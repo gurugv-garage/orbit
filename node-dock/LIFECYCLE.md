@@ -10,17 +10,33 @@ communicate only through [`PerceptionBus`](app/app/src/main/kotlin/dev/orbit/doc
 events. Keeping them decoupled is deliberate — each is independently testable.
 
 ```
-   tap / voice                          Ollama                    TTS
-  ┌───────────┐   PerceptionBus   ┌──────────────┐   speak()   ┌──────────┐
-  │ Perception│ ───────────────▶  │   DockAgent  │ ──────────▶ │ DockTts  │
-  │  Pipeline │  WakeWord/        │ (one POST →  │   setFace   │          │
-  │  + STT    │  Transcript/      │  parse →     │   body      │ onSpeaking
-  │           │  Speaking         │  dispatch)   │             │  Changed │
-  └───────────┘ ◀───────────────  └──────────────┘ ◀────────── └──────────┘
-        │          WakeWord                                      Speaking(b)
-        │          (auto-relisten)                                   │
-        └──────────────────────── AutoRelisten ◀────────────────────┘
+  tap / voice
+      │
+      ▼
+┌──────────────┐  WakeWord/Transcript  ┌──────────────┐
+│  Perception  │ ────────────────────▶ │   DockAgent  │
+│   Pipeline   │                       │ (one POST →  │
+│    + STT     │ ◀──────────────────── │   parse →    │
+└──────────────┘  WakeWord (relisten)  │   dispatch)  │
+      ▲                                └──────┬───────┘
+      │ Speaking(bool)            speak() +   │
+      │ onSpeakingChanged         setFace/body▼
+      │                                ┌──────────────┐
+      └──── AutoRelisten ◀──────────── │   DockTts    │
+                                       └──────────────┘
 ```
+
+Read left→right: a tap/voice utterance enters the **PerceptionPipeline**,
+which emits `WakeWord`/`Transcript` events on the **PerceptionBus** to
+**DockAgent**; DockAgent streams prose to **DockTts** (`speak()`) and fires
+body/face tools (`setFace`); `onSpeakingChanged(false)` feeds **AutoRelisten**,
+which re-arms the mic (emits a fresh `WakeWord`) for hands-free conversation.
+
+Read left→right: a tap/voice utterance enters the **PerceptionPipeline**,
+which emits `WakeWord`/`Transcript` events on the **PerceptionBus** to
+**DockAgent**; DockAgent streams prose to **DockTts** (`speak()`) and fires
+body/face tools (`setFace`); `onSpeakingChanged(false)` feeds **AutoRelisten**,
+which re-arms the mic (emits a fresh `WakeWord`) for hands-free conversation.
 
 ---
 
