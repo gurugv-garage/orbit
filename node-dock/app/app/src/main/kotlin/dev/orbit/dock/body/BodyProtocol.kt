@@ -8,7 +8,7 @@ import kotlinx.serialization.json.JsonObject
 /**
  * Wire-format types for the BodyLink protocol v0 (2026-05-27 redesign).
  *
- * See experiments/orbit/node-dock/bodylink/DESIGN.md for the canonical spec.
+ * See node-dock/bodylink/DESIGN.md for the canonical spec.
  * Every message shares the same outer envelope:
  *
  *     { "v": 0, "type": "...", "id": "...", "ts": 1731943244123, "body": { ... } }

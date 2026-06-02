@@ -9,7 +9,7 @@ Read this first when picking up the project cold.
 > motion. The two sides communicate over a Wi-Fi WebSocket protocol
 > called **BodyLink**.
 
-## Map (everything is relative to `experiments/orbit/node-dock/`)
+## Map (everything is relative to `node-dock/`)
 
 ```
 node-dock/

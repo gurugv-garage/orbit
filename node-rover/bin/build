@@ -2,4 +2,4 @@
 # Build the docker image. ~10 min first time.
 set -euo pipefail
 cd "$(dirname "$0")/.."
-docker build -t bit2atms/rover:latest .
+docker build -t orbit/rover:latest .

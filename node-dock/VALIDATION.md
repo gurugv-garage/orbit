@@ -99,7 +99,7 @@ UX (parallel tools, multi-step, talk-while-move) firing together on hardware.
 - wrapReply JSON hack removed; StreamingReplyExtractor is plain-text native.
 - DOCK_EVT tracing gated to BuildConfig.DEBUG.
 - Stale KDoc fixed; LIFECYCLE.md + STRUCTURE.md + UX.md updated for agentic arch.
-- experiments/pi-kt deleted (vendored as :agent-core).
+- pi-kt vendored as :agent-core (no longer a separate clone).
 
 ## 👁 Physical eyeball pass (with user, voice input via tap-to-talk)
 

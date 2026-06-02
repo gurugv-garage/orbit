@@ -2,16 +2,14 @@
 
 Multi-device personal robotics: a mobile floor robot (**node-rover**), one or
 more stationary desk companions (**node-dock**), and a central agent/WebRTC
-service that bridges them (**plat**). This repo was extracted from the `bit2atms`
-courseware repo (it lived at `experiments/orbit/`); some older docs still say
-"relative to `experiments/orbit/...`" — mentally drop that prefix, the orbit
-root is now the repo root.
+service that bridges them (**plat**). The orbit root is the repo root; all paths
+in these docs are relative to it.
 
 ## Layout
 
 | Folder | What | State |
 |---|---|---|
-| `docs/` | plan.md (architecture), TODO.md (progress), CATCHUP.md (what/why log) — **read these first** | living |
+| `docs/` | plan.md (architecture + decision log), TODO.md (progress) — **read these first** | living |
 | `node-dock/` | Stationary desk companion: an Android phone (the brain — LLM + camera + voice) optionally driving an ESP32 servo body over a Wi-Fi WebSocket (**BodyLink**) | **active** |
 | `node-rover/` | Mobile floor robot, linorobot2-based, ROS2. Sim works through nav; hardware/manipulation next | sim done |
 | `plat/` | Central platform service (agent, LLM, WebRTC SFU, world model) | stub |

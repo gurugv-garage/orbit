@@ -2,8 +2,6 @@
 
 Progress tracker for the orbit platform. Pieces per `plan.md`: **node-rover** (mobile robot), **node-dock** (desk companion), **plat** (central agent + WebRTC SFU). Within each: sim → real hardware. Check items as they ship.
 
-> Section 1 below is node-rover, section 2 is node-dock (was "I/O nodes"), section 3 is plat (was "agent"). Older internal headers may still say robot/I-O/agent — meaning unchanged.
-
 Legend: `[x]` done · `[~]` in progress · `[ ]` not started · `[?]` open question/blocked
 
 ---
@@ -13,8 +11,8 @@ Legend: `[x]` done · `[~]` in progress · `[ ]` not started · `[?]` open quest
 - [x] Single Docker container with ROS2 Jazzy + linorobot2 + Nav2 + slam_toolbox + foxglove_bridge + Gazebo
 - [x] Plain `bin/` shell scripts (no Makefile, no docker-compose)
 - [x] `bin/sync` clones linorobot2 + linorobot2_hardware into `ext/` (gitignored)
-- [x] `bin/build` builds image `bit2atms/botz:latest`
-- [x] `bin/up` runs container `botz`, auto-starts foxglove bridge on `:8765`
+- [x] `bin/build` builds image `orbit/rover:latest`
+- [x] `bin/up` runs container `rover`, auto-starts foxglove bridge on `:8765`
 - [x] `bin/ws-build` runs `colcon build` inside container
 - [x] `bin/sim` launches Gazebo headless; `bin/sim-stop` cleans up
 - [x] `bin/drive` publishes brief `/cmd_vel` to verify motion
@@ -30,7 +28,7 @@ Legend: `[x]` done · `[~]` in progress · `[ ]` not started · `[?]` open quest
 
 ---
 
-## 1 · Robot subsystem (sim first, then hardware)
+## 1 · node-rover (sim first, then hardware)
 
 ### 1.1 Sim — locomotion stack
 - [x] linorobot2 builds in container
@@ -93,9 +91,9 @@ Legend: `[x]` done · `[~]` in progress · `[ ]` not started · `[?]` open quest
 
 ---
 
-## 2 · I/O node subsystem (Android phones, one per room)
+## 2 · node-dock (Android phone per location, optional servo body)
 
-### 2.1 Single-node MVP (phone in one room → laptop agent)
+### 2.1 Single-node MVP (phone at one location → plat)
 - [ ] Inventory which phones are available; confirm at least one is Pixel-class
 - [ ] OS choice: stock vs GrapheneOS vs LineageOS per device
 - [ ] Charge-limiting strategy decided (AccA + root, Chargie hardware, or battery removal)
@@ -140,7 +138,7 @@ Legend: `[x]` done · `[~]` in progress · `[ ]` not started · `[?]` open quest
 
 ---
 
-## 3 · Agent (laptop / cloud)
+## 3 · plat (laptop / home server / cloud)
 
 ### 3.1 Audio pipeline (centralized at agent)
 - [ ] WebRTC SFU (LiveKit) running on laptop
@@ -202,20 +200,20 @@ Per `plan.md` Section 2 capability table:
 
 ## 5 · Backlog — features parked for later
 
-Features identified but deferred. See [`decision-frame.md`](decision-frame.md)
-for the lens used to evaluate where each lives. Each is sized rough-T-shirt
+Features identified but deferred. See [`plan.md`](plan.md) §10 ("Where features
+live") for the lens used to evaluate where each lives. Each is sized rough-T-shirt
 (S/M/L) and tagged with the most likely host: **dock**, **rover**, **plat**,
 or **shared**.
 
 ### node-dock
 
 - [x] **BodyLink (Brain side) — sim path** — DONE. Protocol designed
-  (`experiments/orbit/node-dock/bodylink/DESIGN.md`), Python MuJoCo sim
-  built (`bodylink/sim/`, 30/30 integration tests pass), Kotlin
-  `BodyLinkComms` client wired into the dock app, 4 part-specific LLM
+  ([../node-dock/bodylink/DESIGN.md](../node-dock/bodylink/DESIGN.md)), Python
+  MuJoCo sim built (`node-dock/bodylink/sim/`, 30/30 integration tests pass),
+  Kotlin `BodyLinkComms` client wired into the dock app, 4 part-specific LLM
   tools registered, live body-state badge on the main screen. Verified
   end-to-end on AVD + physical phone: LLM picks tools, sim moves, badge
-  updates. See [../../node-dock/app/PLAN.md](../../node-dock/app/PLAN.md)
+  updates. See [../node-dock/app/PLAN.md](../node-dock/app/PLAN.md)
   §M7 for the full breakdown.
 - [ ] **BodyLink stage 3** — Compose schematic robot canvas (replace the
   text body badge with a live stick-figure drawn from BodyState).
@@ -227,7 +225,7 @@ or **shared**.
 - [ ] **BodyLink ESP32 firmware** — port the Python sim's behavior to
   Arduino + the `BodyLinkComms` C++ lib. Hardware (BOM, assembly,
   3D-print SCAD/STL) ready at
-  [../../node-dock/hardware/](../../node-dock/hardware/).
+  [../node-dock/hardware/](../node-dock/hardware/).
 - [ ] **(A) Persistent memory / conversation history** — S. Local SQLite (or
   JSON) per dock keyed by turn. Surfaced as Koog recall tool. UX win:
   "what did I ask yesterday?". Revisit centralisation once there's >1 dock.
@@ -263,13 +261,13 @@ or **shared**.
 
 ## 6 · Open questions (from plan.md Section 8)
 
-### Robot
+### node-rover
 - [?] Cliff sensors — add proactively or defer until autonomy reveals need
 - [?] Camera pan-only vs pan+tilt mount
 - [?] Chassis fabrication: 3D-printed vs laser-cut acrylic
 - [?] Battery retrofit timing (after sim → real hardware milestone)
 
-### I/O nodes
+### node-dock
 - [?] Which specific phones are on hand
 - [?] Charge-limiting approach finalized
 - [?] Fork HA Companion vs write Kotlin app from scratch
@@ -277,7 +275,7 @@ or **shared**.
 - [?] Camera default-off vs default-on
 - [?] Display use: status only vs context/images shown
 
-### Agent
+### plat
 - [?] `rosbridge_server` vs native ROS2 node
 - [?] Room → map-coordinate config format
 - [?] LLM choice (deferred)
@@ -287,19 +285,6 @@ or **shared**.
 - [?] Build phasing — to be decided after architecture stable
 - [?] When to graduate from sim to real hardware for the robot
 
----
-
-## 6 · Reference — what already works end-to-end
-
-Verified via Playwright + screenshots during dev (`52f505b refactor: rename to botz`):
-
-- Single container `botz` runs ROS2 + Gazebo + linorobot2 + foxglove_bridge
-- Foxglove web (https://app.foxglove.dev) connects to `ws://localhost:8765`
-- `foxglove-layout-v5.json` loads with:
-  - URDF rendered (primitives, no `.dae` meshes by upstream default)
-  - TF axes for every link
-  - LIDAR `/scan` returns visible
-  - Camera RGB image live
-  - Odom position panel updating
-- `bin/drive` actually moves the simulated robot, `/odom` updates
-- Full nuke + rebuild reproduces this state from scratch
+> What already works end-to-end for the rover sim (container, Foxglove
+> layout, drive/SLAM/Nav2 with verified results) is documented in
+> [`../node-rover/README.md`](../node-rover/README.md) → "Sim verification".

@@ -5,7 +5,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-IMAGE=bit2atms/rover:latest
+IMAGE=orbit/rover:latest
 NAME=rover
 
 if docker ps -a --format '{{.Names}}' | grep -qx "$NAME"; then

@@ -356,7 +356,7 @@ Drop-in swaps that don't break the architecture.
 Compact: decision, reason, what would flip it.
 
 ### orbit terminology (2026-05-18)
-Renamed everything for clarity. **orbit** = platform. **node-rover** = mobile robot (was `botz`). **node-dock** = stationary desk companion (was "I/O node" / "deskz"). **plat** = central agent + platform service. Folder layout reorganized accordingly: `experiments/orbit/{plat,node-rover,node-dock,docs}`. The earlier "I/O nodes one per room" framing was folded into node-dock — a dock can sit on a desk, kitchen counter, or bedside table; "one per room" is just N>1 docks. The "dumb edge device" framing was relaxed — a dock can have local active behavior (gaze, idle gestures) that doesn't require a plat round-trip, while plat still owns intent.
+Renamed everything for clarity. **orbit** = platform. **node-rover** = mobile robot (was `botz`). **node-dock** = stationary desk companion (was "I/O node" / "deskz"). **plat** = central agent + platform service. Repo layout: `{plat,node-rover,node-dock,docs}/` at the root. The earlier "I/O nodes one per room" framing was folded into node-dock — a dock can sit on a desk, kitchen counter, or bedside table; "one per room" is just N>1 docks. The "dumb edge device" framing was relaxed — a dock can have local active behavior (gaze, idle gestures) that doesn't require a plat round-trip, while plat still owns intent.
 
 ### Multi-node architecture (dock + rover + plat)
 The original "one bot does everything" framing coupled the conversational stack to a mobile platform — bad for AEC during motion, far-field while moving, and the "no mic where the bot isn't" problem. Decoupled into N nodes + plat. **Would flip if** the project scope shrank to "just the rover" or "just the dock."
@@ -423,3 +423,30 @@ No cloud STT. All inference on local plat (laptop / home server). Per-dock mute 
 
 ### Form factor (dock): desk-resident, optionally expressive
 "Sits with you and reacts to what you're doing" is the dock's headline behavior. Stationary; expressiveness (gaze, servo body) is the differentiator from a passive smart speaker.
+
+---
+
+## 10. Where features live — the decision frame
+
+We don't commit to "fat client" vs "thin client" as an architecture. Each
+feature is placed where the trade-offs land *for that feature*. When deciding
+where a new feature runs (on-device vs on-plat vs on-cloud), make the
+trade-off explicit against these criteria — there's no formal scoring, it's a
+checklist so the choice isn't accidental:
+
+1. **Latency needs** — round-trip target (ms / sec / "user-perceivable"), hop count tolerable, streaming or one-shot.
+2. **Device capability** — CPU/NPU/memory/battery on the candidate device; does the model/library exist for that platform; always-on vs charging-only vs mobile.
+3. **Implementation complexity** — how much new plumbing (transport, build target, ops surface); can we reuse what's already there.
+4. **Simplest solution possible** — dumbest thing that could work; will a v0 with no infra get 80% there. Pick the simplest option that satisfies the latency + capability constraints, not the most architecturally pure.
+5. **Change management** — if we ship it here and later need to move it, what's the cost. Soft tie-breaker toward the more portable option; never blocks on its own.
+6. **Best UX** — does an option noticeably improve feel (e.g. on-device wake-word feels instant and works offline).
+
+**In practice:** node-dock can run a local agent for some tasks AND stream to
+plat for others — no "everything goes here" rule. plat stays small until a
+feature *needs* it (cross-device state, shared world model, GPU-bound
+inference). WebRTC, ROS2 bridge, websockets, gRPC are tools picked per-feature,
+not declared up front.
+
+**When in doubt:** default to the device closest to where the work happens (mic
+input → device with the mic; robot motion → robot; multi-device fusion → plat).
+Move it elsewhere only when a criterion above forces it.

@@ -80,6 +80,47 @@ bin/sim-stop   # when done
 bin/down       # if you want to stop the container
 ```
 
+## Sim verification (locomotion + navigation)
+
+The locomotion + Nav2 sim is validated end-to-end. To reproduce from a
+running container (~5 min):
+
+```bash
+bin/sim                                 # playground world
+docker exec -t rover bash -lc \
+  'source /opt/ros/jazzy/setup.bash && python3 /ws/overlay/test_odom_closure.py'
+bin/slam                                # SLAM + Nav2
+docker exec -t rover bash -lc \
+  'source /opt/ros/jazzy/setup.bash && python3 /ws/overlay/bounded_coverage.py 120'
+bin/save-map playground                 # -> maps/playground.{pgm,yaml}
+bin/nav-stop && sleep 3
+bin/nav playground
+docker exec -t rover bash -lc \
+  'source /opt/ros/jazzy/setup.bash && python3 /ws/overlay/init_amcl.py'
+sleep 3
+bin/wander 4 1.2                        # 4 random goals within 1.2 m
+```
+
+Last verified results:
+
+- **Odometry closure:** 1m-square drive → 1.2 cm closure error, 1.34° yaw
+  drift over the 4 m perimeter (0.3%). Confirms `/odom` topology, EKF fusion,
+  `/cmd_vel` reach, frame consistency. (PID tuning is N/A in sim — Gazebo's
+  diff-drive plugin takes wheel velocities directly; the linorobot2 PID lives
+  in firmware for real hardware only.)
+- **Nav2 goal:** (1.5, 0.0) from (-0.27, -0.09) → `status=4` SUCCESS, 9
+  recovery behaviors fired (spin/backup/wait) before success — BT working.
+- **Wander:** 4/4 random goals SUCCESS.
+
+Two sim-specific tuning changes (applied automatically by `bin/patch-nav-yaml`,
+which `bin/ws-build` runs after every workspace build, since `ext/` is
+re-fetched on `bin/sync`):
+
+- Default world is `playground`, not `turtlebot3_world` (the latter's central
+  pillar makes small-world planning fail under safe inflation).
+- `inflation_radius` 0.7 → 0.25 m, and `/camera/depth/color/points` added as a
+  2nd costmap observation source (catches off-LIDAR-plane obstacles).
+
 ## Layout
 
 ```

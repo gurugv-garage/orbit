@@ -1,6 +1,6 @@
 # node-dock app — build plan
 
-Working plan for the Android app at `experiments/orbit/node-dock/app/`. Source of truth for what's being built, in what order, and what's deferred.
+Working plan for the Android app at `node-dock/app/`. Source of truth for what's being built, in what order, and what's deferred.
 
 **Last updated:** 2026-05-20
 
@@ -50,7 +50,7 @@ Six milestones. Each is independently testable in the emulator, each ends with a
 ### M1 — Skeleton + animated face
 - [x] Android Studio 2025.2 confirmed
 - [x] `adb` on PATH (zsh)
-- [x] Scaffold Android project at `experiments/orbit/node-dock/app/`
+- [x] Scaffold Android project at `node-dock/app/`
 - [x] Compose + landscape lock + full-screen immersive (MainActivity)
 - [x] `FaceController` state machine (StateFlow-based) — Idle / Engaged / Listening / Speaking / Illustrating
 - [x] `FaceRenderer` Compose — eyes, breath, blink, idle drift, gaze offset, pupil dilation, privacy "closed-eye" mode
@@ -227,7 +227,7 @@ Live: [../../bodylink/](../../bodylink/) (spec + sim) and [../../body-firmware/d
 ## Repo layout (after M1 scaffolding)
 
 ```
-experiments/orbit/node-dock/app/
+node-dock/app/
 ├── PLAN.md                      ← this file
 ├── build.gradle.kts             ← top-level
 ├── settings.gradle.kts

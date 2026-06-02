@@ -13,7 +13,7 @@ Parametric, text-based, diffs in git. All shared dimensions live in
 
 ```bash
 brew install openscad         # one-time
-cd experiments/orbit/node-dock/hardware/3dprinting
+cd node-dock/hardware/3dprinting
 make                          # builds all STLs into stl/
 ```
 

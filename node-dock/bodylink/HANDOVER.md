@@ -548,7 +548,7 @@ For reference / cross-checking:
 
 If you're an agent picking this up cold (or a human running an agent),
 copy the block below verbatim into the new session. It assumes the
-working directory is `experiments/orbit/node-dock/app/` (the Android
+working directory is `node-dock/app/` (the Android
 project), gives the full task, and tells you exactly how to verify each
 step against the live firmware and against the sim.
 

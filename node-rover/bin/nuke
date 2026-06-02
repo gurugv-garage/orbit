@@ -6,7 +6,7 @@ cd "$(dirname "$0")/.."
 
 docker stop rover 2>/dev/null
 docker rm rover 2>/dev/null
-docker rmi bit2atms/rover:latest 2>/dev/null
+docker rmi orbit/rover:latest 2>/dev/null
 docker volume rm rover_ws_src rover_ws_build rover_ws_install rover_ws_log 2>/dev/null
 
 rm -rf ext/* maps/* 2>/dev/null

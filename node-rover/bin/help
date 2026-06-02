@@ -49,9 +49,8 @@ Typical flow:
   bin/down                                     # tear down
 
 Files:
-  README.md       — table of all commands + foxglove notes
-  CATCHUP.md      — what's in this folder and why (read this first)
-  plan.md         — overall project plan (audio + robot + agent)
-  TODO.md         — progress per subsystem
+  README.md       — commands, sim verification, foxglove notes (read this first)
+  ../docs/plan.md — overall platform architecture
+  ../docs/TODO.md — progress per subsystem
   screenshots/    — per-section notes.md + decisions.md
 EOF
