@@ -5,11 +5,11 @@ multi-step **tool-calling loop** (pi-kt `Agent`/`AgentLoop` in `:agent-core`),
 not a single forced-JSON POST. This is the contract the implementation serves.
 
 **Living document — optimize for a natural feel, iterate freely.** Tunables are
-called out explicitly so changing the feel is cheap. This *extends*
-[LIFECYCLE.md](LIFECYCLE.md) (the FaceState / AgentState / mic / AutoRelisten
-state machines + tap rules) — read that first; don't duplicate it here. For the
-*mechanics* that serve this contract (how `DockAgent` drives the loop, translates
-events, runs speech + motion in parallel), see [AGENT-WORKFLOW.md](AGENT-WORKFLOW.md).
+called out explicitly so changing the feel is cheap. This is the *behavior /
+feel* spec; for the *mechanics* it serves — the turn lifecycle, the state
+machines (FaceState / AgentState / mic / AutoRelisten + tap rules), how
+`DockAgent` drives the loop and runs speech + motion in parallel — see
+[TURN.md](TURN.md). Read that first; don't duplicate it here.
 
 ---
 

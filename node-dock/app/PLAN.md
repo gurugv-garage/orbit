@@ -2,8 +2,9 @@
 
 Working plan for the Android app at `node-dock/app/`. Source of truth for
 what's being built, in what order, and what's deferred. The file map lives in
-[../README.md](../README.md#project-map); the in-app state machines in
-[LIFECYCLE.md](LIFECYCLE.md); the interaction contract in [UX.md](UX.md).
+[../README.md](../README.md#project-map); how a turn works (lifecycle + state
+machines + agent mechanics) in [TURN.md](TURN.md); the interaction contract in
+[UX.md](UX.md).
 
 **Last updated:** 2026-06-02
 
@@ -108,7 +109,7 @@ Done:
 - [x] **Kotlin client migrated** — `BodyLinkComms` decodes the capability `profile`, sends `set_target` for both intent and a periodic heartbeat (`pingIntervalMillis = 2000L`), and ships a brain-side state catalog (`assets/states.json` + `BodyStateCatalog`, validated against the body's profile). No `set_state`/state-stream types remain.
 - [x] **Body driven via the agent's `move_body` / `gesture` / `move_sequence` tools** → `DockTools.makeBodyMovements` → `BodyController.setState(part,state)` → `set_target`. Part↔state validation in `DockToolsAdapter`.
 - [x] `BodyBadge` UI (green/red dot + per-part state, transitions show `<state> (XX%)`); `BODY_HOST` in `local.properties`; `usesCleartextTraffic=true` for `ws://`.
-- [x] **End-to-end on real ESP32 (neck + foot)** — "look down", "nod", "wiggle", model-authored `move_sequence` all drive real servos with acks; talk-while-moving confirmed (see [LIFECYCLE.md](LIFECYCLE.md)).
+- [x] **End-to-end on real ESP32 (neck + foot)** — "look down", "nod", "wiggle", model-authored `move_sequence` all drive real servos with acks; talk-while-moving confirmed (see [TURN.md](TURN.md)).
 
 Open:
 - [ ] **Rewrite the sim integration tests** — `integration_test.py` still has old `set_state` paths; T-list in [../bodylink/HANDOVER.md](../bodylink/HANDOVER.md) §3.
