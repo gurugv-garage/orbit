@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+# List all ROS2 topics currently in the graph.
+exec docker exec -t rover bash -lc 'source /opt/ros/jazzy/setup.bash && ros2 topic list'

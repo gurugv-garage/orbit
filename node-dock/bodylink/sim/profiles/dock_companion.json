@@ -1,0 +1,81 @@
+{
+  "_comment": [
+    "Capability profile for the dock body. See DESIGN.md §2.",
+    "",
+    "2026-05-27 — protocol redesign. The body now advertises parts +",
+    "primitive parameter ranges only. Named states (lookUp, forward, ...)",
+    "live in the brain's state catalog (e.g. app/src/main/assets/states.json).",
+    "",
+    "For v0 smoke firmware (dock_body_v0): only `neck` and `foot` are wired.",
+    "`arm.left` and `arm.right` are sketched here so the brain knows what",
+    "additional parts will appear when hardware lands; the smoke firmware",
+    "does NOT include them yet.",
+    "",
+    "Pulse-width-µs ranges are the MG90S clone safe span (500-2500). Real",
+    "mechanical end-stops may be narrower; brain's state catalog SHOULD",
+    "stay inside [800, 2200] to avoid stall buzz at extremes.",
+    "",
+    "duration_ms.range = [0, 30000]: 0 = snap, 30s upper bound is policy",
+    "(no upper limit on the wire; we just don't expect anything slower).",
+    "",
+    "velocity_us_per_sec_cap: MG90S spec is ~10000 us/s peak; we cap at",
+    "4000 to keep wear down and motion smooth."
+  ],
+  "device_id": "xiao-esp32-001",
+  "name": "dock-body-smoke-v0",
+  "fw_version": "0.0.1",
+  "parts": {
+    "neck": {
+      "description": "Single-DOF pitch servo on the head — nods up/down. MG90S clone.",
+      "home": { "pulse_width_us": 1500 },
+      "params": {
+        "pulse_width_us": {
+          "type": "int",
+          "unit": "us",
+          "range": [500, 2500],
+          "description": "Servo PWM pulse width. 1500 µs is mechanical center."
+        },
+        "duration_ms": {
+          "type": "int",
+          "unit": "ms",
+          "range": [0, 30000],
+          "default": 400,
+          "description": "Linear-interpolation time to reach target pulse_width_us. 0 = snap."
+        },
+        "velocity_us_per_sec_cap": {
+          "type": "int",
+          "unit": "us/s",
+          "range": [0, 4000],
+          "default": 4000,
+          "description": "Max rate of change. 0 = use device default. Brain must not exceed declared cap."
+        }
+      }
+    },
+    "foot": {
+      "description": "Yaw servo at the base — turns the dock around its vertical axis.",
+      "home": { "pulse_width_us": 1500 },
+      "params": {
+        "pulse_width_us": {
+          "type": "int",
+          "unit": "us",
+          "range": [500, 2500],
+          "description": "Servo PWM pulse width. 1500 µs is mechanical center."
+        },
+        "duration_ms": {
+          "type": "int",
+          "unit": "ms",
+          "range": [0, 30000],
+          "default": 400,
+          "description": "Linear-interpolation time to reach target pulse_width_us. 0 = snap."
+        },
+        "velocity_us_per_sec_cap": {
+          "type": "int",
+          "unit": "us/s",
+          "range": [0, 4000],
+          "default": 4000,
+          "description": "Max rate of change. 0 = use device default."
+        }
+      }
+    }
+  }
+}

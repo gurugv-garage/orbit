@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+# Start the rover container (ROS2 + linorobot2 + sim). Foxglove bridge auto-starts inside it.
+#
+# All flags explicit — no docker-compose, no hidden config.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+
+IMAGE=bit2atms/rover:latest
+NAME=rover
+
+if docker ps -a --format '{{.Names}}' | grep -qx "$NAME"; then
+  echo "[up] container '$NAME' already exists. starting it..."
+  docker start "$NAME" >/dev/null
+else
+  echo "[up] creating and starting container '$NAME'"
+  docker run -d \
+    --name "$NAME" \
+    --hostname "$NAME" \
+    -p 8765:8765 \
+    -v "$PWD/ext:/ws/src/ext:ro" \
+    -v "$PWD/workspace:/ws/overlay" \
+    -v "$PWD/maps:/ws/maps" \
+    -v rover_ws_src:/ws/src \
+    -v rover_ws_build:/ws/build \
+    -v rover_ws_install:/ws/install \
+    -v rover_ws_log:/ws/log \
+    -e ROS_DOMAIN_ID=0 \
+    -e LINOROBOT2_BASE=2wd \
+    -e LINOROBOT2_LASER_SENSOR=ldlidar \
+    -e LINOROBOT2_DEPTH_SENSOR=oakdlite \
+    "$IMAGE" \
+    bash -lc '
+      source /opt/ros/jazzy/setup.bash
+      [ -f /ws/install/setup.bash ] && source /ws/install/setup.bash
+      nohup ros2 run foxglove_bridge foxglove_bridge \
+        --ros-args -p port:=8765 -p address:=0.0.0.0 \
+        > /tmp/foxglove.log 2>&1 &
+      echo "foxglove bridge started (logs: /tmp/foxglove.log)"
+      exec tail -f /dev/null
+    ' >/dev/null
+fi
+
+sleep 1
+echo "[up] container '$NAME' running. foxglove bridge on ws://localhost:8765"

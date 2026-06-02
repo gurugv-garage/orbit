@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# Send N random reachable goals via Nav2.
+# Usage: bin/wander [N_goals] [max_r_meters]
+set -euo pipefail
+N="${1:-3}"
+R="${2:-2.5}"
+exec docker exec -t rover bash -lc "
+  source /opt/ros/jazzy/setup.bash
+  python3 /ws/overlay/wander_node.py --goals ${N} --max-r ${R}
+"

@@ -1,0 +1,36 @@
+# Copy to local.properties (gitignored) and fill in. The Android build reads
+# these at compile time (see app/build.gradle.kts buildConfigField).
+
+# Android SDK location on this machine.
+sdk.dir=/Users/<you>/Library/Android/sdk
+
+# --- LLM backend (the dock's brain) ---
+# Default: gemini-2.5-flash via OpenRouter (the benchmark winner). The in-app
+# model picker can switch at runtime (see ModelCatalog).
+OLLAMA_BASE_URL=https://openrouter.ai/api
+OLLAMA_MODEL=google/gemini-2.5-flash
+LLM_API=openai
+LLM_VISION=true
+
+# Cloud keys (only the one your selected model needs):
+OPENROUTER_API_KEY=        # openrouter.ai — for the gemini/gpt-4o-mini picker entries
+GEMINI_API_KEY=            # aistudio.google.com — for the "gemini-direct (Google)" entry
+
+# Wake-word (optional): picovoice.ai console key.
+PORCUPINE_ACCESS_KEY=
+
+# --- ESP32 body (BodyLink WebSocket) ---
+# IP from the firmware boot log ("Got IP"); update on DHCP lease change.
+BODY_HOST=192.168.1.14:17317
+
+# --- Local model alternatives (laptop on the LAN), if not using cloud ---
+#   gemma4:e2b via Ollama (local, has vision):
+#     OLLAMA_BASE_URL=http://<laptop-lan-ip>:11434
+#     OLLAMA_MODEL=gemma4:e2b
+#     LLM_API=ollama
+#     LLM_VISION=true
+#   Qwen3.6-35B via llama.cpp (local, text-only):
+#     OLLAMA_BASE_URL=http://<laptop-lan-ip>:8081
+#     OLLAMA_MODEL=Qwen3.6-35B-A3B-UD-Q4_K_M.gguf
+#     LLM_API=openai
+#     LLM_VISION=false

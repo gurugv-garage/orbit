@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# Launch slam_toolbox + Nav2 inside the running rover container.
+# Runs alongside `bin/sim`. Headless (no RViz — view in Foxglove).
+set -euo pipefail
+docker exec -t rover bash -lc '
+  source /opt/ros/jazzy/setup.bash
+  source /ws/install/setup.bash
+  nohup ros2 launch linorobot2_navigation slam.launch.py sim:=true rviz:=false \
+    > /tmp/slam.log 2>&1 < /dev/null &
+  disown
+  sleep 1
+  echo "slam_toolbox + Nav2 launched (logs: /tmp/slam.log)"
+'
+echo "topics: /map, /global_costmap, /local_costmap, /plan, /goal_pose visible in Foxglove"

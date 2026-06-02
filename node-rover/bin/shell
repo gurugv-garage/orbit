@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# Open an interactive ROS2 shell inside the running container.
+# Run from multiple terminals to run separate processes side-by-side.
+set -euo pipefail
+exec docker exec -it rover bash -lc \
+  'source /opt/ros/jazzy/setup.bash && [ -f /ws/install/setup.bash ] && source /ws/install/setup.bash; exec bash'

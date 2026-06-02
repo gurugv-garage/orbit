@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+# Clone or update external repos (linorobot2 + linorobot2_hardware) into ext/.
+# Idempotent.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+
+EXT=ext
+mkdir -p "$EXT"
+
+pull() {
+  local url=$1 branch=$2
+  local dir="$EXT/$(basename "$url" .git)"
+  if [[ -d "$dir/.git" ]]; then
+    echo "[sync] updating $(basename "$dir")"
+    git -C "$dir" fetch -q origin "$branch"
+    git -C "$dir" checkout -q "$branch"
+    git -C "$dir" pull -q --ff-only origin "$branch"
+  else
+    echo "[sync] cloning $(basename "$dir")"
+    git clone -q --branch "$branch" "$url" "$dir"
+  fi
+}
+
+pull https://github.com/linorobot/linorobot2.git jazzy
+pull https://github.com/linorobot/linorobot2_hardware.git jazzy
+echo "[sync] done"

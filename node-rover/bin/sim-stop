@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# Stop the running sim (leaves container + foxglove bridge up).
+# Uses a helper script invoked by name so kill patterns don't match the
+# kill command's own command line.
+set +e
+docker exec -t rover bash /ws/overlay/sim-stop.sh
+exit 0

@@ -1,0 +1,57 @@
+#!/usr/bin/env bash
+# Print all bin/ commands grouped by bucket, with one-line descriptions.
+# Source of truth: this file (kept in sync with README.md "All commands").
+cat <<'EOF'
+
+rover/bin/ — commands grouped by bucket
+
+LIFECYCLE  (container + repo setup)
+  sync               clone/update linorobot2 + linorobot2_hardware into ext/
+  build              docker build the image
+  up                 start the container (foxglove bridge auto-starts on :8765)
+  down               stop and remove the container (named volumes persist)
+  shell              open interactive ROS2 shell inside the container
+  status             container + foxglove + sim status
+  nuke               wipe container, image, volumes, ext/, maps/ (keeps workspace/)
+
+WORKSPACE  (ROS2 build inside the container)
+  ws-build           rosdep + colcon build of linorobot2 (auto-runs patch-nav-yaml)
+  patch-nav-yaml     idempotent patch: inflation 0.7→0.25 + depth-cloud costmap source
+
+SIM  (Gazebo + basic interaction)
+  sim                launch Gazebo + linorobot2, headless (WORLD=playground default)
+  sim-stop           stop just the sim (container + foxglove stay up)
+  sim-log            tail the sim's log
+  topics             ros2 topic list
+  drive              publish /cmd_vel for 4s — forward + turn (smoke test)
+
+NAVIGATION  (SLAM + Nav2)
+  slam               launch slam_toolbox + Nav2 alongside the running sim
+  save-map <name>    save current SLAM map to maps/<name>.{pgm,yaml}
+  nav <name>         launch Nav2 with a previously-saved map
+  nav-stop           stop SLAM/Nav stack (sim + foxglove stay)
+  wander [N] [R]     send N random reachable goals via Nav2 (default 3, R=2.5m)
+
+DEMOS
+  demo               end-to-end smoke test: sim → slam → map → nav (6 steps)
+                       At each step: [Enter]=run, s=skip, q=quit
+                       Flags:
+                         --yes              run all steps non-interactively
+                         --from N           start at step N (1-6), skip earlier
+                         --only "1,3,5"     run only listed steps
+                       Note: steps build on each other (sim → SLAM → map → nav).
+                       Killing the script does NOT auto-resume — use --from N to pick up.
+
+Typical flow:
+  bin/up                                       # once per session
+  bin/ws-build                                 # once after sync, or after bin/nuke
+  bin/demo                                     # or run sim/slam/nav manually
+  bin/down                                     # tear down
+
+Files:
+  README.md       — table of all commands + foxglove notes
+  CATCHUP.md      — what's in this folder and why (read this first)
+  plan.md         — overall project plan (audio + robot + agent)
+  TODO.md         — progress per subsystem
+  screenshots/    — per-section notes.md + decisions.md
+EOF

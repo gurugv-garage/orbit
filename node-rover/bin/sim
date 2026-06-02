@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+# Launch Gazebo + linorobot2 in headless mode. Returns immediately; sim runs
+# in the background inside the container. View topics via Foxglove.
+#
+# World defaults to "playground" (open empty space — easier for Nav2 testing
+# than turtlebot3_world's tight central-pillar geometry). Override with:
+#     WORLD=turtlebot3_world bin/sim
+WORLD_NAME="${WORLD:-playground}"
+set -euo pipefail
+docker exec -t rover bash -lc "
+  source /opt/ros/jazzy/setup.bash
+  source /ws/install/setup.bash
+  export LINOROBOT2_BASE=\${LINOROBOT2_BASE:-2wd}
+  nohup ros2 launch linorobot2_gazebo gazebo.launch.py gui:=false \
+    world_name:=${WORLD_NAME} \
+    > /tmp/sim.log 2>&1 < /dev/null &
+  disown
+  sleep 1
+  echo 'sim launched headless (world=${WORLD_NAME}, logs: /tmp/sim.log)'
+"
+echo "topics will appear in Foxglove (ws://localhost:8765) within ~10 sec"

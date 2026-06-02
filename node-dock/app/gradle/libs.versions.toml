@@ -1,0 +1,71 @@
+[versions]
+agp = "8.7.3"
+kotlin = "2.3.21"
+ksp = "2.3.21-2.0.5"
+composeBom = "2024.12.01"
+composeCompiler = "1.5.15"
+coreKtx = "1.15.0"
+lifecycle = "2.8.7"
+activityCompose = "1.9.3"
+coroutines = "1.9.0"
+timber = "5.0.1"
+onnxruntime = "1.26.0"
+porcupine = "4.0.0"
+ktor = "3.0.3"
+kotlinx-serialization = "1.8.1"
+cameraX = "1.5.3"
+mlkitFace = "16.1.7"
+webrtc = "125.6422.07"
+junit = "4.13.2"
+androidxTest = "1.6.1"
+androidxTestExt = "1.2.1"
+androidxTestRunner = "1.6.2"
+turbine = "1.2.0"
+truth = "1.4.4"
+junitJupiter = "5.11.3"
+
+[libraries]
+core-ktx = { module = "androidx.core:core-ktx", version.ref = "coreKtx" }
+lifecycle-runtime-ktx = { module = "androidx.lifecycle:lifecycle-runtime-ktx", version.ref = "lifecycle" }
+lifecycle-service = { module = "androidx.lifecycle:lifecycle-service", version.ref = "lifecycle" }
+activity-compose = { module = "androidx.activity:activity-compose", version.ref = "activityCompose" }
+compose-bom = { module = "androidx.compose:compose-bom", version.ref = "composeBom" }
+compose-ui = { module = "androidx.compose.ui:ui" }
+compose-ui-graphics = { module = "androidx.compose.ui:ui-graphics" }
+compose-ui-tooling = { module = "androidx.compose.ui:ui-tooling" }
+compose-ui-tooling-preview = { module = "androidx.compose.ui:ui-tooling-preview" }
+compose-material3 = { module = "androidx.compose.material3:material3" }
+kotlinx-coroutines-android = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-android", version.ref = "coroutines" }
+kotlinx-coroutines-core = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-core", version.ref = "coroutines" }
+timber = { module = "com.jakewharton.timber:timber", version.ref = "timber" }
+onnxruntime-android = { module = "com.microsoft.onnxruntime:onnxruntime-android", version.ref = "onnxruntime" }
+porcupine-android = { module = "ai.picovoice:porcupine-android", version.ref = "porcupine" }
+kotlinx-serialization-json = { module = "org.jetbrains.kotlinx:kotlinx-serialization-json", version.ref = "kotlinx-serialization" }
+ktor-client-core = { module = "io.ktor:ktor-client-core", version.ref = "ktor" }
+ktor-client-okhttp = { module = "io.ktor:ktor-client-okhttp", version.ref = "ktor" }
+ktor-client-websockets = { module = "io.ktor:ktor-client-websockets", version.ref = "ktor" }
+camerax-camera2 = { module = "androidx.camera:camera-camera2", version.ref = "cameraX" }
+camerax-lifecycle = { module = "androidx.camera:camera-lifecycle", version.ref = "cameraX" }
+camerax-view = { module = "androidx.camera:camera-view", version.ref = "cameraX" }
+mlkit-face-detection = { module = "com.google.mlkit:face-detection", version.ref = "mlkitFace" }
+webrtc-android = { module = "io.github.webrtc-sdk:android", version.ref = "webrtc" }
+lifecycle-runtime-compose = { module = "androidx.lifecycle:lifecycle-runtime-compose", version.ref = "lifecycle" }
+lifecycle-viewmodel-compose = { module = "androidx.lifecycle:lifecycle-viewmodel-compose", version.ref = "lifecycle" }
+junit = { module = "junit:junit", version.ref = "junit" }
+kotlinx-coroutines-test = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-test", version.ref = "coroutines" }
+turbine = { module = "app.cash.turbine:turbine", version.ref = "turbine" }
+truth = { module = "com.google.truth:truth", version.ref = "truth" }
+kotlin-test-junit5 = { module = "org.jetbrains.kotlin:kotlin-test-junit5", version.ref = "kotlin" }
+junit-jupiter = { module = "org.junit.jupiter:junit-jupiter", version.ref = "junitJupiter" }
+junit-platform-launcher = { module = "org.junit.platform:junit-platform-launcher" }
+androidx-test-ext-junit = { module = "androidx.test.ext:junit", version.ref = "androidxTestExt" }
+androidx-test-runner = { module = "androidx.test:runner", version.ref = "androidxTestRunner" }
+compose-ui-test-junit4 = { module = "androidx.compose.ui:ui-test-junit4" }
+compose-ui-test-manifest = { module = "androidx.compose.ui:ui-test-manifest" }
+
+[plugins]
+android-application = { id = "com.android.application", version.ref = "agp" }
+kotlin-android = { id = "org.jetbrains.kotlin.android", version.ref = "kotlin" }
+kotlin-jvm = { id = "org.jetbrains.kotlin.jvm", version.ref = "kotlin" }
+kotlin-compose = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }
+kotlin-serialization = { id = "org.jetbrains.kotlin.plugin.serialization", version.ref = "kotlin" }

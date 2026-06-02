@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# Launch Nav2 with a saved map using linorobot2's navigation.launch.py.
+# Usage: bin/nav <map_name>
+# linorobot2_navigation/config/navigation.yaml has been patched with
+# inflation_radius=0.25 (was 0.70) so the tight turtlebot3_world map is planable.
+set -euo pipefail
+NAME="${1:-home_map}"
+docker exec -t rover bash -lc "
+  source /opt/ros/jazzy/setup.bash
+  source /ws/install/setup.bash
+  nohup ros2 launch linorobot2_navigation navigation.launch.py \
+    sim:=true rviz:=false map:=/ws/maps/${NAME}.yaml \
+    > /tmp/nav.log 2>&1 < /dev/null &
+  disown
+  sleep 1
+  echo 'Nav2 launched with map: ${NAME}.yaml (logs: /tmp/nav.log)'
+"
+echo "publish /initialpose, then /goal_pose"

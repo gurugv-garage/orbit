@@ -1,0 +1,52 @@
+# ESP-IDF sdkconfig defaults for the BodyLink dock body firmware probe.
+#
+# These get merged into the auto-generated sdkconfig at build time.
+# Edit here, not in sdkconfig — sdkconfig is regenerated and any local
+# changes there are lost.
+
+# ── Console over native USB-CDC (XIAO ESP32-S3) ────────────────────────
+# Route stdout / ESP_LOG to the USB Serial/JTAG controller so the XIAO
+# shows logs on /dev/cu.usbmodem* without an external UART bridge.
+CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
+CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG_ENABLED=y
+CONFIG_ESP_CONSOLE_UART_DEFAULT=n
+CONFIG_ESP_CONSOLE_UART_NONE=n
+
+# ── Wi-Fi tuning for maximum AP-compatibility ──────────────────────────
+# PMF (Protected Management Frames / 802.11w) "capable but not required".
+# Many ISP routers (Nokia G-140W-F we're testing against) advertise PMF
+# capabilities in beacons. Older ESP32 builds get tripped up by this in
+# the 4-way handshake; explicitly setting PMF-capable here is the
+# canonical fix.
+CONFIG_ESP_WIFI_ENABLE_WPA3_SAE=y
+CONFIG_ESP_WIFI_GMAC_SUPPORT=y
+CONFIG_ESP_WIFI_SOFTAP_SUPPORT=n
+
+# Power-save off during bring-up — sleep-related quirks have been
+# reported to mask underlying connection problems.
+CONFIG_ESP_WIFI_DEFAULT_PS_NONE=y
+
+# Keep the static buffer pool generous; under-provisioned RX buffers can
+# trip handshake retries on busy 2.4 GHz channels.
+CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM=16
+CONFIG_ESP_WIFI_DYNAMIC_RX_BUFFER_NUM=32
+CONFIG_ESP_WIFI_TX_BUFFER=dynamic
+CONFIG_ESP_WIFI_DYNAMIC_TX_BUFFER_NUM=32
+
+# Log level: INFO for ours, WARN for noisy IDF subsystems. Override at
+# runtime with esp_log_level_set() if we need verbose Wi-Fi debug.
+CONFIG_LOG_DEFAULT_LEVEL_INFO=y
+CONFIG_LOG_MAXIMUM_EQUALS_DEFAULT=y
+
+# ── Boot ────────────────────────────────────────────────────────────────
+# Skip the bootloader's 2-second wait so monitor catches first lines.
+CONFIG_BOOTLOADER_LOG_LEVEL_INFO=y
+
+# Increase main task stack — Wi-Fi event handlers can be deep on first
+# join.
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=6144
+
+# ── HTTP server: enable WebSocket support ─────────────────────────────
+# Off by default in esp_http_server. Enables httpd_ws_recv_frame /
+# httpd_ws_send_frame and the .is_websocket URI flag.
+CONFIG_HTTPD_WS_SUPPORT=y

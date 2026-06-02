@@ -1,0 +1,33 @@
+{
+  "capability": "vision",
+  "cases": [
+    {
+      "id": "count_fingers",
+      "prompt": "how many fingers am I holding up? answer with the number.",
+      "image": "fingers_3.jpg",
+      "expect": { "keywords": ["3", "three"] },
+      "note": "Dock DUMPFRAME pose: 3 fingers. Top vision discriminator — only gemini got it; gemma + haiku-4.5 said 4. Precise counting from the real camera frame."
+    },
+    {
+      "id": "read_expression",
+      "prompt": "look at my face and tell me my mood in one word",
+      "image": "face_happy.jpg",
+      "expect": { "keywords": ["happy", "smil", "joy", "cheer", "glad", "content", "pleased"] },
+      "note": "DUMPFRAME pose: smiling. Tests expression reading constrained to one word. Quality badge grades whether the read is right even if the exact keyword differs."
+    },
+    {
+      "id": "what_holding",
+      "prompt": "what object am I holding?",
+      "image": "holding_phone.jpg",
+      "expect": { "keywords": ["phone", "smartphone", "device", "mobile"] },
+      "note": "DUMPFRAME pose: holding a phone. Object-in-hand recognition from the real pipeline."
+    },
+    {
+      "id": "see_and_react",
+      "prompt": "look at me and react with a face that matches my mood",
+      "image": "face_happy.jpg",
+      "expect": { "toolName": "set_face", "nonEmptySpeech": true },
+      "note": "VISION→ACTION: must read the happy face AND call set_face with a fitting expression, then speak. Couples perception to embodiment — the dock's whole point. Quality badge grades whether the chosen face matches."
+    }
+  ]
+}

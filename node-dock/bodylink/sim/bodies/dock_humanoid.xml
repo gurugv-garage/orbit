@@ -1,0 +1,151 @@
+<!--
+  Dock companion body — MuJoCo MJCF model.
+
+  Desk companion. Fixed-height body on a wide chunky base that houses the
+  yaw motor. Landscape phone holder head. Decorative arms.
+
+  Joints (4 total) — each has a feasible motor location called out:
+    - foot_yaw            : whole body swivels left/right (±90°)
+                            motor: DS3218 standard servo inside the base
+    - neck_pitch          : head nods (chin up/down, X-axis rotation)
+                            motor: MG90D digital micro servo inside the neck stub
+    - shoulder_left_pitch : left arm abducts laterally (Y-axis hinge,
+                            arm swings in X-Z plane: down → outward T-pose)
+                            motor: SG90 micro servo on shoulder bracket
+    - shoulder_right_pitch: right arm abducts laterally (mirror)
+                            motor: SG90 micro servo on shoulder bracket
+
+  Head yaw is intentionally absent — foot_yaw turns the whole body.
+  Head roll is also dropped to simplify — keep a single neck servo.
+
+  Naming note: the shoulder joints retain the `_pitch` suffix for
+  backwards compatibility with profiles/named-state tests, but they are
+  *lateral abduction* hinges (axis = Y), not forward pitch (axis = X).
+
+  Topology:
+    desk → base (chunky disc, yaw joint, houses motor)
+         → leg_shaft (rigid)
+         → trunk (rigid, large, houses electronics + neck/shoulder servos)
+                → arms (×2 lateral abduction via shoulder caps)
+                → head (neck_stub block houses pitch servo)
+                       → phone plate (landscape)
+
+  Units: meters, radians.
+-->
+<mujoco model="dock_companion">
+  <compiler angle="radian" coordinate="local" autolimits="true"/>
+  <option timestep="0.002" gravity="0 0 -9.81" integrator="implicitfast"/>
+
+  <visual>
+    <global offwidth="1280" offheight="1280"/>
+  </visual>
+
+  <default>
+    <joint damping="0.4" armature="0.005"/>
+    <position kp="30" kv="1.5" forcerange="-15 15"/>
+    <geom type="box" rgba="0.7 0.7 0.75 1" contype="0" conaffinity="0"/>
+    <default class="phone">
+      <geom type="box" rgba="0.10 0.10 0.12 1"/>
+    </default>
+    <default class="limb">
+      <geom type="capsule" rgba="0.55 0.6 0.65 1"/>
+    </default>
+  </default>
+
+  <worldbody>
+    <light name="top"   pos="0  0   1.5"   dir="0 0 -1"          diffuse="1.0 1.0 1.0"/>
+    <light name="front" pos="0 -0.8  0.5"  dir="0 1 -0.2"        diffuse="0.7 0.7 0.7"/>
+    <light name="side"  pos="0.8 -0.4 0.8" dir="-0.6 0.3 -0.5"   diffuse="0.5 0.5 0.5"/>
+
+    <!-- Desk surface. -->
+    <geom name="desk" type="plane" size="1.0 1.0 0.01" rgba="0.85 0.82 0.78 1"
+          contype="1" conaffinity="1"/>
+
+    <!-- Base: 240mm Ø × 50mm tall. Houses the foot_yaw motor (NEMA-17
+         or DS3218 servo) vertically inside. -->
+    <body name="base" pos="0 0 0.025">
+      <joint name="foot_yaw" type="hinge" axis="0 0 1" range="-1.5708 1.5708"/>
+      <geom name="base_disc" type="cylinder" size="0.120 0.025"
+            rgba="0.30 0.32 0.36 1"/>
+      <!-- A small visible "motor cap" on top of the base to read as a
+           mounting flange. -->
+      <geom name="base_flange" type="cylinder" size="0.045 0.005"
+            pos="0 0 0.030" rgba="0.20 0.22 0.26 1"/>
+
+      <!-- Rigid leg shaft, 30mm Ø × 70mm tall. -->
+      <geom name="leg_shaft" type="cylinder" size="0.030 0.035"
+            pos="0 0 0.070" rgba="0.40 0.45 0.50 1"/>
+
+      <!-- ── Trunk ──────────────────────────────────────────────────────
+           Houses battery + ESP32 + drivers + neck/shoulder servos.
+           Half-extents 50×40×70 mm → 100×80×140 mm box. -->
+      <body name="trunk" pos="0 0 0.175">
+        <geom name="trunk_geom" type="box"
+              size="0.050 0.040 0.070" rgba="0.55 0.60 0.65 1"/>
+
+        <!-- ── Head ─────────────────────────────────────────────────────
+             1 DOF: pitch (nod). Yaw is delegated to foot_yaw; roll dropped.
+               pitch axis = X (lateral)        → chin up/down
+             neck_stub block (30mm cube) houses the pitch servo. -->
+        <body name="head" pos="0 0 0.085">
+          <joint name="neck_pitch" type="hinge" axis="1 0 0" range="-0.5 0.5"/>
+
+          <geom name="neck_stub" type="box" size="0.015 0.015 0.015"
+                rgba="0.40 0.42 0.46 1"/>
+
+          <!-- Phone plate (landscape). 200×100mm visible face. -->
+          <geom name="head_plate" class="phone"
+                size="0.100 0.010 0.050" pos="0 0 0.065"/>
+          <geom name="head_frame_back" size="0.108 0.013 0.057"
+                pos="0 0.012 0.065" rgba="0.35 0.35 0.38 1"/>
+        </body>
+
+        <!-- ── Arms ─────────────────────────────────────────────────────
+             Shoulder hinges on Y-axis (forward/back), so the arm swings
+             LATERALLY in the X-Z plane (sideways out, up, sideways in).
+             This gives "spread arms wide" / "T-pose" / "arms-up overhead"
+             gestures, more like a stage greeting than a forward wave.
+
+             Geometry:
+               - Head extends to x = ±0.108 m (frame back).
+               - Shoulder bracket extends from trunk side to x = ±0.108 m
+                 — at the head edge, so a lateral raise can clear past it.
+               - Arm pivot at x = ±0.115 m → outside the head footprint.
+               - Arm length 60 mm.
+               - shoulder_pitch range:
+                   LEFT  [-1.6, +0.0]  (down to ~T-pose outward+up)
+                   RIGHT [+0.0, +1.6]  (mirror; sign flipped)
+                 At θ=0, arm hangs straight down. The signs differ because
+                 a Y-axis hinge on both shoulders means the same θ rotates
+                 both arms the SAME world direction; we mirror via range. -->
+
+        <!-- Left shoulder bracket: visible motor housing on trunk side. -->
+        <geom name="shoulder_bracket_left" type="box"
+              size="0.020 0.014 0.014" pos="0.075 0 0.025"
+              rgba="0.40 0.42 0.46 1"/>
+
+        <body name="arm_left" pos="0.115 0 0.025">
+          <joint name="shoulder_left_pitch" type="hinge" axis="0 1 0" range="-1.6 0.0"/>
+          <geom class="limb" size="0.013" fromto="0 0 0  0 0 -0.060"/>
+        </body>
+
+        <!-- Right shoulder bracket. -->
+        <geom name="shoulder_bracket_right" type="box"
+              size="0.020 0.014 0.014" pos="-0.075 0 0.025"
+              rgba="0.40 0.42 0.46 1"/>
+
+        <body name="arm_right" pos="-0.115 0 0.025">
+          <joint name="shoulder_right_pitch" type="hinge" axis="0 1 0" range="0.0 1.6"/>
+          <geom class="limb" size="0.013" fromto="0 0 0  0 0 -0.060"/>
+        </body>
+      </body>
+    </body>
+  </worldbody>
+
+  <actuator>
+    <position name="a_foot_yaw"             joint="foot_yaw"/>
+    <position name="a_neck_pitch"           joint="neck_pitch"/>
+    <position name="a_shoulder_left_pitch"  joint="shoulder_left_pitch"/>
+    <position name="a_shoulder_right_pitch" joint="shoulder_right_pitch"/>
+  </actuator>
+</mujoco>

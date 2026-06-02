@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# Build linorobot2 inside the container. Idempotent — re-run after bin/sync.
+set -euo pipefail
+docker exec -t rover bash -lc '
+  source /opt/ros/jazzy/setup.bash
+  ln -sf /ws/src/ext/linorobot2 /ws/src/linorobot2
+  cd /ws
+  PIP_BREAK_SYSTEM_PACKAGES=1 rosdep install --from-paths src/linorobot2 --ignore-src -r -y
+  colcon build --symlink-install
+'
+# After build, apply our patches against the upstream nav yaml.
+# These tweaks make Nav2 work on the tight turtlebot3_world sim map.
+bin/patch-nav-yaml

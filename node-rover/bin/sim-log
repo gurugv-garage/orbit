@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+# Tail the sim's log.
+exec docker exec -t rover bash -lc 'tail -f /tmp/sim.log'

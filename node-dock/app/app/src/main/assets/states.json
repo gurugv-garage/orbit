@@ -1,0 +1,32 @@
+{
+  "_comment": [
+    "Brain-side BodyLink state catalog. See bodylink/DESIGN.md §6.",
+    "Named states map to primitive command bundles the brain packs into",
+    "a set_target frame. Anything that isn't a known param on the body's",
+    "profile is dropped with a one-time warning at load time.",
+    "",
+    "Override file (writable, optional):",
+    "  <context.filesDir>/states-override.json"
+  ],
+  "version": "1",
+  "parts": {
+    "neck": {
+      "home": "center",
+      "states": {
+        "center":   { "pulse_width_us": 1500, "duration_ms": 300 },
+        "lookUp":   { "pulse_width_us": 1245, "duration_ms": 400 },
+        "lookDown": { "pulse_width_us": 1755, "duration_ms": 400 },
+        "nodYes":   { "pulse_width_us": 1700, "duration_ms": 250 }
+      }
+    },
+    "foot": {
+      "home": "forward",
+      "states": {
+        "forward": { "pulse_width_us": 1500, "duration_ms": 400 },
+        "left":    { "pulse_width_us": 1000, "duration_ms": 500 },
+        "right":   { "pulse_width_us": 2000, "duration_ms": 500 },
+        "away":    { "pulse_width_us": 1000, "duration_ms": 600 }
+      }
+    }
+  }
+}

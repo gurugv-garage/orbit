@@ -1,0 +1,61 @@
+# --- Python / general ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+env/
+
+# --- macOS ---
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# --- Editors ---
+.vscode/
+.idea/
+*.swp
+*.swo
+.ipynb_checkpoints/
+
+# --- Robot / simulation outputs ---
+*.bag
+*.db3
+logs/
+runs/
+.playwright-mcp/
+outputs/
+
+# --- node-rover: vendored external clones (re-clone, don't track) ---
+node-rover/ext/
+
+# --- Android (node-dock/app) ---
+*.apk
+*.aar
+*.ap_
+*.aab
+.gradle/
+local.properties
+captures/
+.externalNativeBuild/
+.cxx/
+*.jks
+*.keystore
+*.log
+.kotlin/
+
+# Big ONNX models — fetched on demand (see node-dock/app scripts).
+node-dock/app/app/src/main/assets/models/emotion_ferplus.onnx
+
+# Local debug dumps (camera frames, screenshots).
+tmp/
+node-dock/app/app/tmp/
+
+# Benchmark run outputs — committed snapshots stay; transient mirror + logs don't.
+node-dock/app/bench/results/latest.json
+node-dock/app/bench/results/*.log
+
+# --- ESP-IDF / PlatformIO firmware build (node-dock/body-firmware) ---
+.pio/

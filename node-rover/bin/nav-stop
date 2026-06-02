@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# Stop SLAM + Nav2 + map_server inside the container (leaves sim + foxglove running).
+set +e
+docker exec -t rover bash /ws/overlay/nav-stop.sh 2>/dev/null
+exit 0

@@ -1,0 +1,90 @@
+[
+  {
+    "name": "gemma4:e2b",
+    "model": "gemma4:e2b",
+    "baseUrl": "http://192.168.1.10:11434",
+    "api": "ollama",
+    "vision": true,
+    "tier": "local",
+    "cost": "free (local)"
+  },
+  {
+    "name": "Qwen3.6-35B-A3B",
+    "model": "Qwen3.6-35B-A3B-UD-Q4_K_M.gguf",
+    "baseUrl": "http://192.168.1.10:8081",
+    "api": "openai",
+    "vision": false,
+    "tier": "local",
+    "cost": "free (local)"
+  },
+  {
+    "name": "gemini-2.5-flash",
+    "model": "google/gemini-2.5-flash",
+    "baseUrl": "https://openrouter.ai/api",
+    "api": "openai",
+    "vision": true,
+    "tier": "cloud",
+    "apiKeyEnv": "OPENROUTER_API_KEY",
+    "cost": "$0.30/$2.50 /Mtok"
+  },
+  {
+    "name": "claude-haiku-4.5",
+    "model": "anthropic/claude-haiku-4.5",
+    "baseUrl": "https://openrouter.ai/api",
+    "api": "openai",
+    "vision": true,
+    "tier": "cloud",
+    "apiKeyEnv": "OPENROUTER_API_KEY",
+    "cost": "$1.00/$5.00 /Mtok"
+  },
+  {
+    "name": "qwen3-vl-235b",
+    "model": "qwen/qwen3-vl-235b-a22b-instruct",
+    "baseUrl": "https://openrouter.ai/api",
+    "api": "openai",
+    "vision": true,
+    "tier": "cloud",
+    "apiKeyEnv": "OPENROUTER_API_KEY",
+    "cost": "$0.20/$0.88 /Mtok"
+  },
+  {
+    "name": "minimax-m3",
+    "model": "minimax/minimax-m3",
+    "baseUrl": "https://openrouter.ai/api",
+    "api": "openai",
+    "vision": true,
+    "tier": "cloud",
+    "apiKeyEnv": "OPENROUTER_API_KEY",
+    "cost": "$0.30/$1.20 /Mtok"
+  },
+  {
+    "name": "glm-4.6v",
+    "model": "z-ai/glm-4.6v",
+    "baseUrl": "https://openrouter.ai/api",
+    "api": "openai",
+    "vision": true,
+    "tier": "cloud",
+    "apiKeyEnv": "OPENROUTER_API_KEY",
+    "cost": "$0.30/$0.90 /Mtok"
+  },
+  {
+    "name": "gemini-2.5-flash-lite",
+    "model": "google/gemini-2.5-flash-lite",
+    "baseUrl": "https://openrouter.ai/api",
+    "api": "openai",
+    "vision": true,
+    "tier": "cloud",
+    "apiKeyEnv": "OPENROUTER_API_KEY",
+    "cost": "$0.10/$0.40 /Mtok"
+  },
+  {
+    "name": "gpt-4o-mini",
+    "model": "openai/gpt-4o-mini",
+    "baseUrl": "https://openrouter.ai/api",
+    "api": "openai",
+    "vision": true,
+    "tier": "cloud",
+    "apiKeyEnv": "OPENROUTER_API_KEY",
+    "cost": "$0.15/$0.60 /Mtok"
+  }
+]

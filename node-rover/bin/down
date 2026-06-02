@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# Stop and remove the container. Named volumes (workspace builds) persist.
+set -euo pipefail
+NAME=rover
+docker stop "$NAME" 2>/dev/null || true
+docker rm "$NAME" 2>/dev/null || true
+echo "[down] container removed. named volumes preserved (use 'bin/nuke' to wipe everything)"

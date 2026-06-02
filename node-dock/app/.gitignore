@@ -1,0 +1,44 @@
+# Built application files
+*.apk
+*.aar
+*.ap_
+*.aab
+
+# Gradle
+.gradle/
+build/
+local.properties
+
+# Android Studio
+.idea/
+*.iml
+captures/
+.externalNativeBuild/
+.cxx/
+
+# Keystore
+*.jks
+*.keystore
+
+# Logs
+*.log
+
+# OS
+.DS_Store
+
+# Kotlin
+.kotlin/
+
+# Big ONNX models — fetched on demand by scripts/fetch-models.sh.
+# Silero VAD (~2 MB) is committed; FER+ (~35 MB) is not.
+app/src/main/assets/models/emotion_ferplus.onnx
+
+# local debug dumps (camera frames, screenshots) — at module root (app/tmp/)
+tmp/
+app/tmp/
+
+# Benchmark results: NAMED snapshots + index.json are committed as durable
+# history (so prompt v1 vs v2 stays comparable). The transient mirror + raw logs
+# are local-only.
+bench/results/latest.json
+bench/results/*.log

@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# Show container status + key processes inside.
+# Note: the pattern strings we check for must NOT appear in this script
+# or in the docker exec command line, or pgrep will match itself.
+set +e
+echo "── container ──"
+docker ps --filter name=rover --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}'
+echo
+echo "── processes inside ──"
+docker exec -t rover bash /ws/overlay/status.sh 2>/dev/null
+exit 0

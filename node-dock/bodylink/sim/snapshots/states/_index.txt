@@ -1,0 +1,35 @@
+profile: dock_companion.json
+model: dock_humanoid.xml
+
+snapshots/states/foot__forward__side.png
+snapshots/states/foot__forward__front.png
+snapshots/states/foot__left__side.png
+snapshots/states/foot__left__front.png
+snapshots/states/foot__right__side.png
+snapshots/states/foot__right__front.png
+snapshots/states/foot__behind__side.png
+snapshots/states/foot__behind__front.png
+snapshots/states/head__center__side.png
+snapshots/states/head__center__front.png
+snapshots/states/head__lookUp__side.png
+snapshots/states/head__lookUp__front.png
+snapshots/states/head__lookDown__side.png
+snapshots/states/head__lookDown__front.png
+snapshots/states/head__nodYes__side.png
+snapshots/states/head__nodYes__front.png
+snapshots/states/arm_left__rest__side.png
+snapshots/states/arm_left__rest__front.png
+snapshots/states/arm_left__out__side.png
+snapshots/states/arm_left__out__front.png
+snapshots/states/arm_left__raise__side.png
+snapshots/states/arm_left__raise__front.png
+snapshots/states/arm_left__wave__side.png
+snapshots/states/arm_left__wave__front.png
+snapshots/states/arm_right__rest__side.png
+snapshots/states/arm_right__rest__front.png
+snapshots/states/arm_right__out__side.png
+snapshots/states/arm_right__out__front.png
+snapshots/states/arm_right__raise__side.png
+snapshots/states/arm_right__raise__front.png
+snapshots/states/arm_right__wave__side.png
+snapshots/states/arm_right__wave__front.png
