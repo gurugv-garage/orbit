@@ -55,8 +55,9 @@ which re-arms the mic (emits a fresh `WakeWord`) for hands-free conversation.
    `move_sequence`, `compute` — see `DockToolsAdapter`); the loop executes them,
    feeds results back, and continues until it stops calling tools.
    AgentState: **Idle → Waiting → Thinking → Speaking → Idle** (per-action status
-   like "looking left" while a tool runs). See **[UX.md](UX.md)** for the full
-   agentic-turn interaction spec.
+   like "looking left" while a tool runs). See **[AGENT-WORKFLOW.md](AGENT-WORKFLOW.md)**
+   for the full turn mechanics (event translation, speak/act parallelism, vision
+   gating, supersede/timeout) and **[UX.md](UX.md)** for the interaction spec.
 5. **Translation** (`DockAgent.onAgentEvent`): prose deltas → `speakSentence`
    (sentence-by-sentence TTS via `StreamingReplyExtractor`); `ToolExecutionStart`
    → fire-and-forget body move. **Speech and motion overlap** — neither awaits

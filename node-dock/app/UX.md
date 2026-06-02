@@ -7,7 +7,9 @@ not a single forced-JSON POST. This is the contract the implementation serves.
 **Living document — optimize for a natural feel, iterate freely.** Tunables are
 called out explicitly so changing the feel is cheap. This *extends*
 [LIFECYCLE.md](LIFECYCLE.md) (the FaceState / AgentState / mic / AutoRelisten
-state machines + tap rules) — read that first; don't duplicate it here.
+state machines + tap rules) — read that first; don't duplicate it here. For the
+*mechanics* that serve this contract (how `DockAgent` drives the loop, translates
+events, runs speech + motion in parallel), see [AGENT-WORKFLOW.md](AGENT-WORKFLOW.md).
 
 ---
 

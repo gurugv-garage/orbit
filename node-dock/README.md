@@ -86,6 +86,7 @@ Hardware lessons (the painful ones, in case they bite again): [body-firmware/doc
 | migrate the Android client | [bodylink/HANDOVER.md](bodylink/HANDOVER.md) |
 | change the firmware | [body-firmware/dock_body_v0/progress.md](body-firmware/dock_body_v0/progress.md) |
 | work on the Android app (face, agent, LLM, perception) | [app/PLAN.md](app/PLAN.md) |
+| understand the agent turn (utterance → speech + motion) | [app/AGENT-WORKFLOW.md](app/AGENT-WORKFLOW.md) |
 | build / wire / 3D-print the physical dock | [hardware/README.md](hardware/README.md) |
 | compare LLMs as the dock brain (runnable harness) | [app/bench/README.md](app/bench/README.md) |
 

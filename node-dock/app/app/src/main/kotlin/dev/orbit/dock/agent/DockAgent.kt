@@ -324,7 +324,7 @@ class DockAgent(
          *  the loop today — there is no per-turn tool-call count cap. */
         private const val TURN_TIMEOUT_MS = 60_000L
 
-        // The dock's system prompt now lives in :dock-llm ([DockPrompt.SYSTEM])
+        // The dock's system prompt lives in dev/orbit/dock/llm ([DockPrompt.SYSTEM])
         // so the live dock and the :bench harness prompt models identically.
         // Kept terse + tool-first for small prompt-sensitive models (see
         // DockPrompt's doc for the why).
