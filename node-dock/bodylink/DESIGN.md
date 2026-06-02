@@ -16,7 +16,7 @@ rewriting the Brain side.
 > - **Body sim** (mirrors firmware): [sim/bodylink_sim.py](sim/bodylink_sim.py).
 > - **Live capability profile:** [sim/profiles/dock_companion.json](sim/profiles/dock_companion.json).
 > - **Hardware-aligned MJCF:** [sim/bodies/dock_humanoid.xml](sim/bodies/dock_humanoid.xml).
-> - **Brain client (Kotlin):** [BodyProtocol.kt](../app/app/src/main/kotlin/dev/orbit/dock/body/BodyProtocol.kt) + [BodyLinkComms.kt](../app/app/src/main/kotlin/dev/orbit/dock/body/BodyLinkComms.kt) — **still on the previous protocol; migration tracked in [HANDOVER.md](HANDOVER.md).**
+> - **Brain client (Kotlin):** [BodyProtocol.kt](../app/app/src/main/kotlin/dev/orbit/dock/body/BodyProtocol.kt) + [BodyLinkComms.kt](../app/app/src/main/kotlin/dev/orbit/dock/body/BodyLinkComms.kt) — on the current `set_target` protocol (heartbeat + state catalog).
 > - **Interactive tester:** [../body-firmware/dock_body_v0/scripts/test_body.sh](../body-firmware/dock_body_v0/scripts/test_body.sh) — works against both the live firmware and the sim.
 >
 > **2026-05-27 — protocol redesign.** Earlier drafts had the body advertise named
@@ -506,9 +506,10 @@ body. The brain's catalog maps name → primitive command:
   the body's cached profile. A state that references an unknown part or a
   value outside the part's declared range is dropped (with a warning) so the
   LLM never sees a broken tool.
-- **LLM integration:** the brain's `setNeckState`, `setFootState` (etc.) LLM
-  tools are populated from this catalog. Tool descriptions enumerate the
-  available state names per part.
+- **LLM integration:** the brain's `move_body(part, state)` LLM tool draws its
+  `state` enum from this catalog. Tool descriptions enumerate the available
+  state names per part. (`gesture` and `move_sequence` build on the same
+  catalog.)
 - **Brain may learn new states.** When the brain wants a custom pose, it
   creates a new entry in the catalog (in the override file), and the LLM
   tool description updates. No firmware change.
@@ -620,7 +621,7 @@ The capability profile the sim loads at boot is at
 ## 10. Cross-reference
 
 - **Firmware:** [../body-firmware/dock_body_v0/](../body-firmware/dock_body_v0/) — ESP-IDF. Shipped, verified end-to-end. See [progress.md](../body-firmware/dock_body_v0/progress.md).
-- **Brain client (Kotlin):** [BodyProtocol.kt](../app/app/src/main/kotlin/dev/orbit/dock/body/BodyProtocol.kt) — still on the old protocol; migration in [HANDOVER.md](HANDOVER.md).
+- **Brain client (Kotlin):** [BodyProtocol.kt](../app/app/src/main/kotlin/dev/orbit/dock/body/BodyProtocol.kt) + [BodyLinkComms.kt](../app/app/src/main/kotlin/dev/orbit/dock/body/BodyLinkComms.kt) — on the current protocol.
 - **Capability profile:** [sim/profiles/dock_companion.json](sim/profiles/dock_companion.json).
 - **MuJoCo model:** [sim/bodies/dock_humanoid.xml](sim/bodies/dock_humanoid.xml).
 - **Interactive tester (firmware + sim):** [../body-firmware/dock_body_v0/scripts/test_body.sh](../body-firmware/dock_body_v0/scripts/test_body.sh).

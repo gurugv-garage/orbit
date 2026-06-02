@@ -17,16 +17,24 @@ The model is told: you have a VOICE (speak plain prose, it's said aloud), a FACE
 EYES (camera image attached when present), and a BODY moved via **tools**.
 
 - **Speak by emitting prose** — streamed to TTS sentence-by-sentence. No JSON.
-- **Act by calling tools** — `set_face(expression)`, `move_body(part,state)`.
+- **Act by calling tools** — face, body, and a safe calculator.
 - It may **interleave**: speak a sentence, call a tool, speak again, call again —
   all in one turn. This is what makes the dock feel alive (narrated action).
 
 Tools (enum-constrained; the adapter additionally validates part↔state pairing
 against the catalog, since a small model may pick a valid-but-mismatched pair
-like `neck,left`):
+like `neck,left`). All five are defined in `DockToolSchemas` + wired in
+`DockToolsAdapter`:
 - `set_face(expression: enum[neutral,happy,curious,concerned,surprised,sad,excited,angry,love])`
-- `move_body(part: enum[neck,foot], state: enum[...])` — one step; the loop chains
-  several for "look around", "wiggle", etc.
+- `move_body(part: enum[neck,foot], state: enum[lookUp,lookDown,center,forward,left,right])`
+  — one step; the loop chains several for "look around" etc.
+- `gesture(name: enum[nod,shake_head,wiggle,look_around,look_up,look_down])` —
+  a named multi-step gesture that expands to a validated `move_body` sequence.
+- `move_sequence(steps: [...])` — model-authored motion: an array of
+  `{part,state,wait_ms?}` so the model composes arbitrary timed sequences.
+- `compute(expression)` — evaluate a SAFE arithmetic / random-number expression
+  (e.g. `3+4*2`, `random(1,10) > 5`) and get the result back, so the model
+  branches on real numbers instead of guessing.
 
 ---
 
@@ -91,10 +99,11 @@ Rules so gaps feel intentional, not broken:
   never a frozen blank.
 - If the model is **acting** (tools running) between speech → keep the per-action
   status visible so the user sees *why* it's quiet.
-- **Unreachable model** → speak the fallback line once, status `Failed`, settle to
-  Idle. Never hang (hard ceiling: `TURN_TIMEOUT`).
-- **Runaway loop guard**: cap tool-call turns per utterance (tunable
-  `MAX_TURNS`); on hit, stop calling tools and let it speak a closing line.
+- **Unreachable model / runaway loop** → the turn is bounded by `TURN_TIMEOUT`
+  (60s wall-clock, in `DockAgent`); on hit it speaks the fallback line, settles
+  to `Failed`/Idle, and never hangs. (There is no per-turn tool-call *count*
+  ceiling today — the loop is bounded only by the timeout. A count cap is a
+  possible future guard if a model spins on cheap tools within the window.)
 
 ---
 
@@ -103,7 +112,6 @@ Rules so gaps feel intentional, not broken:
 | Tunable | Default | Effect |
 |---|---|---|
 | sentence flush | on `.!?…` + space (`StreamingReplyExtractor`) | how eagerly speech starts |
-| `MAX_TURNS` per utterance | 6 | runaway-loop ceiling |
 | narration vs silent-act | narrate | whether the model is prompted to talk through actions |
 | tool-success speech | silent | speak success results or not |
 | failure face flicker | on | concerned flash on soft failure |

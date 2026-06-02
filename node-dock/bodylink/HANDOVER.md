@@ -1,9 +1,17 @@
 # BodyLink — handover to Android/Kotlin team
 
-> Context for the IDE/dev who owns the Android dock app + the `bodylink/`
-> simulator integration tests. The BodyLink protocol was redesigned on
-> 2026-05-27. This doc lists everything that has to change on the Kotlin
-> side to stay compatible with the new firmware and sim.
+> **⚠️ Mostly historical (2026-06-02).** This was the migration plan for moving
+> the Kotlin client to the redesigned `set_target` protocol. **That migration
+> is done** — `BodyLinkComms` is on the current protocol with heartbeat + the
+> brain-side state catalog. The one remaining item is the **sim integration-test
+> rewrite** (§3); `bodylink_cli.py` + `bodylink_sim.py` are already migrated.
+> The canonical, current spec is [DESIGN.md](DESIGN.md). Note: the
+> `setNeckState`/`setFootState` tool names discussed below were superseded —
+> the shipped agent uses `move_body(part, state)` + `gesture` + `move_sequence`.
+>
+> Original context for the IDE/dev who owns the Android dock app + the
+> `bodylink/` simulator integration tests. The BodyLink protocol was redesigned
+> on 2026-05-27; this doc lists what had to change on the Kotlin side.
 
 ---
 

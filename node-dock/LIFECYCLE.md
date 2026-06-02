@@ -52,8 +52,8 @@ which re-arms the mic (emits a fresh `WakeWord`) for hands-free conversation.
    `respond(text)` → `Agent.prompt` drives a **tool-calling loop** against Ollama
    (`gemma4:e2b`, streaming `/api/chat` via `DockStreamFn`). The model streams
    spoken prose AND emits tool calls (`set_face`, `move_body`, `gesture`,
-   `move_sequence` — see `DockToolsAdapter`); the loop executes them, feeds
-   results back, and continues until it stops calling tools.
+   `move_sequence`, `compute` — see `DockToolsAdapter`); the loop executes them,
+   feeds results back, and continues until it stops calling tools.
    AgentState: **Idle → Waiting → Thinking → Speaking → Idle** (per-action status
    like "looking left" while a tool runs). See **[UX.md](UX.md)** for the full
    agentic-turn interaction spec.

@@ -320,7 +320,8 @@ class DockAgent(
 
         /** Hard ceiling so a hung/looping model can never freeze the dock. The
          *  agentic loop can take several round-trips; 60s clears the worst case
-         *  + a cold model load. UX.md `MAX_TURNS` caps the loop separately. */
+         *  + a cold model load. This wall-clock timeout is the *only* bound on
+         *  the loop today — there is no per-turn tool-call count cap. */
         private const val TURN_TIMEOUT_MS = 60_000L
 
         // The dock's system prompt now lives in :dock-llm ([DockPrompt.SYSTEM])

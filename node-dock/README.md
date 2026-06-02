@@ -13,17 +13,18 @@ motion.
 - **Drive the live firmware from any IDE:** [body-firmware/dock_body_v0/scripts/test_body.sh](body-firmware/dock_body_v0/scripts/test_body.sh) — interactive REPL over WebSocket.
 - **Migrate the Kotlin client to the redesigned protocol:** [bodylink/HANDOVER.md](bodylink/HANDOVER.md) (has a copy-paste agent prompt at §8).
 
-## Status — 2026-05-27
+## Status — 2026-06-02
 
 | Component | Status |
 |---|---|
 | Body firmware (ESP-IDF on XIAO ESP32-S3) | ✅ shipped, verified end-to-end on hardware |
-| Python MuJoCo body sim | ✅ speaks the current BodyLink protocol |
+| Python MuJoCo body sim (`bodylink_sim.py`) | ✅ speaks the current BodyLink protocol |
 | Protocol spec | ✅ canonical in [bodylink/DESIGN.md](bodylink/DESIGN.md) |
 | Android app (face + agent loop + perception) | ✅ M1-M4 done |
-| BodyLink Kotlin client | ⚠️ on the previous protocol; migration tracked in [bodylink/HANDOVER.md](bodylink/HANDOVER.md) |
-| Sim CLI + integration tests | ⚠️ on the previous protocol; rewrite tracked in HANDOVER §3 |
-| LLM tools (DockTools.kt) | ⚠️ need name + signature updates |
+| BodyLink Kotlin client (`BodyLinkComms`) | ✅ migrated to the current protocol: `set_target` + heartbeat (`pingIntervalMillis=2000`) + brain-side state catalog (`states.json` + `BodyStateCatalog`) |
+| LLM tools | ✅ 5 tools wired: `set_face`, `move_body`, `gesture`, `move_sequence`, `compute` |
+| Sim integration tests (`integration_test.py`) | ⚠️ partially on old `set_state` — rewrite tracked in [bodylink/HANDOVER.md](bodylink/HANDOVER.md) §3 |
+| BodyLink stage 3/4 (schematic robot canvas; instrumented sim test) | ⏳ open — see [app/PLAN.md](app/PLAN.md) §M7 |
 | Hardware BOM | ⚠️ speculative; bench differs (see [hardware/README.md](hardware/README.md)) |
 | Real-phone companion / plat / proactive triggers | ⏳ v2 |
 

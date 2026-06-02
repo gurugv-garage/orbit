@@ -175,10 +175,10 @@ rail isolated with a cap to absorb stall spikes; the DS3218 + SG90s peak
 around 2-3 A under combined load.
 
 Software: the phone app's `dev.orbit.dock.body.BodyLinkComms` Kotlin client
-wraps the WebSocket protocol and exposes `profile`/`state`/`events`/`connected`
-StateFlows. 4 part-specific LLM tools (`setFootState`/`setHeadState`/
-`setLeftArmState`/`setRightArmState`) let the agent drive the body
-naturally. A Python MuJoCo sim at
+wraps the WebSocket protocol and exposes `profile`/`intent`/`events`/`connected`
+StateFlows. The agent drives the body through its `move_body(part,state)` /
+`gesture` / `move_sequence` LLM tools, which resolve to `set_target` commands on
+the wire. A Python MuJoCo sim at
 [../node-dock/bodylink/sim/](../node-dock/bodylink/sim/) implements the
 same protocol so the phone-side stack can be developed and verified
 without hardware. Gaze tracking uses MediaPipe FaceMesh on-device.

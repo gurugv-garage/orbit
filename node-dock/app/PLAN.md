@@ -20,7 +20,7 @@ Working plan for the Android app at `node-dock/app/`. Source of truth for what's
 - **TTS:** Android `TextToSpeech` (sentence-boundary chunked), also renders as subtitle on face.
 - **Camera + gaze:** MediaPipe FaceMesh, works in emulator via AVD `Webcam0` and on physical front camera.
 - **Memory:** deferred — add a persistence/recall layer when needed (see the backlog in `../../docs/TODO.md` §5).
-- **Body / BodyLink:** firmware shipped end-to-end on hardware; Kotlin Brain client migration to the redesigned protocol is the open item (see M7 + [../bodylink/HANDOVER.md](../bodylink/HANDOVER.md)).
+- **Body / BodyLink:** firmware shipped end-to-end on hardware; Kotlin Brain client migrated to the current `set_target` protocol. Remaining BodyLink work is the sim integration-test rewrite + the stage 3/4 UI/test items (see M7 + [../bodylink/HANDOVER.md](../bodylink/HANDOVER.md)).
 - **Proactive triggers, inter-node, plat:** v2.
 
 ---
@@ -135,13 +135,14 @@ The plumbing on our side is correct (5 instrumented tests confirm `RecognitionLi
 - [x] **Ollama local-first**: `OLLAMA_BASE_URL` + `OLLAMA_MODEL` in `local.properties` → `BuildConfig.*`. When set, DockAgent tries Ollama first; when empty/unreachable falls back to OpenRouter.
 - [x] `DockAgent` — thin facade over the `:agent-core` pi-kt loop; `DockStreamFn` does the Ollama/OpenAI transport.
 - [x] **OpenRouter free-model fallback chain** — when one returns 429/404, try the next.
-- [x] `DockTools` — the dock's tool functions:
-  - `speak(text)` — fires TTS + face speaking state + subtitle
-  - `showSubtitle(text)` — push to subtitle band only
-  - `setFace(expression)` — neutral/happy/curious/concerned/surprised/sleepy
-  - `wink()` / `glance(direction)` — quick eye-only animations
+- [x] `DockTools` — the side-effect surface the agent loop drives (the
+  LLM-facing tools in `DockToolsAdapter` call into these):
+  - `speak(text)` / `speakSentence(text)` — fire TTS + face speaking state + subtitle
+  - `setFace(expression)` — one of the 9 face enums
   - `silence()` — stop TTS + face back to idle
-  - `setFootState(state)` / `setHeadState(state)` / `setLeftArmState(state)` / `setRightArmState(state)` — drive a connected BodyLink body. See M7.
+  - `makeBodyMovements(...)` — drive a connected BodyLink body (parsed from
+    `move_body`/`gesture`/`move_sequence`). See M7.
+  - `endTurn()` — settle the UI when a turn produced no speech
 - [x] `DockTts` — Android `TextToSpeech` wrapper, sentence-level queueing,
   utterance progress listener flips face state speaking → idle automatically
 - [x] Interruption semantics — a new transcript while a turn is in flight
@@ -181,32 +182,28 @@ The plumbing on our side is correct (5 instrumented tests confirm `RecognitionLi
 - [ ] Tool error UX: when a tool fails, agent speaks the error gracefully
 - [ ] **Demo:** "search for weather in Bangalore" → web search → speaks result. "show me a corgi" → image generated → displayed. "send Bob 'on my way' on Slack" → DM sent.
 
-### M7 — BodyLink — firmware shipped; Kotlin migration in progress
+### M7 — BodyLink — firmware shipped; Kotlin migrated to current protocol
 
 Brain-side Kotlin client + LLM tools that drive a connected Body. Firmware
-shipped end-to-end on hardware (2026-05-27). Protocol redesigned in the
-same window — Kotlin side needs catch-up work.
+shipped end-to-end on hardware; the Kotlin client has been migrated to the
+redesigned `set_target` protocol.
 
 Live: [../bodylink/](../bodylink/) (spec + sim) and [../body-firmware/dock_body_v0/](../body-firmware/dock_body_v0/) (firmware).
 
 - [x] **Design doc** — [../bodylink/DESIGN.md](../bodylink/DESIGN.md): single `set_target` motion command (per-part idempotent; used for both intent + heartbeat), capability profile (no named states on body), no body→brain state stream.
 - [x] **MuJoCo sim** — Python `bodylink_sim.py` speaks the current protocol and drives the dock humanoid model.
 - [x] **Hardware-aligned model** — 4 joints (foot_yaw ±90°, neck_pitch, shoulder_{left,right}_pitch — lateral abduction). Bench setup uses 4× MG90S on XIAO ESP32-S3 (BOM at [../hardware/](../hardware/) is speculative and being rewritten).
-- [x] **ESP-IDF firmware shipped** — [../body-firmware/dock_body_v0/](../body-firmware/dock_body_v0/). Native esp_wifi + esp_http_server + mcpwm + cJSON. Joins `HackersWebAP`, accepts `set_target`, drives MG90S servos. Verified end-to-end on hardware.
-- [x] `dev.orbit.dock.body.BodyLinkComms` — ktor-WebSocket client (older protocol; needs migration per HANDOVER.md).
+- [x] **ESP-IDF firmware shipped** — [../body-firmware/dock_body_v0/](../body-firmware/dock_body_v0/). Native esp_wifi + esp_http_server + mcpwm + cJSON. Accepts `set_target`, drives MG90S servos on GPIO 3/4/5/6 (neck + foot advertised). Verified end-to-end on hardware.
+- [x] **Kotlin client migrated** — `BodyLinkComms` (ktor WebSocket) speaks the current protocol: capability `profile` decoding, `set_target` for both intent and periodic heartbeat, `pingIntervalMillis = 2000L` enabled, brain-side state catalog (`assets/states.json` + `BodyStateCatalog`, validated against the body's profile). No `set_state`/state-stream types remain.
 - [x] `BODY_HOST` in `local.properties` → `BuildConfig.BODY_HOST`. Empty disables; otherwise connect to `ws://<host>/`.
-- [x] 4 part-specific LLM tools (`setFootState`/`setHeadState`/`setLeftArmState`/`setRightArmState`) — always registered; politely return "no body connected" when the link is down so the LLM stops calling them.
+- [x] **Body driven via the agent's `move_body` / `gesture` / `move_sequence` tools** → `DockTools.makeBodyMovements` → `BodyController.setState(part,state)` → `set_target` on the wire. (Validation against the part↔state catalog lives in `DockToolsAdapter`.)
 - [x] `BodyBadge` Compose UI — top-right corner shows green dot + per-part state when connected, red dot when not. Transitioning parts show "<state> (XX%)".
 - [x] `usesCleartextTraffic=true` in manifest so `ws://` to LAN sim or ESP32 works.
-- [x] **End-to-end verified on AVD** against the old sim path:
-  - "tilt your head back and raise your left arm" → MuJoCo viewer + AVD body badge agree
-  - "spread both arms wide" → both arms `out` (T-pose) ✓
-  - "turn left" → foot_yaw left ✓
-- [ ] **Kotlin protocol migration** — drop `set_state`/state-stream types, add capability decoding, switch to `set_target` for both intent and periodic heartbeat, re-enable `pingIntervalMillis = 2000L`, add brain-side state catalog (asset + override). Full T-list in [../bodylink/HANDOVER.md](../bodylink/HANDOVER.md) §1-§5.
-- [ ] **Re-verify end-to-end** against the live firmware (test_body.sh proves the wire works today).
-- [ ] **Stage 3:** Compose schematic robot canvas (live stick-figure drawn from brain-side intent — UI now reads from intent rather than reported state).
+- [x] **End-to-end verified on real ESP32 (neck + foot)** — "look down", "nod", "wiggle", model-authored `move_sequence` all drive real servos with acks; talk-while-moving confirmed. (See LIFECYCLE.md / the agent tests.)
+- [ ] **Rewrite the sim integration tests** (`integration_test.py` still has old `set_state` paths) — T-list in [../bodylink/HANDOVER.md](../bodylink/HANDOVER.md) §3.
+- [ ] **Stage 3:** Compose schematic robot canvas (live stick-figure drawn from brain-side intent — UI reads from intent rather than reported state).
 - [ ] **Stage 4:** Kotlin instrumented integration test against the sim.
-- [ ] **Tool description sharpening:** "look up" sometimes routes to `glance` (eyes-only) instead of `setHeadState`. Bias the model with stronger wording.
+- [ ] **Tool description sharpening:** "look up" sometimes routes to `glance` (eyes-only) instead of `move_body`. Bias the model with stronger wording.
 
 ---
 
@@ -272,34 +269,21 @@ node-dock/app/
 
 ## Status snapshot
 
-**Current step (2026-05-27):** Body firmware (ESP-IDF on XIAO ESP32-S3)
-shipped end-to-end on hardware. Brain side is **mid-migration** — the
-shipped Kotlin client speaks the previous BodyLink protocol; the
-firmware speaks the redesigned protocol (single `set_target` command,
-capability profile, no body→brain state stream). The full Kotlin
-catch-up plan is in [../bodylink/HANDOVER.md](../bodylink/HANDOVER.md).
-
-**State:** APK still builds clean against the old protocol. Until the
-T-items in HANDOVER.md are done, the app will not handshake successfully
-against the new firmware (the welcome+profile shape differs and strict
-mode rejects the new fields).
+**Current state (2026-06-02):** Body firmware (ESP-IDF on XIAO ESP32-S3)
+shipped end-to-end on hardware, and the Kotlin Brain client has been
+migrated to the current `set_target` protocol — handshake, heartbeat,
+and the brain-side state catalog are all in place. The app drives real
+servos via the agent's `move_body`/`gesture`/`move_sequence` tools
+(log-validated on the ESP32, neck + foot).
 
 **Next concrete actions** (in order):
-1. **Kotlin BodyLink migration** — T1-T5 from HANDOVER.md §1-§5 (wire
-   types, domain model, BodyLinkComms re-wiring with periodic
-   `set_target` heartbeat, brain-side state catalog asset, LLM tool
-   updates). Verify handshake + drive against the live firmware using
-   `../body-firmware/dock_body_v0/scripts/test_body.sh` as a
-   reference client.
-2. **Rewrite the sim CLI + integration tests** — T6-T7 from HANDOVER.md §3.
-3. **M7 stage 3** — schematic Compose robot canvas on the main screen
-   (live stick-figure drawn from brain-side intent, not the old reported
-   state).
-4. **M7 stage 4** — Kotlin instrumented integration test against the sim.
-5. **M5** — camera + gaze. Foundational sensors are in (CameraX +
+1. **Rewrite the sim integration tests** — `integration_test.py` still has
+   old `set_state` paths; T-list in [../bodylink/HANDOVER.md](../bodylink/HANDOVER.md) §3.
+   (`bodylink_cli.py` + `bodylink_sim.py` are already on the current protocol.)
+2. **M7 stage 3** — schematic Compose robot canvas on the main screen
+   (live stick-figure drawn from brain-side intent).
+3. **M7 stage 4** — Kotlin instrumented integration test against the sim.
+4. **M5** — camera + gaze. Foundational sensors are in (CameraX +
    MediaPipe) but no eyes-track-face wiring yet.
-6. **M6** — real integrations (web search, calendar, Slack, image gen).
-7. **(Optional)** Porcupine AccessKey → real "hey jarvis" wake word.
-8. **ESP32 firmware** — port the Python sim's behavior to Arduino + the
-   `BodyLinkComms` C++ lib. Hardware is fully designed; only firmware +
-   assembly left.
+5. **M6** — real integrations (web search, calendar, Slack, image gen).
+6. **(Optional)** Porcupine AccessKey → real "hey jarvis" wake word.

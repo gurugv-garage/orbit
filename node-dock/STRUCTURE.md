@@ -20,9 +20,8 @@ node-dock/
 │   ├── PLAN.md                 milestone tracker (M1..M7+). Status
 │   │                           snapshot at the bottom.
 │   ├── app/src/main/kotlin/dev/orbit/dock/
-│   │   ├── body/               BodyLinkComms + protocol types (Kotlin).
-│   │   │                       ⚠️ Currently on the OLD protocol.
-│   │   │                       Migration plan: bodylink/HANDOVER.md.
+│   │   ├── body/               BodyLinkComms + protocol types + state catalog
+│   │   │                       (Kotlin). ✅ on the current set_target protocol.
 │   │   ├── agent/              Agentic brain: DockAgent (facade over :agent-core
 │   │   │                       pi-kt loop) + DockToolsAdapter (set_face/move_body/
 │   │   │                       gesture/move_sequence) + DockTools (side effects).
@@ -50,10 +49,10 @@ node-dock/
 │   └── sim/                    Python MuJoCo body that speaks the protocol.
 │       ├── bodies/             MJCF (4 joints — foot/neck/arm.left/arm.right).
 │       ├── profiles/dock_companion.json   capability profile (neck + foot).
-│       ├── bodylink_sim.py     ✅ speaks the current protocol.
-│       ├── bodylink_cli.py     ⚠️ STALE (old set_state protocol); rewrite
-│       │                       pending — see HANDOVER.md §3.
-│       └── integration_test.py ⚠️ STALE — same. T-list in HANDOVER.md §3.
+│       ├── bodylink_sim.py     ✅ speaks the current set_target protocol.
+│       ├── bodylink_cli.py     ✅ on the current set_target protocol.
+│       └── integration_test.py ⚠️ partially on old set_state; rewrite
+│                               pending — T-list in HANDOVER.md §3.
 │
 ├── body-firmware/              ESP32 firmware projects (one per board build).
 │   └── dock_body_v0/           ✅ ESP-IDF firmware, shipped + verified on
@@ -98,9 +97,10 @@ node-dock/
 | Firmware (ESP-IDF, XIAO ESP32-S3) | ✅ shipped, verified end-to-end |
 | Python MuJoCo sim | ✅ speaks the current protocol |
 | Capability profile + spec (DESIGN.md) | ✅ current |
-| BodyLink Kotlin client | ⚠️ on the previous protocol; migration in [bodylink/HANDOVER.md](bodylink/HANDOVER.md) |
-| Agentic brain (DockAgent + :agent-core pi-kt loop) | ✅ tool-calling on gemma4:e2b: set_face/move_body/gesture/move_sequence; streaming, multi-step, vision, talk-while-moving — log-validated on real ESP32 (neck+foot). Physical eyeball pass pending. |
-| Sim CLI + integration tests | ⚠️ stale (old `set_state` protocol) |
+| BodyLink Kotlin client | ✅ migrated to the current `set_target` protocol (heartbeat + state catalog) |
+| Agentic brain (DockAgent + :agent-core pi-kt loop) | ✅ tool-calling on gemma4:e2b: set_face/move_body/gesture/move_sequence/compute; streaming, multi-step, vision, talk-while-moving — log-validated on real ESP32 (neck+foot). Physical eyeball pass pending. |
+| Sim CLI (`bodylink_cli.py`) | ✅ current protocol |
+| Sim integration tests (`integration_test.py`) | ⚠️ partially on old `set_state`; rewrite pending |
 | Hardware BOM | ⚠️ speculative; rewrites pending |
 | Dock app (the rest — face, perception, UI) | ✅ M1-M4 done |
 | Real-phone companion / plat / proactive triggers | ⏳ deferred to v2 |
