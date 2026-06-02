@@ -21,7 +21,12 @@ import kotlinx.serialization.json.JsonObject
  * The loop works in [AgentMessage]s and converts to LLM messages only at the
  * provider boundary. It streams an assistant response, executes any tool calls
  * (sequential or parallel), emits lifecycle [AgentEvent]s, and supports
- * steering / follow-up message injection between turns.
+ * steering / follow-up message injection between steps.
+ *
+ * Vocabulary (see agent-core/AGENT-MODEL.md): one `prompt()` is a **turn**
+ * (bracketed by `TurnStart`/`TurnEnd`); each LLM call + its tool executions is a
+ * **step** (`StepStart`/`StepEnd`). A turn is one or more steps — step N+1
+ * happens only because step N's response contained tool calls.
  *
  * The TS uses `AbortSignal`; here cancellation is cooperative via coroutine
  * cancellation, so there is no explicit signal parameter — cancel the calling
@@ -49,8 +54,8 @@ suspend fun runAgentLoop(
         messages = (context.messages + prompts).toMutableList(),
     )
 
-    emit.emit(AgentEvent.AgentStart)
     emit.emit(AgentEvent.TurnStart)
+    emit.emit(AgentEvent.StepStart)
     for (prompt in prompts) {
         emit.emit(AgentEvent.MessageStart(prompt))
         emit.emit(AgentEvent.MessageEnd(prompt))
@@ -78,8 +83,8 @@ suspend fun runAgentLoopContinue(
     val newMessages = mutableListOf<AgentMessage>()
     val currentContext = context.copy(messages = context.messages.toMutableList())
 
-    emit.emit(AgentEvent.AgentStart)
     emit.emit(AgentEvent.TurnStart)
+    emit.emit(AgentEvent.StepStart)
 
     runLoop(currentContext, newMessages, config, emit, streamFn)
     return newMessages
@@ -94,7 +99,7 @@ private suspend fun runLoop(
 ) {
     var currentContext = initialContext
     var config = initialConfig
-    var firstTurn = true
+    var firstStep = true
     var pendingMessages: List<AgentMessage> = config.getSteeringMessages?.invoke() ?: emptyList()
 
     // Outer loop: continues when queued follow-up messages arrive after the agent would stop.
@@ -103,7 +108,7 @@ private suspend fun runLoop(
 
         // Inner loop: process tool calls and steering messages.
         while (hasMoreToolCalls || pendingMessages.isNotEmpty()) {
-            if (!firstTurn) emit.emit(AgentEvent.TurnStart) else firstTurn = false
+            if (!firstStep) emit.emit(AgentEvent.StepStart) else firstStep = false
 
             if (pendingMessages.isNotEmpty()) {
                 for (message in pendingMessages) {
@@ -121,8 +126,8 @@ private suspend fun runLoop(
             if (message.stopReason == dev.pi.ai.StopReason.ERROR ||
                 message.stopReason == dev.pi.ai.StopReason.ABORTED
             ) {
-                emit.emit(AgentEvent.TurnEnd(message, emptyList()))
-                emit.emit(AgentEvent.AgentEnd(newMessages.toList()))
+                emit.emit(AgentEvent.StepEnd(message, emptyList()))
+                emit.emit(AgentEvent.TurnEnd(newMessages.toList()))
                 return
             }
 
@@ -139,17 +144,17 @@ private suspend fun runLoop(
                 }
             }
 
-            emit.emit(AgentEvent.TurnEnd(message, toolResults))
+            emit.emit(AgentEvent.StepEnd(message, toolResults))
 
-            val nextTurnContext = ShouldStopAfterTurnContext(message, toolResults, currentContext, newMessages)
-            val snapshot = config.prepareNextTurn?.invoke(nextTurnContext)
+            val nextStepContext = ShouldStopAfterStepContext(message, toolResults, currentContext, newMessages)
+            val snapshot = config.prepareNextStep?.invoke(nextStepContext)
             if (snapshot != null) {
                 currentContext = snapshot.context ?: currentContext
-                config = config.withNextTurn(snapshot)
+                config = config.withNextStep(snapshot)
             }
 
-            if (config.shouldStopAfterTurn?.invoke(nextTurnContext) == true) {
-                emit.emit(AgentEvent.AgentEnd(newMessages.toList()))
+            if (config.shouldStopAfterStep?.invoke(nextStepContext) == true) {
+                emit.emit(AgentEvent.TurnEnd(newMessages.toList()))
                 return
             }
 
@@ -164,10 +169,10 @@ private suspend fun runLoop(
         break
     }
 
-    emit.emit(AgentEvent.AgentEnd(newMessages.toList()))
+    emit.emit(AgentEvent.TurnEnd(newMessages.toList()))
 }
 
-private fun AgentLoopConfig.withNextTurn(snapshot: AgentLoopTurnUpdate): AgentLoopConfig {
+private fun AgentLoopConfig.withNextStep(snapshot: AgentLoopStepUpdate): AgentLoopConfig {
     val nextReasoning = when (snapshot.thinkingLevel) {
         null -> this.reasoning
         ThinkingLevel.OFF -> null
@@ -181,8 +186,8 @@ private fun AgentLoopConfig.withNextTurn(snapshot: AgentLoopTurnUpdate): AgentLo
         convertToLlm = this.convertToLlm,
         transformContext = this.transformContext,
         getApiKey = this.getApiKey,
-        shouldStopAfterTurn = this.shouldStopAfterTurn,
-        prepareNextTurn = this.prepareNextTurn,
+        shouldStopAfterStep = this.shouldStopAfterStep,
+        prepareNextStep = this.prepareNextStep,
         getSteeringMessages = this.getSteeringMessages,
         getFollowUpMessages = this.getFollowUpMessages,
         beforeToolCall = this.beforeToolCall,

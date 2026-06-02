@@ -3,7 +3,7 @@
 Working plan for the Android app at `node-dock/app/`. Source of truth for
 what's being built, in what order, and what's deferred. The file map lives in
 [../README.md](../README.md#project-map); how a turn works (lifecycle + state
-machines + agent mechanics) in [TURN.md](TURN.md); the interaction contract in
+machines + agent mechanics) in [dock-agent-loop.md](dock-agent-loop.md); the interaction contract in
 [UX.md](UX.md).
 
 **Last updated:** 2026-06-02
@@ -16,7 +16,7 @@ machines + agent mechanics) in [TURN.md](TURN.md); the interaction contract in
 - **SDK:** minSdk 26 (Android 8.0) · targetSdk 35 (Android 15) · JDK 21.
 - **Dev target:** AVD (Pixel 3a API 35 arm64) **and** physical Android device. Use `10.0.2.2:<port>` from AVD or the laptop's LAN IP from a real phone.
 - **LLM endpoint:** **Ollama local-first** (`OLLAMA_BASE_URL` + `OLLAMA_MODEL` in `local.properties`), **OpenRouter fallback chain** when Ollama is empty/unreachable. Streaming. Model comparison + current pick: [bench/README.md](bench/README.md).
-- **Agent framework:** vendored **pi-kt** loop in the `:agent-core` module (pure-JVM: loop + tools + sessions). `DockAgent` is a thin facade; `DockStreamFn` (in `dev/orbit/dock/llm/`) is the transport. (Koog was evaluated and dropped — pi-kt is lighter and Android-free.)
+- **Agent framework:** our own **`:agent-core`** loop (pure-JVM: loop + tools + sessions; vocabulary in [agent-core/AGENT-MODEL.md](agent-core/AGENT-MODEL.md)). `DockAgent` is a thin facade; `DockStreamFn` (in `dev/orbit/dock/llm/`) is the transport. (Koog was evaluated and dropped — this loop is lighter and Android-free.)
 - **STT:** Android `SpeechRecognizer` (Google on-device) on real devices; **dev bypass via text input** for emulator + scripted testing.
 - **TTS:** Android `TextToSpeech` (sentence-boundary chunked), also rendered as a subtitle on the face.
 - **Camera + gaze:** MediaPipe FaceMesh, works in emulator via AVD `Webcam0` and on the physical front camera.
@@ -109,7 +109,7 @@ Done:
 - [x] **Kotlin client migrated** — `BodyLinkComms` decodes the capability `profile`, sends `set_target` for both intent and a periodic heartbeat (`pingIntervalMillis = 2000L`), and ships a brain-side state catalog (`assets/states.json` + `BodyStateCatalog`, validated against the body's profile). No `set_state`/state-stream types remain.
 - [x] **Body driven via the agent's `move_body` / `gesture` / `move_sequence` tools** → `DockTools.makeBodyMovements` → `BodyController.setState(part,state)` → `set_target`. Part↔state validation in `DockToolsAdapter`.
 - [x] `BodyBadge` UI (green/red dot + per-part state, transitions show `<state> (XX%)`); `BODY_HOST` in `local.properties`; `usesCleartextTraffic=true` for `ws://`.
-- [x] **End-to-end on real ESP32 (neck + foot)** — "look down", "nod", "wiggle", model-authored `move_sequence` all drive real servos with acks; talk-while-moving confirmed (see [TURN.md](TURN.md)).
+- [x] **End-to-end on real ESP32 (neck + foot)** — "look down", "nod", "wiggle", model-authored `move_sequence` all drive real servos with acks; talk-while-moving confirmed (see [dock-agent-loop.md](dock-agent-loop.md)).
 
 Open:
 - [ ] **Rewrite the sim integration tests** — `integration_test.py` still has old `set_state` paths; T-list in [../bodylink/HANDOVER.md](../bodylink/HANDOVER.md) §3.

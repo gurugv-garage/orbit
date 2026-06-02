@@ -8,9 +8,10 @@ implementation serves.
 **Living document — optimize for a natural feel, iterate freely.** Tunables are
 called out explicitly so changing the feel is cheap. This is the *behavior /
 feel* spec; for the *mechanics* it serves — the turn lifecycle, the
-[terminology](TURN.md#terminology) (session / turn / step / LLM call), the state
-machines, how `DockAgent` drives the loop and runs speech + motion in parallel —
-see [TURN.md](TURN.md). Read that first; don't duplicate it here.
+[terminology](agent-core/AGENT-MODEL.md) (session / turn / step / LLM call), the
+state machines, how `DockAgent` drives the loop and runs speech + motion in
+parallel — see [dock-agent-loop.md](dock-agent-loop.md). Read that first; don't
+duplicate it here.
 
 ---
 
@@ -50,8 +51,8 @@ like `neck,left`). All five are defined in `DockToolSchemas` + wired in
 | **Speaking** | first prose sentence ready (`MessageUpdate` deltas → sentence boundary) | face → Speaking | speak sentence now (don't wait for turn end) | — |
 | **Acting** | `ToolExecutionStart(name,args)` | status shows the **specific action** ("looking left", "nodding", "smiling") | keep speaking queued sentences | fire-and-forget servo move; speech continues in parallel |
 | **Reacting** | `ToolExecutionEnd(result)` | (per rule below) | model may speak about the result next | — |
-| **Continue** | loop runs another turn (more tools) | back to Thinking/Speaking/Acting | streamed | streamed |
-| **Settle** | `AgentEnd` | face → Idle (or auto-relisten if voice turn) | queue drains | last move holds |
+| **Continue** | loop runs another step (more tools) | back to Thinking/Speaking/Acting | streamed | streamed |
+| **Settle** | `TurnEnd` | face → Idle (or auto-relisten if voice turn) | queue drains | last move holds |
 
 Key invariant (preserved from today): **speech and motion overlap** — a body
 tool returns immediately; servo travel runs in `DockTools.bodyScope`. Streamed
@@ -88,7 +89,7 @@ line/pill shows it in real time as each tool runs, then returns to Speaking.
 ### 4. Mid-turn steering
 - A **tap while Speaking** = barge-in (today's behavior): hard-cancel + listen.
 - A **new utterance arriving mid-turn** (e.g. debug SAY, or future always-listen)
-  → `agent.steer(message)` (pi-kt queue) so the loop adapts at the next turn
+  → `agent.steer(message)` (agent-core queue) so the loop adapts at the next step
   boundary instead of hard-cancelling. "No, the other way" refines the action.
 - **Long-press** = hard abort always (`stop()` → silence → Idle).
 

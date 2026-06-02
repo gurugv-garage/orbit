@@ -87,10 +87,10 @@ class AgentTest {
 
         assertEquals(
             listOf(
-                "agent_start", "turn_start",
+                "turn_start", "step_start",
                 "message_start", "message_end",     // the user prompt
                 "message_start", "message_end",     // the assistant reply
-                "turn_end", "agent_end",
+                "step_end", "turn_end",
             ),
             events,
         )
@@ -111,10 +111,10 @@ class AgentTest {
 
         assertEquals(
             listOf(
-                "agent_start", "turn_start",
+                "turn_start", "step_start",
                 "message_start", "message_end",   // user prompt
                 "message_start", "message_end",   // synthesized failure assistant message
-                "turn_end", "agent_end",
+                "step_end", "turn_end",
             ),
             events,
         )
@@ -135,10 +135,10 @@ class AgentTest {
 }
 
 private fun AgentEvent.typeName(): String = when (this) {
-    AgentEvent.AgentStart -> "agent_start"
-    is AgentEvent.AgentEnd -> "agent_end"
     AgentEvent.TurnStart -> "turn_start"
     is AgentEvent.TurnEnd -> "turn_end"
+    AgentEvent.StepStart -> "step_start"
+    is AgentEvent.StepEnd -> "step_end"
     is AgentEvent.MessageStart -> "message_start"
     is AgentEvent.MessageUpdate -> "message_update"
     is AgentEvent.MessageEnd -> "message_end"

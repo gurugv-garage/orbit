@@ -1,10 +1,17 @@
-# How a turn works — lifecycle, state machines, agent mechanics
+# The dock agent loop — lifecycle, state machines, mechanics
 
 How one back-and-forth flows through the dock: from a tap or spoken utterance,
 through the agent's tool-calling loop, out to streamed speech + body motion, and
 (optionally) back to a re-armed mic. This is the **mechanics** doc; for how a turn
 should *feel* (narration rules, restraint, tunables, acceptance criteria) see
 [UX.md](UX.md).
+
+**Vocabulary** (session / turn / step / LLM call) is owned by `:agent-core` and
+defined in [agent-core/AGENT-MODEL.md](agent-core/AGENT-MODEL.md); the dock
+**adopts** it. In short: a **turn** is one `prompt()` (the dock's complete
+response to one trigger); a **step** is one LLM call + its tool executions; a turn
+is 1+ steps, so a tool-using turn makes multiple LLM calls. A **session** is the
+turns sharing one message history.
 
 Pinned by `DockAgentTurnTest`, `DockAgentStreamingTest`, `DockAgentBodyTurnTest`,
 `DockAgentVisionIntentTest`, `AutoRelistenTest`, `FaceControllerTest`,
@@ -38,24 +45,26 @@ DockAgent streams prose to **DockTts** (`speak()`) and fires body/face tools;
 
 ---
 
-## Terminology
+## Terminology (adopted from agent-core)
 
-Four nested concepts. **Session ⊃ Turns ⊃ Steps ⊃ (one LLM call each).**
+The **session / turn / step / LLM call** vocabulary is defined in
+[agent-core/AGENT-MODEL.md](agent-core/AGENT-MODEL.md). What the dock pins down on
+top of that abstract model:
 
-| Term | Definition |
-|---|---|
-| **Session** | A set of turns that share one **message history** (one conversational context). Today a session spans from app launch until the next barge-in/long-press `stop()` (which calls `agent.reset()` and clears the history); normal turns accumulate into it. The boundary may change later (e.g. idle timeout, explicit "new chat"). *Independent of the mic.* |
-| **Trigger** | The event that **starts a turn**. Today: the user **speaks** or **types**. Later: a **heartbeat** / proactive timer, or a cross-device event. |
-| **Turn** | One trigger → the dock's **complete response** (prose + motion), ending when the model stops calling tools. This is what `DockAgent.respond()` / `runTurn()` does — the dock's unit of work. |
-| **Step** | One **LLM call plus the tool executions it triggers**, within a turn. A turn has **1 or more** steps: step N+1 happens only because step N's response contained tool calls. (This is `:agent-core`'s internal "turn" — `TurnStart`/`TurnEnd`.) |
-| **LLM call** | A single request/response to the model (`streamAssistantResponse`). Exactly **one per step**. |
+- **Trigger** — today a turn is triggered by the user **speaking** or **typing**
+  (`DockAgent.respond()`); later: a heartbeat / proactive timer / cross-device event.
+- **Turn** — `DockAgent.respond()` / `runTurn()` = one agent-core turn (one `prompt()`).
+- **Session** — today it spans from app launch until the next barge-in/long-press
+  `stop()` (which calls `agent.reset()`, clearing the message history); normal
+  turns accumulate into it. The boundary may change later (idle timeout, "new chat").
+- A tool-using turn makes **multiple LLM calls** (one per step). There is **no
+  per-turn step cap** — the only bound is `TURN_TIMEOUT_MS` (60s wall-clock); see
+  *Superseding, stopping, failing*.
 
-So a turn that uses tools makes **multiple LLM calls**: `LLM calls per turn = (steps that emitted tool calls) + 1`. "What's the capital of France?" → 1 step, 1 call. "Say hi and look left" → ~2 steps (speak + tool, then a closing line), ~2 calls. There is **no per-turn step cap** — the only bound is `TURN_TIMEOUT_MS` (60s wall-clock); see *Superseding, stopping, failing*.
-
-> **Disambiguation:** "step" here = one LLM call (+ its tools) within a turn. The
-> word also appears in `move_sequence` for a **motion step** (one servo move);
-> context distinguishes them. The mic's "listening window" (one armed
-> `SpeechRecognizer` shot) is a separate perception concept — *not* a Session.
+> **Disambiguation:** a **step** (one LLM call + its tools) is unrelated to a
+> `move_sequence` **motion step** (one servo move); context distinguishes them.
+> And the mic's "listening window" (one armed `SpeechRecognizer` shot) is a
+> perception concept — *not* a [Session](agent-core/AGENT-MODEL.md).
 
 ---
 
@@ -89,15 +98,15 @@ the state machines that bracket the turn.
 
 ## The agent loop: `:agent-core` as a black box
 
-The dock does **not** implement the tool-calling loop itself. It delegates to a
-vendored, dock-agnostic runtime (pi-kt) in the `:agent-core` Gradle module. We
-rely only on its **interface** — what you call and what you get back — not how it
-works inside:
+The dock does **not** implement the tool-calling loop itself. It delegates to the
+dock-agnostic `:agent-core` module (our own engine; see its
+[AGENT-MODEL.md](agent-core/AGENT-MODEL.md)). Here we rely only on its
+**interface** — what you call and what you get back — not how it works inside:
 
 - **In:** you configure it (with a prompt, a model, tools, and a transport — the
   dock supplies all four; see below), then call `prompt(userMessage)`.
 - **Out:** while it runs, it emits a stream of **`AgentEvent`s** you subscribe to
-  (`MessageUpdate`, `ToolExecutionStart/End`, `AgentEnd`, …). It calls the tools
+  (`MessageUpdate`, `ToolExecutionStart/End`, `TurnEnd`, …). It calls the tools
   you gave it and stops on its own.
 - **Constraint:** it's **one run at a time** — a second `prompt` while one is
   active throws `AgentBusyException` (the dock handles this — see *Superseding*).
@@ -161,7 +170,7 @@ are handled independently and **overlap**.
 | `MessageUpdate` (prose delta) | `Waiting → Thinking` on first bytes; push the delta through `StreamingReplyExtractor`; each completed sentence → `tools.speakSentence` and flip to `Speaking`. Live partial → subtitle. |
 | `ToolExecutionStart(name,args)` | State → `ToolCalling("looking left")` via `DockToolsAdapter.statusPhrase` (a human phrase, not the raw tool name). The side effect already fired inside the loop. |
 | `MessageEnd` with an error | State → `Failed`; speak the fallback line. |
-| `AgentEnd` | If nothing was spoken, settle to `Idle`. |
+| `TurnEnd` | If nothing was spoken, settle to `Idle`. |
 
 Every event is timestamped and emitted to `events` (the on-screen live log) and,
 in debug builds, to logcat under tag `DOCK_EVT` — so the loop's sequence + timing
@@ -268,8 +277,8 @@ Owner: [`PerceptionPipeline`](app/src/main/kotlin/dev/orbit/dock/perception/Perc
 
 > The perception code calls this a "session" (`sessionActive`, `onSessionStarted`,
 > `session_ended`) — a **mic listening window**, *not* the conversational
-> [Session](#terminology) (shared message history). They're orthogonal; the name
-> overlap is historical.
+> [Session](agent-core/AGENT-MODEL.md) (shared message history). They're
+> orthogonal; the name overlap is historical.
 
 ```
             WakeWord                 Transcript(final)

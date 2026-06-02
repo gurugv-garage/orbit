@@ -74,7 +74,7 @@ class Runner(
         agent.subscribe(AgentListener { ev ->
             when (ev) {
                 is AgentEvent.MessageUpdate -> if (firstEventMs < 0) firstEventMs = System.currentTimeMillis() - start
-                is AgentEvent.AgentEnd -> ended = true
+                is AgentEvent.TurnEnd -> ended = true
                 else -> {}
             }
         })
@@ -89,7 +89,7 @@ class Runner(
             val completed = withTimeoutOrNull(timeoutMs) {
                 runCatching { agent.prompt(case.prompt, images) }
                     .onFailure { streamError = it.message ?: it::class.java.simpleName }
-                // wait for the loop to flush AgentEnd (prompt returns once the run finishes)
+                // wait for the loop to flush TurnEnd (prompt returns once the turn finishes)
                 ended
             }
             if (completed == null) streamError = "timeout after ${timeoutMs}ms"

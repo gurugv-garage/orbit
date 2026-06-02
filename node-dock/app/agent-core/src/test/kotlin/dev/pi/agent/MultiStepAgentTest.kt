@@ -27,8 +27,8 @@ import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 /**
- * How to test AGENTIC, MULTI-STEP flows deterministically — one prompt that
- * drives several turns of tool calls — without a live model.
+ * How to test AGENTIC, MULTI-STEP flows deterministically — one prompt (one
+ * turn) that drives several steps of tool calls — without a live model.
  *
  * The trick: a "scripted model" whose next reply is a *function of the running
  * transcript*. It inspects the latest tool result and decides whether to call
@@ -102,10 +102,10 @@ class MultiStepAgentTest {
     }
 
     @Test
-    fun `one prompt drives N sequential tool-call turns until the model stops`() = runTest {
+    fun `one prompt (turn) drives N sequential tool-call steps until the model stops`() = runTest {
         val tool = CounterTool()
         val target = 4
-        val turns = mutableListOf<String>()
+        val log = mutableListOf<String>()
 
         val agent = Agent(
             AgentOptions(
@@ -117,17 +117,17 @@ class MultiStepAgentTest {
         )
         agent.subscribe { e ->
             when (e) {
-                is AgentEvent.ToolExecutionStart -> turns.add("call:${e.args["n"]?.jsonPrimitive?.content}")
-                is AgentEvent.AgentEnd -> turns.add("end")
+                is AgentEvent.ToolExecutionStart -> log.add("call:${e.args["n"]?.jsonPrimitive?.content}")
+                is AgentEvent.TurnEnd -> log.add("end")   // TurnEnd fires once, when the turn (all steps) completes
                 else -> {}
             }
         }
 
         agent.prompt("count to $target using the step tool")
 
-        // The tool was called once per step, in order, then the model stopped.
+        // The tool was called once per step, in order, then the model stopped (turn ended).
         assertEquals(target, tool.calls)
-        assertEquals(listOf("call:1", "call:2", "call:3", "call:4", "end"), turns)
+        assertEquals(listOf("call:1", "call:2", "call:3", "call:4", "end"), log)
 
         // Final assistant message is the stop text, and the transcript holds all
         // the intermediate tool results.

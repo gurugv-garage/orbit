@@ -109,8 +109,8 @@ class AgentLoopTest {
         // user prompt + assistant reply
         assertEquals(2, newMessages.size)
         assertTrue(newMessages.last() is AssistantMessage)
-        assertTrue(events.first() is AgentEvent.AgentStart)
-        assertTrue(events.last() is AgentEvent.AgentEnd)
+        assertTrue(events.first() is AgentEvent.TurnStart)
+        assertTrue(events.last() is AgentEvent.TurnEnd)
     }
 
     @Test
@@ -268,7 +268,7 @@ class AgentLoopTest {
             stream,
         )
         assertTrue((newMessages.last() as AssistantMessage).stopReason == StopReason.ERROR)
-        assertTrue(events.last() is AgentEvent.AgentEnd)
+        assertTrue(events.last() is AgentEvent.TurnEnd)
     }
 
     @Test

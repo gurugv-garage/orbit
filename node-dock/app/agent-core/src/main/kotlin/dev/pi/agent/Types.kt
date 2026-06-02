@@ -110,7 +110,7 @@ data class AfterToolCallContext(
     val context: AgentContext,
 )
 
-data class ShouldStopAfterTurnContext(
+data class ShouldStopAfterStepContext(
     val message: AssistantMessage,
     val toolResults: List<ToolResultMessage>,
     val context: AgentContext,
@@ -118,7 +118,7 @@ data class ShouldStopAfterTurnContext(
 )
 
 /** Replacement runtime state for the next provider request. */
-data class AgentLoopTurnUpdate(
+data class AgentLoopStepUpdate(
     val context: AgentContext? = null,
     val model: Model? = null,
     val thinkingLevel: ThinkingLevel? = null,
@@ -138,8 +138,8 @@ class AgentLoopConfig(
     /** Optional AgentMessage-level transform before convertToLlm. */
     val transformContext: (suspend (List<AgentMessage>) -> List<AgentMessage>)? = null,
     val getApiKey: (suspend (provider: String) -> String?)? = null,
-    val shouldStopAfterTurn: (suspend (ShouldStopAfterTurnContext) -> Boolean)? = null,
-    val prepareNextTurn: (suspend (ShouldStopAfterTurnContext) -> AgentLoopTurnUpdate?)? = null,
+    val shouldStopAfterStep: (suspend (ShouldStopAfterStepContext) -> Boolean)? = null,
+    val prepareNextStep: (suspend (ShouldStopAfterStepContext) -> AgentLoopStepUpdate?)? = null,
     val getSteeringMessages: (suspend () -> List<AgentMessage>)? = null,
     val getFollowUpMessages: (suspend () -> List<AgentMessage>)? = null,
     val beforeToolCall: (suspend (BeforeToolCallContext) -> BeforeToolCallResult?)? = null,
@@ -152,10 +152,10 @@ class AgentLoopConfig(
 
 /** Events emitted by the loop / Agent for UI updates. */
 sealed interface AgentEvent {
-    data object AgentStart : AgentEvent
-    data class AgentEnd(val messages: List<AgentMessage>) : AgentEvent
     data object TurnStart : AgentEvent
-    data class TurnEnd(val message: AgentMessage, val toolResults: List<ToolResultMessage>) : AgentEvent
+    data class TurnEnd(val messages: List<AgentMessage>) : AgentEvent
+    data object StepStart : AgentEvent
+    data class StepEnd(val message: AgentMessage, val toolResults: List<ToolResultMessage>) : AgentEvent
     data class MessageStart(val message: AgentMessage) : AgentEvent
     data class MessageUpdate(
         val message: AgentMessage,

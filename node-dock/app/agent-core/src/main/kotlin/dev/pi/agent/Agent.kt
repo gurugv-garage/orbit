@@ -68,7 +68,7 @@ data class AgentOptions(
     val getApiKey: (suspend (provider: String) -> String?)? = null,
     val beforeToolCall: (suspend (BeforeToolCallContext) -> BeforeToolCallResult?)? = null,
     val afterToolCall: (suspend (AfterToolCallContext) -> AfterToolCallResult?)? = null,
-    val prepareNextTurn: (suspend () -> AgentLoopTurnUpdate?)? = null,
+    val prepareNextStep: (suspend () -> AgentLoopStepUpdate?)? = null,
     val steeringMode: QueueMode = QueueMode.ONE_AT_A_TIME,
     val followUpMode: QueueMode = QueueMode.ONE_AT_A_TIME,
     val sessionId: String? = null,
@@ -108,7 +108,7 @@ class Agent(private val options: AgentOptions = AgentOptions()) {
     var getApiKey: (suspend (provider: String) -> String?)? = options.getApiKey
     var beforeToolCall = options.beforeToolCall
     var afterToolCall = options.afterToolCall
-    var prepareNextTurn = options.prepareNextTurn
+    var prepareNextStep = options.prepareNextStep
     var sessionId: String? = options.sessionId
     var toolExecution: ToolExecutionMode = options.toolExecution
 
@@ -205,8 +205,8 @@ class Agent(private val options: AgentOptions = AgentOptions()) {
 
     private fun createLoopConfig(skipInitialSteeringPoll: Boolean = false): AgentLoopConfig {
         var skip = skipInitialSteeringPoll
-        val prepareHook: (suspend (ShouldStopAfterTurnContext) -> AgentLoopTurnUpdate?)? =
-            prepareNextTurn?.let { hook -> { _ -> hook() } }
+        val prepareHook: (suspend (ShouldStopAfterStepContext) -> AgentLoopStepUpdate?)? =
+            prepareNextStep?.let { hook -> { _ -> hook() } }
         return AgentLoopConfig(
             model = state.model,
             reasoning = if (state.thinkingLevel == ThinkingLevel.OFF) null
@@ -218,7 +218,7 @@ class Agent(private val options: AgentOptions = AgentOptions()) {
             getApiKey = getApiKey,
             beforeToolCall = beforeToolCall,
             afterToolCall = afterToolCall,
-            prepareNextTurn = prepareHook,
+            prepareNextStep = prepareHook,
             getSteeringMessages = {
                 if (skip) { skip = false; emptyList() } else steeringQueue.drain()
             },
@@ -253,8 +253,8 @@ class Agent(private val options: AgentOptions = AgentOptions()) {
         )
         processEvents(AgentEvent.MessageStart(failure))
         processEvents(AgentEvent.MessageEnd(failure))
-        processEvents(AgentEvent.TurnEnd(failure, emptyList()))
-        processEvents(AgentEvent.AgentEnd(listOf(failure)))
+        processEvents(AgentEvent.StepEnd(failure, emptyList()))
+        processEvents(AgentEvent.TurnEnd(listOf(failure)))
     }
 
     private fun finishRun() {
@@ -276,11 +276,11 @@ class Agent(private val options: AgentOptions = AgentOptions()) {
                 state.pendingToolCalls = state.pendingToolCalls + event.toolCallId
             is AgentEvent.ToolExecutionEnd ->
                 state.pendingToolCalls = state.pendingToolCalls - event.toolCallId
-            is AgentEvent.TurnEnd -> {
+            is AgentEvent.StepEnd -> {
                 val m = event.message
                 if (m is AssistantMessage && m.errorMessage != null) state.errorMessage = m.errorMessage
             }
-            is AgentEvent.AgentEnd -> state.streamingMessage = null
+            is AgentEvent.TurnEnd -> state.streamingMessage = null
             else -> {}
         }
         for (listener in listeners.toList()) listener.onEvent(event)

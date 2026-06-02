@@ -86,7 +86,8 @@ Hardware lessons (the painful ones, in case they bite again): [body-firmware/doc
 | migrate the Android client | [bodylink/HANDOVER.md](bodylink/HANDOVER.md) |
 | change the firmware | [body-firmware/dock_body_v0/progress.md](body-firmware/dock_body_v0/progress.md) |
 | work on the Android app (face, agent, LLM, perception) | [app/PLAN.md](app/PLAN.md) |
-| understand a turn (utterance → speech + motion; state machines) | [app/TURN.md](app/TURN.md) |
+| understand a turn (utterance → speech + motion; state machines) | [app/dock-agent-loop.md](app/dock-agent-loop.md) |
+| the agent model + vocabulary (session/turn/step) | [app/agent-core/AGENT-MODEL.md](app/agent-core/AGENT-MODEL.md) |
 | build / wire / 3D-print the physical dock | [hardware/README.md](hardware/README.md) |
 | compare LLMs as the dock brain (runnable harness) | [app/bench/README.md](app/bench/README.md) |
 
@@ -148,8 +149,8 @@ node-dock/
 │
 ├── app/                        Android dock app (Kotlin, Compose).
 │   ├── PLAN.md                 milestone tracker (M1..M7+). Status at the bottom.
-│   ├── TURN.md                 how a turn works: lifecycle + state machines +
-│   │                           agent mechanics (utterance → speech + motion).
+│   ├── dock-agent-loop.md      how a turn works in the dock: lifecycle + state
+│   │                           machines + mechanics (utterance → speech + motion).
 │   ├── UX.md                   the agentic-turn interaction contract (how it feels).
 │   ├── app/src/main/kotlin/dev/orbit/dock/
 │   │   ├── body/               BodyLinkComms + protocol types + state catalog
@@ -163,9 +164,10 @@ node-dock/
 │   │   │                       SafeCompute. :bench compiles this same dir.
 │   │   ├── ui/                 Compose face + body badge + dev panel.
 │   │   └── ...                 perception, audio, UI wiring.
-│   ├── agent-core/             :agent-core — pure-JVM Gradle module: the pi-kt
-│   │                           agentic runtime (loop + tools + sessions),
-│   │                           vendored. No Android/Ktor; reusable.
+│   ├── agent-core/             :agent-core — pure-JVM Gradle module: the agentic
+│   │                           runtime (loop + tools + sessions). No Android/Ktor;
+│   │                           independent + reusable. Owns the agent vocabulary —
+│   │                           see agent-core/AGENT-MODEL.md.
 │   ├── bench/                  :bench — runnable LLM benchmark harness (pure-JVM).
 │   │                           Drives models through the real transport + tool
 │   │                           schemas. See app/bench/README.md.

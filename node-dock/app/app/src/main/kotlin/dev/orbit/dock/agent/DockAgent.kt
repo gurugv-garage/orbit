@@ -31,14 +31,15 @@ import timber.log.Timber
 /**
  * The dock's brain — a thin facade over the pi-kt agentic runtime (`:agent-core`).
  *
- * One trigger (a user utterance today) → one **turn**: `Agent.prompt` drives a
- * tool-calling loop where the model streams spoken prose AND emits `move_body` /
- * `set_face` tool calls, the loop executes them ([DockToolsAdapter]), feeds
- * results back, and continues until it stops calling tools. Each LLM call + its
- * tools is a **step**; a turn is 1+ steps. (Terminology: see TURN.md#terminology.
- * Note `:agent-core` confusingly names a *step* `AgentEvent.TurnStart/End` — the
- * dock's "turn" is its whole `prompt()` run.) We translate the loop's
- * [AgentEvent]s into the dock's UX (see TURN.md / UX.md): streamed
+ * One trigger (a user utterance today) → one **turn**: `Agent.prompt` drives the
+ * loop where the model streams spoken prose AND emits `move_body` / `set_face`
+ * tool calls, the loop executes them ([DockToolsAdapter]), feeds results back,
+ * and continues until it stops calling tools. Each LLM call + its tools is a
+ * **step**; a turn is 1+ steps. (Vocabulary — session / turn / step / LLM call —
+ * is defined and owned by `:agent-core`; see agent-core/AGENT-MODEL.md. The dock
+ * adopts it: `AgentEvent.TurnStart/End` brackets the whole `prompt()` run = one
+ * dock turn; `StepStart/End` brackets each step.) We translate the loop's
+ * [AgentEvent]s into the dock's UX (see app/dock-agent-loop.md / UX.md): streamed
  * sentence-by-sentence TTS, live status (Waiting→Thinking→Speaking + per-action),
  * talk-while-moving.
  *
@@ -224,7 +225,7 @@ class DockAgent(
                 _state.value = AgentState.ToolCalling(DockToolsAdapter.statusPhrase(event.toolName, event.args))
                 TurnLog.toolCalled(event.toolName, event.args.toString())
             }
-            is AgentEvent.AgentEnd -> {
+            is AgentEvent.TurnEnd -> {
                 if (!spokeThisTurn && _state.value !is AgentState.Failed) _state.value = AgentState.Idle
             }
             is AgentEvent.MessageEnd -> {
@@ -252,16 +253,16 @@ class DockAgent(
     private fun traceEvent(event: AgentEvent) {
         val dt = System.currentTimeMillis() - turnStartMs
         val line = when (event) {
-            is AgentEvent.AgentStart -> "AGENT_START"
-            is AgentEvent.TurnStart -> "turn_start"
+            is AgentEvent.TurnStart -> "TURN_START"
+            is AgentEvent.StepStart -> "step_start"
             is AgentEvent.MessageStart -> "msg_start"
             is AgentEvent.MessageUpdate -> "msg_update (${assistantText(event.message).length} chars)"
             is AgentEvent.MessageEnd -> "msg_end"
             is AgentEvent.ToolExecutionStart -> "TOOL_START ${event.toolName}${event.args}"
             is AgentEvent.ToolExecutionEnd -> "TOOL_END   ${event.toolName} → ${(event.result.content.firstOrNull() as? TextContent)?.text}"
             is AgentEvent.ToolExecutionUpdate -> "tool_update"
-            is AgentEvent.TurnEnd -> "turn_end"
-            is AgentEvent.AgentEnd -> "AGENT_END"
+            is AgentEvent.StepEnd -> "step_end"
+            is AgentEvent.TurnEnd -> "TURN_END"
         }
         _events.tryEmit("+${dt}ms  $line")
         if (BuildConfig.DEBUG) Timber.tag(EVT).i("+${dt}ms  $line")
