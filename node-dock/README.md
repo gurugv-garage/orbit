@@ -9,9 +9,9 @@ motion.
 
 ## Start here
 
-- **Project map** (every directory, what it is, current status): [STRUCTURE.md](STRUCTURE.md).
+- **Project map** (every directory, what it is, current status): see [Project map](#project-map) below.
 - **Drive the live firmware from any IDE:** [body-firmware/dock_body_v0/scripts/test_body.sh](body-firmware/dock_body_v0/scripts/test_body.sh) — interactive REPL over WebSocket.
-- **Migrate the Kotlin client to the redesigned protocol:** [bodylink/HANDOVER.md](bodylink/HANDOVER.md) (has a copy-paste agent prompt at §8).
+- **Wire protocol:** [bodylink/DESIGN.md](bodylink/DESIGN.md) (canonical spec).
 
 ## Status — 2026-06-02
 
@@ -80,7 +80,7 @@ Hardware lessons (the painful ones, in case they bite again): [body-firmware/doc
 
 | You want to … | Read |
 |---|---|
-| see every file + its current state | [STRUCTURE.md](STRUCTURE.md) |
+| see every file + its current state | [Project map](#project-map) below |
 | understand the wire protocol | [bodylink/DESIGN.md](bodylink/DESIGN.md) |
 | drive the body from a terminal | [body-firmware/dock_body_v0/scripts/test_body.sh](body-firmware/dock_body_v0/scripts/test_body.sh) (run `--help`) |
 | migrate the Android client | [bodylink/HANDOVER.md](bodylink/HANDOVER.md) |
@@ -136,16 +136,86 @@ comes to revisit, work from a clean spec rather than digging in git.
 - **Latency budget:** end-to-end voice ≤ ~1.4s typical (TTFT 600-1000ms +
   streaming TTS). End-to-end body command ≤ ~75ms RTT typical.
 
-## Repo layout (one level)
+## Project map
+
+Where each part lives, what it is, and its current state (paths relative to
+`node-dock/`):
 
 ```
 node-dock/
-├── README.md            ← you are here
-├── STRUCTURE.md         project map
-├── app/                 Android dock app (Kotlin, Compose) + bench harness
-├── bodylink/            protocol spec, sim, handover
-├── body-firmware/       ESP32 firmware project(s)
-└── hardware/            BOM, wiring, 3D-print
+├── README.md                   start-here front page (this file).
+│
+├── app/                        Android dock app (Kotlin, Compose).
+│   ├── PLAN.md                 milestone tracker (M1..M7+). Status at the bottom.
+│   ├── LIFECYCLE.md            the four in-app state machines + tap rules.
+│   ├── UX.md                   the agentic-turn interaction contract.
+│   ├── app/src/main/kotlin/dev/orbit/dock/
+│   │   ├── body/               BodyLinkComms + protocol types + state catalog
+│   │   │                       (Kotlin). ✅ on the current set_target protocol.
+│   │   ├── agent/              Agentic brain: DockAgent (facade over :agent-core
+│   │   │                       pi-kt loop) + DockToolsAdapter (set_face/move_body/
+│   │   │                       gesture/move_sequence/compute) + DockTools.
+│   │   │                       Interaction spec: app/UX.md.
+│   │   ├── llm/                Dock LLM transport: DockStreamFn (Ollama NDJSON +
+│   │   │                       OpenAI SSE), DockToolSchemas, DockPrompt,
+│   │   │                       SafeCompute. :bench compiles this same dir.
+│   │   ├── ui/                 Compose face + body badge + dev panel.
+│   │   └── ...                 perception, audio, UI wiring.
+│   ├── agent-core/             :agent-core — pure-JVM Gradle module: the pi-kt
+│   │                           agentic runtime (loop + tools + sessions),
+│   │                           vendored. No Android/Ktor; reusable.
+│   ├── bench/                  :bench — runnable LLM benchmark harness (pure-JVM).
+│   │                           Drives models through the real transport + tool
+│   │                           schemas. See app/bench/README.md.
+│   └── local.properties        BODY_HOST=<ip>:17317 — points the app at
+│                               either the sim or the live ESP32.
+│
+├── bodylink/                   The brain ↔ body protocol + sim.
+│   ├── DESIGN.md               ✅ canonical wire spec.
+│   ├── HANDOVER.md             ⚠️ historical: the (completed) Kotlin migration
+│   │                           plan; one sim-test rewrite item remains.
+│   └── sim/                    Python MuJoCo body that speaks the protocol.
+│       ├── bodies/             MJCF (4 joints — foot/neck/arm.left/arm.right).
+│       ├── profiles/dock_companion.json   capability profile (neck + foot).
+│       ├── bodylink_sim.py     ✅ speaks the current set_target protocol.
+│       ├── bodylink_cli.py     ✅ on the current set_target protocol.
+│       └── integration_test.py ⚠️ partially on old set_state; rewrite
+│                               pending — T-list in HANDOVER.md §3.
+│
+├── body-firmware/              ESP32 firmware projects (one per board build).
+│   └── dock_body_v0/           ✅ ESP-IDF firmware, shipped + verified on
+│       │                       hardware (XIAO ESP32-S3 + 4× MG90S).
+│       │                       Joins Wi-Fi, serves BodyLink WS on :17317.
+│       ├── progress.md         milestone log + hardware lessons (antenna +
+│       │                       external 5V — both mandatory).
+│       ├── platformio.ini      espressif32@6.13.0 (IDF 5.5.3).
+│       ├── src/                main.c, servo.{h,c} (mcpwm ×4 on GPIO 3/4/5/6),
+│       │                       wifi_sta, bodylink_proto/motion/ws (cJSON).
+│       ├── include/secrets.h   ⚠️ gitignored Wi-Fi creds (.example checked in).
+│       └── scripts/test_body.sh ✅ interactive REPL; drives firmware AND sim.
+│
+└── hardware/                   Physical-build artifacts.
+    ├── README.md               ⚠️ BOM + assembly (target build). Speculative —
+    │                           bench differs (banner inside the doc).
+    └── 3dprinting/PLAN.md       OpenSCAD source + STL exports (active).
 ```
 
-— see [STRUCTURE.md](STRUCTURE.md) for the full map.
+## Naming conventions
+
+- **Brain** = the Android phone (and its software).
+- **Body** = the ESP32 + servos.
+- **Part** = a logical addressable thing on the body (`neck`, `foot`).
+  Currently 1:1 with a servo, but the protocol allows N joints per part.
+- **Capability profile** = body's self-description sent at handshake.
+  Lists parts, their parameters (with ranges), and home pose.
+- **set_target** = the brain's only motion command. Per-part idempotent.
+  Used for both immediate intent and periodic heartbeat (~1 Hz).
+- **State catalog** = brain-owned mapping of named states ("lookUp") to
+  primitive parameter bundles. Lives in the Android app's assets, not
+  in the firmware.
+
+## Commit log conventions
+
+Lowercase prefix (`node-dock/body:`, `bodylink:`, `node-dock/app:`)
++ em-dash + concise summary. Body has bullets. Trailer:
+`Co-Authored-By: Claude <noreply@anthropic.com>`.

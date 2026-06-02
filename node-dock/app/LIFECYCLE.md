@@ -6,7 +6,7 @@ involved. This is the contract the unit tests (`AutoRelistenTest`,
 `PerceptionWiringTest`) pin down.
 
 There is **no central state object**. Four small machines run in parallel and
-communicate only through [`PerceptionBus`](app/app/src/main/kotlin/dev/orbit/dock/perception/PerceptionBus.kt)
+communicate only through [`PerceptionBus`](app/src/main/kotlin/dev/orbit/dock/perception/PerceptionBus.kt)
 events. Keeping them decoupled is deliberate — each is independently testable.
 
 ```
@@ -78,7 +78,7 @@ Idle and waits for a tap.
 
 ## State machine 1 — FaceState (the on-screen face)
 
-Owner: [`FaceController`](app/app/src/main/kotlin/dev/orbit/dock/ui/face/FaceController.kt).
+Owner: [`FaceController`](app/src/main/kotlin/dev/orbit/dock/ui/face/FaceController.kt).
 Drives what the face looks like. Five states:
 
 | State | Meaning | Entered by |
@@ -110,7 +110,7 @@ Transition rules that matter:
 
 ## State machine 2 — AgentState (what the agent is doing)
 
-Owner: [`DockAgent`](app/app/src/main/kotlin/dev/orbit/dock/agent/DockAgent.kt).
+Owner: [`DockAgent`](app/src/main/kotlin/dev/orbit/dock/agent/DockAgent.kt).
 Surfaced to the UI status line. (`ToolCalling` is emitted transiently by tools.)
 
 ```
@@ -145,7 +145,7 @@ validation — gated behind `BuildConfig.DEBUG`.)
 
 ## State machine 3 — Listening session (the mic)
 
-Owner: [`PerceptionPipeline`](app/app/src/main/kotlin/dev/orbit/dock/perception/PerceptionPipeline.kt).
+Owner: [`PerceptionPipeline`](app/src/main/kotlin/dev/orbit/dock/perception/PerceptionPipeline.kt).
 `SpeechRecognizer` is **one-shot**, so a "session" is a single armed shot.
 
 ```
@@ -167,7 +167,7 @@ Rules:
 
 ## State machine 4 — AutoRelisten (continuous-conversation decision)
 
-Owner: [`AutoRelisten`](app/app/src/main/kotlin/dev/orbit/dock/perception/AutoRelisten.kt).
+Owner: [`AutoRelisten`](app/src/main/kotlin/dev/orbit/dock/perception/AutoRelisten.kt).
 Pure, no Android deps — fully unit tested. Two booleans:
 `sessionActive`, `voiceTurnPending`.
 
@@ -188,7 +188,7 @@ session (barge-in WakeWord) supersedes a stale pending re-arm, so the trailing
 
 ## Cross-cutting interaction rules (the tap handler)
 
-[`DockScreen`](app/app/src/main/kotlin/dev/orbit/dock/ui/DockScreen.kt) maps a
+[`DockScreen`](app/src/main/kotlin/dev/orbit/dock/ui/DockScreen.kt) maps a
 tap by the **current FaceState**:
 
 | Tap while… | Action |

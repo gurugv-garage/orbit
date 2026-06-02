@@ -625,4 +625,4 @@ The capability profile the sim loads at boot is at
 - **Capability profile:** [sim/profiles/dock_companion.json](sim/profiles/dock_companion.json).
 - **MuJoCo model:** [sim/bodies/dock_humanoid.xml](sim/bodies/dock_humanoid.xml).
 - **Interactive tester (firmware + sim):** [../body-firmware/dock_body_v0/scripts/test_body.sh](../body-firmware/dock_body_v0/scripts/test_body.sh).
-- **Project map:** [../STRUCTURE.md](../STRUCTURE.md).
+- **Project map:** [../README.md](../README.md#project-map).
