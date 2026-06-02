@@ -24,16 +24,20 @@ node-dock/
 │   │   │                       ⚠️ Currently on the OLD protocol.
 │   │   │                       Migration plan: bodylink/HANDOVER.md.
 │   │   ├── agent/              Agentic brain: DockAgent (facade over :agent-core
-│   │   │                       pi-kt loop) + DockStreamFn (Ollama tool-calling)
-│   │   │                       + DockToolsAdapter (set_face/move_body/gesture/
-│   │   │                       move_sequence) + DockTools (side effects).
+│   │   │                       pi-kt loop) + DockToolsAdapter (set_face/move_body/
+│   │   │                       gesture/move_sequence) + DockTools (side effects).
 │   │   │                       Interaction spec: ../UX.md.
+│   │   ├── llm/                Dock LLM transport: DockStreamFn (Ollama NDJSON +
+│   │   │                       OpenAI SSE), DockToolSchemas, DockPrompt,
+│   │   │                       SafeCompute. :bench compiles this same dir.
 │   │   ├── ui/                 Compose face + body badge + dev panel.
 │   │   └── ...                 perception, audio, UI wiring.
 │   ├── agent-core/             :agent-core — pure-JVM Gradle module: the pi-kt
 │   │                           agentic runtime (loop + tools + sessions),
-│   │                           vendored. No Android/Ktor; reusable. The app's
-│   │                           DockStreamFn/DockToolsAdapter depend on it.
+│   │                           vendored. No Android/Ktor; reusable.
+│   ├── bench/                  :bench — runnable LLM benchmark harness (pure-JVM).
+│   │                           Drives models through the real transport + tool
+│   │                           schemas. See app/bench/README.md.
 │   └── local.properties        BODY_HOST=<ip>:17317 — points the app at
 │                               either the sim or the live ESP32.
 │
@@ -83,11 +87,8 @@ node-dock/
 │   │                           XIAO ESP32-S3 + 4× MG90S + external 5V,
 │   │                           NOT the ESP32-WROOM / PCA9685 / mixed-servo
 │   │                           set listed in this file. Banner inside doc.
-│   └── 3dprinting/             OpenSCAD source + STL exports.
-│       └── PLAN.md             3D-print design notes (active).
-│
-└── llm/                        On-device LLM adapter design + Koog wiring.
-    └── README.md               LiteRT-LM adapter for Koog (not yet built).
+    └── 3dprinting/             OpenSCAD source + STL exports.
+        └── PLAN.md             3D-print design notes (active).
 ```
 
 ## State summary
@@ -135,6 +136,6 @@ node-dock/
 
 Lowercase prefix (`node-dock/body:`, `bodylink:`, `node-dock/app:`)
 + em-dash + concise summary. Body has bullets. Trailer:
-`Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>`.
+`Co-Authored-By: Claude <noreply@anthropic.com>`.
 
 See `git log --oneline` for examples.

@@ -2,7 +2,7 @@
 
 Working plan for the Android app at `node-dock/app/`. Source of truth for what's being built, in what order, and what's deferred.
 
-**Last updated:** 2026-05-20
+**Last updated:** 2026-06-02
 
 ---
 
@@ -14,13 +14,13 @@ Working plan for the Android app at `node-dock/app/`. Source of truth for what's
 - **minSdk:** 26 (Android 8.0) · **targetSdk:** 35 (Android 15).
 - **JDK:** 21 (already installed via Temurin).
 - **Dev target:** AVD (Pixel 3a API 35 arm64) **and** physical Android device — both verified during the BodyLink integration work. Use `10.0.2.2:<port>` from AVD or the laptop's LAN IP from a real phone.
-- **LLM endpoint:** **Ollama local first** (configured via `OLLAMA_BASE_URL` + `OLLAMA_MODEL` in `local.properties`; current default `glm-4.7-flash:latest`), with **OpenRouter fallback chain** when Ollama is empty/unreachable. Streaming.
-- **Agent framework:** Koog (JetBrains, Apache 2.0, KMP, Android-first), Kotlin 2.3.21, Koog 0.8.0.
+- **LLM endpoint:** **Ollama local first** (configured via `OLLAMA_BASE_URL` + `OLLAMA_MODEL` in `local.properties`), with **OpenRouter fallback chain** when Ollama is empty/unreachable. Streaming. Model comparison + current pick: [bench/README.md](bench/README.md).
+- **Agent framework:** vendored **pi-kt** agentic loop in the `:agent-core` Gradle module (pure-JVM: loop + tools + sessions). The app's `DockAgent` is a thin facade over it; `DockStreamFn` (in `dev/orbit/dock/llm/`) is the transport. (Koog was evaluated and dropped — the pi-kt loop is lighter and Android-free.)
 - **STT:** Android `SpeechRecognizer` (Google on-device) for real devices; **dev bypass via text input** for emulator + scripted testing.
 - **TTS:** Android `TextToSpeech` (sentence-boundary chunked), also renders as subtitle on face.
 - **Camera + gaze:** MediaPipe FaceMesh, works in emulator via AVD `Webcam0` and on physical front camera.
-- **Memory:** deferred — revisit Koog's built-in memory features when needed.
-- **Body / BodyLink:** firmware shipped end-to-end on hardware; Kotlin Brain client migration to the redesigned protocol is the open item (see M7 + [../../bodylink/HANDOVER.md](../../bodylink/HANDOVER.md)).
+- **Memory:** deferred — add a persistence/recall layer when needed (see the backlog in `../../docs/TODO.md` §5).
+- **Body / BodyLink:** firmware shipped end-to-end on hardware; Kotlin Brain client migration to the redesigned protocol is the open item (see M7 + [../bodylink/HANDOVER.md](../bodylink/HANDOVER.md)).
 - **Proactive triggers, inter-node, plat:** v2.
 
 ---
@@ -130,15 +130,12 @@ Tested extensively on Pixel 3a API 35 AVD with `webcam0` mic + macOS Android Stu
 
 The plumbing on our side is correct (5 instrumented tests confirm `RecognitionListener` callbacks → bus events). The AVD's STT engine is the bottleneck.
 
-### M4 — Koog agent + Ollama / OpenRouter + TTS — DONE
-- [x] Bumped Kotlin 2.0.21 → 2.3.21 (Koog 0.8.0 needs 2.2+; AGP 8.7.3 + Compose Compiler 1.5.15 still happy)
-- [x] Added `ai.koog:koog-agents:0.8.0` + `kotlinx-serialization 1.8.1` + serialization plugin
-- [x] Packaging-resource exclusions for the ~50 META-INF conflicts Koog brings in
+### M4 — agent loop + Ollama / OpenRouter + TTS — DONE
 - [x] OpenRouter API key from `local.properties` → `BuildConfig.OPENROUTER_API_KEY`
-- [x] **Ollama local-first**: `OLLAMA_BASE_URL` + `OLLAMA_MODEL` in `local.properties` → `BuildConfig.*`. When set, DockAgent tries Ollama first; when empty/unreachable falls back to OpenRouter. Current default: `glm-4.7-flash:latest` (25 GB, 100% GPU, ~30 ms/token).
-- [x] `DockAgent` wrapper — uses Koog's executors + AIAgent
-- [x] **OpenRouter free-model fallback chain** — DeepSeek v4 flash → Gemma 4 31b → Nemotron-3-super-120b → MiniMax M2.5 → Qwen3 Next 80b → GLM-4.5-air. When one returns 429/404, try the next.
-- [x] `DockTools` — nine Koog `@Tool` Kotlin functions:
+- [x] **Ollama local-first**: `OLLAMA_BASE_URL` + `OLLAMA_MODEL` in `local.properties` → `BuildConfig.*`. When set, DockAgent tries Ollama first; when empty/unreachable falls back to OpenRouter.
+- [x] `DockAgent` — thin facade over the `:agent-core` pi-kt loop; `DockStreamFn` does the Ollama/OpenAI transport.
+- [x] **OpenRouter free-model fallback chain** — when one returns 429/404, try the next.
+- [x] `DockTools` — the dock's tool functions:
   - `speak(text)` — fires TTS + face speaking state + subtitle
   - `showSubtitle(text)` — push to subtitle band only
   - `setFace(expression)` — neutral/happy/curious/concerned/surprised/sleepy
@@ -159,7 +156,7 @@ The plumbing on our side is correct (5 instrumented tests confirm `RecognitionLi
   - Face turned brighter blue (Speaking state)
   - Subtitle rendered the answer in bright dock-blue
   - Android TTS spoke it through the laptop speakers
-- [ ] **Hooks: Koog feature/event handler** for richer logging — deferred (text logging via Timber already works)
+- [ ] **Richer agent-loop event logging/metrics** — deferred (text logging via Timber already works)
 - [ ] **Streaming TTS (sentence-chunked from token deltas)** — deferred. Current path is one-utterance-per-tool-call which is naturally sentence-sized given the tool design
 
 ### M5 — Camera + gaze tracking (works in emulator)
@@ -190,12 +187,12 @@ Brain-side Kotlin client + LLM tools that drive a connected Body. Firmware
 shipped end-to-end on hardware (2026-05-27). Protocol redesigned in the
 same window — Kotlin side needs catch-up work.
 
-Live: [../../bodylink/](../../bodylink/) (spec + sim) and [../../body-firmware/dock_body_v0/](../../body-firmware/dock_body_v0/) (firmware).
+Live: [../bodylink/](../bodylink/) (spec + sim) and [../body-firmware/dock_body_v0/](../body-firmware/dock_body_v0/) (firmware).
 
-- [x] **Design doc** — [../../bodylink/DESIGN.md](../../bodylink/DESIGN.md): single `set_target` motion command (per-part idempotent; used for both intent + heartbeat), capability profile (no named states on body), no body→brain state stream.
+- [x] **Design doc** — [../bodylink/DESIGN.md](../bodylink/DESIGN.md): single `set_target` motion command (per-part idempotent; used for both intent + heartbeat), capability profile (no named states on body), no body→brain state stream.
 - [x] **MuJoCo sim** — Python `bodylink_sim.py` speaks the current protocol and drives the dock humanoid model.
-- [x] **Hardware-aligned model** — 4 joints (foot_yaw ±90°, neck_pitch, shoulder_{left,right}_pitch — lateral abduction). Bench setup uses 4× MG90S on XIAO ESP32-S3 (BOM at [../../hardware/](../../hardware/) is speculative and being rewritten).
-- [x] **ESP-IDF firmware shipped** — [../../body-firmware/dock_body_v0/](../../body-firmware/dock_body_v0/). Native esp_wifi + esp_http_server + mcpwm + cJSON. Joins `HackersWebAP`, accepts `set_target`, drives MG90S servos. Verified end-to-end on hardware.
+- [x] **Hardware-aligned model** — 4 joints (foot_yaw ±90°, neck_pitch, shoulder_{left,right}_pitch — lateral abduction). Bench setup uses 4× MG90S on XIAO ESP32-S3 (BOM at [../hardware/](../hardware/) is speculative and being rewritten).
+- [x] **ESP-IDF firmware shipped** — [../body-firmware/dock_body_v0/](../body-firmware/dock_body_v0/). Native esp_wifi + esp_http_server + mcpwm + cJSON. Joins `HackersWebAP`, accepts `set_target`, drives MG90S servos. Verified end-to-end on hardware.
 - [x] `dev.orbit.dock.body.BodyLinkComms` — ktor-WebSocket client (older protocol; needs migration per HANDOVER.md).
 - [x] `BODY_HOST` in `local.properties` → `BuildConfig.BODY_HOST`. Empty disables; otherwise connect to `ws://<host>/`.
 - [x] 4 part-specific LLM tools (`setFootState`/`setHeadState`/`setLeftArmState`/`setRightArmState`) — always registered; politely return "no body connected" when the link is down so the LLM stops calling them.
@@ -205,7 +202,7 @@ Live: [../../bodylink/](../../bodylink/) (spec + sim) and [../../body-firmware/d
   - "tilt your head back and raise your left arm" → MuJoCo viewer + AVD body badge agree
   - "spread both arms wide" → both arms `out` (T-pose) ✓
   - "turn left" → foot_yaw left ✓
-- [ ] **Kotlin protocol migration** — drop `set_state`/state-stream types, add capability decoding, switch to `set_target` for both intent and periodic heartbeat, re-enable `pingIntervalMillis = 2000L`, add brain-side state catalog (asset + override). Full T-list in [../../bodylink/HANDOVER.md](../../bodylink/HANDOVER.md) §1-§5.
+- [ ] **Kotlin protocol migration** — drop `set_state`/state-stream types, add capability decoding, switch to `set_target` for both intent and periodic heartbeat, re-enable `pingIntervalMillis = 2000L`, add brain-side state catalog (asset + override). Full T-list in [../bodylink/HANDOVER.md](../bodylink/HANDOVER.md) §1-§5.
 - [ ] **Re-verify end-to-end** against the live firmware (test_body.sh proves the wire works today).
 - [ ] **Stage 3:** Compose schematic robot canvas (live stick-figure drawn from brain-side intent — UI now reads from intent rather than reported state).
 - [ ] **Stage 4:** Kotlin instrumented integration test against the sim.
@@ -217,7 +214,7 @@ Live: [../../bodylink/](../../bodylink/) (spec + sim) and [../../body-firmware/d
 
 - [ ] Permissions onboarding wizard — first-run flow walking through all special-access grants from dock README §9
 - [ ] Foreground service hardening — battery optimization exemption flow, restart on boot
-- [ ] Logging + metrics — Timber + Koog hooks + on-disk audit log + simple Settings screen to view
+- [ ] Logging + metrics — Timber + agent-loop event hooks + on-disk audit log + simple Settings screen to view
 - [ ] Settings screen — toggle privacy mode, view audit log, change wake word, change model, API keys
 - [ ] CI (GitHub Actions later) — lint, unit tests, build APK
 - [ ] Debug menu (long-press status bar) — switch model, toggle STT bypass, force face state, inject fake events
@@ -251,7 +248,8 @@ node-dock/app/
         │   │   │   ├── widgets/          ← Left/right widget slots
         │   │   │   └── theme/
         │   │   ├── perception/           ← mic, VAD, wake word, camera, gaze
-        │   │   ├── agent/                ← Koog wiring, tools, prompts
+        │   │   ├── agent/                ← DockAgent (pi-kt facade), tools
+        │   │   ├── llm/                  ← transport, schemas, prompt
         │   │   ├── tts/                  ← streaming TTS chunker
         │   │   ├── stt/                  ← whisper.cpp wrapper + dev text bar
         │   │   └── tools/                ← search, calendar, slack, illustrate, imagegen
@@ -265,7 +263,6 @@ node-dock/app/
 ## Risks + mitigations
 
 - **whisper.cpp NDK build complexity** — start with Android `SpeechRecognizer` as M3 fallback; whisper.cpp later if quality needs it. Or stick to text bypass for v1.
-- **Koog 0.7.x API churn** — pin a version; expect ~2 hour cleanup per major bump.
 - **OpenRouter rate limits / cost during dev** — set a budget cap; default to cheap model (claude-haiku, deepseek) during iteration.
 - **AVD camera + mic glitches on Apple Silicon** — known to be slightly flaky; have a "use static test face image / pre-recorded audio" path for CI / headless dev.
 - **Compose Preview performance for complex face animation** — fine for static frames, may not render full animation smoothly. Acceptable; we'll just run the app for animation tuning.
@@ -280,7 +277,7 @@ shipped end-to-end on hardware. Brain side is **mid-migration** — the
 shipped Kotlin client speaks the previous BodyLink protocol; the
 firmware speaks the redesigned protocol (single `set_target` command,
 capability profile, no body→brain state stream). The full Kotlin
-catch-up plan is in [../../bodylink/HANDOVER.md](../../bodylink/HANDOVER.md).
+catch-up plan is in [../bodylink/HANDOVER.md](../bodylink/HANDOVER.md).
 
 **State:** APK still builds clean against the old protocol. Until the
 T-items in HANDOVER.md are done, the app will not handshake successfully
@@ -292,7 +289,7 @@ mode rejects the new fields).
    types, domain model, BodyLinkComms re-wiring with periodic
    `set_target` heartbeat, brain-side state catalog asset, LLM tool
    updates). Verify handshake + drive against the live firmware using
-   `../../body-firmware/dock_body_v0/scripts/test_body.sh` as a
+   `../body-firmware/dock_body_v0/scripts/test_body.sh` as a
    reference client.
 2. **Rewrite the sim CLI + integration tests** — T6-T7 from HANDOVER.md §3.
 3. **M7 stage 3** — schematic Compose robot canvas on the main screen

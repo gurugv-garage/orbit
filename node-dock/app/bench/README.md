@@ -1,9 +1,9 @@
 # :bench — dock-LLM benchmark harness
 
 A runnable "test suite for models". It drives each model through the dock's REAL
-request path — the shared [`:dock-llm`](../dock-llm) transport + the real tool
-schemas ([`DockToolSchemas`](../dock-llm/src/main/kotlin/dev/orbit/dock/llm/DockToolSchemas.kt))
-+ the real system prompt ([`DockPrompt`](../dock-llm/src/main/kotlin/dev/orbit/dock/llm/DockPrompt.kt))
+request path — the dock LLM transport + the real tool schemas
+([`DockToolSchemas`](../app/src/main/kotlin/dev/orbit/dock/llm/DockToolSchemas.kt))
++ the real system prompt ([`DockPrompt`](../app/src/main/kotlin/dev/orbit/dock/llm/DockPrompt.kt))
 — N times per case, scores objective predicates + latency percentiles, and writes
 a results JSON the HTML viewer renders as a model×case matrix. Pure-JVM: no
 Android, no emulator. Tools are no-ops ([`BenchTools`](src/main/kotlin/dev/orbit/dock/bench/BenchTools.kt))
@@ -145,6 +145,18 @@ llama.cpp AND OpenRouter). `vision:false` makes image cases skip for that model.
 Two real OpenRouter gotchas the harness surfaces as HTTP errors: a model may have
 no vision (`does not support image input`) or no tool-calling provider
 (`No endpoints found that support tool use`) — pick full-capability cloud models.
+
+### Disabling chain-of-thought (latency)
+
+Thinking models pay a big latency tax on every turn — disable CoT for the
+real-time dock. The knob differs by backend (both wired into the transport):
+
+- **Ollama** (`gemma4:e2b`): `think: false`. (Ollama bug: `think:false` can drop
+  the schema on some models — fine here since we use tool-calling, not a forced
+  output format.)
+- **llama.cpp openai** (`Qwen3.6-35B`): `chat_template_kwargs:{enable_thinking:false}`
+  — verified to cut warm latency ~6s → ~1.8s. `reasoning_effort:"none"` did NOT
+  work for this model.
 
 ## View
 

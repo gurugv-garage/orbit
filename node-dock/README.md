@@ -55,7 +55,7 @@ Hardware lessons (the painful ones, in case they bite again): [body-firmware/doc
 ┌──────────────────────────────────────────────────────────────┐
 │                  Android phone (one process)                 │
 │                                                              │
-│   Face UI ── Koog agent ── LLM (Anthropic / local Gemma)     │
+│   Face UI ── agent loop (:agent-core) ── LLM (Ollama/cloud) │
 │                  │                                           │
 │                  ├── Perception: mic, VAD, wake-word,        │
 │                  │   camera, FaceMesh, touch                 │
@@ -86,7 +86,7 @@ Hardware lessons (the painful ones, in case they bite again): [body-firmware/doc
 | change the firmware | [body-firmware/dock_body_v0/progress.md](body-firmware/dock_body_v0/progress.md) |
 | work on the Android app (face, agent, LLM, perception) | [app/PLAN.md](app/PLAN.md) |
 | build / wire / 3D-print the physical dock | [hardware/README.md](hardware/README.md) |
-| LLM adapter / Koog wiring design | [llm/README.md](llm/README.md) |
+| compare LLMs as the dock brain (runnable harness) | [app/bench/README.md](app/bench/README.md) |
 
 ## v1 scope (the dock, end-to-end)
 
@@ -141,11 +141,10 @@ comes to revisit, work from a clean spec rather than digging in git.
 node-dock/
 ├── README.md            ← you are here
 ├── STRUCTURE.md         project map
-├── app/                 Android dock app (Kotlin, Compose)
+├── app/                 Android dock app (Kotlin, Compose) + bench harness
 ├── bodylink/            protocol spec, sim, handover
 ├── body-firmware/       ESP32 firmware project(s)
-├── hardware/            BOM, wiring, 3D-print
-└── llm/                 LLM adapter design
+└── hardware/            BOM, wiring, 3D-print
 ```
 
 — see [STRUCTURE.md](STRUCTURE.md) for the full map.
