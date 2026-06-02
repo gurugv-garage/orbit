@@ -35,13 +35,17 @@ cp local.properties.template local.properties   # then fill in SDK path + keys
 Gradle modules (all under `node-dock/app/`, self-contained — no path reaches
 outside this tree):
 - **`:app`** — the Android app (Compose UI, perception, audio, body comms).
+  Also home to the **dock LLM transport** — `DockStreamFn` (Ollama NDJSON +
+  OpenAI SSE), tool schemas (`DockToolSchemas`), system prompt (`DockPrompt`),
+  `SafeCompute` — under `app/src/main/kotlin/dev/orbit/dock/llm/`.
 - **`:agent-core`** — pure-JVM agentic runtime (vendored pi-kt: loop + tools +
   sessions). No Android/Ktor. Reusable.
-- **`:dock-llm`** — pure-JVM LLM transport: `DockStreamFn` (Ollama NDJSON +
-  OpenAI SSE), tool schemas (`DockToolSchemas`), system prompt (`DockPrompt`),
-  `SafeCompute`. Shared by `:app` and `:bench` so there's one model-facing
-  surface (no drift).
 - **`:bench`** — runnable LLM benchmark harness (see `node-dock/app/bench/`).
+  Can't depend on the Android `:app`, so it **compiles the transport's source
+  dir directly** (`kotlin.srcDir(app/src/main/.../llm)` in its build file) —
+  one copy of the model-facing surface, shared by app + bench, no drift. The
+  transport's unit tests live in `bench/src/test/.../llm/` (bench runs JUnit5;
+  `:app` is JUnit4).
 
 ### Firmware (node-dock/body-firmware/dock_body_v0)
 

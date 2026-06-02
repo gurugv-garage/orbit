@@ -150,7 +150,9 @@ android {
 
 dependencies {
     implementation(project(":agent-core"))  // pure-JVM agentic runtime (vendored pi-kt)
-    implementation(project(":dock-llm"))     // pure-JVM dock LLM transport (shared with :bench)
+    // dock LLM transport (DockStreamFn/DockPrompt/DockToolSchemas/SafeCompute)
+    // lives in src/main/kotlin/dev/orbit/dock/llm; :bench compiles that same
+    // source dir directly (it can't depend on this Android module).
     implementation(libs.core.ktx)
     implementation(libs.lifecycle.runtime.ktx)
     implementation(libs.lifecycle.runtime.compose)
