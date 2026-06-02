@@ -1,15 +1,16 @@
 # Dock interaction UX — the agentic turn
 
-How the dock should *behave* during one response, now that a turn is a
-multi-step **tool-calling loop** (pi-kt `Agent`/`AgentLoop` in `:agent-core`),
-not a single forced-JSON POST. This is the contract the implementation serves.
+How the dock should *behave* during one **turn** — the dock's complete response
+to one trigger, which is a multi-**step** tool-calling loop (each step = one LLM
+call + its tools), not a single forced-JSON POST. This is the contract the
+implementation serves.
 
 **Living document — optimize for a natural feel, iterate freely.** Tunables are
 called out explicitly so changing the feel is cheap. This is the *behavior /
-feel* spec; for the *mechanics* it serves — the turn lifecycle, the state
-machines (FaceState / AgentState / mic / AutoRelisten + tap rules), how
-`DockAgent` drives the loop and runs speech + motion in parallel — see
-[TURN.md](TURN.md). Read that first; don't duplicate it here.
+feel* spec; for the *mechanics* it serves — the turn lifecycle, the
+[terminology](TURN.md#terminology) (session / turn / step / LLM call), the state
+machines, how `DockAgent` drives the loop and runs speech + motion in parallel —
+see [TURN.md](TURN.md). Read that first; don't duplicate it here.
 
 ---
 
@@ -93,9 +94,9 @@ line/pill shows it in real time as each tool runs, then returns to Speaking.
 
 ---
 
-## Latency & fallbacks (multi-round-trip reality)
+## Latency & fallbacks (multi-step reality)
 
-The agentic loop can take several model round-trips (model → tool → model …).
+A turn can take several **steps** (each step = model → tool → model again).
 Rules so gaps feel intentional, not broken:
 - During any model gap > ~400ms with nothing spoken yet → show `Thinking` (dots),
   never a frozen blank.
@@ -132,5 +133,5 @@ Per "prototype then judge" — drive via `adb … SAY`, watch logcat + the dock:
 - "what do you see" → vision turn (image attached), describes the scene.
 - body offline + "nod" → dock *reacts* ("I can't move right now"), not silent/hung.
 - tap mid-speech → barge-in; long-press → hard stop.
-- measure per-turn latency; if multi-round-trip drags, cut `MAX_TURNS` / add a
-  single-step fast-path for trivial requests.
+- measure per-turn latency; if multi-step turns drag, consider a step-count cap
+  (none today — only `TURN_TIMEOUT`) or a single-step fast-path for trivial requests.

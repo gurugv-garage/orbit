@@ -31,12 +31,16 @@ import timber.log.Timber
 /**
  * The dock's brain — a thin facade over the pi-kt agentic runtime (`:agent-core`).
  *
- * One user utterance → `Agent.prompt` drives a real tool-calling loop: the model
- * streams spoken prose AND emits `move_body` / `set_face` tool calls, the loop
- * executes them ([DockToolsAdapter]), feeds results back, and continues until it
- * stops calling tools. We translate the loop's [AgentEvent]s into the dock's UX
- * (see UX.md): streamed sentence-by-sentence TTS, live status
- * (Waiting→Thinking→Speaking + per-action), talk-while-moving, multi-step.
+ * One trigger (a user utterance today) → one **turn**: `Agent.prompt` drives a
+ * tool-calling loop where the model streams spoken prose AND emits `move_body` /
+ * `set_face` tool calls, the loop executes them ([DockToolsAdapter]), feeds
+ * results back, and continues until it stops calling tools. Each LLM call + its
+ * tools is a **step**; a turn is 1+ steps. (Terminology: see TURN.md#terminology.
+ * Note `:agent-core` confusingly names a *step* `AgentEvent.TurnStart/End` — the
+ * dock's "turn" is its whole `prompt()` run.) We translate the loop's
+ * [AgentEvent]s into the dock's UX (see TURN.md / UX.md): streamed
+ * sentence-by-sentence TTS, live status (Waiting→Thinking→Speaking + per-action),
+ * talk-while-moving.
  *
  * **Speak and act run in parallel.** Prose deltas → `tools.speakSentence` (TTS
  * thread); tool calls → `DockTools` body scope (fire-and-forget). Neither awaits

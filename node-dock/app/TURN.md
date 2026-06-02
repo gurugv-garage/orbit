@@ -38,11 +38,32 @@ DockAgent streams prose to **DockTts** (`speak()`) and fires body/face tools;
 
 ---
 
+## Terminology
+
+Four nested concepts. **Session ⊃ Turns ⊃ Steps ⊃ (one LLM call each).**
+
+| Term | Definition |
+|---|---|
+| **Session** | A set of turns that share one **message history** (one conversational context). Today a session spans from app launch until the next barge-in/long-press `stop()` (which calls `agent.reset()` and clears the history); normal turns accumulate into it. The boundary may change later (e.g. idle timeout, explicit "new chat"). *Independent of the mic.* |
+| **Trigger** | The event that **starts a turn**. Today: the user **speaks** or **types**. Later: a **heartbeat** / proactive timer, or a cross-device event. |
+| **Turn** | One trigger → the dock's **complete response** (prose + motion), ending when the model stops calling tools. This is what `DockAgent.respond()` / `runTurn()` does — the dock's unit of work. |
+| **Step** | One **LLM call plus the tool executions it triggers**, within a turn. A turn has **1 or more** steps: step N+1 happens only because step N's response contained tool calls. (This is `:agent-core`'s internal "turn" — `TurnStart`/`TurnEnd`.) |
+| **LLM call** | A single request/response to the model (`streamAssistantResponse`). Exactly **one per step**. |
+
+So a turn that uses tools makes **multiple LLM calls**: `LLM calls per turn = (steps that emitted tool calls) + 1`. "What's the capital of France?" → 1 step, 1 call. "Say hi and look left" → ~2 steps (speak + tool, then a closing line), ~2 calls. There is **no per-turn step cap** — the only bound is `TURN_TIMEOUT_MS` (60s wall-clock); see *Superseding, stopping, failing*.
+
+> **Disambiguation:** "step" here = one LLM call (+ its tools) within a turn. The
+> word also appears in `move_sequence` for a **motion step** (one servo move);
+> context distinguishes them. The mic's "listening window" (one armed
+> `SpeechRecognizer` shot) is a separate perception concept — *not* a Session.
+
+---
+
 ## The happy path (voice turn, body connected)
 
 1. **User taps** the screen while Idle → `DockScreen` emits `WakeWord("(tap)")`.
-2. **Pipeline** opens a listening session, hands the mic to `SpeechRecognizer`,
-   emits `SttListening(armed=true)`. Face → **Listening**.
+2. **Pipeline** opens a listening window (one `SpeechRecognizer` shot), hands it
+   the mic, emits `SttListening(armed=true)`. Face → **Listening**.
 3. **User speaks.** SR returns a final transcript → `Transcript(isFinal=true)`.
    - Pipeline ends the session, records it as a *voice turn* (`AutoRelisten.onVoiceTranscript`).
    - `PerceptionWiring.onUserUtterance` → `DockAgent.respond(text)`.
@@ -241,9 +262,14 @@ Owner: [`DockAgent`](app/src/main/kotlin/dev/orbit/dock/agent/DockAgent.kt). Sur
 
 (The supersede / stop / fail guarantees are in *Superseding, stopping, failing* above.)
 
-### 3 — Listening session (the mic)
+### 3 — Listening window (the mic)
 Owner: [`PerceptionPipeline`](app/src/main/kotlin/dev/orbit/dock/perception/PerceptionPipeline.kt).
-`SpeechRecognizer` is **one-shot**, so a "session" is a single armed shot.
+`SpeechRecognizer` is **one-shot**, so a listening window is a single armed shot.
+
+> The perception code calls this a "session" (`sessionActive`, `onSessionStarted`,
+> `session_ended`) — a **mic listening window**, *not* the conversational
+> [Session](#terminology) (shared message history). They're orthogonal; the name
+> overlap is historical.
 
 ```
             WakeWord                 Transcript(final)
