@@ -20,23 +20,22 @@ The implementation is [`agent/DockAgent.kt`](app/src/main/kotlin/dev/orbit/dock/
 ## The abstract piece: `:agent-core` (treat as a black box)
 
 The dock does **not** implement the tool-calling loop itself. It delegates to a
-vendored, dock-agnostic runtime (pi-kt) in the `:agent-core` Gradle module.
-Treat it as a component with this contract:
+vendored, dock-agnostic runtime (pi-kt) in the `:agent-core` Gradle module. This
+doc only relies on its **interface** — what you call and what you get back — not
+how it works inside:
 
-- You construct an `Agent` with: a system prompt, a `Model`, a list of **tools**,
-  and a **`StreamFn`** (the thing that actually talks to an LLM endpoint).
-- You call `agent.prompt(userMessage)`. The agent runs a loop:
-  **ask the model → if it emitted tool calls, execute them → feed results back →
-  ask again → … → stop when the model stops calling tools.**
-- While it runs, it emits a stream of **`AgentEvent`s** you subscribe to
-  (`MessageUpdate` for streamed prose deltas, `ToolExecutionStart/End`,
-  `AgentEnd`, …).
-- It's **one run at a time**. A second `prompt` while one is active throws
-  `AgentBusyException` (the dock works around this — see *Superseding* below).
+- **In:** you configure it (with a prompt, a model, tools, and a transport — the
+  dock supplies all four; see the next section), then call `prompt(userMessage)`.
+- **Out:** while it runs, it emits a stream of **`AgentEvent`s** you subscribe to
+  (`MessageUpdate`, `ToolExecutionStart/End`, `AgentEnd`, …). It calls the tools
+  you gave it and stops on its own.
+- **Constraint:** it's **one run at a time** — a second `prompt` while one is
+  active throws `AgentBusyException` (the dock handles this — see *Superseding*).
 
-That's all the dock assumes. *How* the loop is implemented (its `while`-loop,
-context shape, event ordering) lives in `:agent-core` and is out of scope here.
-The dock's job is to **wire it up** and **translate its events into UX**.
+Everything else — the loop algorithm, how it decides to keep going, context
+shape, event ordering — is `:agent-core`'s business and out of scope here. The
+dock's job is to **supply the configuration** and **translate the events into
+UX**.
 
 ---
 
