@@ -43,24 +43,6 @@ outside this tree):
   surface (no drift).
 - **`:bench`** — runnable LLM benchmark harness (see `node-dock/app/bench/`).
 
-### The dock's brain (LLM)
-
-Default model is **gemini-2.5-flash** (via OpenRouter, or "gemini-direct" via
-Google's OpenAI-compat endpoint). The model is switchable at runtime via an
-in-app picker (`ModelCatalog`) — the picker offers only the **benchmark-verified**
-models. Config (default model, keys) comes from `local.properties` →
-`BuildConfig`. Keys: `OPENROUTER_API_KEY` and/or `GEMINI_API_KEY`.
-
-### Benchmark (`node-dock/app/bench/`) — "test suite for models"
-
-`./gradlew :bench:run --args="..."` drives each model through the dock's REAL
-request path N times per case, scores objective predicates + latency, and writes
-named **snapshots** (embedding the exact system prompt) for a static HTML matrix
-viewer with two badges per cell (pass-rate + a Claude-assigned quality grade).
-Cases are chosen to DISCRIMINATE, not to cover. See `bench/README.md` for the
-full analysis. Headline: gemini-2.5-flash is the one that's both correct AND fast
-enough for a real-time dock; the bigger "smart" vision models lose on latency.
-
 ### Firmware (node-dock/body-firmware/dock_body_v0)
 
 ESP32 (Seeed XIAO) servo controller, **PlatformIO** (ESP-IDF/Arduino). Build/flash
