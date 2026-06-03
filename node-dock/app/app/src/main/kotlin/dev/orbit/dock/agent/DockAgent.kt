@@ -363,6 +363,23 @@ class DockAgent(
     internal fun setSpeaking(speaking: Boolean) {
         if (speaking) _state.value = AgentState.Speaking
         else if (_state.value is AgentState.Speaking) _state.value = AgentState.Idle
+        // ship a speech-phase marker to obs (SpeakStart/SpeakEnd) so the timeline
+        // can show when the dock was actually talking, separate from LLM/tools.
+        shipObsMarker(if (speaking) "SpeakStart" else "SpeakEnd")
+    }
+
+    /** Emit a synthetic obs event (not an agent-core AgentEvent) on the current
+     *  turn — used for speech-phase markers the agent loop doesn't model. */
+    private fun shipObsMarker(kind: String) {
+        val link = stationLink ?: return
+        if (obsTurnId.isEmpty()) return
+        link.emitAgentEvent(buildJsonObject {
+            put("sessionId", obsSessionId)
+            put("turnId", obsTurnId)
+            put("seq", obsSeq++)
+            put("kind", kind)
+            put("ts", System.currentTimeMillis())
+        })
     }
 
     fun shutdown() {

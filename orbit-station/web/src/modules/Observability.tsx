@@ -5,12 +5,13 @@ import type { AgentEventDto } from '../lib/protocol';
 
 // ── view models (mirror the server store) ────────────────────────────────────
 interface ToolVM { id: string; name: string; args?: unknown; result?: string; isError?: boolean; startedAt?: number; endedAt?: number }
-interface StepVM { idx: number; model?: string; stopReason?: string; text?: string; tools: ToolVM[]; inTok?: number; outTok?: number; startedAt?: number; endedAt?: number }
-interface TurnVM { id: string; sessionId: string; source?: string; prompt?: string; startedAt: number; endedAt?: number; ended: boolean; steps: StepVM[] }
+interface StepVM { idx: number; model?: string; stopReason?: string; text?: string; tools: ToolVM[]; inTok?: number; outTok?: number; startedAt?: number; messageStartedAt?: number; endedAt?: number }
+interface SpeechVM { startedAt: number; endedAt?: number }
+interface TurnVM { id: string; sessionId: string; source?: string; prompt?: string; startedAt: number; endedAt?: number; ended: boolean; steps: StepVM[]; speech: SpeechVM[] }
 
 interface StoredTool { toolCallId: string; toolName: string; args?: unknown; result?: string; isError?: boolean; startedAt?: number; endedAt?: number }
-interface StoredStep { index: number; model?: string; stopReason?: string; text?: string; tools: StoredTool[]; usage?: { inputTokens?: number; outputTokens?: number }; startedAt?: number; endedAt?: number }
-interface StoredTurn { turnId: string; sessionId: string; prompt?: string; startedAt: number; endedAt?: number; steps: StoredStep[] }
+interface StoredStep { index: number; model?: string; stopReason?: string; text?: string; tools: StoredTool[]; usage?: { inputTokens?: number; outputTokens?: number }; startedAt?: number; messageStartedAt?: number; endedAt?: number }
+interface StoredTurn { turnId: string; sessionId: string; prompt?: string; speech?: { startedAt: number; endedAt?: number }[]; startedAt: number; endedAt?: number; steps: StoredStep[] }
 interface StoredSession { sessionId: string; source?: string; turns: StoredTurn[] }
 interface SessionSummary { sessionId: string; source?: string }
 
@@ -60,7 +61,7 @@ export function Observability() {
       if (i == null) {
         i = next.length;
         turnIndex.current.set(ev.turnId, i);
-        next.push({ id: ev.turnId, sessionId: ev.sessionId, startedAt: ev.ts, ended: false, steps: [] });
+        next.push({ id: ev.turnId, sessionId: ev.sessionId, startedAt: ev.ts, ended: false, steps: [], speech: [] });
       }
       const turn = { ...next[i]!, steps: next[i]!.steps.slice() };
       applyEvent(turn, ev);
@@ -180,39 +181,56 @@ function TurnTimeline({ turn }: { turn: TurnVM }) {
         <div className="obs-msg user"><span className="obs-msg-who">user</span><span className="obs-msg-text">{turn.prompt}</span></div>
       )}
 
-      {/* Timeline: one labeled lane per step (and nested tool call). Each lane
-          shows WHAT it is, its bar, and clock-time + duration inline. */}
-      <div className="obs-lanes">
-        <div className="obs-lane axis">
-          <span className="obs-lane-label" />
-          <span className="obs-lane-track"><span className="obs-axis-start">{clockMs(turn.startedAt)}</span><span className="obs-axis-end">+{fmtMs(total)}</span></span>
-          <span className="obs-lane-when" />
+      {/* THREE parallel lanes on one shared time axis: LLM · TOOLS · SPEECH. */}
+      <div className="obs-tl">
+        <div className="obs-tl-row axis">
+          <span className="obs-tl-name" />
+          <span className="obs-tl-track"><span className="obs-axis-l">{clockMs(turn.startedAt)}</span><span className="obs-axis-r">+{fmtMs(total)}</span></span>
         </div>
-        {turn.steps.map((s) => {
-          const a = (s.startedAt ?? t0) - t0;
-          const b = (s.endedAt ?? t0 + total) - t0;
-          const kind = s.tools.length ? 'tool' : 'speak';
-          return (
-            <div key={`lane${s.idx}`}>
-              <div className="obs-lane">
-                <span className={`obs-lane-label ${kind}`}>step {s.idx} · {kind === 'tool' ? 'tool call' : 'reply'}</span>
-                <span className="obs-lane-track"><Bar start={a} len={b - a} total={total} cls={`step ${kind}`} title={`step ${s.idx}`} /></span>
-                <span className="obs-lane-when mono">@{fmtMs(a)} · {fmtMs(b - a)}</span>
-              </div>
-              {s.tools.map((tc) => {
-                const ta = (tc.startedAt ?? t0) - t0;
-                const tw = (tc.endedAt ?? tc.startedAt ?? t0) - (tc.startedAt ?? t0);
-                return (
-                  <div key={tc.id} className="obs-lane tool">
-                    <span className={`obs-lane-label tool${tc.isError ? ' err' : ''}`}>⚙ {tc.name}</span>
-                    <span className="obs-lane-track"><Bar start={ta} len={tw} total={total} cls={`tool${tc.isError ? ' err' : ''}`} title={tc.name} /></span>
-                    <span className="obs-lane-when mono">@{fmtMs(ta)} · {fmtMs(tw)}</span>
-                  </div>
-                );
-              })}
-            </div>
-          );
-        })}
+
+        {/* LLM: per step, a 'think' segment (waiting→tokens) then a 'message' segment */}
+        <div className="obs-tl-row">
+          <span className="obs-tl-name llm">LLM</span>
+          <span className="obs-tl-track">
+            {turn.steps.map((s) => {
+              const sA = (s.startedAt ?? t0) - t0;
+              const sB = (s.endedAt ?? t0 + total) - t0;
+              const mA = s.messageStartedAt != null ? s.messageStartedAt - t0 : sB; // think→message boundary
+              return (
+                <span key={`llm${s.idx}`}>
+                  <Seg start={sA} len={mA - sA} total={total} cls="think" label={`think ${fmtMs(mA - sA)}`} title={`step ${s.idx} thinking · @${fmtMs(sA)} · ${fmtMs(mA - sA)}`} />
+                  <Seg start={mA} len={sB - mA} total={total} cls="msg" label={`msg ${fmtMs(sB - mA)}`} title={`step ${s.idx} message · @${fmtMs(mA)} · ${fmtMs(sB - mA)}`} />
+                </span>
+              );
+            })}
+          </span>
+        </div>
+
+        {/* TOOLS: each tool-call span */}
+        <div className="obs-tl-row">
+          <span className="obs-tl-name tool">tools</span>
+          <span className="obs-tl-track">
+            {turn.steps.flatMap((s) => s.tools).map((tc) => {
+              const a = (tc.startedAt ?? t0) - t0;
+              const w = (tc.endedAt ?? tc.startedAt ?? t0) - (tc.startedAt ?? t0);
+              return <Seg key={tc.id} start={a} len={w} total={total} cls={`tool${tc.isError ? ' err' : ''}`} label={`${tc.name} ${fmtMs(w)}`} title={`${tc.name} · @${fmtMs(a)} · ${fmtMs(w)}`} />;
+            })}
+            {turn.steps.flatMap((s) => s.tools).length === 0 && <span className="obs-tl-empty">—</span>}
+          </span>
+        </div>
+
+        {/* SPEECH: each TTS speaking window */}
+        <div className="obs-tl-row">
+          <span className="obs-tl-name speak">speech</span>
+          <span className="obs-tl-track">
+            {turn.speech.map((w, i) => {
+              const a = w.startedAt - t0;
+              const len = (w.endedAt ?? t0 + total) - w.startedAt;
+              return <Seg key={i} start={a} len={len} total={total} cls="speech" label={`🔊 ${fmtMs(len)}`} title={`speaking · @${fmtMs(a)} · ${fmtMs(len)}`} />;
+            })}
+            {turn.speech.length === 0 && <span className="obs-tl-empty">—</span>}
+          </span>
+        </div>
       </div>
 
       {/* per-step detail (no individual track now — the bar above is the timeline) */}
@@ -255,10 +273,16 @@ function TurnTimeline({ turn }: { turn: TurnVM }) {
   );
 }
 
-function Bar({ start, len, total, cls, title }: { start: number; len: number; total: number; cls: string; title?: string }) {
+
+// a positioned segment on a lane track, labeled in place.
+function Seg({ start, len, total, cls, label, title }: { start: number; len: number; total: number; cls: string; label: string; title?: string }) {
   const left = Math.max(0, (start / total) * 100);
-  const width = Math.max(0.8, (len / total) * 100);
-  return <div className={`obs-bar ${cls}`} style={{ left: `${left}%`, width: `${Math.min(width, 100 - left)}%` }} title={title} />;
+  const width = Math.max(1.5, (len / total) * 100);
+  return (
+    <span className={`obs-seg ${cls}`} style={{ left: `${left}%`, width: `${Math.min(width, 100 - left)}%` }} title={title}>
+      <span className="obs-seg-lbl">{label}</span>
+    </span>
+  );
 }
 
 // ── helpers ──────────────────────────────────────────────────────────────────
@@ -273,9 +297,10 @@ function pretty(v: unknown): string { try { return typeof v === 'string' ? v : J
 function storedToVM(t: StoredTurn, source?: string): TurnVM {
   return {
     id: t.turnId, sessionId: t.sessionId, source, prompt: t.prompt, startedAt: t.startedAt, endedAt: t.endedAt, ended: t.endedAt != null,
+    speech: t.speech ?? [],
     steps: t.steps.map((s) => ({
       idx: s.index, model: s.model, stopReason: s.stopReason, text: s.text,
-      inTok: s.usage?.inputTokens, outTok: s.usage?.outputTokens, startedAt: s.startedAt, endedAt: s.endedAt,
+      inTok: s.usage?.inputTokens, outTok: s.usage?.outputTokens, startedAt: s.startedAt, messageStartedAt: s.messageStartedAt, endedAt: s.endedAt,
       tools: s.tools.map((tc) => ({ id: tc.toolCallId, name: tc.toolName, args: tc.args, result: tc.result, isError: tc.isError, startedAt: tc.startedAt, endedAt: tc.endedAt })),
     })),
   };
@@ -293,7 +318,10 @@ function applyEvent(turn: TurnVM, ev: AgentEventDto): void {
         last.inTok = ev.data?.usage?.inputTokens; last.outTok = ev.data?.usage?.outputTokens;
       }
       break;
+    case 'MessageStart': if (last && last.messageStartedAt == null) last.messageStartedAt = ev.ts; break;
     case 'MessageEnd': if (last && ev.data?.text != null) last.text = ev.data.text; break;
+    case 'SpeakStart': turn.speech.push({ startedAt: ev.ts }); break;
+    case 'SpeakEnd': { const w = [...turn.speech].reverse().find((x) => x.endedAt == null); if (w) w.endedAt = ev.ts; break; }
     case 'ToolExecutionStart':
       if (last && ev.data?.toolCallId) last.tools.push({ id: ev.data.toolCallId, name: ev.data.toolName ?? '?', args: ev.data.args, startedAt: ev.ts });
       break;

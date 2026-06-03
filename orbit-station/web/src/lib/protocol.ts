@@ -21,7 +21,8 @@ export type OutboundFrame = EventFrame | WelcomeFrame | ErrorFrame;
 export type AgentEventKind =
   | 'TurnStart' | 'TurnEnd' | 'StepStart' | 'StepEnd'
   | 'MessageStart' | 'MessageUpdate' | 'MessageEnd'
-  | 'ToolExecutionStart' | 'ToolExecutionUpdate' | 'ToolExecutionEnd';
+  | 'ToolExecutionStart' | 'ToolExecutionUpdate' | 'ToolExecutionEnd'
+  | 'SpeakStart' | 'SpeakEnd';
 
 export interface AgentEventDto {
   sessionId: string;

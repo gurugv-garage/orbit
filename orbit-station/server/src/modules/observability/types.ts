@@ -21,7 +21,10 @@ export type AgentEventKind =
   | 'MessageEnd'
   | 'ToolExecutionStart'
   | 'ToolExecutionUpdate'
-  | 'ToolExecutionEnd';
+  | 'ToolExecutionEnd'
+  // synthetic markers the dock emits (not agent-core events):
+  | 'SpeakStart'
+  | 'SpeakEnd';
 
 /**
  * One agent-core event as it crosses the wire. The host stamps it with the
@@ -70,6 +73,8 @@ export interface ToolCallRecord {
 export interface StepRecord {
   index: number;
   startedAt: number;
+  /** when the assistant message began streaming (think→tokens boundary). */
+  messageStartedAt?: number;
   endedAt?: number;
   model?: string;
   stopReason?: string;
@@ -79,11 +84,16 @@ export interface StepRecord {
 }
 
 /** A Turn = one prompt() → complete response, 1+ steps. */
+/** A speech (TTS) window within a turn: dock was talking from startedAt→endedAt. */
+export interface SpeechWindow { startedAt: number; endedAt?: number }
+
 export interface TurnRecord {
   turnId: string;
   sessionId: string;
   /** the user message / prompt that triggered this turn. */
   prompt?: string;
+  /** TTS speaking windows (the dock may speak in multiple chunks). */
+  speech?: SpeechWindow[];
   startedAt: number;
   endedAt?: number;
   steps: StepRecord[];

@@ -47,9 +47,23 @@ export class ObsStore {
         }
         break;
       }
+      case 'MessageStart': {
+        const step = last(turn.steps);
+        if (step && step.messageStartedAt == null) step.messageStartedAt = ev.ts;
+        break;
+      }
       case 'MessageEnd': {
         const step = last(turn.steps);
         if (step && ev.data?.text != null) step.text = ev.data.text;
+        break;
+      }
+      case 'SpeakStart': {
+        (turn.speech ??= []).push({ startedAt: ev.ts });
+        break;
+      }
+      case 'SpeakEnd': {
+        const open = turn.speech?.findLast((w) => w.endedAt == null);
+        if (open) open.endedAt = ev.ts;
         break;
       }
       case 'ToolExecutionStart': {
