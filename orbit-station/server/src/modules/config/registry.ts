@@ -1,34 +1,41 @@
 /**
- * The config REGISTRY: the single declared catalogue of every config entry the
- * station knows about. Each entry has a scope, a value type the UI renders an
- * editor for (number/boolean/text/json), a Zod schema that VALIDATES writes,
- * and a default value (the safe baseline baked into firmware/app builds).
+ * The config REGISTRY: the single declared catalogue of every config knob.
  *
- * Adding a new knob = add an Entry here. The store, REST validation, the push
- * protocol, the build export, and the type-aware UI all derive from this — one
- * source of truth, no per-knob wiring.
+ * Keys are FLAT and GLOBAL (unique names, no owner-scope) because configs are
+ * SHARED — a value like `bodyAddr` or `neckPitchLimitDeg` is consumed by more
+ * than one component. Ownership/routing is NOT derived from the key; instead
+ * each component announces the set of keys it's interested in (hardcoded in its
+ * init), and the station pushes only those. `tags` is for UI grouping ONLY —
+ * never routing. (A "dock" = the brain/app + the body/ESP32; a key can be
+ * tagged for both.)
+ *
+ * Each entry has a value type the UI renders an editor for, a Zod schema that
+ * VALIDATES writes, and a default (the safe baseline baked into device builds).
+ * The store, REST validation, push protocol, build export, and type-aware UI
+ * all derive from this — one source of truth.
  */
 
 import { z } from 'zod';
 
-export type Scope = 'station' | 'dock' | 'body';
 export type ValueType = 'number' | 'boolean' | 'text' | 'json';
+/** UI grouping tags only (brain = phone app, body = ESP32 firmware). */
+export type Tag = 'station' | 'brain' | 'body';
 
 export interface ConfigEntry {
-  scope: Scope;
   key: string;
   type: ValueType;
   /** Validates any incoming value for this key. */
   schema: z.ZodTypeAny;
   /** Safe baseline; what a fresh db / offline device falls back to. */
   default: unknown;
+  /** UI grouping only — which components typically use this key. NOT routing. */
+  tags: Tag[];
   /** Human label + help for the UI. */
   label?: string;
   description?: string;
   /**
-   * For `json` entries: an optional JSON-Schema the UI can use to render a
-   * schema-aware editor (and document the shape). Derived from `schema` via
-   * zod-to-json-schema at registration so it never drifts from validation.
+   * For `json` entries: a JSON-Schema the UI can use to render a schema-aware
+   * editor. Derived from `schema` (zod) at read time so it never drifts.
    */
   jsonSchema?: unknown;
 }
@@ -142,27 +149,33 @@ function entry(e: Omit<ConfigEntry, 'jsonSchema'>): ConfigEntry {
 }
 
 export const REGISTRY: ConfigEntry[] = [
-  entry({ scope: 'station', key: 'logLevel', type: 'text', schema: z.enum(['debug', 'info', 'warn', 'error']), default: 'info' }),
-  entry({ scope: 'station', key: 'heartbeatSec', type: 'number', schema: z.number().int().min(1).max(120), default: 10 }),
+  entry({ key: 'logLevel', type: 'text', schema: z.enum(['debug', 'info', 'warn', 'error']), default: 'info', tags: ['station'] }),
+  entry({ key: 'heartbeatSec', type: 'number', schema: z.number().int().min(1).max(120), default: 10, tags: ['station'] }),
 
-  entry({ scope: 'dock', key: 'idleAnimations', type: 'boolean', schema: z.boolean(), default: true }),
-  entry({ scope: 'dock', key: 'gazeTracking', type: 'boolean', schema: z.boolean(), default: true }),
-  entry({ scope: 'dock', key: 'ttsRate', type: 'number', schema: z.number().min(0.5).max(2), default: 1.0 }),
-  entry({ scope: 'dock', key: 'cameraDefaultOn', type: 'boolean', schema: z.boolean(), default: false }),
-  entry({ scope: 'dock', key: 'thinkingLevel', type: 'text', schema: z.enum(['low', 'medium', 'high']), default: 'low' }),
+  entry({ key: 'idleAnimations', type: 'boolean', schema: z.boolean(), default: true, tags: ['brain'] }),
+  entry({ key: 'gazeTracking', type: 'boolean', schema: z.boolean(), default: true, tags: ['brain'] }),
+  entry({ key: 'ttsRate', type: 'number', schema: z.number().min(0.5).max(2), default: 1.0, tags: ['brain'] }),
+  entry({ key: 'cameraDefaultOn', type: 'boolean', schema: z.boolean(), default: false, tags: ['brain'] }),
+  entry({ key: 'thinkingLevel', type: 'text', schema: z.enum(['low', 'medium', 'high']), default: 'low', tags: ['brain'] }),
   entry({
-    scope: 'dock', key: 'faceGestures', type: 'json',
-    schema: faceGesturesSchema, default: FACE_GESTURES_DEFAULT,
+    key: 'bodyAddr', type: 'text', schema: z.string(), default: '', tags: ['brain', 'body'],
+    label: 'Body address',
+    description: 'ESP32 body WS address ("ip:port"). Set automatically by the station each time the body connects (reports its phone-facing address); the app caches it and reconnects on change. Empty = app uses its own cached/baked default.',
+  }),
+  entry({
+    key: 'faceGestures', type: 'json', schema: faceGesturesSchema, default: FACE_GESTURES_DEFAULT, tags: ['brain'],
     label: 'Face gestures',
     description: 'Body choreography the dock performs when set_face sets an expression. Each gesture is a list of move steps (degrees).',
   }),
 
-  entry({ scope: 'body', key: 'maxSpeedDegPerSec', type: 'number', schema: z.number().int().min(10).max(360), default: 120 }),
-  entry({ scope: 'body', key: 'neckPitchLimitDeg', type: 'number', schema: z.number().min(0).max(90), default: 45 }),
-  entry({ scope: 'body', key: 'footYawLimitDeg', type: 'number', schema: z.number().min(0).max(90), default: 90 }),
-  entry({ scope: 'body', key: 'idleGestures', type: 'boolean', schema: z.boolean(), default: true }),
+  // limits are owned by the body but the brain also reads them (to clamp), so
+  // both components register interest — sharing, not ownership.
+  entry({ key: 'maxSpeedDegPerSec', type: 'number', schema: z.number().int().min(10).max(360), default: 120, tags: ['body', 'brain'] }),
+  entry({ key: 'neckPitchLimitDeg', type: 'number', schema: z.number().min(0).max(90), default: 45, tags: ['body', 'brain'] }),
+  entry({ key: 'footYawLimitDeg', type: 'number', schema: z.number().min(0).max(90), default: 90, tags: ['body', 'brain'] }),
+  entry({ key: 'idleGestures', type: 'boolean', schema: z.boolean(), default: true, tags: ['body'] }),
 ];
 
-export function findEntry(scope: string, key: string): ConfigEntry | undefined {
-  return REGISTRY.find((e) => e.scope === scope && e.key === key);
+export function findEntry(key: string): ConfigEntry | undefined {
+  return REGISTRY.find((e) => e.key === key);
 }

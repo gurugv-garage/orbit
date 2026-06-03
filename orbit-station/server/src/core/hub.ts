@@ -76,7 +76,10 @@ export class Hub {
       };
       const json = JSON.stringify(frame);
       for (const peer of this.#peers.values()) {
-        if (peer.topics.has(msg.topic)) peer.ws.send(json);
+        if (!peer.topics.has(msg.topic)) continue;
+        // directed message: only the addressed peer receives it.
+        if (msg.to != null && peer.id !== msg.to) continue;
+        peer.ws.send(json);
       }
     });
   }

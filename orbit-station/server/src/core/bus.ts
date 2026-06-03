@@ -16,6 +16,12 @@ export interface BusMessage {
   ts: number;
   /** id of the peer that originated it, or 'station' for internal. */
   source: string;
+  /**
+   * Optional target peer id. When set, the hub delivers this message ONLY to
+   * that peer (still gated on topic subscription) — for directed pushes like
+   * per-peer config snapshots. Unset = normal broadcast to all subscribers.
+   */
+  to?: string;
 }
 
 type Handler = (msg: BusMessage) => void;

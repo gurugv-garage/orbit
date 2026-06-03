@@ -4,11 +4,16 @@ import { useStationEvents } from '../lib/useStation';
 
 type ValueType = 'number' | 'boolean' | 'text' | 'json';
 interface Entry {
-  scope: string; key: string; type: ValueType; value: unknown;
+  key: string; type: ValueType; value: unknown;
   lastUpdated: number; isDefault: boolean;
+  tags: string[];
+  /** ids of peers currently registered interest in this key (live). */
+  interested: string[];
   label?: string; description?: string; jsonSchema?: unknown;
 }
 interface ConfigResp { entries: Entry[]; }
+
+const TAG_ORDER = ['station', 'brain', 'body'];
 
 export function Config() {
   const [entries, setEntries] = useState<Entry[] | null>(null);
@@ -22,26 +27,29 @@ export function Config() {
   // reflect pushes from anywhere (another console editing, a force-push)
   useStationEvents('config', useCallback((e) => {
     if (e.kind === 'changed') {
-      const p = e.payload as { scope: string; key: string };
-      setFlash(`pushed ${p.scope}.${p.key} · ${new Date(e.ts).toLocaleTimeString()}`);
+      const p = e.payload as { key: string };
+      setFlash(`pushed ${p.key} · ${new Date(e.ts).toLocaleTimeString()}`);
       load();
     }
   }, [load]));
 
   if (!entries) return <section><h2 className="title">Config</h2><p className="subtitle">loading…</p></section>;
 
-  const scopes = [...new Set(entries.map((e) => e.scope))];
+  // group by primary tag (UI only). Keys are flat/global and may be shared by
+  // several components; a key shows under its first tag.
+  const tags = [...new Set(entries.flatMap((e) => e.tags))]
+    .sort((a, b) => (TAG_ORDER.indexOf(a) + 1 || 99) - (TAG_ORDER.indexOf(b) + 1 || 99));
 
   return (
     <section>
       <h2 className="title">Config</h2>
-      <p className="subtitle">Typed, versioned config. Saving validates &amp; pushes to firmware &amp; app over WS. Force-push re-sends a key unchanged.</p>
+      <p className="subtitle">Typed, versioned, flat config keys. Saving validates &amp; pushes to peers that registered interest. Tags group keys; “wants” shows who’s live-subscribed.</p>
       {flash && <div className="row" style={{ marginBottom: 10 }}><span className="pill good">{flash}</span></div>}
       <div className="grid">
-        {scopes.map((s) => (
-          <div key={s} className="card">
-            <h3>{s}</h3>
-            {entries.filter((e) => e.scope === s).map((e) => (
+        {tags.map((tag) => (
+          <div key={tag} className="card">
+            <h3>{tag}</h3>
+            {entries.filter((e) => e.tags[0] === tag).map((e) => (
               <EntryRow key={e.key} entry={e} onChanged={load} />
             ))}
           </div>
@@ -62,7 +70,7 @@ function EntryRow({ entry, onChanged }: { entry: Entry; onChanged: () => void })
   const save = async () => {
     setBusy(true); setErr(null);
     try {
-      const r = await api.patch<{ applied: Entry[]; errors: Record<string, unknown> }>(`/config/${entry.scope}`, { [entry.key]: draft });
+      const r = await api.patch<{ applied: Entry[]; errors: Record<string, unknown> }>(`/config`, { [entry.key]: draft });
       if (r.errors && r.errors[entry.key]) setErr(fmtIssues(r.errors[entry.key]));
       else onChanged();
     } catch (e) { setErr(String(e)); }
@@ -71,13 +79,13 @@ function EntryRow({ entry, onChanged }: { entry: Entry; onChanged: () => void })
 
   const forcePush = async () => {
     setBusy(true);
-    try { await api.post(`/config/${entry.scope}/${encodeURIComponent(entry.key)}/push`, {}); } catch { /* flash via WS */ }
+    try { await api.post(`/config/${encodeURIComponent(entry.key)}/push`, {}); } catch { /* flash via WS */ }
     setBusy(false);
   };
 
   const reset = async () => {
     setBusy(true);
-    try { await api.post(`/config/${entry.scope}/${encodeURIComponent(entry.key)}/reset`, {}); onChanged(); } catch { /* */ }
+    try { await api.post(`/config/${encodeURIComponent(entry.key)}/reset`, {}); onChanged(); } catch { /* */ }
     setBusy(false);
   };
 
@@ -89,6 +97,11 @@ function EntryRow({ entry, onChanged }: { entry: Entry; onChanged: () => void })
         {entry.isDefault
           ? <span className="muted sm" title="no override; the baked default">default</span>
           : <span className="muted sm" title={new Date(entry.lastUpdated).toLocaleString()}>edited {rel(entry.lastUpdated)}</span>}
+        {entry.interested.length > 0 && (
+          <span className="muted sm" title={`live subscribers: ${entry.interested.join(', ')}`}>
+            wants {entry.interested.length}
+          </span>
+        )}
       </div>
       <ValueEditor type={entry.type} value={draft} schema={entry.jsonSchema} onChange={setDraft} onError={setErr} />
       {err && <div className="cfg-err">{err}</div>}
