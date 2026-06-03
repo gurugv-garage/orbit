@@ -89,12 +89,15 @@ export function Observability() {
     return true;
   }), [turns, fSession, fSource, fTool, fErrors, fSearch]);
 
-  // group filtered turns by session (newest session + newest turn first)
+  // group filtered turns by session. Sessions are ordered newest-first (below),
+  // but turns WITHIN a session read chronologically — oldest at top, newest at
+  // the bottom — so a conversation flows top-to-bottom. ("slowest" overrides to
+  // slowest-first since that's the point of the filter.)
   const groups = useMemo(() => {
     const m = new Map<string, TurnVM[]>();
     for (const t of filtered) (m.get(t.sessionId) ?? m.set(t.sessionId, []).get(t.sessionId)!).push(t);
     const arr = [...m.entries()].map(([sid, ts]) => {
-      const sorted = ts.slice().sort((a, b) => (fSlow ? dur(b) - dur(a) : b.startedAt - a.startedAt));
+      const sorted = ts.slice().sort((a, b) => (fSlow ? dur(b) - dur(a) : a.startedAt - b.startedAt));
       return { sid, source: ts[0]?.source, turns: sorted, started: Math.min(...ts.map((t) => t.startedAt)), last: Math.max(...ts.map((t) => t.startedAt)) };
     });
     arr.sort((a, b) => b.last - a.last);
