@@ -62,55 +62,73 @@ const moveStep = z
 /** faceGestures: expression name → ordered move steps the body performs. */
 const faceGesturesSchema = z.record(z.string(), z.array(moveStep));
 
-/** The default gesture choreography — mirrors DockTools.expressionGesture().
- *  Degrees, device-independent; the app converts to µs on the fixed scale. */
+/** The default gesture choreography — MIRRORS DockTools.defaultGesture(). Keep
+ *  the two in sync. Degrees, device-independent (app converts to µs).
+ *  NECK SIGN (verified on hardware): positive = head DOWN, negative = head UP.
+ *  FOOT = base yaw (left/right). */
 const FACE_GESTURES_DEFAULT = {
+  // Drowsy: head sags forward (DOWN), bobs once, sinks low — "nodding off".
   sleepy: [
-    { part: 'neck', degrees: -30, duration_ms: 900 }, { wait_ms: 250 },
-    { part: 'neck', degrees: -18, duration_ms: 350 },
-    { part: 'neck', degrees: -38, duration_ms: 1100 }, { wait_ms: 300 },
+    { part: 'neck', degrees: 30, duration_ms: 900 }, { wait_ms: 250 },
+    { part: 'neck', degrees: 18, duration_ms: 350 },
+    { part: 'neck', degrees: 38, duration_ms: 1100 }, { wait_ms: 300 },
   ],
+  // Warm: a gentle up-bob (UP) + small body sway.
   happy: [
-    { parts: [{ part: 'neck', degrees: 12 }, { part: 'foot', degrees: 12 }], duration_ms: 280 },
+    { parts: [{ part: 'neck', degrees: -12 }, { part: 'foot', degrees: 12 }], duration_ms: 280 },
     { parts: [{ part: 'neck', degrees: 0 }, { part: 'foot', degrees: -12 }], duration_ms: 320 },
-    { parts: [{ part: 'neck', degrees: 8 }, { part: 'foot', degrees: 0 }], duration_ms: 260 },
+    { parts: [{ part: 'neck', degrees: -8 }, { part: 'foot', degrees: 0 }], duration_ms: 260 },
     { parts: [{ part: 'neck', degrees: 0 }, { part: 'foot', degrees: 0 }], duration_ms: 300 },
   ],
+  // Giddy: fast head+body wiggle/vibrate — the "laughing shake".
   excited: [
-    { parts: [{ part: 'neck', degrees: 10 }, { part: 'foot', degrees: 16 }], duration_ms: 120 },
-    { parts: [{ part: 'neck', degrees: -10 }, { part: 'foot', degrees: -16 }], duration_ms: 120 },
-    { parts: [{ part: 'neck', degrees: 10 }, { part: 'foot', degrees: 16 }], duration_ms: 120 },
-    { parts: [{ part: 'neck', degrees: -10 }, { part: 'foot', degrees: -16 }], duration_ms: 120 },
-    { parts: [{ part: 'neck', degrees: 10 }, { part: 'foot', degrees: 16 }], duration_ms: 120 },
-    { parts: [{ part: 'neck', degrees: 0 }, { part: 'foot', degrees: 0 }], duration_ms: 220 },
+    { parts: [{ part: 'neck', degrees: 9 }, { part: 'foot', degrees: 15 }], duration_ms: 80 },
+    { parts: [{ part: 'neck', degrees: -9 }, { part: 'foot', degrees: -15 }], duration_ms: 80 },
+    { parts: [{ part: 'neck', degrees: 9 }, { part: 'foot', degrees: 15 }], duration_ms: 80 },
+    { parts: [{ part: 'neck', degrees: -9 }, { part: 'foot', degrees: -15 }], duration_ms: 80 },
+    { parts: [{ part: 'neck', degrees: 9 }, { part: 'foot', degrees: 15 }], duration_ms: 80 },
+    { parts: [{ part: 'neck', degrees: -9 }, { part: 'foot', degrees: -15 }], duration_ms: 80 },
+    { parts: [{ part: 'neck', degrees: 9 }, { part: 'foot', degrees: 15 }], duration_ms: 80 },
+    { parts: [{ part: 'neck', degrees: -9 }, { part: 'foot', degrees: -15 }], duration_ms: 80 },
+    { parts: [{ part: 'neck', degrees: 0 }, { part: 'foot', degrees: 0 }], duration_ms: 180 },
   ],
+  // Smitten: slow dreamy head-tilt UP + lean, held.
   love: [
-    { parts: [{ part: 'neck', degrees: 22 }, { part: 'foot', degrees: 14 }], duration_ms: 700 }, { wait_ms: 500 },
-    { parts: [{ part: 'neck', degrees: 16 }, { part: 'foot', degrees: 8 }], duration_ms: 600 },
+    { parts: [{ part: 'neck', degrees: -22 }, { part: 'foot', degrees: 14 }], duration_ms: 700 }, { wait_ms: 500 },
+    { parts: [{ part: 'neck', degrees: -16 }, { part: 'foot', degrees: 8 }], duration_ms: 600 },
   ],
+  // Inquisitive: head cocked UP, body slowly sways left↔right in parallel.
   curious: [
-    { parts: [{ part: 'neck', degrees: 20 }, { part: 'foot', degrees: -18 }], duration_ms: 450 }, { wait_ms: 400 },
-    { part: 'neck', degrees: 14, duration_ms: 300 },
+    { parts: [{ part: 'neck', degrees: -18 }, { part: 'foot', degrees: -22 }], duration_ms: 700 }, { wait_ms: 300 },
+    { parts: [{ part: 'neck', degrees: -14 }, { part: 'foot', degrees: 22 }], duration_ms: 1100 }, { wait_ms: 300 },
+    { parts: [{ part: 'neck', degrees: -18 }, { part: 'foot', degrees: -16 }], duration_ms: 1000 },
+    { parts: [{ part: 'neck', degrees: -14 }, { part: 'foot', degrees: 0 }], duration_ms: 700 },
   ],
+  // Startled: quick snap UP-and-back, freeze, ease toward level.
   surprised: [
-    { part: 'neck', degrees: 38, duration_ms: 130 }, { wait_ms: 450 },
-    { part: 'neck', degrees: 20, duration_ms: 350 },
+    { part: 'neck', degrees: -38, duration_ms: 130 }, { wait_ms: 450 },
+    { part: 'neck', degrees: -20, duration_ms: 350 },
   ],
+  // Crestfallen: head sinks low (DOWN), body turns slightly away.
   sad: [
-    { parts: [{ part: 'neck', degrees: -28 }, { part: 'foot', degrees: 30 }], duration_ms: 1000 }, { wait_ms: 400 },
-    { part: 'neck', degrees: -34, duration_ms: 700 },
+    { parts: [{ part: 'neck', degrees: 28 }, { part: 'foot', degrees: 30 }], duration_ms: 1000 }, { wait_ms: 400 },
+    { part: 'neck', degrees: 34, duration_ms: 700 },
   ],
+  // Indignant: sharp little "no!" base-shakes, tense and quick.
   angry: [
     { part: 'foot', degrees: -30, duration_ms: 130 }, { part: 'foot', degrees: 30, duration_ms: 130 },
     { part: 'foot', degrees: -26, duration_ms: 130 }, { part: 'foot', degrees: 24, duration_ms: 130 },
     { parts: [{ part: 'neck', degrees: 0 }, { part: 'foot', degrees: 0 }], duration_ms: 180 },
   ],
+  // Uneasy: quick little side-to-side "no/no" head shake (base yaw).
   concerned: [
-    { part: 'neck', degrees: -12, duration_ms: 450 }, { part: 'neck', degrees: 12, duration_ms: 500 },
-    { part: 'neck', degrees: -8, duration_ms: 450 }, { part: 'neck', degrees: 0, duration_ms: 400 },
+    { part: 'foot', degrees: -16, duration_ms: 180 }, { part: 'foot', degrees: 16, duration_ms: 200 },
+    { part: 'foot', degrees: -14, duration_ms: 180 }, { part: 'foot', degrees: 12, duration_ms: 180 },
+    { parts: [{ part: 'neck', degrees: 0 }, { part: 'foot', degrees: 0 }], duration_ms: 220 },
   ],
+  // Playful: a tiny double head-tilt UP to punctuate the eye-wink.
   wink: [
-    { part: 'neck', degrees: 16, duration_ms: 200 }, { part: 'neck', degrees: 0, duration_ms: 220 },
+    { part: 'neck', degrees: -16, duration_ms: 200 }, { part: 'neck', degrees: 0, duration_ms: 220 },
   ],
   neutral: [
     { parts: [{ part: 'neck', degrees: 0 }, { part: 'foot', degrees: 0 }], duration_ms: 450 },

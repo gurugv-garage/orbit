@@ -301,55 +301,64 @@ class DockTools(
         return defaultGesture(expression)
     }
 
+    // NECK SIGN CONVENTION (verified on hardware): positive = head DOWN,
+    // negative = head UP (matches DockToolSchemas MOVE_DESC). So drooping moods
+    // use POSITIVE neck, looking-up moods use NEGATIVE.
     private fun defaultGesture(expression: String): List<MoveOp> = when (expression) {
-        // Drowsy: the head sags forward, bobs once as if catching itself, then
-        // sinks and rests low — "nodding off".
+        // Drowsy: the head sags forward (DOWN), bobs once as if catching itself,
+        // then sinks and rests low — "nodding off".
         "sleepy" -> listOf(
-            head(-30.0, 900), hold(250),
-            head(-18.0, 350), head(-38.0, 1100), hold(300),
+            head(30.0, 900), hold(250),
+            head(18.0, 350), head(38.0, 1100), hold(300),
         )
-        // Warm: a gentle up-bob and a small body sway, like a contented nod.
+        // Warm: a gentle up-bob (UP) and a small body sway, like a happy look-up.
         "happy" -> listOf(
-            pose(neck = 12.0, foot = 12.0, ms = 280),
+            pose(neck = -12.0, foot = 12.0, ms = 280),
             pose(neck = 0.0, foot = -12.0, ms = 320),
-            pose(neck = 8.0, foot = 0.0, ms = 260), center(300),
+            pose(neck = -8.0, foot = 0.0, ms = 260), center(300),
         )
-        // Giddy: a fast head+body wiggle/vibrate — the "laughing shake". Several
-        // quick small alternations, then settle.
+        // Giddy: a fast head+body wiggle/vibrate — the "laughing shake". Many
+        // quick small alternations (symmetric, direction-agnostic), then settle.
         "excited" -> buildList {
-            repeat(5) { i ->
+            repeat(8) { i ->
                 val s = if (i % 2 == 0) 1 else -1
-                add(pose(neck = 10.0 * s, foot = 16.0 * s, ms = 120))
+                add(pose(neck = 9.0 * s, foot = 15.0 * s, ms = 80))
             }
-            add(center(220))
+            add(center(180))
         }
-        // Smitten: a slow dreamy head-tilt to one side with a matching lean, held.
+        // Smitten: a slow dreamy head-tilt UP to one side with a matching lean.
         "love" -> listOf(
-            pose(neck = 22.0, foot = 14.0, ms = 700), hold(500),
-            pose(neck = 16.0, foot = 8.0, ms = 600),
+            pose(neck = -22.0, foot = 14.0, ms = 700), hold(500),
+            pose(neck = -16.0, foot = 8.0, ms = 600),
         )
-        // Inquisitive: cock the head to one side and lean in a touch — "hmm?".
+        // Inquisitive: cock the head UP and SLOWLY sway the body left↔right in
+        // parallel — "hmm, what's this?". Neck holds the tilt while the foot
+        // pans side to side.
         "curious" -> listOf(
-            pose(neck = 20.0, foot = -18.0, ms = 450), hold(400),
-            head(14.0, 300),
+            pose(neck = -18.0, foot = -22.0, ms = 700), hold(300),
+            pose(neck = -14.0, foot = 22.0, ms = 1100), hold(300),
+            pose(neck = -18.0, foot = -16.0, ms = 1000),
+            pose(neck = -14.0, foot = 0.0, ms = 700),
         )
-        // Startled: a quick snap up-and-back, freeze, then ease down.
+        // Startled: a quick snap UP-and-back, freeze, then ease down toward level.
         "surprised" -> listOf(
-            head(38.0, 130), hold(450), head(20.0, 350),
+            head(-38.0, 130), hold(450), head(-20.0, 350),
         )
-        // Crestfallen: the head sinks low and the body turns slightly away.
+        // Crestfallen: the head sinks low (DOWN) and the body turns slightly away.
         "sad" -> listOf(
-            pose(neck = -28.0, foot = 30.0, ms = 1000), hold(400),
-            head(-34.0, 700),
+            pose(neck = 28.0, foot = 30.0, ms = 1000), hold(400),
+            head(34.0, 700),
         )
         // Indignant: sharp little "no!" head-shakes, tense and quick.
         "angry" -> listOf(
             base(-30.0, 130), base(30.0, 130), base(-26.0, 130), base(24.0, 130),
             center(180),
         )
-        // Uneasy: a slow, small side-to-side head shake — "I'm not sure".
+        // Uneasy: a quick little side-to-side "no/no" head shake (foot yaw) —
+        // "I'm not sure".
         "concerned" -> listOf(
-            head(-12.0, 450), head(12.0, 500), head(-8.0, 450), center(400),
+            base(-16.0, 180), base(16.0, 200), base(-14.0, 180),
+            base(12.0, 180), center(220),
         )
         // Playful: a tiny double head-tilt to punctuate the eye-wink.
         "wink" -> listOf(head(16.0, 200), head(0.0, 220))
