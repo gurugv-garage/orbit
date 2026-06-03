@@ -123,6 +123,7 @@ class DockAgent(
     // session; each turn gets a fresh id; seq orders events within a turn.
     private val obsSessionId = "sess-" + java.util.UUID.randomUUID().toString().take(8)
     @Volatile private var obsTurnId = ""
+    @Volatile private var obsUserText = ""   // the prompt that triggered the current turn
     private var obsSeq = 0
 
     private val agent: Agent = Agent(
@@ -164,6 +165,7 @@ class DockAgent(
     }
 
     private suspend fun runTurn(userText: String) {
+        obsUserText = userText   // shipped on the next TurnStart for the obs view
         tools.stopBody()           // cancel any leftover gesture from the prior turn
         tools.beginTurn()
         extractor = StreamingReplyExtractor()
@@ -307,6 +309,7 @@ class DockAgent(
             is AgentEvent.ToolExecutionEnd -> "ToolExecutionEnd"
         }
         val data: kotlinx.serialization.json.JsonObject? = when (event) {
+            is AgentEvent.TurnStart -> buildJsonObject { put("prompt", obsUserText) }
             is AgentEvent.MessageEnd -> buildJsonObject { put("text", assistantText(event.message)) }
             is AgentEvent.ToolExecutionStart -> buildJsonObject {
                 put("toolCallId", event.toolCallId)

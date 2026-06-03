@@ -28,6 +28,7 @@ export class ObsStore {
     switch (ev.kind) {
       case 'TurnStart':
         turn.startedAt = ev.ts;
+        if (ev.data?.prompt != null) turn.prompt = ev.data.prompt as string;
         break;
       case 'TurnEnd':
         turn.endedAt = ev.ts;

@@ -181,8 +181,25 @@ label.field { display: flex; flex-direction: column; gap: 4px; font-size: 12px; 
 .obs-turn-dur { color: var(--dim); font-family: ui-monospace, monospace; }
 .obs-turn-dur.slow { color: var(--warn); }
 .obs-turn-fulltime { color: #5a647c; }
+.obs-turn-prompt { color: var(--fg); opacity: .8; max-width: 280px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; }
 
-.obs-timeline { padding: 6px 10px 10px 28px; background: #0a0e1c66; }
+.obs-timeline { padding: 8px 10px 10px 28px; background: #0a0e1c66; }
+
+/* user / bot message lines */
+.obs-msg { display: flex; gap: 6px; align-items: baseline; font-size: 12px; margin: 4px 0; }
+.obs-msg-who { flex: none; font-size: 9px; text-transform: uppercase; letter-spacing: .06em; padding: 1px 5px; border-radius: 4px; font-weight: 600; }
+.obs-msg.user .obs-msg-who { background: var(--accent-2); color: #0a0e1c; }
+.obs-msg.bot .obs-msg-who { background: var(--good); color: #0a0e1c; }
+.obs-msg-text { color: var(--fg); }
+.obs-msg.user .obs-msg-text { font-weight: 500; }
+
+/* the ONE combined turn timeline */
+.obs-track.turn-track { height: 16px; margin: 6px 0 4px; }
+.obs-legend { display: flex; gap: 12px; align-items: center; font-size: 10px; color: var(--dim); margin-bottom: 8px; }
+.obs-legend i.sw { display: inline-block; width: 16px; height: 7px; border-radius: 2px; margin-right: 4px; vertical-align: middle; }
+.obs-legend i.sw.step.tool { background: var(--accent); opacity: .5; }
+.obs-legend i.sw.step.speak { background: var(--good); opacity: .5; }
+.obs-legend i.sw.tool { background: var(--accent-2); }
 
 /* a step — color-coded by kind (tool call vs spoken/LLM-only) */
 .obs-step { margin: 7px 0; padding-left: 8px; border-left: 3px solid var(--line); }

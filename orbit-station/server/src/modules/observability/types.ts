@@ -44,6 +44,7 @@ export interface AgentEventDto {
     isError?: boolean;
     result?: string;
     text?: string;
+    prompt?: string;
     stopReason?: string;
     /** usage if the host reports it on StepEnd / MessageEnd. */
     usage?: { inputTokens?: number; outputTokens?: number };
@@ -81,6 +82,8 @@ export interface StepRecord {
 export interface TurnRecord {
   turnId: string;
   sessionId: string;
+  /** the user message / prompt that triggered this turn. */
+  prompt?: string;
   startedAt: number;
   endedAt?: number;
   steps: StepRecord[];

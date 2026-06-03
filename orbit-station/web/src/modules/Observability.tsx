@@ -6,11 +6,11 @@ import type { AgentEventDto } from '../lib/protocol';
 // ── view models (mirror the server store) ────────────────────────────────────
 interface ToolVM { id: string; name: string; args?: unknown; result?: string; isError?: boolean; startedAt?: number; endedAt?: number }
 interface StepVM { idx: number; model?: string; stopReason?: string; text?: string; tools: ToolVM[]; inTok?: number; outTok?: number; startedAt?: number; endedAt?: number }
-interface TurnVM { id: string; sessionId: string; source?: string; startedAt: number; endedAt?: number; ended: boolean; steps: StepVM[] }
+interface TurnVM { id: string; sessionId: string; source?: string; prompt?: string; startedAt: number; endedAt?: number; ended: boolean; steps: StepVM[] }
 
 interface StoredTool { toolCallId: string; toolName: string; args?: unknown; result?: string; isError?: boolean; startedAt?: number; endedAt?: number }
 interface StoredStep { index: number; model?: string; stopReason?: string; text?: string; tools: StoredTool[]; usage?: { inputTokens?: number; outputTokens?: number }; startedAt?: number; endedAt?: number }
-interface StoredTurn { turnId: string; sessionId: string; startedAt: number; endedAt?: number; steps: StoredStep[] }
+interface StoredTurn { turnId: string; sessionId: string; prompt?: string; startedAt: number; endedAt?: number; steps: StoredStep[] }
 interface StoredSession { sessionId: string; source?: string; turns: StoredTurn[] }
 interface SessionSummary { sessionId: string; source?: string }
 
@@ -154,6 +154,7 @@ function TurnRow({ turn, open, onToggle }: { turn: TurnVM; open: boolean; onTogg
         <span className="obs-caret">{open ? '▾' : '▸'}</span>
         <span className="obs-turn-time mono">{clockMs(turn.startedAt)}</span>
         <span className="obs-turn-id mono">{turn.id.replace('turn-', '')}</span>
+        {turn.prompt && <span className="obs-turn-prompt" title={turn.prompt}>“{turn.prompt}”</span>}
         <span className={`obs-turn-dur${dur(turn) > 4000 ? ' slow' : ''}`}>{fmtMs(dur(turn))}</span>
         <span className="muted sm">{turn.steps.length} step{turn.steps.length !== 1 ? 's' : ''}</span>
         {turn.steps.flatMap((s) => s.tools).map((tc) => (
@@ -174,13 +175,38 @@ function TurnTimeline({ turn }: { turn: TurnVM }) {
   const total = Math.max(dur(turn), 1);
   return (
     <div className="obs-timeline">
+      {/* the user message that triggered this turn */}
+      {turn.prompt && (
+        <div className="obs-msg user"><span className="obs-msg-who">user</span><span className="obs-msg-text">{turn.prompt}</span></div>
+      )}
+
+      {/* ONE combined timeline for the whole turn: every step + tool on one bar */}
+      <div className="obs-track turn-track" title="turn timeline">
+        {turn.steps.map((s) => {
+          const a = (s.startedAt ?? t0) - t0;
+          const b = (s.endedAt ?? t0 + total) - t0;
+          const kind = s.tools.length ? 'tool' : 'speak';
+          return <Bar key={`s${s.idx}`} start={a} len={b - a} total={total} cls={`step ${kind}`} title={`step ${s.idx} (${kind}) ${fmtMs(b - a)}`} />;
+        })}
+        {turn.steps.flatMap((s) => s.tools).map((tc) => {
+          const a = (tc.startedAt ?? t0) - t0;
+          const w = (tc.endedAt ?? tc.startedAt ?? t0) - (tc.startedAt ?? t0);
+          return <Bar key={tc.id} start={a} len={w} total={total} cls={`tool${tc.isError ? ' err' : ''}`} title={`${tc.name} ${fmtMs(w)}`} />;
+        })}
+      </div>
+      <div className="obs-legend">
+        <span><i className="sw step tool" />step (tool)</span>
+        <span><i className="sw step speak" />step (reply)</span>
+        <span><i className="sw tool" />tool call</span>
+        <span className="muted">0–{fmtMs(total)}</span>
+      </div>
+
+      {/* per-step detail (no individual track now — the bar above is the timeline) */}
       {turn.steps.map((s, si) => {
         const sStart = (s.startedAt ?? t0) - t0;
         const sEnd = (s.endedAt ?? t0 + total) - t0;
-        const sDur = sEnd - sStart;
-        // gap before this step's first tool = the LLM "thinking" time.
         const firstTool = s.tools[0];
-        const think = firstTool?.startedAt != null ? firstTool.startedAt - (s.startedAt ?? t0) : sDur;
+        const think = firstTool?.startedAt != null ? firstTool.startedAt - (s.startedAt ?? t0) : sEnd - sStart;
         const kind = s.tools.length ? 'tool' : 'speak';
         return (
           <div key={s.idx} className={`obs-step kind-${kind}`}>
@@ -190,18 +216,9 @@ function TurnTimeline({ turn }: { turn: TurnVM }) {
               {s.stopReason && <span className="muted mono sm">{s.stopReason}</span>}
               <span className="muted sm">tok {tok(s.inTok)}→{tok(s.outTok)}</span>
               <span className="muted sm">think {fmtMs(Math.max(0, think))}</span>
-              <span className="muted sm">· {fmtMs(sDur)}</span>
               <span className="muted sm mono">[{fmtMs(sStart)}–{fmtMs(sEnd)}]</span>
             </div>
-            <div className="obs-track" title={`step ${s.idx}: ${fmtMs(sStart)}–${fmtMs(sEnd)}`}>
-              <Bar start={sStart} len={sDur} total={total} cls={`step ${kind}`} />
-              {s.tools.map((tc) => {
-                const a = (tc.startedAt ?? t0) - t0;
-                const w = (tc.endedAt ?? tc.startedAt ?? t0) - (tc.startedAt ?? t0);
-                return <Bar key={tc.id} start={a} len={w} total={total} cls={`tool${tc.isError ? ' err' : ''}`} title={`${tc.name} ${fmtMs(w)}`} />;
-              })}
-            </div>
-            {s.text && <div className="obs-text">“{s.text}”</div>}
+            {s.text && <div className="obs-msg bot"><span className="obs-msg-who">bot</span><span className="obs-msg-text">{s.text}</span></div>}
             {s.tools.map((tc) => {
               const a = (tc.startedAt ?? t0) - t0;
               const w = (tc.endedAt ?? tc.startedAt ?? t0) - (tc.startedAt ?? t0);
@@ -241,7 +258,7 @@ function pretty(v: unknown): string { try { return typeof v === 'string' ? v : J
 
 function storedToVM(t: StoredTurn, source?: string): TurnVM {
   return {
-    id: t.turnId, sessionId: t.sessionId, source, startedAt: t.startedAt, endedAt: t.endedAt, ended: t.endedAt != null,
+    id: t.turnId, sessionId: t.sessionId, source, prompt: t.prompt, startedAt: t.startedAt, endedAt: t.endedAt, ended: t.endedAt != null,
     steps: t.steps.map((s) => ({
       idx: s.index, model: s.model, stopReason: s.stopReason, text: s.text,
       inTok: s.usage?.inputTokens, outTok: s.usage?.outputTokens, startedAt: s.startedAt, endedAt: s.endedAt,
@@ -253,6 +270,7 @@ function storedToVM(t: StoredTurn, source?: string): TurnVM {
 function applyEvent(turn: TurnVM, ev: AgentEventDto): void {
   const last = turn.steps[turn.steps.length - 1];
   switch (ev.kind) {
+    case 'TurnStart': if (ev.data?.prompt != null) turn.prompt = ev.data.prompt as string; break;
     case 'TurnEnd': turn.ended = true; turn.endedAt = ev.ts; break;
     case 'StepStart': turn.steps.push({ idx: turn.steps.length, tools: [], startedAt: ev.ts }); break;
     case 'StepEnd':
