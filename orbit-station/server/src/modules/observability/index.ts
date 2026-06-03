@@ -26,10 +26,11 @@ export function observabilityModule(): StationModule {
 
   function ingest(ev: AgentEventDto, source: string): void {
     store.ingest(ev, source);
-    // re-publish for live UI + mind (source 'station' to avoid a WS echo loop:
-    // events that arrived over WS were already published by the hub, but the
-    // HTTP path needs this; the hub fan-out only reaches subscribers).
-    bus.publish({ topic: 'obs', kind: 'event', payload: ev, source });
+    // re-publish for live UI + mind. MUST be source 'station' so our own bus
+    // handler (below) skips re-ingesting it — otherwise every HTTP event lands
+    // in the store twice (the original ingest above + this echo). WS-arrived
+    // events are already published by the hub, so they only need this for HTTP.
+    bus.publish({ topic: 'obs', kind: 'event', payload: ev, source: 'station' });
   }
 
   return {

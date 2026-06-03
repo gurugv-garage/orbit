@@ -126,16 +126,19 @@ export class ObsStore {
         first_seen INTEGER, last_seen INTEGER
       );
       CREATE TABLE IF NOT EXISTS obs_turns (
-        turn_id TEXT PRIMARY KEY, session_id TEXT, source TEXT,
+        -- turn ids are unique only WITHIN a session, so the key is composite.
+        session_id TEXT, turn_id TEXT, source TEXT,
         trigger_kind TEXT, trigger_text TEXT,
         started_at INTEGER, ended_at INTEGER, duration_ms INTEGER,
         step_count INTEGER, had_error INTEGER,
-        detail TEXT                     -- full TurnRecord as JSON
+        detail TEXT,                    -- full TurnRecord as JSON
+        PRIMARY KEY (session_id, turn_id)
       );
       CREATE INDEX IF NOT EXISTS obs_turns_started ON obs_turns(started_at);
       CREATE INDEX IF NOT EXISTS obs_turns_session ON obs_turns(session_id);
-      -- FTS over the searchable text: trigger, step text, tool args/results.
-      CREATE VIRTUAL TABLE IF NOT EXISTS obs_fts USING fts5(turn_id, body);
+      -- FTS over the searchable text (trigger, step text, tool args/results),
+      -- keyed by the same composite identity packed into one column.
+      CREATE VIRTUAL TABLE IF NOT EXISTS obs_fts USING fts5(turn_key, body);
     `);
   }
 
@@ -148,9 +151,9 @@ export class ObsStore {
 
     const hadError = turn.steps.some((s) => s.tools.some((t) => t.isError)) ? 1 : 0;
     this.#db.prepare(
-      `INSERT INTO obs_turns(turn_id,session_id,source,trigger_kind,trigger_text,started_at,ended_at,duration_ms,step_count,had_error,detail)
-       VALUES(@id,@sid,@src,@tk,@tt,@sa,@ea,@dur,@sc,@err,@det)
-       ON CONFLICT(turn_id) DO UPDATE SET
+      `INSERT INTO obs_turns(session_id,turn_id,source,trigger_kind,trigger_text,started_at,ended_at,duration_ms,step_count,had_error,detail)
+       VALUES(@sid,@id,@src,@tk,@tt,@sa,@ea,@dur,@sc,@err,@det)
+       ON CONFLICT(session_id,turn_id) DO UPDATE SET
          ended_at=@ea, duration_ms=@dur, step_count=@sc, had_error=@err, detail=@det, trigger_kind=@tk, trigger_text=@tt`,
     ).run({
       id: turn.turnId, sid: turn.sessionId, src: session.source,
@@ -160,13 +163,14 @@ export class ObsStore {
       sc: turn.steps.length, err: hadError, det: JSON.stringify(turn),
     });
 
+    const key = ftsKey(turn.sessionId, turn.turnId);
     const body = [
       turn.trigger?.text,
       ...turn.steps.map((s) => s.text),
       ...turn.steps.flatMap((s) => s.tools.map((t) => `${t.toolName} ${JSON.stringify(t.args ?? '')} ${t.result ?? ''}`)),
     ].filter(Boolean).join(' \n ');
-    this.#db.prepare(`DELETE FROM obs_fts WHERE turn_id=?`).run(turn.turnId);
-    this.#db.prepare(`INSERT INTO obs_fts(turn_id,body) VALUES(?,?)`).run(turn.turnId, body);
+    this.#db.prepare(`DELETE FROM obs_fts WHERE turn_key=?`).run(key);
+    this.#db.prepare(`INSERT INTO obs_fts(turn_key,body) VALUES(?,?)`).run(key, body);
   }
 
   #hydrate(): void {
@@ -222,4 +226,9 @@ export class ObsStore {
 
 function last<T>(arr: T[]): T | undefined {
   return arr.length ? arr[arr.length - 1] : undefined;
+}
+
+/** Packed composite identity for the FTS row (turn ids aren't globally unique). */
+function ftsKey(sessionId: string, turnId: string): string {
+  return `${sessionId} ${turnId}`;
 }
