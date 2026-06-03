@@ -4,7 +4,9 @@
   "private": true,
   "type": "module",
   "description": "orbit-station backend: raw-WS hub + bus + modules",
-  "engines": { "node": ">=22" },
+  "engines": {
+    "node": ">=22"
+  },
   "scripts": {
     "dev": "tsx watch src/main.ts",
     "start": "tsx src/main.ts",
@@ -13,9 +15,11 @@
     "smoke": "tsx src/dev/smoke-client.ts"
   },
   "dependencies": {
+    "better-sqlite3": "^11.10.0",
     "ws": "^8.18.0"
   },
   "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^22.10.0",
     "@types/ws": "^8.5.13",
     "tsx": "^4.19.2",

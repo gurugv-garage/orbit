@@ -1,9 +1,15 @@
 /**
- * Reconstructs the Session/Turn/Step tree from the flat AgentEventDto stream,
- * keeping a bounded in-memory history. The dock app emits agent-core's
- * AgentEvents; this threads them back into the nested model the UI shows.
+ * Reconstructs the Session/Turn/Step tree from the flat AgentEventDto stream.
+ * The dock app emits agent-core's AgentEvents; this threads them back into the
+ * nested model the UI shows.
+ *
+ * In-memory working set (handles incremental event mutation cleanly) MIRRORED
+ * to SQLite (orbit.db) on each change, so traces survive station restarts.
+ * Hydrates the recent set from SQLite on boot. Reads serve from memory.
  */
 
+import type Database from 'better-sqlite3';
+import { orbitDb } from '../../core/db.js';
 import type {
   AgentEventDto,
   SessionRecord,
@@ -13,11 +19,19 @@ import type {
 } from './types.js';
 
 const MAX_SESSIONS = 200;
+const HYDRATE_TURNS = 2000; // most-recent turns loaded into memory on boot
 
 export class ObsStore {
   #sessions = new Map<string, SessionRecord>();
   /** insertion order for bounded eviction. */
   #order: string[] = [];
+  #db: Database.Database;
+
+  constructor() {
+    this.#db = orbitDb();
+    this.#initSchema();
+    this.#hydrate();
+  }
 
   /** Apply one agent-core event; returns the touched session for fan-out. */
   ingest(ev: AgentEventDto, source: string): SessionRecord {
@@ -99,7 +113,75 @@ export class ObsStore {
       // MessageStart / MessageUpdate / ToolExecutionUpdate are streaming noise
       // for the persisted tree; the live UI gets them via WS fan-out anyway.
     }
+    this.#persist(session, turn);
     return session;
+  }
+
+  // ── persistence (orbit.db) ───────────────────────────────────────────────
+
+  #initSchema(): void {
+    this.#db.exec(`
+      CREATE TABLE IF NOT EXISTS obs_sessions (
+        session_id TEXT PRIMARY KEY, source TEXT,
+        first_seen INTEGER, last_seen INTEGER
+      );
+      CREATE TABLE IF NOT EXISTS obs_turns (
+        turn_id TEXT PRIMARY KEY, session_id TEXT, source TEXT,
+        trigger_kind TEXT, trigger_text TEXT,
+        started_at INTEGER, ended_at INTEGER, duration_ms INTEGER,
+        step_count INTEGER, had_error INTEGER,
+        detail TEXT                     -- full TurnRecord as JSON
+      );
+      CREATE INDEX IF NOT EXISTS obs_turns_started ON obs_turns(started_at);
+      CREATE INDEX IF NOT EXISTS obs_turns_session ON obs_turns(session_id);
+      -- FTS over the searchable text: trigger, step text, tool args/results.
+      CREATE VIRTUAL TABLE IF NOT EXISTS obs_fts USING fts5(turn_id, body);
+    `);
+  }
+
+  #persist(session: SessionRecord, turn: TurnRecord): void {
+    this.#db.prepare(
+      `INSERT INTO obs_sessions(session_id,source,first_seen,last_seen)
+       VALUES(@id,@src,@fs,@ls)
+       ON CONFLICT(session_id) DO UPDATE SET last_seen=@ls`,
+    ).run({ id: session.sessionId, src: session.source, fs: session.firstSeen, ls: session.lastSeen });
+
+    const hadError = turn.steps.some((s) => s.tools.some((t) => t.isError)) ? 1 : 0;
+    this.#db.prepare(
+      `INSERT INTO obs_turns(turn_id,session_id,source,trigger_kind,trigger_text,started_at,ended_at,duration_ms,step_count,had_error,detail)
+       VALUES(@id,@sid,@src,@tk,@tt,@sa,@ea,@dur,@sc,@err,@det)
+       ON CONFLICT(turn_id) DO UPDATE SET
+         ended_at=@ea, duration_ms=@dur, step_count=@sc, had_error=@err, detail=@det, trigger_kind=@tk, trigger_text=@tt`,
+    ).run({
+      id: turn.turnId, sid: turn.sessionId, src: session.source,
+      tk: turn.trigger?.kind ?? null, tt: turn.trigger?.text ?? null,
+      sa: turn.startedAt, ea: turn.endedAt ?? null,
+      dur: (turn.endedAt ?? turn.startedAt) - turn.startedAt,
+      sc: turn.steps.length, err: hadError, det: JSON.stringify(turn),
+    });
+
+    const body = [
+      turn.trigger?.text,
+      ...turn.steps.map((s) => s.text),
+      ...turn.steps.flatMap((s) => s.tools.map((t) => `${t.toolName} ${JSON.stringify(t.args ?? '')} ${t.result ?? ''}`)),
+    ].filter(Boolean).join(' \n ');
+    this.#db.prepare(`DELETE FROM obs_fts WHERE turn_id=?`).run(turn.turnId);
+    this.#db.prepare(`INSERT INTO obs_fts(turn_id,body) VALUES(?,?)`).run(turn.turnId, body);
+  }
+
+  #hydrate(): void {
+    // Load the most-recent turns back into the in-memory working set so the UI
+    // (and ongoing reconstruction) has history after a restart.
+    const rows = this.#db.prepare(
+      `SELECT detail, source FROM obs_turns ORDER BY started_at DESC LIMIT ?`,
+    ).all(HYDRATE_TURNS) as Array<{ detail: string; source: string }>;
+    // oldest-first so #order/eviction matches original arrival order.
+    for (const row of rows.reverse()) {
+      const turn = JSON.parse(row.detail) as TurnRecord;
+      const session = this.#session(turn.sessionId, row.source, turn.startedAt);
+      session.lastSeen = Math.max(session.lastSeen, turn.endedAt ?? turn.startedAt);
+      if (!session.turns.find((t) => t.turnId === turn.turnId)) session.turns.push(turn);
+    }
   }
 
   list(): Array<Omit<SessionRecord, 'turns'> & { turns: number }> {
