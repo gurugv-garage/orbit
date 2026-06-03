@@ -317,8 +317,19 @@ class DockAgent(
                 put("toolCallId", event.toolCallId)
                 put("toolName", event.toolName)
                 put("isError", event.isError)
+                // the tool's response text, so the timeline can show what it returned.
+                put("result", (event.result.content.firstOrNull() as? TextContent)?.text ?: "")
             }
-            is AgentEvent.StepEnd -> buildJsonObject { put("model", model) }
+            is AgentEvent.StepEnd -> buildJsonObject {
+                put("model", model)
+                (event.message as? AssistantMessage)?.let { m ->
+                    put("stopReason", m.stopReason.toString())
+                    put("usage", buildJsonObject {
+                        put("inputTokens", m.usage.input)
+                        put("outputTokens", m.usage.output)
+                    })
+                }
+            }
             else -> null
         }
 

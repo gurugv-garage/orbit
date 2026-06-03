@@ -42,6 +42,7 @@ export interface AgentEventDto {
     toolName?: string;
     args?: unknown;
     isError?: boolean;
+    result?: string;
     text?: string;
     stopReason?: string;
     /** usage if the host reports it on StepEnd / MessageEnd. */
@@ -58,6 +59,8 @@ export interface ToolCallRecord {
   toolName: string;
   args?: unknown;
   isError?: boolean;
+  /** the tool's response text (what it returned to the model). */
+  result?: string;
   startedAt: number;
   endedAt?: number;
 }

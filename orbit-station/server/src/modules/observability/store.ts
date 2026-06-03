@@ -70,6 +70,7 @@ export class ObsStore {
         if (tc) {
           tc.endedAt = ev.ts;
           tc.isError = ev.data?.isError;
+          if (ev.data?.result != null) tc.result = ev.data.result as string;
         }
         break;
       }
