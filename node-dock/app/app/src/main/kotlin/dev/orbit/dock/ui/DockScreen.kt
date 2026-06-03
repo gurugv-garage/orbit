@@ -115,6 +115,23 @@ fun DockScreen() {
     // new transport/model takes effect immediately; default comes from the build.
     val modelStore = remember { dev.orbit.dock.agent.ModelStore(ctx) }
     var selectedModel by remember { mutableStateOf(modelStore.selected()) }
+    // Optional orbit-station link (observability + presence). Empty STATION_URL
+    // → disabled; the dock is fully functional without it.
+    val stationLink = remember {
+        dev.orbit.dock.station.StationLink(
+            url = BuildConfig.STATION_URL,
+            dock = BuildConfig.DOCK_NAME,
+            appId = "${BuildConfig.DOCK_NAME}-app",
+            scope = scope,
+            // report our own links so the station knows the full mesh.
+            linkStatus = {
+                dev.orbit.dock.station.AppLinks(
+                    bodyConnected = bodyComms.connected.value,
+                    llmReachable = selectedModel.baseUrl.isNotBlank(),
+                )
+            },
+        ).also { it.start() }
+    }
     val agent = remember(tools, selectedModel) {
         DockAgent(
             tools,
@@ -123,6 +140,7 @@ fun DockScreen() {
             api = selectedModel.api,
             visionEnabled = selectedModel.vision,
             cameraFrame = faceTracker,
+            stationLink = stationLink,
         ).also { agentRef.value = it }
     }
 
@@ -151,6 +169,7 @@ fun DockScreen() {
         }
     }
     val bodyConnected by bodyComms.connected.collectAsState()
+    val stationConnected by stationLink.connected.collectAsState()
     val bodyIntent by bodyComms.intent.collectAsState()
     val agentState by agent.state.collectAsState()
     val wiring = remember(controller, agent) {
@@ -333,11 +352,14 @@ fun DockScreen() {
                 speaker = speaker,
                 micOn = micGranted && !micMuted,
                 camOn = camGranted && !camMuted,
+                bodyConnected = bodyConnected,
+                stationConnected = stationConnected,
                 onMicToggle = if (micGranted) ({ controller.toggleMic() }) else null,
                 onCamToggle = if (camGranted) ({ controller.toggleCam() }) else null,
                 onWakeClick = if (BuildConfig.DEBUG) {
                     { PerceptionBus.emit(PerceptionEvent.WakeWord(label = "(debug)")) }
                 } else null,
+                onLinkClick = { showConnectDialog = true },
             )
         }
 

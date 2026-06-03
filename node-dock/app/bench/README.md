@@ -5,7 +5,10 @@ request path — the dock LLM transport + the real tool schemas
 ([`DockToolSchemas`](../app/src/main/kotlin/dev/orbit/dock/llm/DockToolSchemas.kt))
 + the real system prompt ([`DockPrompt`](../app/src/main/kotlin/dev/orbit/dock/llm/DockPrompt.kt))
 — N times per case, scores objective predicates + latency percentiles, and writes
-a results JSON the HTML viewer renders as a model×case matrix. Pure-JVM: no
+a results JSON rendered as a model×case matrix by the viewer, which now lives in
+**orbit-station** (`orbit-station/web/public/modules/bench.html`, served at
+`/#bench` in the station UI). Copy fresh `results/*.json` into
+`orbit-station/server/src/modules/bench/results/` to view them there. Pure-JVM: no
 Android, no emulator. Tools are no-ops ([`BenchTools`](src/main/kotlin/dev/orbit/dock/bench/BenchTools.kt))
 that record calls and feed back the same validation messages as the live dock, so
 this measures MODEL behavior, not servos.
@@ -160,8 +163,13 @@ real-time dock. The knob differs by backend (both wired into the transport):
 
 ## View
 
+The viewer moved to **orbit-station**. Copy the snapshot(s) you want to view
+into the station, then open its UI:
+
 ```bash
-cd bench && python3 -m http.server 8090   # → http://localhost:8090/viewer.html
+cp results/<snapshot>.json results/index.json \
+   ../../../orbit-station/server/src/modules/bench/results/
+cd ../../../orbit-station && npm run build && npm run start   # → http://localhost:8099/#bench
 ```
 
 Matrix: rows = cases (grouped by capability), columns = models. Each cell has
@@ -181,7 +189,10 @@ pass-rate+quality are all marked). A snapshot dropdown + a compare-vs dropdown
 | `results/<snapshot>.json` + `latest.json` | Output (gitignored except committed snapshots). Full per-run output/tools/latency kept for debugging. |
 | `results/index.json` | Snapshot list for the viewer dropdown. |
 | `results/<ts>.log` | Tee of the run console (transport POSTs + per-run trace). |
-| `viewer.html` | Static matrix viewer (vanilla JS, no build). |
+
+The matrix viewer (`bench.html`) now lives in
+[`orbit-station/web/public/modules/`](../../../orbit-station/web/public/modules/bench.html)
+and is served at `/#bench` in the station UI — see the **View** section above.
 
 `expect` predicates (all present fields must hold): `tool:"any"`,
 `toolName:"move_body"`, `minToolCalls:N`, `noTool`, `noMove` (no body movement;

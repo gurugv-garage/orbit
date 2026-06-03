@@ -38,7 +38,15 @@ Repo layout under this directory:
 
 ### Actuators
 
-| Joint | Servo | Torque | Range | Why |
+> **AS BUILT: all four joints use MG90S micro servos** (what's actually wired —
+> see `body-firmware/.../servo.h`). The DS3218/MG90D/SG90 mix in the table below
+> is the *original spec'd* BOM and its torque/fit rationale; it does **not** match
+> the current build. Practically: every joint is an MG90S driven 1:1, so each
+> sweeps the servo's full ±90° over 500–2500µs (the brain's `DEGREE_RANGE` uses
+> ±90° for both neck and foot). Re-spec to the metal-gear servos below only if the
+> MG90S torque/precision proves insufficient under real load.
+
+| Joint | Servo (spec'd) | Torque | Range | Why |
 |---|---|---|---|---|
 | foot_yaw | **DS3218** (180°, metal gear) | 20 kg·cm | ±90° | Rotates ~600 g upper body. Thrust bearing carries static weight. |
 | neck_pitch | **MG90D** (digital micro, metal gear) | ~2.5 kg·cm | ±28.6° | Holds head + ~250 g phone (req ~1.25 kg·cm, 2× margin). Same envelope as MG90S → fits the 30×40×40 neck_stub cavity. MG996R doesn't fit (42.9 mm tall). |

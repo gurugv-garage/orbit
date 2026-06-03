@@ -26,6 +26,41 @@ object DockToolSchemas {
         "foot" to listOf("forward", "left", "right"),
     )
 
+    /**
+     * The degree↔µs scale is FIXED and universal for every part:
+     *   -90° = 500µs, 0° = 1500µs, +90° = 2500µs  (1° ≈ 11.11µs).
+     * A given degree is the same physical servo angle everywhere — it never
+     * rescales per part.
+     */
+    private const val FULL_SWING_DEG = 90.0
+
+    /**
+     * Per-part LIMIT on how far the LLM may command, in degrees from neutral.
+     * This does NOT change the scale above — it just restricts the allowed range
+     * (and clamps anything beyond). Mirror in the station console:
+     * orbit-station/web/src/lib/bodyAngles.ts — keep both in sync.
+     *
+     * Both joints are MG90S. The FOOT is a direct 1:1 swivel → full ±90°. The
+     * NECK runs through a semicircle sector-gear pair, so its real head tilt is
+     * mechanically limited; set to ±45° (calibrated on hardware). To widen/narrow
+     * a part, change ONLY its number here — the µs math is untouched.
+     */
+    val DEGREE_RANGE: Map<String, Double> = mapOf(
+        "neck" to 45.0,
+        "foot" to 90.0,
+    )
+
+    /**
+     * Convert an absolute angle for a part to a servo pulse width (µs). The angle
+     * is first clamped to the part's [DEGREE_RANGE] limit, then mapped on the
+     * universal ±90° = 500–2500µs scale.
+     */
+    fun degreesToUs(part: String, degrees: Double): Int {
+        val limit = DEGREE_RANGE[part] ?: FULL_SWING_DEG
+        val clamped = degrees.coerceIn(-limit, limit)
+        return (1500 + (clamped / FULL_SWING_DEG) * 1000).toInt().coerceIn(500, 2500)
+    }
+
     val FACES: List<String> = listOf(
         "neutral", "happy", "curious", "concerned", "surprised", "sad", "excited", "angry", "love",
     )
@@ -40,7 +75,6 @@ object DockToolSchemas {
         "look_down" to "neck:lookDown",
     )
 
-    private val MOVE_STATES: List<String> = VALID.values.flatten().distinct()
 
     val setFace: JsonObject = buildJsonObject {
         put("type", "object")
@@ -53,53 +87,57 @@ object DockToolSchemas {
         putJsonArray("required") { add("expression") }
     }
 
-    val moveBody: JsonObject = buildJsonObject {
-        put("type", "object")
-        putJsonObject("properties") {
-            putJsonObject("part") {
-                put("type", "string"); put("description", "which part")
-                putJsonArray("enum") { add("neck"); add("foot") }
-            }
-            putJsonObject("state") {
-                put("type", "string"); put("description", "target position")
-                putJsonArray("enum") { MOVE_STATES.forEach { add(it) } }
-            }
-        }
-        putJsonArray("required") { add("part"); add("state") }
-    }
-
-    val gesture: JsonObject = buildJsonObject {
-        put("type", "object")
-        putJsonObject("properties") {
-            putJsonObject("name") {
-                put("type", "string"); put("description", "which gesture")
-                putJsonArray("enum") { GESTURES.keys.forEach { add(it) } }
-            }
-        }
-        putJsonArray("required") { add("name") }
-    }
-
-    val moveSequence: JsonObject = buildJsonObject {
+    /**
+     * The ONE movement tool: an ordered sequence of steps the body performs.
+     * A single move is just a one-step sequence. Each step targets a part at an
+     * absolute angle (degrees), takes `duration_ms` to get there, then optionally
+     * pauses `wait_ms` before the next step — enough to compose any motion
+     * (nod = down, up, down, up; look-around = left, pause, right, pause, center).
+     *
+     * Degrees are physical and absolute (0 = home/neutral), so the model reasons
+     * about real poses; the brain converts °→µs per part using each part's range.
+     */
+    val move: JsonObject = buildJsonObject {
         put("type", "object")
         putJsonObject("properties") {
             putJsonObject("steps") {
                 put("type", "array")
-                put("description", "ordered list of moves")
+                put("description", "Ordered moves, performed one after another. One step = a single move.")
                 putJsonObject("items") {
                     put("type", "object")
                     putJsonObject("properties") {
                         putJsonObject("part") {
-                            put("type", "string"); putJsonArray("enum") { add("neck"); add("foot") }
-                        }
-                        putJsonObject("state") {
                             put("type", "string")
-                            putJsonArray("enum") { MOVE_STATES.forEach { add(it) } }
+                            put("description", "which joint to move")
+                            putJsonArray("enum") { add("neck"); add("foot") }
+                        }
+                        putJsonObject("degrees") {
+                            put("type", "number")
+                            put(
+                                "description",
+                                "Absolute target angle in degrees. 0 = neutral. " +
+                                    "neck: -45 = fully up … 0 = level … +45 = fully down (range ±45°). " +
+                                    "foot: -90 = fully left … 0 = forward … +90 = fully right (range ±90°). " +
+                                    "Choose the magnitude to match the request: 'a little' ≈ a third of range, " +
+                                    "'all the way' ≈ the limit. Out-of-range is clamped.",
+                            )
+                        }
+                        putJsonObject("duration_ms") {
+                            put("type", "integer")
+                            put(
+                                "description",
+                                "Time to travel to this angle. 0 = snap instantly, ~250 = quick/snappy, " +
+                                    "~600 = normal, ~1500 = slow/gentle. Range 0–5000. Default ~400 if omitted.",
+                            )
+                            put("minimum", 0); put("maximum", 5000)
                         }
                         putJsonObject("wait_ms") {
-                            put("type", "integer"); put("description", "pause after this move, 0-5000")
+                            put("type", "integer")
+                            put("description", "Pause AFTER this step before the next, in ms (0–5000). Use for beats between moves.")
+                            put("minimum", 0); put("maximum", 5000)
                         }
                     }
-                    putJsonArray("required") { add("part"); add("state") }
+                    putJsonArray("required") { add("part"); add("degrees") }
                 }
             }
         }
@@ -127,9 +165,9 @@ object DockToolSchemas {
         "(e.g. math, or \"random(1,10)\", or \"random(1,10) > 5\"). Use this whenever you'd otherwise want to " +
         "\"run code\" for a number or a calculation — you have NO general code execution, only this."
     const val SET_FACE_DESC = "Set the dock's facial expression to match the mood of what you're saying."
-    const val MOVE_BODY_DESC = "Move one of the dock's body parts. neck: lookUp/lookDown/center. foot: left/right/forward."
-    const val GESTURE_DESC = "Perform a whole gesture (nod, shake head, wiggle, look around)."
-    const val MOVE_SEQUENCE_DESC = "Perform a custom sequence of body moves you compose yourself — " +
-        "for expressive or repeated motion. Each step is a part + state, with an " +
-        "optional pause (wait_ms) before the next."
+    const val MOVE_DESC = "Move the body. Give an ordered list of steps; each step turns a joint to an " +
+        "absolute angle in DEGREES over a duration, with an optional pause after. " +
+        "neck nods up/down (±45°, 0=level, negative=up). foot swivels left/right (±90°, 0=forward, negative=left). " +
+        "ONE step = a single move; many steps = a composed motion (e.g. nod = neck +25 then 0 then +25 then 0; " +
+        "look around = foot -60 wait, foot +60 wait, foot 0). You choose the angle, speed (duration_ms) and beats (wait_ms)."
 }

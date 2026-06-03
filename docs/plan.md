@@ -255,6 +255,17 @@ The sensor-fusion challenge there is that gyroscope / accelerometer / rotation-v
 
 ## 5. plat (agent + platform service)
 
+> **Renamed `plat` → `orbit-station` (2026-06-02), and split in two.** What's
+> built is the **control & observability plane** (`orbit-station/`, Node/TS):
+> one WebSocket for all firmware/apps, a browser UI, and modules for
+> observability (agent-core traces), config push, the bodylink console, a
+> `mind` stub, and the bench viewer. The **media brain** described below
+> (WebRTC SFU + VAD + STT + TTS + ROS2 bridge) is **deferred to a separate
+> sidecar** — it's a Python/Go GPU-adjacent concern that doesn't belong in the
+> Node control process. The text below is retained as the media-brain spec for
+> that future sidecar. See the decision log entry "orbit-station split" and
+> [`../orbit-station/README.md`](../orbit-station/README.md).
+
 Lives on the laptop (or cloud / dedicated home server later). One process tree:
 
 ### What it does
@@ -354,6 +365,9 @@ Drop-in swaps that don't break the architecture.
 ## 9. Decision log
 
 Compact: decision, reason, what would flip it.
+
+### orbit-station split (2026-06-02)
+`plat` was specced as one heavy process doing both the **media brain** (WebRTC SFU + Silero VAD + faster-whisper STT + MediaPipe + Piper TTS + ROS2 bridge) and, implicitly, all the cross-device glue. Building started on the glue and it became clear those are two different animals: the media pipeline is real-time, Python/Go, GPU-adjacent; the glue is a control plane — observability, config, a body console, a supervisor — best as a small Node/TS service with a browser UI. **Split them.** Renamed `plat/` → `orbit-station/` and built the control plane: one WebSocket every firmware/app connects to, an in-process event bus, and modules (observability of agent-core traces, config push-on-change, bodylink console, `mind` stub, bench viewer). Node + TypeScript; backend (`server/`, raw `ws`) + React/Vite UI (`web/`). The media brain is **deferred to a separate sidecar** (still specced in §5). **Transport:** raw WebSocket everywhere (not socket.io) — the ESP32 can't easily speak socket.io, and one trivial framing for all peers beats a JS-centric one + a bridge. **No fakes in the architecture** — the dock app (emulator or physical device, holding a WS) and the ESP32 (WS client; USB is only for PlatformIO flash/monitor) are the real producers; a manual `npm run smoke` poke exists only for eyeballing the UI. **Would flip if** the media work turns out small enough to co-host, or if everything moved to one language.
 
 ### orbit terminology (2026-05-18)
 Renamed everything for clarity. **orbit** = platform. **node-rover** = mobile robot (was `botz`). **node-dock** = stationary desk companion (was "I/O node" / "deskz"). **plat** = central agent + platform service. Repo layout: `{plat,node-rover,node-dock,docs}/` at the root. The earlier "I/O nodes one per room" framing was folded into node-dock — a dock can sit on a desk, kitchen counter, or bedside table; "one per room" is just N>1 docks. The "dumb edge device" framing was relaxed — a dock can have local active behavior (gaze, idle gestures) that doesn't require a plat round-trip, while plat still owns intent.

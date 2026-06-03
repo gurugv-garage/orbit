@@ -138,9 +138,28 @@ Legend: `[x]` done · `[~]` in progress · `[ ]` not started · `[?]` open quest
 
 ---
 
-## 3 · plat (laptop / home server / cloud)
+## 3 · plat → orbit-station (laptop / home server / cloud)
 
-### 3.1 Audio pipeline (centralized at agent)
+> **Renamed `plat` → `orbit-station` + split (2026-06-02).** The **control
+> plane** is built (`orbit-station/`, Node/TS): one WebSocket, browser UI, and
+> modules — observability (agent-core trace ingest), config push, bodylink
+> console, `mind` stub, bench viewer (moved from `node-dock/app/bench`). See
+> `orbit-station/README.md` + `TESTING.md` and decision log "orbit-station
+> split". The **media pipeline below** (WebRTC/STT/TTS) is a deferred separate
+> sidecar — the checkboxes still stand for that.
+
+### 3.0 orbit-station control plane
+- [x] One WS hub + in-process bus; raw-WS protocol for all peers
+- [x] Observability: agent-core Session/Turn/Step trace ingest + live stream
+- [x] Config: defaults + push-on-change to firmware/app over WS
+- [x] BodyLink console: direct body control (profile-driven), bypassing the app
+- [x] Mind: stub subscriber (no actions yet)
+- [x] Bench viewer folded in; browser UI (space-themed, responsive); verified in-browser
+- [ ] Wire real producers: dock app (emulator + device) + ESP32 firmware over WS
+- [ ] `mind` gains triggers (rules, then maybe LLM supervisor)
+- [ ] HTTPS in real deployment; auth on the WS for non-LAN
+
+### 3.1 Audio pipeline (centralized at agent — deferred media sidecar)
 - [ ] WebRTC SFU (LiveKit) running on laptop
 - [ ] Per-stream Silero VAD chunking utterances
 - [ ] `faster-whisper-small` STT on GPU (or `base` CPU fallback)

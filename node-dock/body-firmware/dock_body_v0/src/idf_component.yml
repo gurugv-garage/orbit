@@ -1,0 +1,6 @@
+# ESP-IDF Component Manager manifest.
+# Declares external (managed) component dependencies, fetched on build into
+# managed_components/ (gitignored). Core IDF components don't go here — only
+# registry components like esp_websocket_client (the station-link client).
+dependencies:
+  espressif/esp_websocket_client: "^1.2.0"

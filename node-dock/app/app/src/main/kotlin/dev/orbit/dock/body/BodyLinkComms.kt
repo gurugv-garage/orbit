@@ -373,6 +373,14 @@ class BodyLinkComms(
         setTarget(mapOf(part to cmd.params), cmd.durationMs, stateName = stateName)
     }
 
+    override suspend fun setAngle(part: String, pulseWidthUs: Int, durationMs: Int, label: String) {
+        // Raw target — the `move` tool already converted degrees → µs. The body
+        // clamps to its own declared range; we just send pulse_width_us. `label`
+        // (e.g. "+20°") rides along as the intent's stateName so the body badge
+        // shows the angle instead of "<raw>".
+        setTarget(mapOf(part to mapOf("pulse_width_us" to pulseWidthUs.toDouble())), durationMs, stateName = label)
+    }
+
     /**
      * Lower-level: brain has already resolved primitive params.
      * `parts[<partName>]` is a `{paramName: value}` map. If `durationMs` is

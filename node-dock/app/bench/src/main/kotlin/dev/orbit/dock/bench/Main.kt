@@ -141,18 +141,12 @@ private fun rescore(dir: File, cases: List<Pair<String, List<Case>>>, json: Json
     for (m in out.models) { println(m.name); for (c in m.cases) println("  ${c.capability.padEnd(20)} ${c.id.padEnd(18)} ${pctOf(c.passRate)}") }
 }
 
-/** True if a stored tool call uses a valid part↔state pair (or isn't a move tool). */
+/** True if a stored `move` call uses valid parts (or isn't a move call). */
 private fun enumsOk(tc: ToolCallRecord): Boolean {
-    val v = dev.orbit.dock.llm.DockToolSchemas.VALID
-    return when (tc.name) {
-        "move_body" -> {
-            val m = Regex("\"part\"\\s*:\\s*\"(\\w+)\".*?\"state\"\\s*:\\s*\"(\\w+)\"").find(tc.args)
-                ?: return false
-            m.groupValues[2] in (v[m.groupValues[1]] ?: emptyList())
-        }
-        "gesture" -> Regex("\"name\"\\s*:\\s*\"(\\w+)\"").find(tc.args)?.groupValues?.get(1) in dev.orbit.dock.llm.DockToolSchemas.GESTURES.keys
-        else -> true
-    }
+    if (tc.name != "move") return true
+    val parts = Regex("\"part\"\\s*:\\s*\"(\\w+)\"").findAll(tc.args).map { it.groupValues[1] }.toList()
+    // at least one step, and every named part is known.
+    return parts.isNotEmpty() && parts.all { it in dev.orbit.dock.llm.DockToolSchemas.DEGREE_RANGE.keys }
 }
 
 /** Prior models in the SAME snapshot file (for --merge), or empty if new. */

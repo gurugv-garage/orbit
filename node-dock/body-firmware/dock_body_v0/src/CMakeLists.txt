@@ -6,6 +6,7 @@ idf_component_register(
         "bodylink_proto.c"
         "bodylink_motion.c"
         "bodylink_ws.c"
+        "station_link.c"
     INCLUDE_DIRS "." "../include"
     REQUIRES
         esp_wifi
@@ -16,4 +17,5 @@ idf_component_register(
         esp_driver_mcpwm
         esp_timer
         json
+        esp_websocket_client
 )

@@ -18,6 +18,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.cancelAndJoin
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -83,6 +85,10 @@ class DockAgent(
      *  the facade → tool-call → body path is unit-testable without a model.
      *  Null → the real [DockStreamFn]. */
     streamFnOverride: dev.pi.ai.StreamFn? = null,
+    /** Optional observability sink. When set, every [AgentEvent] is also shipped
+     *  to orbit-station's `obs` topic as an AgentEventDto. Null → no station
+     *  (the dock is fully functional without it). */
+    private val stationLink: dev.orbit.dock.station.StationLink? = null,
 ) {
     val isConfigured: Boolean get() = baseUrl.isNotBlank() && model.isNotBlank()
 
@@ -112,6 +118,12 @@ class DockAgent(
     private var extractor = StreamingReplyExtractor()
     @Volatile private var spokeThisTurn = false
     @Volatile private var turnStartMs = 0L
+
+    // Observability threading (orbit-station obs topic). One DockAgent = one
+    // session; each turn gets a fresh id; seq orders events within a turn.
+    private val obsSessionId = "sess-" + java.util.UUID.randomUUID().toString().take(8)
+    @Volatile private var obsTurnId = ""
+    private var obsSeq = 0
 
     private val agent: Agent = Agent(
         AgentOptions(
@@ -208,6 +220,7 @@ class DockAgent(
      */
     private fun onAgentEvent(event: AgentEvent) {
         traceEvent(event)
+        shipToStation(event)
         when (event) {
             is AgentEvent.MessageUpdate -> {
                 // Streaming assistant prose → live subtitle + sentence-by-sentence TTS.
@@ -266,6 +279,58 @@ class DockAgent(
         }
         _events.tryEmit("+${dt}ms  $line")
         if (BuildConfig.DEBUG) Timber.tag(EVT).i("+${dt}ms  $line")
+    }
+
+    /**
+     * Map one [AgentEvent] to orbit-station's AgentEventDto and publish it on the
+     * `obs` topic. No-op when no station is wired. The DTO shape mirrors
+     * orbit-station/server/src/modules/observability/types.ts.
+     */
+    private fun shipToStation(event: AgentEvent) {
+        val link = stationLink ?: return
+        if (event is AgentEvent.TurnStart) {
+            obsTurnId = "turn-" + java.util.UUID.randomUUID().toString().take(8)
+            obsSeq = 0
+        }
+        if (obsTurnId.isEmpty()) return  // events outside a turn (shouldn't happen)
+
+        val kind = when (event) {
+            is AgentEvent.TurnStart -> "TurnStart"
+            is AgentEvent.TurnEnd -> "TurnEnd"
+            is AgentEvent.StepStart -> "StepStart"
+            is AgentEvent.StepEnd -> "StepEnd"
+            is AgentEvent.MessageStart -> "MessageStart"
+            is AgentEvent.MessageUpdate -> "MessageUpdate"
+            is AgentEvent.MessageEnd -> "MessageEnd"
+            is AgentEvent.ToolExecutionStart -> "ToolExecutionStart"
+            is AgentEvent.ToolExecutionUpdate -> "ToolExecutionUpdate"
+            is AgentEvent.ToolExecutionEnd -> "ToolExecutionEnd"
+        }
+        val data: kotlinx.serialization.json.JsonObject? = when (event) {
+            is AgentEvent.MessageEnd -> buildJsonObject { put("text", assistantText(event.message)) }
+            is AgentEvent.ToolExecutionStart -> buildJsonObject {
+                put("toolCallId", event.toolCallId)
+                put("toolName", event.toolName)
+                put("args", event.args)
+            }
+            is AgentEvent.ToolExecutionEnd -> buildJsonObject {
+                put("toolCallId", event.toolCallId)
+                put("toolName", event.toolName)
+                put("isError", event.isError)
+            }
+            is AgentEvent.StepEnd -> buildJsonObject { put("model", model) }
+            else -> null
+        }
+
+        val dto = buildJsonObject {
+            put("sessionId", obsSessionId)
+            put("turnId", obsTurnId)
+            put("seq", obsSeq++)
+            put("kind", kind)
+            put("ts", System.currentTimeMillis())
+            if (data != null) put("data", data)
+        }
+        link.emitAgentEvent(dto)
     }
 
     /** Plain assistant text (concat of TextContent), ignoring tool-call blocks. */

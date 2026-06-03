@@ -63,6 +63,14 @@ int bl_motion_body_clock_ms(void) {
     return (int)((esp_timer_get_time() / 1000) - s_boot_ms);
 }
 
+int bl_motion_current_us(int idx) {
+    if (idx < 0 || idx >= g_bl_n_parts) return -1;
+    xSemaphoreTake(s_mtx, portMAX_DELAY);
+    int us = s_rt[idx].current_us;
+    xSemaphoreGive(s_mtx);
+    return us;
+}
+
 static const bl_part_decl_t *find_part(const char *name, int *out_idx) {
     if (!name) return NULL;
     for (int i = 0; i < g_bl_n_parts; ++i) {

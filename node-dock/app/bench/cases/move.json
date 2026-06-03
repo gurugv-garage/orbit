@@ -1,0 +1,68 @@
+{
+  "_comment": [
+    "Tests the single `move` tool (sequence of {part, degrees, duration_ms?, wait_ms?}).",
+    "degrees are absolute: 0=neutral. neck ±45 (neg=up, pos=down). foot ±90 (neg=left, pos=right).",
+    "Two things under test:",
+    "  (A) individual moves with the RIGHT AMOUNT — does the model scale degrees to the request?",
+    "  (B) COMPOSITION — can it build multi-step sequences (nod, look around) with waits?",
+    "degRange windows are generous (testing 'sensible', not exact). minSteps tests sequencing.",
+    "validEnums = every step names a real part."
+  ],
+  "capability": "move",
+  "cases": [
+    {
+      "id": "look_fully_up",
+      "prompt": "look all the way up",
+      "expect": { "toolName": "move", "validEnums": true, "degRange": { "part": "neck", "lo": -45, "hi": -25 } },
+      "note": "Full up = near -45° (neck range ±90°). A timid -15° fails: 'all the way' demands magnitude."
+    },
+    {
+      "id": "look_slightly_up",
+      "prompt": "tilt your head up just a tiny bit",
+      "expect": { "toolName": "move", "validEnums": true, "degRange": { "part": "neck", "lo": -25, "hi": -1 } },
+      "note": "Tiny = small negative. Discriminates: must NOT be a full swing."
+    },
+    {
+      "id": "look_down_some",
+      "prompt": "look down at the table in front of you",
+      "expect": { "toolName": "move", "validEnums": true, "degRange": { "part": "neck", "lo": 12, "hi": 45 } },
+      "note": "Down = positive neck degrees, a meaningful amount."
+    },
+    {
+      "id": "turn_hard_left",
+      "prompt": "turn all the way to your left",
+      "expect": { "toolName": "move", "validEnums": true, "degRange": { "part": "foot", "lo": -90, "hi": -65 } },
+      "note": "Hard left = near -90°."
+    },
+    {
+      "id": "turn_a_little_right",
+      "prompt": "turn a little to the right",
+      "expect": { "toolName": "move", "validEnums": true, "degRange": { "part": "foot", "lo": 10, "hi": 45 } },
+      "note": "A little right = modest positive, not full 90."
+    },
+    {
+      "id": "center",
+      "prompt": "face straight forward and look level",
+      "expect": { "toolName": "move", "validEnums": true, "degRange": { "part": "foot", "lo": -5, "hi": 5 } },
+      "note": "Neutral anchor: 0° both. Sanity check the model uses 0 for neutral."
+    },
+    {
+      "id": "nod_yes",
+      "prompt": "nod your head yes a couple times",
+      "expect": { "toolName": "move", "validEnums": true, "minSteps": 3 },
+      "note": "COMPOSITION: a nod is multiple neck steps (down/up/down/up). minSteps≥3 forces a real sequence, not one move."
+    },
+    {
+      "id": "look_around_room",
+      "prompt": "look around the room slowly, checking left then right",
+      "expect": { "toolName": "move", "validEnums": true, "minSteps": 3 },
+      "note": "COMPOSITION: foot left, (pause), right, (pause), center. Tests sequencing + intent to use waits."
+    },
+    {
+      "id": "curious_tilt_then_lean",
+      "prompt": "act curious — tilt up to look at me, pause, then lean down to inspect something",
+      "expect": { "toolName": "move", "validEnums": true, "minSteps": 2, "degRange": { "part": "neck", "lo": -45, "hi": -2 } },
+      "note": "COMPOSITION + amount: at least an up-tilt then a down-lean, with a beat. Hard case: needs both axes of control."
+    }
+  ]
+}

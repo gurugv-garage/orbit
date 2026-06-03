@@ -21,8 +21,10 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.setMain
+import kotlinx.serialization.json.add
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
+import kotlinx.serialization.json.putJsonArray
 import org.junit.After
 import org.junit.Before
 import org.junit.Test
@@ -57,7 +59,9 @@ class DockAgentBodyTurnTest {
             ),
         )
         val moves = CopyOnWriteArrayList<Pair<String, String>>()
+        val angles = CopyOnWriteArrayList<Triple<String, Int, Int>>()
         override suspend fun setState(part: String, stateName: String) { moves.add(part to stateName) }
+        override suspend fun setAngle(part: String, pulseWidthUs: Int, durationMs: Int, label: String) { angles.add(Triple(part, pulseWidthUs, durationMs)) }
         private companion object {
             fun cmd() = BodyStateCatalog.PrimitiveCommand(mapOf("pulse_width_us" to 1500.0), durationMs = 20)
         }
@@ -80,8 +84,12 @@ class DockAgentBodyTurnTest {
             val out = AssistantMessageEventStream()
             val msg = if (round++ == 0) {
                 val call = ToolCall(
-                    id = "c1", name = "move_body",
-                    arguments = buildJsonObject { put("part", "neck"); put("state", "lookDown") },
+                    id = "c1", name = "move",
+                    arguments = buildJsonObject {
+                        putJsonArray("steps") {
+                            add(buildJsonObject { put("part", "neck"); put("degrees", 20); put("duration_ms", 50) })
+                        }
+                    },
                 )
                 AssistantMessage(
                     content = listOf(TextContent("Looking down."), call),
@@ -126,9 +134,10 @@ class DockAgentBodyTurnTest {
 
         agent.respond("look down")
 
-        // The scripted move_body tool call must reach the body's setState.
-        waitUntil { body.moves.isNotEmpty() }
-        assertThat(body.moves).containsExactly("neck" to "lookDown")
+        // The scripted `move` tool call must reach the body's setAngle (°→µs).
+        waitUntil { body.angles.isNotEmpty() }
+        assertThat(body.angles.first().first).isEqualTo("neck")
+        assertThat(body.angles.first().second).isGreaterThan(1500)   // +20° → below center (down)
         agent.shutdown()
         faux.cancel()
     }

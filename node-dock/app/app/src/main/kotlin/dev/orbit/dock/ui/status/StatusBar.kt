@@ -27,9 +27,8 @@ import dev.orbit.dock.ui.face.Speaker
  *
  * - VAD bar: live audio level [0..1]
  * - Speaker: who's currently producing audio
- * - Body: mock; v2
  * - Mic / cam: real states
- * - Plat link: mock; v2
+ * - Link status: one sleek chip with BODY + STATION connection dots (real).
  *
  * `onWakeClick` is wired in debug builds only (callers gate the lambda).
  */
@@ -39,9 +38,12 @@ fun StatusBar(
     speaker: Speaker,
     micOn: Boolean,
     camOn: Boolean,
+    bodyConnected: Boolean,
+    stationConnected: Boolean,
     onMicToggle: (() -> Unit)? = null,
     onCamToggle: (() -> Unit)? = null,
     onWakeClick: (() -> Unit)? = null,
+    onLinkClick: (() -> Unit)? = null,
     modifier: Modifier = Modifier,
 ) {
     Row(
@@ -53,12 +55,54 @@ fun StatusBar(
     ) {
         VadBar(level = audioLevel)
         SpeakerIndicator(speaker, onClick = onWakeClick)
-        BodyIndicator(status = "🤖 idle")
         MicCamIndicator(
             micOn = micOn, camOn = camOn,
             onMicClick = onMicToggle, onCamClick = onCamToggle,
         )
-        PlatLink(connected = false)
+        LinkStatus(
+            bodyConnected = bodyConnected,
+            stationConnected = stationConnected,
+            onClick = onLinkClick,
+        )
+    }
+}
+
+/**
+ * Unified connection chip: two labelled dots — body (ESP32) and station —
+ * each green when up, amber when down. Replaces the old mock body + plat
+ * indicators. Tap to open the connect dialog.
+ */
+@Composable
+private fun LinkStatus(
+    bodyConnected: Boolean,
+    stationConnected: Boolean,
+    onClick: (() -> Unit)? = null,
+) {
+    val mod = Modifier
+        .clip(RoundedCornerShape(50))
+        .background(Color.White.copy(alpha = 0.05f))
+        .let { if (onClick != null) it.clickable { onClick() } else it }
+        .padding(horizontal = 10.dp, vertical = 4.dp)
+    Row(verticalAlignment = Alignment.CenterVertically, modifier = mod) {
+        LinkDot(label = "body", up = bodyConnected)
+        Spacer(modifier = Modifier.width(10.dp))
+        LinkDot(label = "stn", up = stationConnected)
+    }
+}
+
+@Composable
+private fun LinkDot(label: String, up: Boolean) {
+    val color = if (up) Color(0xFF7FE08C) else Color(0xFFFFBE5C)
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Box(
+            modifier = Modifier
+                .height(7.dp)
+                .width(7.dp)
+                .clip(RoundedCornerShape(50))
+                .background(color),
+        )
+        Spacer(modifier = Modifier.width(5.dp))
+        Text(label, fontSize = 11.sp, color = color.copy(alpha = 0.95f))
     }
 }
 
@@ -109,11 +153,6 @@ private fun SpeakerIndicator(speaker: Speaker, onClick: (() -> Unit)?) {
 }
 
 @Composable
-private fun BodyIndicator(status: String) {
-    Text(status, color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.7f), fontSize = 12.sp)
-}
-
-@Composable
 private fun MicCamIndicator(
     micOn: Boolean,
     camOn: Boolean,
@@ -157,12 +196,3 @@ private fun ToggleIcon(
     }
 }
 
-@Composable
-private fun PlatLink(connected: Boolean) {
-    val dot = if (connected) "● plat" else "○ local"
-    Text(
-        dot,
-        color = if (connected) Color(0xFF7FE08C) else Color(0xFFFFBE5C),
-        fontSize = 12.sp,
-    )
-}

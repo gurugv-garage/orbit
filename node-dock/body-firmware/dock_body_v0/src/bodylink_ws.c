@@ -13,6 +13,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>      // close()
+#include <sys/socket.h>  // getpeername()
+#include <netinet/in.h>
+#include <arpa/inet.h>   // inet_ntop()
 #include "esp_log.h"
 #include "esp_http_server.h"
 #include "esp_timer.h"
@@ -125,7 +128,14 @@ static esp_err_t ws_handler(httpd_req_t *req) {
         s_handshake_done = false;
         xSemaphoreGive(s_client_mtx);
 
-        ESP_LOGI(TAG, "WS client connected (fd=%d)", fd);
+        // Log the peer IP — handy for spotting which device owns the body link.
+        struct sockaddr_in6 paddr;
+        socklen_t paddr_len = sizeof(paddr);
+        char peer_ip[40] = "?";
+        if (getpeername(fd, (struct sockaddr *)&paddr, &paddr_len) == 0) {
+            inet_ntop(AF_INET6, &paddr.sin6_addr, peer_ip, sizeof(peer_ip));
+        }
+        ESP_LOGI(TAG, "WS client connected (fd=%d) from %s", fd, peer_ip);
         // event:boot fires immediately, before hello.
         send_text(req, bl_enc_event_boot(now_ms_short()));
         return ESP_OK;
@@ -268,6 +278,13 @@ static void motion_task(void *arg) {
 }
 
 // ── Public API ─────────────────────────────────────────────────────────
+
+bool bl_ws_has_client(void) {
+    xSemaphoreTake(s_client_mtx, portMAX_DELAY);
+    bool up = (s_client_fd >= 0) && s_handshake_done;
+    xSemaphoreGive(s_client_mtx);
+    return up;
+}
 
 esp_err_t bl_ws_start(void) {
     if (s_httpd) return ESP_OK;

@@ -8,6 +8,9 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import timber.log.Timber
 import java.util.concurrent.atomic.AtomicBoolean
 
@@ -326,11 +329,71 @@ class DockTools(
                else "running $moves moves; issues: ${problems.joinToString()}"
     }
 
-    /** One step of a body-movement sequence: either a move (part+state with a
-     *  travel time) or a pure wait. */
+    /**
+     * The `move` tool's executor: an ordered sequence of degree-targeted steps.
+     * Each step is `{part, degrees, duration_ms?, wait_ms?}`. The brain converts
+     * degrees → µs ([DockToolSchemas.degreesToUs], per-part range), commands the
+     * body over `duration_ms`, waits the move's travel time + any `wait_ms`, then
+     * proceeds. Fire-and-forget so speech isn't blocked; a new sequence preempts
+     * a running one (barge-in). Validates synchronously so the model gets
+     * immediate feedback on a bad step.
+     */
+    fun makeMove(steps: kotlinx.serialization.json.JsonArray): String {
+        val link = body
+        if (link == null || !link.connected.value) {
+            Timber.i("tool.makeMove: no body connected — would have run: $steps")
+            return "no body connected; nothing happened"
+        }
+        TurnLog.toolCalled("move", steps.toString())
+
+        val ops = mutableListOf<MoveOp>()
+        val problems = mutableListOf<String>()
+        for ((i, el) in steps.withIndex()) {
+            val o = el as? JsonObject ?: run { problems.add("step ${i + 1}: not an object"); continue }
+            val part = o["part"]?.jsonPrimitive?.content?.lowercase().orEmpty()
+            val deg = o["degrees"]?.jsonPrimitive?.content?.toDoubleOrNull()
+            val durMs = o["duration_ms"]?.jsonPrimitive?.content?.toIntOrNull()?.coerceIn(0, 5000) ?: 400
+            val waitMs = o["wait_ms"]?.jsonPrimitive?.content?.toLongOrNull()?.coerceIn(0, 5000) ?: 0L
+            if (part !in dev.orbit.dock.llm.DockToolSchemas.DEGREE_RANGE.keys) {
+                problems.add("step ${i + 1}: unknown part '$part'"); continue
+            }
+            if (deg == null) { problems.add("step ${i + 1}: missing/invalid degrees"); continue }
+            val us = dev.orbit.dock.llm.DockToolSchemas.degreesToUs(part, deg)
+            val label = "${if (deg > 0) "+" else ""}${deg.toInt()}°"
+            ops.add(MoveOp(part = part, pulseWidthUs = us, travelMs = durMs, waitMs = waitMs, label = label))
+        }
+
+        val moves = ops.count { it.part != null }
+        if (ops.isNotEmpty()) {
+            onToolCall("move")
+            bodyJob?.cancel()
+            bodyJob = bodyScope.launch {
+                try {
+                    for (op in ops) {
+                        if (op.part != null && op.pulseWidthUs != null) {
+                            link.setAngle(op.part, op.pulseWidthUs, op.travelMs, op.label ?: "")
+                            kotlinx.coroutines.delay(op.travelMs + 40L)
+                        }
+                        if (op.waitMs > 0) kotlinx.coroutines.delay(op.waitMs)
+                    }
+                } finally {
+                    onToolCall(null)
+                }
+            }
+        }
+        return if (moves == 0) "no valid steps; issues: ${problems.joinToString()}"
+               else if (problems.isEmpty()) "ok — running $moves step(s)"
+               else "running $moves step(s); issues: ${problems.joinToString()}"
+    }
+
+    /** One step of a body-movement sequence: a move (part + target with a travel
+     *  time) and/or a pause after it. `state` (named) and `pulseWidthUs` (raw,
+     *  from the degrees `move` tool) are alternative ways to express the target. */
     private data class MoveOp(
         val part: String? = null,
         val state: String? = null,
+        val pulseWidthUs: Int? = null,
+        val label: String? = null,
         val travelMs: Int = 0,
         val waitMs: Long = 0L,
     )

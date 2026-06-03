@@ -24,9 +24,9 @@ import java.util.concurrent.CopyOnWriteArrayList
 
 /**
  * The agent's tool surface: validates the [DockToolsAdapter] tools the model
- * calls — move_body part/state pairing, named gestures, model-authored
- * move_sequence, and the human status phrasing. Drives them against a mock body
- * (no socket/servos) so the validation + sequence-building logic is testable.
+ * calls — the single degrees-based `move` tool (one or many steps, °→µs
+ * conversion, sequencing) and the human status phrasing. Drives them against a
+ * mock body (no socket/servos) so the conversion + sequence-building is testable.
  */
 @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
 class DockToolsAdapterTest {
@@ -41,7 +41,9 @@ class DockToolsAdapterTest {
         override val connected: StateFlow<Boolean> = _c
         override val validatedCatalog: BodyStateCatalog = catalog
         val moves = CopyOnWriteArrayList<Pair<String, String>>()
+        val angles = CopyOnWriteArrayList<Triple<String, Int, Int>>()
         override suspend fun setState(part: String, stateName: String) { moves.add(part to stateName) }
+        override suspend fun setAngle(part: String, pulseWidthUs: Int, durationMs: Int, label: String) { angles.add(Triple(part, pulseWidthUs, durationMs)) }
     }
 
     private fun catalog(): BodyStateCatalog {
@@ -69,77 +71,87 @@ class DockToolsAdapterTest {
     }
     @After fun tearDown() = Dispatchers.resetMain()
 
-    private fun waitMoves(n: Int) {
+    private fun waitAngles(n: Int) {
         val end = System.currentTimeMillis() + 3000
-        while (System.currentTimeMillis() < end) { if (body.moves.size >= n) return; Thread.sleep(10) }
+        while (System.currentTimeMillis() < end) { if (body.angles.size >= n) return; Thread.sleep(10) }
     }
 
-    // ── move_body ─────────────────────────────────────────────────────────
+    // ── move: single step ───────────────────────────────────────────────────
 
-    @Test fun moveBodyValidPairExecutes() = runTest {
-        val r = tool("move_body").execute("1", args("""{"part":"neck","state":"lookDown"}"""), null)
-        assertThat(text(r)).contains("running 1 moves")
-        waitMoves(1); assertThat(body.moves).containsExactly("neck" to "lookDown")
+    @Test fun degreesUseFixedScale() = runTest {
+        // Fixed universal scale: +90° = 2500µs. foot allows ±90, so +90 → ~2500.
+        val r = tool("move").execute("1", args("""{"steps":[{"part":"foot","degrees":90,"duration_ms":300}]}"""), null)
+        assertThat(text(r)).contains("running 1 step")
+        waitAngles(1)
+        val (part, us, dur) = body.angles.first()
+        assertThat(part).isEqualTo("foot")
+        assertThat(us).isAtLeast(2480)   // +90° on the fixed scale
+        assertThat(dur).isEqualTo(300)
     }
 
-    @Test fun moveBodyRejectsMismatchedPair() = runTest {
-        // neck has no 'left' (that's a foot state) — rejected before the body call.
-        val r = tool("move_body").execute("1", args("""{"part":"neck","state":"left"}"""), null)
-        assertThat(text(r)).contains("neck has no 'left'")
-        Thread.sleep(80); assertThat(body.moves).isEmpty()
+    @Test fun perPartLimitClampsBeyondRange() = runTest {
+        // neck limit is ±45°. Scale is FIXED (90°=1000µs), so +45° = 2000µs.
+        // Commanding +90° must CLAMP to +45° → ~2000µs, NOT go to the full 2500.
+        tool("move").execute("1", args("""{"steps":[{"part":"neck","degrees":90}]}"""), null)
+        waitAngles(1)
+        val us = body.angles.first().second
+        assertThat(us).isAtLeast(1960)   // +45° = 1500 + (45/90)*1000 = 2000
+        assertThat(us).isAtMost(2040)
     }
 
-    // ── gesture ─────────────────────────────────────────────────────────────
-
-    @Test fun gestureNodExpandsToNeckSequence() = runTest {
-        val r = tool("gesture").execute("1", args("""{"name":"nod"}"""), null)
-        assertThat(text(r)).contains("running")
-        waitMoves(2)
-        assertThat(body.moves.map { it.first }.distinct()).containsExactly("neck")
-        assertThat(body.moves.size).isAtLeast(2)
+    @Test fun centerDegreesMapsToMidpoint() = runTest {
+        tool("move").execute("1", args("""{"steps":[{"part":"foot","degrees":0}]}"""), null)
+        waitAngles(1)
+        assertThat(body.angles.first().second).isEqualTo(1500)   // 0° = center
     }
 
-    @Test fun gestureUnknownReported() = runTest {
-        val r = tool("gesture").execute("1", args("""{"name":"backflip"}"""), null)
-        assertThat(text(r)).contains("unknown gesture")
+    @Test fun negativeDegreesGoBelowCenter() = runTest {
+        // foot -90 = full left → ~500µs.
+        tool("move").execute("1", args("""{"steps":[{"part":"foot","degrees":-90}]}"""), null)
+        waitAngles(1)
+        assertThat(body.angles.first().second).isAtMost(600)
     }
 
-    // ── move_sequence (model-authored) ──────────────────────────────────────
+    // ── move: sequencing ────────────────────────────────────────────────────
 
-    @Test fun moveSequenceRunsAuthoredSteps() = runTest {
-        val r = tool("move_sequence").execute(
+    @Test fun multiStepRunsAllStepsInOrder() = runTest {
+        val r = tool("move").execute(
             "1",
-            args("""{"steps":[{"part":"neck","state":"lookUp","wait_ms":100},{"part":"neck","state":"center"}]}"""),
+            args("""{"steps":[{"part":"neck","degrees":20,"duration_ms":50,"wait_ms":50},{"part":"neck","degrees":0,"duration_ms":50}]}"""),
             null,
         )
-        assertThat(text(r)).contains("running 2 moves")
-        waitMoves(2)
-        assertThat(body.moves).containsExactly("neck" to "lookUp", "neck" to "center").inOrder()
+        assertThat(text(r)).contains("running 2 step")
+        waitAngles(2)
+        assertThat(body.angles.map { it.first }).containsExactly("neck", "neck").inOrder()
+        // first step (down, +deg) should be a higher µs than the second (center).
+        assertThat(body.angles[0].second).isGreaterThan(body.angles[1].second)
     }
 
-    @Test fun moveSequenceSkipsInvalidStepsButRunsValidOnes() = runTest {
-        val r = tool("move_sequence").execute(
+    @Test fun unknownPartSkippedValidStepsRun() = runTest {
+        val r = tool("move").execute(
             "1",
-            args("""{"steps":[{"part":"neck","state":"lookUp"},{"part":"neck","state":"sideways"},{"part":"foot","state":"left"}]}"""),
+            args("""{"steps":[{"part":"arm","degrees":10},{"part":"foot","degrees":45}]}"""),
             null,
         )
-        assertThat(text(r)).contains("skipped")
-        waitMoves(2)
-        assertThat(body.moves).containsExactly("neck" to "lookUp", "foot" to "left").inOrder()
+        assertThat(text(r)).contains("issues")
+        waitAngles(1)
+        assertThat(body.angles.map { it.first }).containsExactly("foot")
     }
 
-    @Test fun moveSequenceAllInvalidReportsNothingRun() = runTest {
-        val r = tool("move_sequence").execute("1", args("""{"steps":[{"part":"arm","state":"wave"}]}"""), null)
+    @Test fun allInvalidReportsNothingRun() = runTest {
+        val r = tool("move").execute("1", args("""{"steps":[{"part":"arm","degrees":10}]}"""), null)
         assertThat(text(r)).contains("no valid steps")
-        Thread.sleep(80); assertThat(body.moves).isEmpty()
+        Thread.sleep(80); assertThat(body.angles).isEmpty()
     }
 
     // ── status phrasing (live per-action label) ─────────────────────────────
 
     @Test fun statusPhraseMapsToHumanLabels() {
-        assertThat(DockToolsAdapter.statusPhrase("move_body", args("""{"part":"foot","state":"left"}"""))).isEqualTo("turning left")
-        assertThat(DockToolsAdapter.statusPhrase("move_body", args("""{"part":"neck","state":"lookUp"}"""))).isEqualTo("looking up")
+        assertThat(DockToolsAdapter.statusPhrase("move", args("""{"steps":[{"part":"foot","degrees":-40}]}"""))).isEqualTo("turning left")
+        assertThat(DockToolsAdapter.statusPhrase("move", args("""{"steps":[{"part":"neck","degrees":-20}]}"""))).isEqualTo("looking up")
+        assertThat(DockToolsAdapter.statusPhrase("move", args("""{"steps":[{"part":"neck","degrees":20}]}"""))).isEqualTo("looking down")
         assertThat(DockToolsAdapter.statusPhrase("set_face", args("""{"expression":"happy"}"""))).isEqualTo("smiling")
-        assertThat(DockToolsAdapter.statusPhrase("gesture", args("""{"name":"nod"}"""))).isEqualTo("nodding")
+        // multi-step → generic "moving"
+        assertThat(DockToolsAdapter.statusPhrase("move", args("""{"steps":[{"part":"neck","degrees":-20},{"part":"neck","degrees":0}]}"""))).isEqualTo("moving")
     }
 }

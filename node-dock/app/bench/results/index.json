@@ -1,8 +1,14 @@
 [
-  {
-    "file": "01-cloud-vision.json",
-    "snapshot": "01-cloud-vision",
-    "ts": "2026-06-01T17:59:05.483536Z",
-    "note": "cloud vision+tools; fast flash/mini class"
-  }
+    {
+        "file": "move-degrees.json",
+        "snapshot": "move-degrees",
+        "ts": "2026-06-03T02:48:16.563673Z",
+        "note": null
+    },
+    {
+        "file": "01-cloud-vision.json",
+        "snapshot": "01-cloud-vision",
+        "ts": "2026-06-01T17:59:05.483536Z",
+        "note": "cloud vision+tools; fast flash/mini class"
+    }
 ]

@@ -17,8 +17,8 @@ data class TurnOutcome(
  */
 object Evaluate {
 
-    /** Body-movement tools — set_face is expressive, not movement. */
-    private val MOVE_TOOLS = setOf("move_body", "gesture", "move_sequence")
+    /** Body-movement tool — set_face is expressive, not movement. */
+    private val MOVE_TOOLS = setOf("move")
 
     fun pass(expect: Expect, o: TurnOutcome): Boolean {
         if (o.error != null) return false
@@ -37,7 +37,29 @@ object Evaluate {
             val hay = text.lowercase()
             if (kws.none { hay.contains(it.lowercase()) }) return false
         }
+        expect.degRange?.let { r ->
+            // any move step on r.part whose degrees ∈ [lo, hi]
+            val ok = tools.filter { it.name == "move" }.any { tc ->
+                moveSteps(tc.args).any { (part, deg) -> part == r.part && deg != null && deg in r.lo..r.hi }
+            }
+            if (!ok) return false
+        }
+        expect.minSteps?.let { n ->
+            val maxSteps = tools.filter { it.name == "move" }.maxOfOrNull { moveSteps(it.args).size } ?: 0
+            if (maxSteps < n) return false
+        }
         return true
+    }
+
+    /** Parse a `move` call's args into (part, degrees) pairs, in order. */
+    private fun moveSteps(args: String): List<Pair<String?, Double?>> {
+        // matches each step object's part + degrees, tolerant of key order.
+        return Regex("\\{[^{}]*?\\}").findAll(args).mapNotNull { m ->
+            val o = m.value
+            val part = Regex("\"part\"\\s*:\\s*\"(\\w+)\"").find(o)?.groupValues?.get(1)
+            val deg = Regex("\"degrees\"\\s*:\\s*(-?\\d+(?:\\.\\d+)?)").find(o)?.groupValues?.get(1)?.toDoubleOrNull()
+            if (part == null && deg == null) null else part to deg
+        }.toList()
     }
 
     /** Per-run objective signals, surfaced in the viewer (not all gate the pass). */

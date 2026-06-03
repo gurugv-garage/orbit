@@ -72,7 +72,20 @@ data class Expect(
     val nonEmptySpeech: Boolean? = null,
     val minSpeechChars: Int? = null,
     val validEnums: Boolean? = null,
+    /**
+     * Degrees check: the `move` call has at least one step on `part` whose
+     * `degrees` lands in [lo, hi]. Tests that the model picks a sensible angle
+     * for the asked direction/amount (e.g. "look fully up" → neck near -25).
+     * null = unchecked.
+     */
+    val degRange: DegRange? = null,
+    /** Minimum number of steps in the `move` call — tests sequencing/composition. */
+    val minSteps: Int? = null,
 )
+
+/** Expected degrees window for a `move` step on a given part. */
+@Serializable
+data class DegRange(val part: String, val lo: Double, val hi: Double)
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Outputs: bench/results/<ts>.json (+ latest.json), read by viewer.html.

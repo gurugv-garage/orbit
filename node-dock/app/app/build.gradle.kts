@@ -85,6 +85,18 @@ android {
             "BODY_HOST",
             "\"${localProps.getProperty("BODY_HOST", "")}\"",
         )
+        // orbit-station (optional). Empty → no station; the dock runs standalone.
+        // Example: ws://10.0.2.2:8099/ws (AVD → host) or ws://<laptop-lan>:8099/ws.
+        buildConfigField(
+            "String",
+            "STATION_URL",
+            "\"${localProps.getProperty("STATION_URL", "")}\"",
+        )
+        buildConfigField(
+            "String",
+            "DOCK_NAME",
+            "\"${localProps.getProperty("DOCK_NAME", "anne-bot")}\"",
+        )
     }
 
     buildTypes {

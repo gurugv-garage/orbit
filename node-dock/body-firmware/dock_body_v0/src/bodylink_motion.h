@@ -59,6 +59,10 @@ typedef struct {
 esp_err_t bl_motion_init(void);
 int       bl_motion_body_clock_ms(void);
 
+// Current (last-pushed-to-servo) pulse width for part `idx` (0..g_bl_n_parts).
+// Used to report live state to the station. Returns -1 for a bad index.
+int       bl_motion_current_us(int idx);
+
 // ── Command handler (called from WS layer) ─────────────────────────────
 
 // Apply a `set_target` body: `body.parts` is a map of `{part: {param: val}}`.

@@ -22,4 +22,11 @@ interface BodyController {
     /** Resolve `(part, stateName)` via the catalog and command the body to move
      *  there. A no-op (logged) if the state is unknown or not connected. */
     suspend fun setState(part: String, stateName: String)
+
+    /** Command a part directly to a raw servo target (pulse_width_us) over
+     *  `durationMs`, bypassing the named-state catalog. This is the path the
+     *  `move` tool uses: the brain has already converted degrees → µs. `label`
+     *  is a human description (e.g. "+20°") shown in the body badge instead of
+     *  "<raw>". A no-op (logged) if not connected or the part is unknown. */
+    suspend fun setAngle(part: String, pulseWidthUs: Int, durationMs: Int, label: String)
 }

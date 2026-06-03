@@ -59,7 +59,7 @@ let INDEX=[], CUR=null, CMP=null;
 
 init();
 async function init(){
-  INDEX = await fetch('results/index.json').then(r=>r.json()).catch(()=>[]);
+  INDEX = await fetch('/api/bench/results/index.json').then(r=>r.json()).catch(()=>[]);
   if(!INDEX.length){ document.getElementById('meta').textContent='no snapshots yet — run ./gradlew :bench:run'; return; }
   const snap=document.getElementById('snap'), cmp=document.getElementById('cmp');
   for(const e of INDEX){ const o=document.createElement('option'); o.value=e.file; o.textContent=`${e.snapshot}  (${e.ts.slice(0,16).replace('T',' ')})`; snap.appendChild(o);
@@ -71,8 +71,8 @@ async function init(){
 async function load(){
   const snapFile=document.getElementById('snap').value;
   const cmpFile=document.getElementById('cmp').value;
-  CUR = await fetch('results/'+snapFile).then(r=>r.json());
-  CMP = cmpFile ? await fetch('results/'+cmpFile).then(r=>r.json()) : null;
+  CUR = await fetch('/api/bench/results/'+snapFile).then(r=>r.json());
+  CMP = cmpFile ? await fetch('/api/bench/results/'+cmpFile).then(r=>r.json()) : null;
   document.getElementById('meta').innerHTML = `${CUR.run.snapshot} · ${CUR.run.host} · ${CUR.run.ts.slice(0,16).replace('T',' ')}${CUR.run.note?' · '+CUR.run.note:''}${CMP?` &nbsp;|&nbsp; Δ vs <b>${CMP.run.snapshot}</b>`:''}`;
   document.getElementById('prompt').textContent = CUR.run.systemPrompt || '(no prompt recorded)';
   render();
@@ -131,7 +131,7 @@ function cell(model,c,row){
       ${r.output?`<div class="out">${esc(r.output)}</div>`:''}
       ${r.error?`<div class="err">${esc(r.error)}</div>`:''}
     </div>`).join('');
-  const img=c.image?`<img class="frame" src="images/${c.image}" alt="${c.image}">`:'';
+  const img=c.image?`<img class="frame" src="/api/bench/images/${c.image}" alt="${c.image}">`:'';
   const qn=c.quality?`<div class="qnote">★ ${c.quality.score!=null?c.quality.score+'/5 — ':''}${esc(c.quality.notes||'')}</div>`:'';
   const obj=Object.entries(c.objective||{}).map(([k,v])=>`${k} ${v}`).join(' · ');
   return `<details><summary>${head}</summary><div class="note">${obj}</div>${img}${runs}${qn}</details>`;

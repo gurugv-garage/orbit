@@ -23,6 +23,14 @@ PORCUPINE_ACCESS_KEY=
 # IP from the firmware boot log ("Got IP"); update on DHCP lease change.
 BODY_HOST=192.168.1.14:17317
 
+# --- orbit-station (optional) ---
+# If set, the app dials orbit-station and ships its agent-core event stream
+# (observability) + a heartbeat, under the dock name below. Empty → no station;
+# the dock runs exactly as before. AVD → host: ws://10.0.2.2:8099/ws.
+# Physical device: ws://<laptop-lan-ip>:8099/ws.
+STATION_URL=
+DOCK_NAME=anne-bot
+
 # --- Local model alternatives (laptop on the LAN), if not using cloud ---
 #   gemma4:e2b via Ollama (local, has vision):
 #     OLLAMA_BASE_URL=http://<laptop-lan-ip>:11434

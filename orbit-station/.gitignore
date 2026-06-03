@@ -1,0 +1,12 @@
+node_modules/
+dist/
+*.log
+# self-signed dev certs — regenerate with `npm run certs`
+certs/*.pem
+certs/*.key
+certs/*.crt
+# runtime state (observability traces persisted to disk during dev)
+.data/
+
+# TS incremental build cache
+*.tsbuildinfo

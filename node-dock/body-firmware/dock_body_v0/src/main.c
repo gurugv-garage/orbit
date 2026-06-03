@@ -26,12 +26,13 @@
 #include "wifi_sta.h"
 #include "bodylink_motion.h"
 #include "bodylink_ws.h"
+#include "station_link.h"
 
 static const char *TAG = "main";
 
 static void on_got_ip(esp_ip4_addr_t ip) {
-    (void)ip;
-    bl_ws_start();
+    bl_ws_start();                  // phone-facing BodyLink server (:17317)
+    station_link_start(ip);         // optional client registration with orbit-station
 }
 
 void app_main(void) {

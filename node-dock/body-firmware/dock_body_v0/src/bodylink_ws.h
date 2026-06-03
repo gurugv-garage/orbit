@@ -13,3 +13,9 @@ esp_err_t bl_ws_start(void);
 
 // Stop the HTTP server. (Not currently used; provided for completeness.)
 esp_err_t bl_ws_stop(void);
+
+// True if a phone/brain client is connected to the BodyLink server (:17317)
+// and has completed the hello handshake. Used to report the app↔body link to
+// orbit-station.
+#include <stdbool.h>
+bool bl_ws_has_client(void);
