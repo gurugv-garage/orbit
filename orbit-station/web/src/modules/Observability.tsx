@@ -1,16 +1,17 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import type { ReactNode } from 'react';
 import { useStationEvents } from '../lib/useStation';
 import { api } from '../lib/station';
 import type { AgentEventDto } from '../lib/protocol';
 
 // ── view models (mirror the server store) ────────────────────────────────────
 interface ToolVM { id: string; name: string; args?: unknown; result?: string; isError?: boolean; startedAt?: number; endedAt?: number }
-interface StepVM { idx: number; model?: string; stopReason?: string; text?: string; tools: ToolVM[]; inTok?: number; outTok?: number; startedAt?: number; messageStartedAt?: number; endedAt?: number }
+interface StepVM { idx: number; model?: string; stopReason?: string; text?: string; tools: ToolVM[]; inTok?: number; outTok?: number; startedAt?: number; streamStartedAt?: number; endedAt?: number }
 interface SpeechVM { startedAt: number; endedAt?: number }
 interface TurnVM { id: string; sessionId: string; source?: string; prompt?: string; startedAt: number; endedAt?: number; ended: boolean; steps: StepVM[]; speech: SpeechVM[] }
 
 interface StoredTool { toolCallId: string; toolName: string; args?: unknown; result?: string; isError?: boolean; startedAt?: number; endedAt?: number }
-interface StoredStep { index: number; model?: string; stopReason?: string; text?: string; tools: StoredTool[]; usage?: { inputTokens?: number; outputTokens?: number }; startedAt?: number; messageStartedAt?: number; endedAt?: number }
+interface StoredStep { index: number; model?: string; stopReason?: string; text?: string; tools: StoredTool[]; usage?: { inputTokens?: number; outputTokens?: number }; startedAt?: number; streamStartedAt?: number; endedAt?: number }
 interface StoredTurn { turnId: string; sessionId: string; prompt?: string; speech?: { startedAt: number; endedAt?: number }[]; startedAt: number; endedAt?: number; steps: StoredStep[] }
 interface StoredSession { sessionId: string; source?: string; turns: StoredTurn[] }
 interface SessionSummary { sessionId: string; source?: string }
@@ -171,122 +172,91 @@ function TurnRow({ turn, open, onToggle }: { turn: TurnVM; open: boolean; onTogg
   );
 }
 
+// One row in the vertical timeline.
+interface Ev { lane: 'llm' | 'tool' | 'speech'; cls: string; label: string; start: number; end: number; detail?: ReactNode }
+
 function TurnTimeline({ turn }: { turn: TurnVM }) {
   const t0 = turn.startedAt;
-  const total = Math.max(dur(turn), 1);
+  const total = Math.max(turnSpan(turn), 1);
+
+  // Build a flat, time-ordered event list. Each LLM step splits into generate
+  // (StepStart→first token) + stream (first token→step end).
+  const evs: Ev[] = [];
+  for (const s of turn.steps) {
+    const a = (s.startedAt ?? t0) - t0;
+    const e = (s.endedAt ?? t0 + total) - t0;
+    const stream = s.streamStartedAt != null ? s.streamStartedAt - t0 : e; // gen→stream boundary
+    evs.push({
+      lane: 'llm', cls: 'gen', label: `step ${s.idx} · generate`, start: a, end: stream,
+      detail: <>{s.model && <span className="pill acc sm">{s.model.split('/').pop()}</span>}{s.stopReason && <span className="muted sm mono">{s.stopReason}</span>}<span className="muted sm">tok {tok(s.inTok)}→{tok(s.outTok)}</span></>,
+    });
+    if (stream < e) {
+      evs.push({
+        lane: 'llm', cls: 'stream', label: `step ${s.idx} · stream reply`, start: stream, end: e,
+        detail: s.text ? <span className="obs-ev-text">“{s.text}”</span> : undefined,
+      });
+    }
+    for (const tc of s.tools) {
+      const ta = (tc.startedAt ?? t0) - t0;
+      const tb = (tc.endedAt ?? tc.startedAt ?? t0) - t0;
+      evs.push({
+        lane: 'tool', cls: `tool${tc.isError ? ' err' : ''}`, label: `⚙ ${tc.name}`, start: ta, end: tb,
+        detail: (
+          <details className="obs-ev-tool">
+            <summary className="muted sm">{tc.isError ? 'error · ' : ''}params / response</summary>
+            <div className="obs-kv"><span>params</span><pre>{pretty(tc.args)}</pre></div>
+            {tc.result != null && <div className="obs-kv"><span>response</span><pre>{tc.result}</pre></div>}
+          </details>
+        ),
+      });
+    }
+  }
+  for (const w of turn.speech) {
+    const start = w.startedAt - t0;
+    const end = (w.endedAt ?? t0 + total) - t0;   // open window clamps to turn span
+    evs.push({ lane: 'speech', cls: 'speech', label: '🔊 speaking', start, end: Math.max(end, start) });
+  }
+  evs.sort((x, y) => x.start - y.start || x.end - y.end);
+
   return (
     <div className="obs-timeline">
-      {/* the user message that triggered this turn */}
       {turn.prompt && (
         <div className="obs-msg user"><span className="obs-msg-who">user</span><span className="obs-msg-text">{turn.prompt}</span></div>
       )}
-
-      {/* THREE parallel lanes on one shared time axis: LLM · TOOLS · SPEECH. */}
-      <div className="obs-tl">
-        <div className="obs-tl-row axis">
-          <span className="obs-tl-name" />
-          <span className="obs-tl-track"><span className="obs-axis-l">{clockMs(turn.startedAt)}</span><span className="obs-axis-r">+{fmtMs(total)}</span></span>
-        </div>
-
-        {/* LLM: per step, a 'think' segment (waiting→tokens) then a 'message' segment */}
-        <div className="obs-tl-row">
-          <span className="obs-tl-name llm">LLM</span>
-          <span className="obs-tl-track">
-            {turn.steps.map((s) => {
-              const sA = (s.startedAt ?? t0) - t0;
-              const sB = (s.endedAt ?? t0 + total) - t0;
-              const mA = s.messageStartedAt != null ? s.messageStartedAt - t0 : sB; // think→message boundary
-              return (
-                <span key={`llm${s.idx}`}>
-                  <Seg start={sA} len={mA - sA} total={total} cls="think" label={`think ${fmtMs(mA - sA)}`} title={`step ${s.idx} thinking · @${fmtMs(sA)} · ${fmtMs(mA - sA)}`} />
-                  <Seg start={mA} len={sB - mA} total={total} cls="msg" label={`msg ${fmtMs(sB - mA)}`} title={`step ${s.idx} message · @${fmtMs(mA)} · ${fmtMs(sB - mA)}`} />
-                </span>
-              );
-            })}
-          </span>
-        </div>
-
-        {/* TOOLS: each tool-call span */}
-        <div className="obs-tl-row">
-          <span className="obs-tl-name tool">tools</span>
-          <span className="obs-tl-track">
-            {turn.steps.flatMap((s) => s.tools).map((tc) => {
-              const a = (tc.startedAt ?? t0) - t0;
-              const w = (tc.endedAt ?? tc.startedAt ?? t0) - (tc.startedAt ?? t0);
-              return <Seg key={tc.id} start={a} len={w} total={total} cls={`tool${tc.isError ? ' err' : ''}`} label={`${tc.name} ${fmtMs(w)}`} title={`${tc.name} · @${fmtMs(a)} · ${fmtMs(w)}`} />;
-            })}
-            {turn.steps.flatMap((s) => s.tools).length === 0 && <span className="obs-tl-empty">—</span>}
-          </span>
-        </div>
-
-        {/* SPEECH: each TTS speaking window */}
-        <div className="obs-tl-row">
-          <span className="obs-tl-name speak">speech</span>
-          <span className="obs-tl-track">
-            {turn.speech.map((w, i) => {
-              const a = w.startedAt - t0;
-              const len = (w.endedAt ?? t0 + total) - w.startedAt;
-              return <Seg key={i} start={a} len={len} total={total} cls="speech" label={`🔊 ${fmtMs(len)}`} title={`speaking · @${fmtMs(a)} · ${fmtMs(len)}`} />;
-            })}
-            {turn.speech.length === 0 && <span className="obs-tl-empty">—</span>}
-          </span>
-        </div>
-      </div>
-
-      {/* per-step detail (no individual track now — the bar above is the timeline) */}
-      {turn.steps.map((s, si) => {
-        const sStart = (s.startedAt ?? t0) - t0;
-        const sEnd = (s.endedAt ?? t0 + total) - t0;
-        const firstTool = s.tools[0];
-        const think = firstTool?.startedAt != null ? firstTool.startedAt - (s.startedAt ?? t0) : sEnd - sStart;
-        const kind = s.tools.length ? 'tool' : 'speak';
-        return (
-          <div key={s.idx} className={`obs-step kind-${kind}`}>
-            <div className="obs-step-head">
-              <span className={`obs-step-tag ${kind}`}>step {s.idx}</span>
-              {s.model && <span className="pill acc sm">{s.model.split('/').pop()}</span>}
-              {s.stopReason && <span className="muted mono sm">{s.stopReason}</span>}
-              <span className="muted sm">tok {tok(s.inTok)}→{tok(s.outTok)}</span>
-              <span className="muted sm">think {fmtMs(Math.max(0, think))}</span>
-              <span className="muted sm mono">[{fmtMs(sStart)}–{fmtMs(sEnd)}]</span>
+      <div className="obs-vaxis">{clockMs(turn.startedAt)} → +{fmtMs(total)} · {evs.length} events</div>
+      <div className="obs-vt">
+        {evs.map((ev, i) => {
+          const leftPct = (ev.start / total) * 100;
+          const widPct = Math.max(1.5, ((ev.end - ev.start) / total) * 100);
+          return (
+            <div key={i} className={`obs-ev lane-${ev.lane}`}>
+              <span className="obs-ev-when mono">@{fmtMs(ev.start)}</span>
+              <span className={`obs-ev-lbl ${ev.cls}`}>{ev.label}</span>
+              <span className="obs-ev-dur mono">{fmtMs(ev.end - ev.start)}</span>
+              <span className="obs-ev-track">
+                <span className={`obs-ev-bar ${ev.cls}`} style={{ left: `${leftPct}%`, width: `${Math.min(widPct, 100 - leftPct)}%` }} />
+              </span>
             </div>
-            {s.text && <div className="obs-msg bot"><span className="obs-msg-who">bot</span><span className="obs-msg-text">{s.text}</span></div>}
-            {s.tools.map((tc) => {
-              const a = (tc.startedAt ?? t0) - t0;
-              const w = (tc.endedAt ?? tc.startedAt ?? t0) - (tc.startedAt ?? t0);
-              return (
-                <details key={tc.id} className="obs-tool" open={si === 0}>
-                  <summary>
-                    <span className={`obs-tool-name ${tc.isError ? 'err' : ''}`}>⚙ {tc.name}</span>
-                    <span className="muted sm mono">start {fmtMs(a)} · end {fmtMs(a + w)} · {fmtMs(w)}</span>
-                    {tc.isError && <span className="pill bad sm">error</span>}
-                  </summary>
-                  <div className="obs-kv"><span>params</span><pre>{pretty(tc.args)}</pre></div>
-                  {tc.result != null && <div className="obs-kv"><span>response</span><pre>{tc.result}</pre></div>}
-                </details>
-              );
-            })}
-          </div>
-        );
-      })}
+          );
+        }).reduce<ReactNode[]>((acc, row, i) => {
+          // interleave the detail (text/params) under its row
+          acc.push(row);
+          const d = evs[i]!.detail;
+          if (d) acc.push(<div key={`d${i}`} className="obs-ev-detail">{d}</div>);
+          return acc;
+        }, [])}
+      </div>
     </div>
-  );
-}
-
-
-// a positioned segment on a lane track, labeled in place.
-function Seg({ start, len, total, cls, label, title }: { start: number; len: number; total: number; cls: string; label: string; title?: string }) {
-  const left = Math.max(0, (start / total) * 100);
-  const width = Math.max(1.5, (len / total) * 100);
-  return (
-    <span className={`obs-seg ${cls}`} style={{ left: `${left}%`, width: `${Math.min(width, 100 - left)}%` }} title={title}>
-      <span className="obs-seg-lbl">{label}</span>
-    </span>
   );
 }
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 function dur(t: TurnVM): number { return (t.endedAt ?? t.steps.at(-1)?.endedAt ?? t.startedAt) - t.startedAt; }
+/** turn span including any (post-TurnEnd) speech windows. */
+function turnSpan(t: TurnVM): number {
+  const ends = [t.endedAt ?? 0, ...t.speech.map((w) => w.endedAt ?? w.startedAt)];
+  return Math.max(...ends, t.startedAt) - t.startedAt;
+}
 function fmtMs(ms: number): string { return ms >= 1000 ? `${(ms / 1000).toFixed(2)}s` : `${Math.round(ms)}ms`; }
 function tok(n?: number): string { return n != null && n > 0 ? String(n) : 'n/a'; }
 function clock(ts: number): string { return new Date(ts).toLocaleTimeString('en-GB', { timeZone: IST, hour: '2-digit', minute: '2-digit', second: '2-digit' }); }
@@ -300,7 +270,7 @@ function storedToVM(t: StoredTurn, source?: string): TurnVM {
     speech: t.speech ?? [],
     steps: t.steps.map((s) => ({
       idx: s.index, model: s.model, stopReason: s.stopReason, text: s.text,
-      inTok: s.usage?.inputTokens, outTok: s.usage?.outputTokens, startedAt: s.startedAt, messageStartedAt: s.messageStartedAt, endedAt: s.endedAt,
+      inTok: s.usage?.inputTokens, outTok: s.usage?.outputTokens, startedAt: s.startedAt, streamStartedAt: s.streamStartedAt, endedAt: s.endedAt,
       tools: s.tools.map((tc) => ({ id: tc.toolCallId, name: tc.toolName, args: tc.args, result: tc.result, isError: tc.isError, startedAt: tc.startedAt, endedAt: tc.endedAt })),
     })),
   };
@@ -318,9 +288,12 @@ function applyEvent(turn: TurnVM, ev: AgentEventDto): void {
         last.inTok = ev.data?.usage?.inputTokens; last.outTok = ev.data?.usage?.outputTokens;
       }
       break;
-    case 'MessageStart': if (last && last.messageStartedAt == null) last.messageStartedAt = ev.ts; break;
+    case 'MessageUpdate': if (last && last.streamStartedAt == null) last.streamStartedAt = ev.ts; break;
     case 'MessageEnd': if (last && ev.data?.text != null) last.text = ev.data.text; break;
-    case 'SpeakStart': turn.speech.push({ startedAt: ev.ts }); break;
+    case 'SpeakStart': {
+      const prev = [...turn.speech].reverse().find((x) => x.endedAt == null); if (prev) prev.endedAt = ev.ts;
+      turn.speech.push({ startedAt: ev.ts }); break;
+    }
     case 'SpeakEnd': { const w = [...turn.speech].reverse().find((x) => x.endedAt == null); if (w) w.endedAt = ev.ts; break; }
     case 'ToolExecutionStart':
       if (last && ev.data?.toolCallId) last.tools.push({ id: ev.data.toolCallId, name: ev.data.toolName ?? '?', args: ev.data.args, startedAt: ev.ts });

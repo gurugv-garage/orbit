@@ -193,27 +193,31 @@ label.field { display: flex; flex-direction: column; gap: 4px; font-size: 12px; 
 .obs-msg-text { color: var(--fg); }
 .obs-msg.user .obs-msg-text { font-weight: 500; }
 
-/* THREE parallel lanes (LLM / tools / speech) on one shared time axis. */
-.obs-tl { margin: 6px 0 10px; border: 1px solid var(--line); border-radius: 6px; padding: 5px 8px; background: #0a0e1c; }
-.obs-tl-row { display: grid; grid-template-columns: 52px 1fr; gap: 8px; align-items: center; height: 20px; }
-.obs-tl-row.axis { height: 14px; }
-.obs-tl-name { font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; text-align: right; }
-.obs-tl-name.llm { color: var(--accent); }
-.obs-tl-name.tool { color: var(--accent-2); }
-.obs-tl-name.speak { color: var(--good); }
-.obs-tl-track { position: relative; height: 16px; background: #ffffff06; border-radius: 4px; }
-.obs-tl-row.axis .obs-tl-track { background: none; }
-.obs-axis-l { position: absolute; left: 2px; top: 0; font-size: 9px; color: #5a647c; }
-.obs-axis-r { position: absolute; right: 2px; top: 0; font-size: 9px; color: #5a647c; }
-.obs-tl-empty { position: absolute; left: 4px; top: 1px; font-size: 10px; color: #3a4256; }
-
-.obs-seg { position: absolute; top: 0; bottom: 0; border-radius: 3px; display: flex; align-items: center; padding: 0 4px; overflow: hidden; box-sizing: border-box; }
-.obs-seg-lbl { font-size: 9px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--fg); }
-.obs-seg.think { background: rgba(93,184,255,.15); border: 1px solid rgba(93,184,255,.4); }   /* LLM waiting/thinking */
-.obs-seg.msg   { background: rgba(93,184,255,.45); border: 1px solid var(--accent); }          /* LLM emitting message */
-.obs-seg.tool  { background: rgba(143,123,255,.45); border: 1px solid var(--accent-2); }       /* tool exec */
-.obs-seg.tool.err { background: rgba(255,107,129,.5); border-color: var(--bad); }
-.obs-seg.speech { background: rgba(74,214,160,.45); border: 1px solid var(--good); }           /* TTS speaking */
+/* VERTICAL timeline: one labeled row per event, time-ordered. No clipping. */
+.obs-vaxis { font-size: 9px; color: #5a647c; margin: 4px 0 4px 2px; font-family: ui-monospace, monospace; }
+.obs-vt { display: flex; flex-direction: column; gap: 1px; }
+.obs-ev { display: grid; grid-template-columns: 56px 150px 56px 1fr; gap: 8px; align-items: center; height: 18px; }
+.obs-ev-when { font-size: 10px; color: var(--dim); text-align: right; }
+.obs-ev-dur { font-size: 10px; color: var(--dim); text-align: right; }
+.obs-ev-lbl { font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; padding-left: 6px; border-left: 3px solid var(--line); }
+.obs-ev-lbl.gen { color: var(--accent); border-left-color: rgba(93,184,255,.5); }      /* generate/think */
+.obs-ev-lbl.stream { color: var(--accent); border-left-color: var(--accent); }          /* streaming reply */
+.obs-ev-lbl.tool { color: var(--accent-2); border-left-color: var(--accent-2); font-family: ui-monospace, monospace; }
+.obs-ev-lbl.tool.err { color: var(--bad); border-left-color: var(--bad); }
+.obs-ev-lbl.speech { color: var(--good); border-left-color: var(--good); }
+/* proportional position bar (right column) */
+.obs-ev-track { position: relative; height: 9px; background: #ffffff06; border-radius: 3px; }
+.obs-ev-bar { position: absolute; top: 0; bottom: 0; border-radius: 3px; min-width: 2px; }
+.obs-ev-bar.gen { background: rgba(93,184,255,.35); }
+.obs-ev-bar.stream { background: var(--accent); }
+.obs-ev-bar.tool { background: var(--accent-2); box-shadow: 0 0 4px var(--accent-2); }
+.obs-ev-bar.tool.err { background: var(--bad); box-shadow: 0 0 4px var(--bad); }
+.obs-ev-bar.speech { background: var(--good); }
+/* detail rows under an event (text / tool params+response) */
+.obs-ev-detail { margin: 1px 0 4px 120px; font-size: 11px; }
+.obs-ev-text { color: var(--fg); opacity: .92; }
+.obs-ev-tool > summary { cursor: pointer; list-style: none; }
+.obs-ev-tool > summary::-webkit-details-marker { display: none; }
 
 /* a step — color-coded by kind (tool call vs spoken/LLM-only) */
 .obs-step { margin: 7px 0; padding-left: 8px; border-left: 3px solid var(--line); }

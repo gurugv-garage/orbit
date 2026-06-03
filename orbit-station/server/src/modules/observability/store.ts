@@ -47,9 +47,11 @@ export class ObsStore {
         }
         break;
       }
-      case 'MessageStart': {
+      case 'MessageUpdate': {
+        // First real delta = streaming started (the empty MessageStart at step
+        // start isn't a reliable boundary; deltas only fire for actual content).
         const step = last(turn.steps);
-        if (step && step.messageStartedAt == null) step.messageStartedAt = ev.ts;
+        if (step && step.streamStartedAt == null) step.streamStartedAt = ev.ts;
         break;
       }
       case 'MessageEnd': {
@@ -58,7 +60,12 @@ export class ObsStore {
         break;
       }
       case 'SpeakStart': {
-        (turn.speech ??= []).push({ startedAt: ev.ts });
+        const list = (turn.speech ??= []);
+        // a new utterance implies any prior open window ended (defensive: some
+        // SpeakEnds don't arrive). Close it at this start.
+        const prevOpen = list.findLast((w) => w.endedAt == null);
+        if (prevOpen) prevOpen.endedAt = ev.ts;
+        list.push({ startedAt: ev.ts });
         break;
       }
       case 'SpeakEnd': {

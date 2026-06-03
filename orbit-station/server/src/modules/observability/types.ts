@@ -73,8 +73,8 @@ export interface ToolCallRecord {
 export interface StepRecord {
   index: number;
   startedAt: number;
-  /** when the assistant message began streaming (think→tokens boundary). */
-  messageStartedAt?: number;
+  /** when the first real output token streamed (generate→stream boundary). */
+  streamStartedAt?: number;
   endedAt?: number;
   model?: string;
   stopReason?: string;
