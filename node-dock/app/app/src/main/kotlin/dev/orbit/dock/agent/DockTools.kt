@@ -292,7 +292,7 @@ class DockTools(
     private fun expressionGesture(expression: String): List<MoveOp> {
         // Prefer the station-synced choreography (live-editable); fall back to
         // the baked-in default tables. Same move-step shape as the `move` tool.
-        config?.obj("dock", "faceGestures")?.get(expression)?.let { el ->
+        config?.obj("faceGestures")?.get(expression)?.let { el ->
             (el as? JsonArray)?.let { steps ->
                 val ops = stepsToOps(steps).first
                 if (ops.isNotEmpty()) return ops

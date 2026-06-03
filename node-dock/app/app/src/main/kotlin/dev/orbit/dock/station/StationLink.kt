@@ -58,6 +58,12 @@ class StationLink(
      * link is usable without config.
      */
     private val onConfigFrame: (JsonObject) -> Unit = {},
+    /**
+     * The flat config keys this app is interested in. Announced to the station
+     * on connect (a `config`/`interest` publish); the station then pushes only
+     * these keys (snapshot now + live changes). Empty = announce nothing.
+     */
+    private val configInterest: List<String> = emptyList(),
 ) {
     private val _connected = MutableStateFlow(false)
     val connected: StateFlow<Boolean> = _connected.asStateFlow()
@@ -104,8 +110,18 @@ class StationLink(
             put("t", "subscribe")
             put("topics", buildJsonArray { add("config"); add("station") })
         }))
+        // Announce which config keys we care about. The station replies with a
+        // directed snapshot of just these, then pushes their changes live.
+        if (configInterest.isNotEmpty()) {
+            s.send(json.encodeToString(JsonObject.serializer(), buildJsonObject {
+                put("t", "publish"); put("topic", "config"); put("kind", "interest")
+                put("payload", buildJsonObject {
+                    put("keys", buildJsonArray { configInterest.forEach { add(it) } })
+                })
+            }))
+        }
         _connected.value = true
-        Timber.i("StationLink: connected to $url (dock=$dock)")
+        Timber.i("StationLink: connected to $url (dock=$dock); announced ${configInterest.size} config keys")
         heartbeatJob?.cancel()
         heartbeatJob = scope.launch { heartbeatLoop() }
 

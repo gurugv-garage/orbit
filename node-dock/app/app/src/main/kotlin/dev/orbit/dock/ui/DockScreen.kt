@@ -76,12 +76,21 @@ fun DockScreen() {
     }
     // BodyLink host history (last 5 successful connects, persisted).
     val hostStore = remember { dev.orbit.dock.body.BodyHostStore(ctx) }
-    // BodyLink client. Created whenever we have a host: the last successful
-    // host from history, else the compile-time BODY_HOST default.
+    // Station-synced config (faceGestures, bodyAddr, …). Resolves baked-default
+    // ← persisted ← live station pushes; works fully offline. Shared by
+    // DockTools (gestures), StationLink (feeds pushes), and the body host below.
+    val configCache = remember { dev.orbit.dock.config.ConfigCache(ctx) }
+    // BodyLink client. Initial host, highest-trust first:
+    //   1. dock.bodyAddr from config (station tells us where the body is — the
+    //      station learns it each time the body connects; cached/baked offline)
+    //   2. last successful host from local history
+    //   3. compile-time BODY_HOST default
+    //   4. a sensible literal so the badge is always live
     val bodyComms = remember {
-        val initialHost = hostStore.lastHost()
+        val initialHost = configCache.string("bodyAddr", "").takeIf { it.isNotBlank() }
+            ?: hostStore.lastHost()
             ?: BuildConfig.BODY_HOST.takeIf { it.isNotBlank() }
-            ?: "192.168.1.10:17317"  // sensible default so the badge is always live
+            ?: "192.168.1.10:17317"
         val catalog = BodyStateCatalog.load(ctx)
         BodyLinkComms(
             host = initialHost,
@@ -89,6 +98,19 @@ fun DockScreen() {
             catalog = catalog,
             onConnected = { h -> hostStore.recordSuccess(h) },
         )
+    }
+    // When the station pushes a new body address (the body reconnected at a new
+    // IP), retarget the BodyLink to it. Registered once.
+    LaunchedEffect(configCache, bodyComms) {
+        configCache.onChange { key ->
+            if (key == "bodyAddr") {
+                val addr = configCache.string("bodyAddr", "")
+                if (addr.isNotBlank() && addr != bodyComms.currentHost) {
+                    timber.log.Timber.i("config: body address changed → reconnecting BodyLink to $addr")
+                    bodyComms.reconnect(addr)
+                }
+            }
+        }
     }
     var showConnectDialog by remember { mutableStateOf(false) }
     // Live senses shared between perception (writer) and the agent (reader) so
@@ -100,10 +122,6 @@ fun DockScreen() {
     if (BuildConfig.DEBUG) {
         dev.orbit.dock.perception.CameraFrameProvider.debugInstance = faceTracker
     }
-    // Station-synced config (faceGestures etc.). Resolves baked-default ←
-    // persisted ← live station pushes; works fully offline. Shared by DockTools
-    // (reads gestures) and StationLink (feeds it pushes).
-    val configCache = remember { dev.orbit.dock.config.ConfigCache(ctx) }
     val tools = remember(controller, tts, bodyComms, configCache) {
         DockTools(
             controller,
@@ -135,18 +153,17 @@ fun DockScreen() {
                     llmReachable = selectedModel.baseUrl.isNotBlank(),
                 )
             },
-            // feed config pushes/snapshots into the cache (it ignores stale +
-            // keys the dock doesn't care about).
+            // feed flat config pushes/snapshots into the cache.
             onConfigFrame = { payload ->
-                val scope = (payload["scope"] as? kotlinx.serialization.json.JsonPrimitive)?.content
                 val key = (payload["key"] as? kotlinx.serialization.json.JsonPrimitive)?.content
                 val value = payload["value"]
                 val lastUpdated = (payload["lastUpdated"] as? kotlinx.serialization.json.JsonPrimitive)?.content?.toLongOrNull()
-                if (scope != null && key != null && value != null && lastUpdated != null
-                    && "$scope.$key" in dev.orbit.dock.config.ConfigCache.DOCK_KEYS) {
-                    configCache.apply(scope, key, value, lastUpdated)
+                if (key != null && value != null && lastUpdated != null) {
+                    configCache.apply(key, value, lastUpdated)
                 }
             },
+            // announce the keys we care about; the station pushes only these.
+            configInterest = dev.orbit.dock.config.ConfigCache.INTEREST,
         ).also { it.start() }
     }
     val agent = remember(tools, selectedModel) {

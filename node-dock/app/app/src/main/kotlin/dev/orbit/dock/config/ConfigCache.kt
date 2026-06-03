@@ -11,24 +11,23 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CopyOnWriteArrayList
 
 /**
- * The dock's local view of orbit-station config. Three layers, highest wins:
+ * The dock's local view of orbit-station config. Config keys are FLAT/global
+ * (no scope) — the same key can be shared by several components. Three layers,
+ * highest wins:
  *
  *   1. in-memory synced values (from station pushes this session)
  *   2. SharedPreferences (synced values persisted across reboots)
  *   3. baked asset `config-defaults.json` (packed at build time from the
  *      station's current config — so the dock works with NO station ever seen)
  *
- * A station push carries a `lastUpdated`; we apply it only if it's NEWER than
- * what we hold, then persist and fire onChange listeners. This is the "update
- * + cache, with an onChange callback" the dock wires its features to.
+ * A station push carries `lastUpdated`; we apply it only if NEWER than what we
+ * hold, then persist and fire onChange. The app declares the keys it cares
+ * about in [INTEREST] (hardcoded here, its component init) and ANNOUNCES that
+ * set to the station on connect; the station then pushes only those keys.
  *
- * Keys are addressed `scope.key` (e.g. "dock.faceGestures"). Values are stored
- * as their JSON text so any type (number/boolean/string/object) round-trips.
- * Never throws on read — a missing/un-parseable value falls through to the next
- * layer, ultimately to the caller's supplied fallback.
- *
- * The app declares which keys it cares about in [DOCK_KEYS]; pushes for other
- * keys are ignored (the ESP32 has its own interest list firmware-side).
+ * Values are stored as JSON text so any type round-trips. Reads never throw —
+ * a missing/unparseable value falls through to the next layer, then to the
+ * caller's fallback.
  */
 class ConfigCache(context: Context) {
     private val appCtx = context.applicationContext
@@ -36,12 +35,9 @@ class ConfigCache(context: Context) {
         appCtx.getSharedPreferences("orbit_config", Context.MODE_PRIVATE)
     private val json = Json { ignoreUnknownKeys = true; isLenient = true }
 
-    /** scope.key → raw JSON text of the current synced value. */
-    private val mem = ConcurrentHashMap<String, String>()
-    /** scope.key → lastUpdated of the value we hold (synced layer only). */
-    private val stamps = ConcurrentHashMap<String, Long>()
-    /** scope.key → baked default JSON text (from the asset). */
-    private val baked = ConcurrentHashMap<String, String>()
+    private val mem = ConcurrentHashMap<String, String>()      // key → synced JSON text
+    private val stamps = ConcurrentHashMap<String, Long>()     // key → synced lastUpdated
+    private val baked = ConcurrentHashMap<String, String>()    // key → baked default JSON text
 
     private val listeners = CopyOnWriteArrayList<(String) -> Unit>()
 
@@ -50,40 +46,36 @@ class ConfigCache(context: Context) {
         loadPersisted()
     }
 
-    /** Register a callback fired (with "scope.key") whenever a key changes. */
+    /** Register a callback fired with the changed key whenever a key updates. */
     fun onChange(listener: (String) -> Unit) { listeners.add(listener) }
 
     /**
      * Apply a station push/snapshot for one key. Returns true if it changed our
-     * value (newer lastUpdated). Stale pushes (older/equal stamp) are ignored so
-     * out-of-order frames or a re-announce can't roll us back.
+     * value (newer lastUpdated). Stale/equal pushes are ignored so out-of-order
+     * frames or a re-announce can't roll us back.
      */
-    fun apply(scope: String, key: String, value: JsonElement, lastUpdated: Long): Boolean {
-        val id = "$scope.$key"
-        val have = stamps[id] ?: -1L
-        if (lastUpdated <= have && mem.containsKey(id)) return false
+    fun apply(key: String, value: JsonElement, lastUpdated: Long): Boolean {
+        val have = stamps[key] ?: -1L
+        if (lastUpdated <= have && mem.containsKey(key)) return false
         val text = value.toString()
-        mem[id] = text
-        stamps[id] = lastUpdated
-        prefs.edit()
-            .putString("v:$id", text)
-            .putLong("t:$id", lastUpdated)
-            .apply()
-        Timber.i("config: applied $id (lastUpdated=$lastUpdated)")
-        listeners.forEach { runCatching { it(id) } }
+        mem[key] = text
+        stamps[key] = lastUpdated
+        prefs.edit().putString("v:$key", text).putLong("t:$key", lastUpdated).apply()
+        Timber.i("config: applied $key (lastUpdated=$lastUpdated)")
+        listeners.forEach { runCatching { it(key) } }
         return true
     }
 
     // ── typed reads (synced → persisted → baked → fallback) ──────────────────
 
-    fun raw(scope: String, key: String): String? = mem["$scope.$key"] ?: baked["$scope.$key"]
+    fun raw(key: String): String? = mem[key] ?: baked[key]
 
-    fun string(scope: String, key: String, fallback: String): String =
-        raw(scope, key)?.let { runCatching { json.parseToJsonElement(it).toString().trim('"') }.getOrNull() } ?: fallback
+    fun string(key: String, fallback: String): String =
+        raw(key)?.let { runCatching { json.parseToJsonElement(it).toString().trim('"') }.getOrNull() } ?: fallback
 
     /** Read an object-valued key (e.g. faceGestures) as a JsonObject, or null. */
-    fun obj(scope: String, key: String): JsonObject? =
-        raw(scope, key)?.let { runCatching { json.parseToJsonElement(it).jsonObject }.getOrNull() }
+    fun obj(key: String): JsonObject? =
+        raw(key)?.let { runCatching { json.parseToJsonElement(it).jsonObject }.getOrNull() }
 
     private fun loadBaked() {
         val text = try {
@@ -92,11 +84,9 @@ class ConfigCache(context: Context) {
             Timber.w("config: no $BAKED_ASSET baked — relying on station + code fallbacks")
             return
         }
-        // shape: { scope: { key: value, ... }, ... }
+        // shape: flat { key: value, ... }
         runCatching {
-            for ((scope, entries) in json.parseToJsonElement(text).jsonObject) {
-                for ((key, value) in entries.jsonObject) baked["$scope.$key"] = value.toString()
-            }
+            for ((key, value) in json.parseToJsonElement(text).jsonObject) baked[key] = value.toString()
         }.onFailure { Timber.w(it, "config: failed to parse $BAKED_ASSET") }
         Timber.i("config: baked ${baked.size} default keys from $BAKED_ASSET")
     }
@@ -111,10 +101,12 @@ class ConfigCache(context: Context) {
 
     companion object {
         const val BAKED_ASSET = "config-defaults.json"
-        /** Keys the dock app listens for; other scopes' pushes are ignored. */
-        val DOCK_KEYS = setOf(
-            "dock.faceGestures", "dock.idleAnimations", "dock.gazeTracking",
-            "dock.ttsRate", "dock.cameraDefaultOn", "dock.thinkingLevel",
+        /** The flat keys the dock app (brain) is interested in — announced to the
+         *  station on connect; the station pushes only these. */
+        val INTEREST = listOf(
+            "faceGestures", "bodyAddr", "idleAnimations", "gazeTracking",
+            "ttsRate", "cameraDefaultOn", "thinkingLevel",
+            "neckPitchLimitDeg", "footYawLimitDeg", "maxSpeedDegPerSec",
         )
     }
 }
