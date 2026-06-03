@@ -62,6 +62,9 @@ class DockAgentBodyTurnTest {
         val angles = CopyOnWriteArrayList<Triple<String, Int, Int>>()
         override suspend fun setState(part: String, stateName: String) { moves.add(part to stateName) }
         override suspend fun setAngle(part: String, pulseWidthUs: Int, durationMs: Int, label: String) { angles.add(Triple(part, pulseWidthUs, durationMs)) }
+        override suspend fun setAngles(targets: Map<String, Pair<Int, String>>, durationMs: Int) {
+            targets.forEach { (p, v) -> angles.add(Triple(p, v.first, durationMs)) }
+        }
         private companion object {
             fun cmd() = BodyStateCatalog.PrimitiveCommand(mapOf("pulse_width_us" to 1500.0), durationMs = 20)
         }

@@ -381,6 +381,15 @@ class BodyLinkComms(
         setTarget(mapOf(part to mapOf("pulse_width_us" to pulseWidthUs.toDouble())), durationMs, stateName = label)
     }
 
+    override suspend fun setAngles(targets: Map<String, Pair<Int, String>>, durationMs: Int) {
+        if (targets.isEmpty()) return
+        // All parts in ONE set_target envelope → the body starts them together.
+        // Each part carries ITS OWN label so the badge shows neck/foot separately.
+        val parts = targets.mapValues { (_, v) -> mapOf("pulse_width_us" to v.first.toDouble()) }
+        val labels = targets.mapValues { (_, v) -> v.second }
+        setTarget(parts, durationMs, labels = labels)
+    }
+
     /**
      * Lower-level: brain has already resolved primitive params.
      * `parts[<partName>]` is a `{paramName: value}` map. If `durationMs` is
@@ -395,6 +404,10 @@ class BodyLinkComms(
         durationMs: Int? = null,
         stateName: String? = null,
         correlate: Boolean = true,
+        /** Optional PER-PART label for the body badge (e.g. {neck:"-20°", foot:"+45°"}).
+         *  Falls back to [stateName] for parts not in the map. Lets a multi-part
+         *  set_target label each joint with its own angle instead of a shared one. */
+        labels: Map<String, String>? = null,
     ): String? {
         if (parts.isEmpty()) return null
 
@@ -456,7 +469,7 @@ class BodyLinkComms(
                         }
                     }
                     nextPartIntents[partName] = PartIntent(
-                        stateName = stateName,
+                        stateName = labels?.get(partName) ?: stateName,
                         params = params,
                         sentAt = now,
                         durationMs = durationMs ?: (params["duration_ms"]?.toInt() ?: 400),

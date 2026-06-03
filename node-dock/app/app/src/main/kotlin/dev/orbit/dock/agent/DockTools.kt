@@ -350,28 +350,51 @@ class DockTools(
         val problems = mutableListOf<String>()
         for ((i, el) in steps.withIndex()) {
             val o = el as? JsonObject ?: run { problems.add("step ${i + 1}: not an object"); continue }
-            val part = o["part"]?.jsonPrimitive?.content?.lowercase().orEmpty()
-            val deg = o["degrees"]?.jsonPrimitive?.content?.toDoubleOrNull()
             val durMs = o["duration_ms"]?.jsonPrimitive?.content?.toIntOrNull()?.coerceIn(0, 5000) ?: 400
             val waitMs = o["wait_ms"]?.jsonPrimitive?.content?.toLongOrNull()?.coerceIn(0, 5000) ?: 0L
-            if (part !in dev.orbit.dock.llm.DockToolSchemas.DEGREE_RANGE.keys) {
-                problems.add("step ${i + 1}: unknown part '$part'"); continue
+
+            // A step's joints: the multi-joint `parts` array OR the single-joint
+            // {part, degrees}. Both resolve to a map of part → (µs, label) that
+            // this step moves SIMULTANEOUSLY.
+            val jointEls: List<JsonObject> = when {
+                o["parts"] is kotlinx.serialization.json.JsonArray ->
+                    (o["parts"] as kotlinx.serialization.json.JsonArray).filterIsInstance<JsonObject>()
+                o["part"] != null -> listOf(o) // single-joint form: the step itself
+                else -> emptyList()
             }
-            if (deg == null) { problems.add("step ${i + 1}: missing/invalid degrees"); continue }
-            val us = dev.orbit.dock.llm.DockToolSchemas.degreesToUs(part, deg)
-            val label = "${if (deg > 0) "+" else ""}${deg.toInt()}°"
-            ops.add(MoveOp(part = part, pulseWidthUs = us, travelMs = durMs, waitMs = waitMs, label = label))
+
+            // A step with NO joints but a wait_ms is a valid PAUSE step (the model
+            // often emits {wait_ms: N} as its own step between moves). Only flag it
+            // as bad if it has neither joints nor a wait.
+            if (jointEls.isEmpty()) {
+                if (waitMs > 0) ops.add(MoveOp(targets = emptyMap(), travelMs = 0, waitMs = waitMs))
+                else problems.add("step ${i + 1}: no part/parts and no wait_ms")
+                continue
+            }
+
+            val targets = LinkedHashMap<String, Pair<Int, String>>()
+            for (j in jointEls) {
+                val part = j["part"]?.jsonPrimitive?.content?.lowercase().orEmpty()
+                val deg = j["degrees"]?.jsonPrimitive?.content?.toDoubleOrNull()
+                if (part !in dev.orbit.dock.llm.DockToolSchemas.DEGREE_RANGE.keys) {
+                    problems.add("step ${i + 1}: unknown part '$part'"); continue
+                }
+                if (deg == null) { problems.add("step ${i + 1}: $part missing/invalid degrees"); continue }
+                val us = dev.orbit.dock.llm.DockToolSchemas.degreesToUs(part, deg)
+                targets[part] = us to "${if (deg > 0) "+" else ""}${deg.toInt()}°"
+            }
+            if (targets.isNotEmpty()) ops.add(MoveOp(targets = targets, travelMs = durMs, waitMs = waitMs))
         }
 
-        val moves = ops.count { it.part != null }
         if (ops.isNotEmpty()) {
             onToolCall("move")
             bodyJob?.cancel()
             bodyJob = bodyScope.launch {
                 try {
                     for (op in ops) {
-                        if (op.part != null && op.pulseWidthUs != null) {
-                            link.setAngle(op.part, op.pulseWidthUs, op.travelMs, op.label ?: "")
+                        if (op.targets.isNotEmpty()) {
+                            // all of this step's joints start together (one set_target).
+                            link.setAngles(op.targets, op.travelMs)
                             kotlinx.coroutines.delay(op.travelMs + 40L)
                         }
                         if (op.waitMs > 0) kotlinx.coroutines.delay(op.waitMs)
@@ -381,19 +404,22 @@ class DockTools(
                 }
             }
         }
+        val moves = ops.size
         return if (moves == 0) "no valid steps; issues: ${problems.joinToString()}"
                else if (problems.isEmpty()) "ok — running $moves step(s)"
                else "running $moves step(s); issues: ${problems.joinToString()}"
     }
 
-    /** One step of a body-movement sequence: a move (part + target with a travel
-     *  time) and/or a pause after it. `state` (named) and `pulseWidthUs` (raw,
-     *  from the degrees `move` tool) are alternative ways to express the target. */
+    /** One step of a body-movement sequence: a set of joint targets that move
+     *  TOGETHER (part → (pulse_width_us, label)) over `travelMs`, then a pause.
+     *  A single-joint step is just a one-entry map. (`state`/`pulseWidthUs` below
+     *  are kept for the legacy named-state [makeBodyMovements] path.) */
     private data class MoveOp(
         val part: String? = null,
         val state: String? = null,
         val pulseWidthUs: Int? = null,
         val label: String? = null,
+        val targets: Map<String, Pair<Int, String>> = emptyMap(),
         val travelMs: Int = 0,
         val waitMs: Long = 0L,
     )

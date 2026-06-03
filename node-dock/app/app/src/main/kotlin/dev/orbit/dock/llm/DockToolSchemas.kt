@@ -89,26 +89,36 @@ object DockToolSchemas {
 
     /**
      * The ONE movement tool: an ordered sequence of steps the body performs.
-     * A single move is just a one-step sequence. Each step targets a part at an
-     * absolute angle (degrees), takes `duration_ms` to get there, then optionally
-     * pauses `wait_ms` before the next step — enough to compose any motion
-     * (nod = down, up, down, up; look-around = left, pause, right, pause, center).
      *
-     * Degrees are physical and absolute (0 = home/neutral), so the model reasons
-     * about real poses; the brain converts °→µs per part using each part's range.
+     * A step moves one or more joints AT THE SAME TIME, over `duration_ms`, then
+     * pauses `wait_ms` before the next step. So:
+     *   - SIMULTANEOUS (neck AND foot together) → put both in ONE step.
+     *   - SEQUENTIAL (one then the next) → use separate steps.
+     * A single move is a one-step, one-joint sequence.
+     *
+     * Each joint target is an absolute angle (degrees); the brain converts
+     * °→µs per part. Two equivalent ways to give a step's joints:
+     *   - one joint:  {part, degrees, ...}
+     *   - many joints: {parts:[{part,degrees}, ...], ...}  ← moves all together
      */
     val move: JsonObject = buildJsonObject {
         put("type", "object")
         putJsonObject("properties") {
             putJsonObject("steps") {
                 put("type", "array")
-                put("description", "Ordered moves, performed one after another. One step = a single move.")
+                put(
+                    "description",
+                    "Ordered steps, performed one after another. Each step moves its joint(s) " +
+                        "SIMULTANEOUSLY. For 'neck and foot at the same time', list both in one step's " +
+                        "`parts`. For 'do X then Y', use two steps.",
+                )
                 putJsonObject("items") {
                     put("type", "object")
                     putJsonObject("properties") {
+                        // single-joint form
                         putJsonObject("part") {
                             put("type", "string")
-                            put("description", "which joint to move")
+                            put("description", "which joint (single-joint step). Use `parts` instead to move several at once.")
                             putJsonArray("enum") { add("neck"); add("foot") }
                         }
                         putJsonObject("degrees") {
@@ -118,26 +128,44 @@ object DockToolSchemas {
                                 "Absolute target angle in degrees. 0 = neutral. " +
                                     "neck: -45 = fully up … 0 = level … +45 = fully down (range ±45°). " +
                                     "foot: -90 = fully left … 0 = forward … +90 = fully right (range ±90°). " +
-                                    "Choose the magnitude to match the request: 'a little' ≈ a third of range, " +
-                                    "'all the way' ≈ the limit. Out-of-range is clamped.",
+                                    "'a little' ≈ a third of range, 'all the way' ≈ the limit. Out-of-range clamps.",
                             )
+                        }
+                        // multi-joint form: all move together within this step
+                        putJsonObject("parts") {
+                            put("type", "array")
+                            put("description", "Several joints to move TOGETHER in this step (simultaneous). Use instead of part/degrees.")
+                            putJsonObject("items") {
+                                put("type", "object")
+                                putJsonObject("properties") {
+                                    putJsonObject("part") {
+                                        put("type", "string"); putJsonArray("enum") { add("neck"); add("foot") }
+                                    }
+                                    putJsonObject("degrees") { put("type", "number"); put("description", "absolute angle for this joint") }
+                                }
+                                putJsonArray("required") { add("part"); add("degrees") }
+                            }
                         }
                         putJsonObject("duration_ms") {
                             put("type", "integer")
                             put(
                                 "description",
-                                "Time to travel to this angle. 0 = snap instantly, ~250 = quick/snappy, " +
-                                    "~600 = normal, ~1500 = slow/gentle. Range 0–5000. Default ~400 if omitted.",
+                                "Time for this step's joint(s) to reach target. 0 = snap, ~250 = quick, " +
+                                    "~600 = normal, ~1500 = slow. Range 0–5000. Default ~400.",
                             )
                             put("minimum", 0); put("maximum", 5000)
                         }
                         putJsonObject("wait_ms") {
                             put("type", "integer")
-                            put("description", "Pause AFTER this step before the next, in ms (0–5000). Use for beats between moves.")
+                            put(
+                                "description",
+                                "Pause AFTER this step before the next, in ms (0–5000). A step may be " +
+                                    "wait-only ({wait_ms: 2000}, no part) — a pure pause between moves.",
+                            )
                             put("minimum", 0); put("maximum", 5000)
                         }
                     }
-                    putJsonArray("required") { add("part"); add("degrees") }
+                    // a step needs EITHER part+degrees OR parts; validated in code.
                 }
             }
         }
@@ -165,9 +193,14 @@ object DockToolSchemas {
         "(e.g. math, or \"random(1,10)\", or \"random(1,10) > 5\"). Use this whenever you'd otherwise want to " +
         "\"run code\" for a number or a calculation — you have NO general code execution, only this."
     const val SET_FACE_DESC = "Set the dock's facial expression to match the mood of what you're saying."
-    const val MOVE_DESC = "Move the body. Give an ordered list of steps; each step turns a joint to an " +
+    const val MOVE_DESC = "Move the body. Give an ordered list of steps; each step moves its joint(s) to an " +
         "absolute angle in DEGREES over a duration, with an optional pause after. " +
+        "The steps list can be ANY LENGTH — chain as many as the motion needs. " +
         "neck nods up/down (±45°, 0=level, negative=up). foot swivels left/right (±90°, 0=forward, negative=left). " +
-        "ONE step = a single move; many steps = a composed motion (e.g. nod = neck +25 then 0 then +25 then 0; " +
-        "look around = foot -60 wait, foot +60 wait, foot 0). You choose the angle, speed (duration_ms) and beats (wait_ms)."
+        "SAME TIME (neck AND foot together): put both in ONE step's `parts`, e.g. " +
+        "{parts:[{part:neck,degrees:-20},{part:foot,degrees:30}]}. ONE AFTER ANOTHER: use separate steps " +
+        "(e.g. nod = neck +25 then 0; look around = foot -60 wait, foot +60 wait, foot 0). " +
+        "REPEATING is just repeating the steps: 'nod 5 times' = the nod's steps listed 5 times in a row. " +
+        "There is NO limit on how many times you repeat — just build the full sequence. " +
+        "You choose the angle, speed (duration_ms) and beats (wait_ms)."
 }

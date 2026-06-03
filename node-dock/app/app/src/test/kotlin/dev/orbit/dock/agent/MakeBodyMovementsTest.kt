@@ -56,6 +56,9 @@ class MakeBodyMovementsTest {
         override suspend fun setAngle(part: String, pulseWidthUs: Int, durationMs: Int, label: String) {
             moves.add(Move(part, "${pulseWidthUs}us", System.currentTimeMillis() - t0))
         }
+        override suspend fun setAngles(targets: Map<String, Pair<Int, String>>, durationMs: Int) {
+            targets.forEach { (p, v) -> moves.add(Move(p, "${v.first}us", System.currentTimeMillis() - t0)) }
+        }
 
         fun parts(): List<String> = moves.map { it.part }
         fun states(): List<Pair<String, String>> = moves.map { it.part to it.state }

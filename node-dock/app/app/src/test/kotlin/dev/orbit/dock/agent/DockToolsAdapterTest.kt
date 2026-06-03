@@ -44,6 +44,11 @@ class DockToolsAdapterTest {
         val angles = CopyOnWriteArrayList<Triple<String, Int, Int>>()
         override suspend fun setState(part: String, stateName: String) { moves.add(part to stateName) }
         override suspend fun setAngle(part: String, pulseWidthUs: Int, durationMs: Int, label: String) { angles.add(Triple(part, pulseWidthUs, durationMs)) }
+        val batches = CopyOnWriteArrayList<Map<String, Int>>()  // each simultaneous setAngles call
+        override suspend fun setAngles(targets: Map<String, Pair<Int, String>>, durationMs: Int) {
+            batches.add(targets.mapValues { it.value.first })
+            targets.forEach { (p, v) -> angles.add(Triple(p, v.first, durationMs)) }
+        }
     }
 
     private fun catalog(): BodyStateCatalog {
@@ -112,6 +117,32 @@ class DockToolsAdapterTest {
         assertThat(body.angles.first().second).isAtMost(600)
     }
 
+    // ── move: SIMULTANEOUS (one step, many joints) ──────────────────────────
+
+    @Test fun multiJointStepMovesPartsTogetherInOneBatch() = runTest {
+        // neck AND foot in ONE step → a single setAngles batch (move together).
+        val r = tool("move").execute(
+            "1",
+            args("""{"steps":[{"parts":[{"part":"neck","degrees":-20},{"part":"foot","degrees":45}],"duration_ms":300}]}"""),
+            null,
+        )
+        assertThat(text(r)).contains("running 1 step")
+        waitAngles(2)
+        // exactly ONE batch carrying both parts (proves simultaneity).
+        assertThat(body.batches).hasSize(1)
+        assertThat(body.batches.first().keys).containsExactly("neck", "foot")
+        assertThat(body.batches.first()["neck"]!!).isLessThan(1500)   // -20° = up
+        assertThat(body.batches.first()["foot"]!!).isGreaterThan(1500) // +45° = right
+    }
+
+    @Test fun singleJointStepStillWorks() = runTest {
+        // back-compat: the old {part,degrees} form is a one-joint batch.
+        tool("move").execute("1", args("""{"steps":[{"part":"neck","degrees":-20}]}"""), null)
+        waitAngles(1)
+        assertThat(body.batches).hasSize(1)
+        assertThat(body.batches.first().keys).containsExactly("neck")
+    }
+
     // ── move: sequencing ────────────────────────────────────────────────────
 
     @Test fun multiStepRunsAllStepsInOrder() = runTest {
@@ -125,6 +156,20 @@ class DockToolsAdapterTest {
         assertThat(body.angles.map { it.first }).containsExactly("neck", "neck").inOrder()
         // first step (down, +deg) should be a higher µs than the second (center).
         assertThat(body.angles[0].second).isGreaterThan(body.angles[1].second)
+    }
+
+    @Test fun waitOnlyStepIsAValidPause() = runTest {
+        // The model emits {wait_ms:N} as its own step between moves — must NOT be
+        // rejected. Two moves around a pause = 2 angle batches, run in order.
+        val r = tool("move").execute(
+            "1",
+            args("""{"steps":[{"part":"foot","degrees":-90,"duration_ms":50},{"wait_ms":100},{"part":"foot","degrees":90,"duration_ms":50}]}"""),
+            null,
+        )
+        assertThat(text(r)).doesNotContain("no part")   // the wait step isn't an error
+        waitAngles(2)
+        assertThat(body.angles.map { it.first }).containsExactly("foot", "foot").inOrder()
+        assertThat(body.angles[0].second).isLessThan(body.angles[1].second) // -90 then +90
     }
 
     @Test fun unknownPartSkippedValidStepsRun() = runTest {

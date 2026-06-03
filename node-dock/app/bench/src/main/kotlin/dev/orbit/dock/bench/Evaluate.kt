@@ -1,5 +1,9 @@
 package dev.orbit.dock.bench
 
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.jsonObject
+
 /** Outcome of one run before aggregation. */
 data class TurnOutcome(
     val output: String,
@@ -45,8 +49,18 @@ object Evaluate {
             if (!ok) return false
         }
         expect.minSteps?.let { n ->
-            val maxSteps = tools.filter { it.name == "move" }.maxOfOrNull { moveSteps(it.args).size } ?: 0
-            if (maxSteps < n) return false
+            val steps = tools.filter { it.name == "move" }.maxOfOrNull { moveStepCount(it.args) } ?: 0
+            if (steps < n) return false
+        }
+        expect.maxSteps?.let { n ->
+            val steps = tools.filter { it.name == "move" }.maxOfOrNull { moveStepCount(it.args) } ?: 0
+            if (steps > n) return false
+        }
+        expect.durRange?.let { r ->
+            val ok = tools.filter { it.name == "move" }.any { tc ->
+                moveDurations(tc.args).any { it in r.lo..r.hi }
+            }
+            if (!ok) return false
         }
         return true
     }
@@ -61,6 +75,18 @@ object Evaluate {
             if (part == null && deg == null) null else part to deg
         }.toList()
     }
+
+    /** All duration_ms values across a `move` call's steps. */
+    private fun moveDurations(args: String): List<Int> =
+        Regex("\"duration_ms\"\\s*:\\s*(\\d+)").findAll(args).mapNotNull { it.groupValues[1].toIntOrNull() }.toList()
+
+    private val lenientJson = Json { isLenient = true; ignoreUnknownKeys = true }
+
+    /** Count of TOP-LEVEL steps in the `steps` array (a multi-joint `parts` step
+     *  counts as ONE step, not one-per-joint). Falls back to 0 on parse failure. */
+    private fun moveStepCount(args: String): Int = runCatching {
+        (lenientJson.parseToJsonElement(args).jsonObject["steps"] as? JsonArray)?.size ?: 0
+    }.getOrDefault(0)
 
     /** Per-run objective signals, surfaced in the viewer (not all gate the pass). */
     fun objective(o: TurnOutcome): Map<String, Boolean> = mapOf(

@@ -63,12 +63,24 @@ class BenchTools {
             val problems = mutableListOf<String>()
             for ((i, el) in steps.withIndex()) {
                 val o = el as? JsonObject ?: continue
-                val part = o["part"]?.jsonPrimitive?.content.orEmpty()
-                val deg = o["degrees"]?.jsonPrimitive?.content?.toDoubleOrNull()
-                if (part !in DEGREE_RANGE.keys) { problems.add("step ${i + 1}: unknown part '$part'"); continue }
-                if (deg == null) { problems.add("step ${i + 1}: missing/invalid degrees"); continue }
-                // out-of-range is clamped (not an error) — mirror the body's clamp.
-                good.add("$part@${DockToolSchemas.degreesToUs(part, deg)}us")
+                // a step's joints: the multi-joint `parts` array OR single {part,degrees}.
+                val joints = when {
+                    o["parts"] is JsonArray -> (o["parts"] as JsonArray).filterIsInstance<JsonObject>()
+                    o["part"] != null -> listOf(o)
+                    else -> emptyList()
+                }
+                if (joints.isEmpty()) {
+                    // a wait-only step (pause between moves) is valid, not an error.
+                    if (o["wait_ms"] == null) problems.add("step ${i + 1}: no part/parts and no wait_ms")
+                    continue
+                }
+                for (j in joints) {
+                    val part = j["part"]?.jsonPrimitive?.content.orEmpty()
+                    val deg = j["degrees"]?.jsonPrimitive?.content?.toDoubleOrNull()
+                    if (part !in DEGREE_RANGE.keys) { problems.add("step ${i + 1}: unknown part '$part'"); continue }
+                    if (deg == null) { problems.add("step ${i + 1}: $part missing/invalid degrees"); continue }
+                    good.add("$part@${DockToolSchemas.degreesToUs(part, deg)}us")
+                }
             }
             if (problems.isNotEmpty()) allEnumsValid = false
             if (good.isEmpty()) return AgentToolResult(

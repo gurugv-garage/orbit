@@ -29,4 +29,11 @@ interface BodyController {
      *  is a human description (e.g. "+20°") shown in the body badge instead of
      *  "<raw>". A no-op (logged) if not connected or the part is unknown. */
     suspend fun setAngle(part: String, pulseWidthUs: Int, durationMs: Int, label: String)
+
+    /** Command several parts SIMULTANEOUSLY in one set_target envelope — they
+     *  start moving together over `durationMs`. `targets` maps part → (µs, label).
+     *  This is how the `move` tool runs a multi-joint step (neck AND foot at
+     *  once). A no-op if not connected; unknown parts are dropped by the body.
+     *  Single-part callers can still use [setAngle]. */
+    suspend fun setAngles(targets: Map<String, Pair<Int, String>>, durationMs: Int)
 }

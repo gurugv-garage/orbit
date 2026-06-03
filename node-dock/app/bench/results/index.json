@@ -1,5 +1,23 @@
 [
     {
+        "file": "move-suite.json",
+        "snapshot": "move-suite",
+        "ts": "2026-06-03T05:42:57.553940Z",
+        "note": null
+    },
+    {
+        "file": "move-repeat.json",
+        "snapshot": "move-repeat",
+        "ts": "2026-06-03T05:30:28.278156Z",
+        "note": null
+    },
+    {
+        "file": "move-simul.json",
+        "snapshot": "move-simul",
+        "ts": "2026-06-03T04:47:18.904460Z",
+        "note": null
+    },
+    {
         "file": "move-degrees.json",
         "snapshot": "move-degrees",
         "ts": "2026-06-03T02:48:16.563673Z",

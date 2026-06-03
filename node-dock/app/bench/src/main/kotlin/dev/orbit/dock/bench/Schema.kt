@@ -81,11 +81,23 @@ data class Expect(
     val degRange: DegRange? = null,
     /** Minimum number of steps in the `move` call — tests sequencing/composition. */
     val minSteps: Int? = null,
+    /** Maximum number of steps — tests brevity (e.g. a quick one-shot move). */
+    val maxSteps: Int? = null,
+    /**
+     * Duration check: at least one step's `duration_ms` lands in [lo, hi]. Tests
+     * that the model maps speed words to time — 'fast'/'snappy' → small ms,
+     * 'slow'/'gentle' → large ms. null = unchecked.
+     */
+    val durRange: DurRange? = null,
 )
 
 /** Expected degrees window for a `move` step on a given part. */
 @Serializable
 data class DegRange(val part: String, val lo: Double, val hi: Double)
+
+/** Expected duration_ms window for some `move` step (speed test). */
+@Serializable
+data class DurRange(val lo: Int, val hi: Int)
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Outputs: bench/results/<ts>.json (+ latest.json), read by viewer.html.
