@@ -17,6 +17,8 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.add
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
@@ -49,6 +51,13 @@ class StationLink(
      * unknown when not supplied.
      */
     private val linkStatus: () -> AppLinks = { AppLinks() },
+    /**
+     * Called for each inbound config push/snapshot frame on the `config` topic,
+     * with the frame's payload (carrying scope/key/value/lastUpdated). Wired to
+     * [dev.orbit.dock.config.ConfigCache.apply]. Default no-op so the station
+     * link is usable without config.
+     */
+    private val onConfigFrame: (JsonObject) -> Unit = {},
 ) {
     private val _connected = MutableStateFlow(false)
     val connected: StateFlow<Boolean> = _connected.asStateFlow()
@@ -100,10 +109,22 @@ class StationLink(
         heartbeatJob?.cancel()
         heartbeatJob = scope.launch { heartbeatLoop() }
 
-        // Drain inbound (config pushes / dock-updated). We don't need to act on
-        // them yet, but reading keeps the socket healthy and lets us see closes.
+        // Drain inbound. Config pushes/snapshots (topic 'config') feed the
+        // ConfigCache via onConfigFrame; everything else keeps the socket
+        // healthy and lets us notice closes.
         for (frame in s.incoming) {
-            if (frame is Frame.Text) { /* config/station events available here later */ }
+            if (frame is Frame.Text) handleInbound(frame.readText())
+        }
+    }
+
+    private fun handleInbound(text: String) {
+        val frame = runCatching { json.parseToJsonElement(text).jsonObject }.getOrNull() ?: return
+        // station wraps published events as {t:'event', topic, kind, payload, ...}
+        val topic = frame["topic"]?.jsonPrimitive?.content
+        if (topic == "config") {
+            val payload = frame["payload"] as? JsonObject ?: return
+            runCatching { onConfigFrame(payload) }
+                .onFailure { Timber.d("config frame handling failed: ${it.message}") }
         }
     }
 

@@ -47,6 +47,13 @@ class DockTools(
      * grounded rather than guessed. Null → no visual context (mic-only dock).
      */
     private val perception: PerceptionSnapshot? = null,
+    /**
+     * Optional station-synced config. When present, [expressionGesture] reads
+     * the `dock.faceGestures` choreography from it (live-updatable from the
+     * station console); when null or a gesture is absent, the hardcoded
+     * [defaultGesture] tables are used. Either way the dock still acts out moods.
+     */
+    private val config: dev.orbit.dock.config.ConfigCache? = null,
 ) {
 
     private val spokeThisTurn = AtomicBoolean(false)
@@ -282,7 +289,19 @@ class DockTools(
      * the motion reads as a tell, not a lunge. Most gestures resolve back toward
      * center so the body settles in a natural rest pose.
      */
-    private fun expressionGesture(expression: String): List<MoveOp> = when (expression) {
+    private fun expressionGesture(expression: String): List<MoveOp> {
+        // Prefer the station-synced choreography (live-editable); fall back to
+        // the baked-in default tables. Same move-step shape as the `move` tool.
+        config?.obj("dock", "faceGestures")?.get(expression)?.let { el ->
+            (el as? JsonArray)?.let { steps ->
+                val ops = stepsToOps(steps).first
+                if (ops.isNotEmpty()) return ops
+            }
+        }
+        return defaultGesture(expression)
+    }
+
+    private fun defaultGesture(expression: String): List<MoveOp> = when (expression) {
         // Drowsy: the head sags forward, bobs once as if catching itself, then
         // sinks and rests low — "nodding off".
         "sleepy" -> listOf(
@@ -468,45 +487,7 @@ class DockTools(
         }
         TurnLog.toolCalled("move", steps.toString())
 
-        val ops = mutableListOf<MoveOp>()
-        val problems = mutableListOf<String>()
-        for ((i, el) in steps.withIndex()) {
-            val o = el as? JsonObject ?: run { problems.add("step ${i + 1}: not an object"); continue }
-            val durMs = o["duration_ms"]?.jsonPrimitive?.content?.toIntOrNull()?.coerceIn(0, 5000) ?: 400
-            val waitMs = o["wait_ms"]?.jsonPrimitive?.content?.toLongOrNull()?.coerceIn(0, 5000) ?: 0L
-
-            // A step's joints: the multi-joint `parts` array OR the single-joint
-            // {part, degrees}. Both resolve to a map of part → (µs, label) that
-            // this step moves SIMULTANEOUSLY.
-            val jointEls: List<JsonObject> = when {
-                o["parts"] is kotlinx.serialization.json.JsonArray ->
-                    (o["parts"] as kotlinx.serialization.json.JsonArray).filterIsInstance<JsonObject>()
-                o["part"] != null -> listOf(o) // single-joint form: the step itself
-                else -> emptyList()
-            }
-
-            // A step with NO joints but a wait_ms is a valid PAUSE step (the model
-            // often emits {wait_ms: N} as its own step between moves). Only flag it
-            // as bad if it has neither joints nor a wait.
-            if (jointEls.isEmpty()) {
-                if (waitMs > 0) ops.add(MoveOp(targets = emptyMap(), travelMs = 0, waitMs = waitMs))
-                else problems.add("step ${i + 1}: no part/parts and no wait_ms")
-                continue
-            }
-
-            val targets = LinkedHashMap<String, Pair<Int, String>>()
-            for (j in jointEls) {
-                val part = j["part"]?.jsonPrimitive?.content?.lowercase().orEmpty()
-                val deg = j["degrees"]?.jsonPrimitive?.content?.toDoubleOrNull()
-                if (part !in dev.orbit.dock.llm.DockToolSchemas.DEGREE_RANGE.keys) {
-                    problems.add("step ${i + 1}: unknown part '$part'"); continue
-                }
-                if (deg == null) { problems.add("step ${i + 1}: $part missing/invalid degrees"); continue }
-                val us = dev.orbit.dock.llm.DockToolSchemas.degreesToUs(part, deg)
-                targets[part] = us to "${if (deg > 0) "+" else ""}${deg.toInt()}°"
-            }
-            if (targets.isNotEmpty()) ops.add(MoveOp(targets = targets, travelMs = durMs, waitMs = waitMs))
-        }
+        val (ops, problems) = stepsToOps(steps)
 
         if (ops.isNotEmpty()) {
             onToolCall("move")
@@ -530,6 +511,49 @@ class DockTools(
         return if (moves == 0) "no valid steps; issues: ${problems.joinToString()}"
                else if (problems.isEmpty()) "ok — running $moves step(s)"
                else "running $moves step(s); issues: ${problems.joinToString()}"
+    }
+
+    /**
+     * Parse the move-step JSON shape into executable [MoveOp]s. The single
+     * vocabulary shared by the `move` tool and config-driven face gestures:
+     * each step is `{part,degrees}` or `{parts:[...]}` (joints move together),
+     * with optional `duration_ms` (travel) + `wait_ms` (trailing pause); a bare
+     * `{wait_ms}` is a pause step. Degrees → µs on the fixed scale, clamped per
+     * part. Returns (ops, problems) so callers can surface bad steps.
+     */
+    private fun stepsToOps(steps: JsonArray): Pair<List<MoveOp>, List<String>> {
+        val ops = mutableListOf<MoveOp>()
+        val problems = mutableListOf<String>()
+        for ((i, el) in steps.withIndex()) {
+            val o = el as? JsonObject ?: run { problems.add("step ${i + 1}: not an object"); continue }
+            val durMs = o["duration_ms"]?.jsonPrimitive?.content?.toIntOrNull()?.coerceIn(0, 5000) ?: 400
+            val waitMs = o["wait_ms"]?.jsonPrimitive?.content?.toLongOrNull()?.coerceIn(0, 5000) ?: 0L
+
+            val jointEls: List<JsonObject> = when {
+                o["parts"] is JsonArray -> (o["parts"] as JsonArray).filterIsInstance<JsonObject>()
+                o["part"] != null -> listOf(o) // single-joint form: the step itself
+                else -> emptyList()
+            }
+
+            if (jointEls.isEmpty()) {
+                if (waitMs > 0) ops.add(MoveOp(targets = emptyMap(), travelMs = 0, waitMs = waitMs))
+                else problems.add("step ${i + 1}: no part/parts and no wait_ms")
+                continue
+            }
+
+            val targets = LinkedHashMap<String, Pair<Int, String>>()
+            for (j in jointEls) {
+                val part = j["part"]?.jsonPrimitive?.content?.lowercase().orEmpty()
+                val deg = j["degrees"]?.jsonPrimitive?.content?.toDoubleOrNull()
+                if (part !in DockToolSchemas.DEGREE_RANGE.keys) {
+                    problems.add("step ${i + 1}: unknown part '$part'"); continue
+                }
+                if (deg == null) { problems.add("step ${i + 1}: $part missing/invalid degrees"); continue }
+                targets[part] = DockToolSchemas.degreesToUs(part, deg) to fmtDeg(deg)
+            }
+            if (targets.isNotEmpty()) ops.add(MoveOp(targets = targets, travelMs = durMs, waitMs = waitMs))
+        }
+        return ops to problems
     }
 
     /** One step of a body-movement sequence: a set of joint targets that move

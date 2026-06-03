@@ -100,7 +100,11 @@ fun DockScreen() {
     if (BuildConfig.DEBUG) {
         dev.orbit.dock.perception.CameraFrameProvider.debugInstance = faceTracker
     }
-    val tools = remember(controller, tts, bodyComms) {
+    // Station-synced config (faceGestures etc.). Resolves baked-default ←
+    // persisted ← live station pushes; works fully offline. Shared by DockTools
+    // (reads gestures) and StationLink (feeds it pushes).
+    val configCache = remember { dev.orbit.dock.config.ConfigCache(ctx) }
+    val tools = remember(controller, tts, bodyComms, configCache) {
         DockTools(
             controller,
             tts,
@@ -109,7 +113,8 @@ fun DockScreen() {
             body = bodyComms,
             perception = perception,
             onTurnSettled = { wiringRef.value?.clearTranscript() },
-        )
+            config = configCache,
+        ).also { dev.orbit.dock.agent.ToolsTestController.tools = it }
     }
     // Runtime model selection (persisted). Changing it rebuilds the agent so the
     // new transport/model takes effect immediately; default comes from the build.
@@ -129,6 +134,18 @@ fun DockScreen() {
                     bodyConnected = bodyComms.connected.value,
                     llmReachable = selectedModel.baseUrl.isNotBlank(),
                 )
+            },
+            // feed config pushes/snapshots into the cache (it ignores stale +
+            // keys the dock doesn't care about).
+            onConfigFrame = { payload ->
+                val scope = (payload["scope"] as? kotlinx.serialization.json.JsonPrimitive)?.content
+                val key = (payload["key"] as? kotlinx.serialization.json.JsonPrimitive)?.content
+                val value = payload["value"]
+                val lastUpdated = (payload["lastUpdated"] as? kotlinx.serialization.json.JsonPrimitive)?.content?.toLongOrNull()
+                if (scope != null && key != null && value != null && lastUpdated != null
+                    && "$scope.$key" in dev.orbit.dock.config.ConfigCache.DOCK_KEYS) {
+                    configCache.apply(scope, key, value, lastUpdated)
+                }
             },
         ).also { it.start() }
     }

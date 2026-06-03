@@ -1,5 +1,7 @@
 import java.util.Properties
 import java.io.FileInputStream
+import java.net.HttpURLConnection
+import java.net.URI
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 
 plugins {
@@ -159,6 +161,46 @@ android {
         }
     }
 }
+
+// ── config bake ──────────────────────────────────────────────────────────────
+// At build time, pull the station's current config and pack it into the app as
+// assets/config-defaults.json, so the dock boots with up-to-date defaults even
+// with NO station reachable later. If the station is down (or no URL is set),
+// the COMMITTED config-defaults.json is kept — the build never fails on this.
+//
+// Set STATION_BAKE_URL in local.properties (e.g. http://192.168.1.10:8099) to
+// enable the live fetch; otherwise the committed file is used as-is.
+val bakeConfig by tasks.registering {
+    description = "Fetch station config → assets/config-defaults.json (keeps committed file on failure)"
+    val localProps = Properties().apply {
+        val f = rootProject.file("local.properties")
+        if (f.exists()) FileInputStream(f).use { load(it) }
+    }
+    val bakeUrl = localProps.getProperty("STATION_BAKE_URL", "").trimEnd('/')
+    val out = file("src/main/assets/config-defaults.json")
+    // Re-run whenever the URL changes; cheap network task otherwise.
+    inputs.property("bakeUrl", bakeUrl)
+    outputs.file(out)
+    doLast {
+        if (bakeUrl.isBlank()) {
+            logger.lifecycle("bakeConfig: no STATION_BAKE_URL — using committed ${out.name}")
+            return@doLast
+        }
+        try {
+            val conn = URI("$bakeUrl/api/config/export").toURL().openConnection() as HttpURLConnection
+            conn.connectTimeout = 2000; conn.readTimeout = 3000
+            val text = conn.inputStream.bufferedReader().use { it.readText() }
+            // sanity: must be a JSON object (don't clobber the committed file with junk).
+            groovy.json.JsonSlurper().parseText(text)
+            out.writeText(text)
+            logger.lifecycle("bakeConfig: baked fresh config from $bakeUrl (${text.length} bytes)")
+        } catch (t: Throwable) {
+            logger.warn("bakeConfig: fetch from $bakeUrl failed (${t.message}) — keeping committed ${out.name}")
+        }
+    }
+}
+// Run before assets are merged into the APK.
+tasks.matching { it.name == "preBuild" }.configureEach { dependsOn(bakeConfig) }
 
 dependencies {
     implementation(project(":agent-core"))  // pure-JVM agentic runtime (vendored pi-kt)

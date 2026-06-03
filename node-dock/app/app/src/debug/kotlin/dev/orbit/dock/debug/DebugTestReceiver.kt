@@ -51,6 +51,16 @@ object DebugTestReceiver {
                         val active = intent.getStringExtra("active")?.toBoolean() ?: false
                         PerceptionBus.emit(PerceptionEvent.Speaking(active = active))
                     }
+                    "${PREFIX}SETFACE" -> {
+                        // Invoke set_face directly (skips the LLM turn) so the
+                        // expression → config-driven body gesture → servos path
+                        // is testable on-device:
+                        //   adb ... SETFACE -e expression happy
+                        val expr = intent.getStringExtra("expression").orEmpty()
+                        Timber.i("DEBUG setFace: \"$expr\"")
+                        val r = dev.orbit.dock.agent.ToolsTestController.tools?.setFace(expr)
+                        Timber.i("DEBUG setFace result: $r")
+                    }
                     "${PREFIX}DUMPFRAME" -> {
                         // Write the exact frame the dock would attach to a turn,
                         // so it can be pulled + eyeballed:
@@ -104,6 +114,7 @@ object DebugTestReceiver {
             addAction("${PREFIX}STOP")
             addAction("${PREFIX}SAY")
             addAction("${PREFIX}SPEAKING")
+            addAction("${PREFIX}SETFACE")
             addAction("${PREFIX}FACE")
             addAction("${PREFIX}DUMPFRAME")
         }
