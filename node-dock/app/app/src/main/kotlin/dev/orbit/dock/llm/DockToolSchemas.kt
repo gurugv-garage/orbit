@@ -192,7 +192,10 @@ object DockToolSchemas {
     const val COMPUTE_DESC = "Evaluate a SAFE arithmetic or random-number expression and get the result back " +
         "(e.g. math, or \"random(1,10)\", or \"random(1,10) > 5\"). Use this whenever you'd otherwise want to " +
         "\"run code\" for a number or a calculation — you have NO general code execution, only this."
-    const val SET_FACE_DESC = "Set the dock's facial expression to match the mood of what you're saying."
+    const val SET_FACE_DESC = "Set the dock's facial expression to match the mood of what you're saying. " +
+        "The body also acts out the mood automatically — a sleepy face droops the head, excited does a happy " +
+        "wiggle, love a dreamy tilt, surprised a snap-back, etc. — so you usually DON'T need a separate `move` " +
+        "for emotion; use `move` only for deliberate, literal motions (nod yes, look left, point)."
     const val MOVE_DESC = "Move the body. Give an ordered list of steps; each step moves its joint(s) to an " +
         "absolute angle in DEGREES over a duration, with an optional pause after. " +
         "The steps list can be ANY LENGTH — chain as many as the motion needs. " +

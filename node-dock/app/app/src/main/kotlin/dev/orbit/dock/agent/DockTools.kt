@@ -1,6 +1,7 @@
 package dev.orbit.dock.agent
 
 import dev.orbit.dock.body.BodyController
+import dev.orbit.dock.llm.DockToolSchemas
 import dev.orbit.dock.tts.Speaker
 import dev.orbit.dock.ui.face.FaceController
 import dev.orbit.dock.ui.face.FaceExpression
@@ -62,6 +63,12 @@ class DockTools(
     // new utterance) can cancel a long gesture instead of letting it twitch on
     // after the conversation has moved on.
     @Volatile private var bodyJob: kotlinx.coroutines.Job? = null
+
+    // Body gesture that accompanies an expression (set_face). Kept SEPARATE from
+    // bodyJob so an emotive twitch (a sleepy head-droop, an excited wiggle)
+    // doesn't cancel an in-flight `move` the model explicitly asked for — and so
+    // a new expression only preempts the previous expression's gesture.
+    @Volatile private var faceGestureJob: kotlinx.coroutines.Job? = null
 
     fun beginTurn() {
         spokeThisTurn.set(false)
@@ -218,6 +225,7 @@ class DockTools(
                 // auto-restoring helper so the face returns to its prior
                 // expression after ~700ms.
                 face.wink()
+                runExpressionGesture("wink")
                 onToolCall(null)
                 return "ok"
             }
@@ -231,9 +239,121 @@ class DockTools(
             }
         }
         face.setExpression(e)
+        // Give the body a personality: a mood implies a little physical tell.
+        // Fire-and-forget; no-ops gracefully when no body is connected.
+        runExpressionGesture(expression.trim().lowercase())
         onToolCall(null)
         return "ok"
     }
+
+    /**
+     * Drive a short, expressive body gesture that matches a facial expression —
+     * the dock's body "acts out" the mood (sleepy → head droops; excited →
+     * happy wiggle; love → dreamy tilt-sway; surprised → snap back). Runs on its
+     * own [faceGestureJob] so it never preempts an explicit `move`, and a new
+     * expression preempts only the previous expression's gesture. Each gesture
+     * ends near neutral so the body doesn't get stuck in a pose. No-op when no
+     * body is connected.
+     *
+     * Joints (see [DockToolSchemas.DEGREE_RANGE]): `neck` = head tilt/nod, ±45°;
+     * `foot` = base swivel, ±90°. Degrees are absolute angles from neutral.
+     */
+    private fun runExpressionGesture(expression: String) {
+        val link = body
+        if (link == null || !link.connected.value) return
+        val ops = expressionGesture(expression)
+        if (ops.isEmpty()) return
+        faceGestureJob?.cancel()
+        faceGestureJob = bodyScope.launch {
+            for (op in ops) {
+                if (op.targets.isNotEmpty()) {
+                    link.setAngles(op.targets, op.travelMs)
+                    kotlinx.coroutines.delay(op.travelMs + 40L)
+                }
+                if (op.waitMs > 0) kotlinx.coroutines.delay(op.waitMs)
+            }
+        }
+    }
+
+    /**
+     * Choreography for each expression, as a sequence of [MoveOp]s. Small,
+     * readable building blocks: [head]/[base] move one joint; [pose] moves both
+     * together; [hold] pauses. Amplitudes stay well inside the joint limits so
+     * the motion reads as a tell, not a lunge. Most gestures resolve back toward
+     * center so the body settles in a natural rest pose.
+     */
+    private fun expressionGesture(expression: String): List<MoveOp> = when (expression) {
+        // Drowsy: the head sags forward, bobs once as if catching itself, then
+        // sinks and rests low — "nodding off".
+        "sleepy" -> listOf(
+            head(-30.0, 900), hold(250),
+            head(-18.0, 350), head(-38.0, 1100), hold(300),
+        )
+        // Warm: a gentle up-bob and a small body sway, like a contented nod.
+        "happy" -> listOf(
+            pose(neck = 12.0, foot = 12.0, ms = 280),
+            pose(neck = 0.0, foot = -12.0, ms = 320),
+            pose(neck = 8.0, foot = 0.0, ms = 260), center(300),
+        )
+        // Giddy: a fast head+body wiggle/vibrate — the "laughing shake". Several
+        // quick small alternations, then settle.
+        "excited" -> buildList {
+            repeat(5) { i ->
+                val s = if (i % 2 == 0) 1 else -1
+                add(pose(neck = 10.0 * s, foot = 16.0 * s, ms = 120))
+            }
+            add(center(220))
+        }
+        // Smitten: a slow dreamy head-tilt to one side with a matching lean, held.
+        "love" -> listOf(
+            pose(neck = 22.0, foot = 14.0, ms = 700), hold(500),
+            pose(neck = 16.0, foot = 8.0, ms = 600),
+        )
+        // Inquisitive: cock the head to one side and lean in a touch — "hmm?".
+        "curious" -> listOf(
+            pose(neck = 20.0, foot = -18.0, ms = 450), hold(400),
+            head(14.0, 300),
+        )
+        // Startled: a quick snap up-and-back, freeze, then ease down.
+        "surprised" -> listOf(
+            head(38.0, 130), hold(450), head(20.0, 350),
+        )
+        // Crestfallen: the head sinks low and the body turns slightly away.
+        "sad" -> listOf(
+            pose(neck = -28.0, foot = 30.0, ms = 1000), hold(400),
+            head(-34.0, 700),
+        )
+        // Indignant: sharp little "no!" head-shakes, tense and quick.
+        "angry" -> listOf(
+            base(-30.0, 130), base(30.0, 130), base(-26.0, 130), base(24.0, 130),
+            center(180),
+        )
+        // Uneasy: a slow, small side-to-side head shake — "I'm not sure".
+        "concerned" -> listOf(
+            head(-12.0, 450), head(12.0, 500), head(-8.0, 450), center(400),
+        )
+        // Playful: a tiny double head-tilt to punctuate the eye-wink.
+        "wink" -> listOf(head(16.0, 200), head(0.0, 220))
+        // Reset to a calm, square rest pose.
+        "neutral" -> listOf(center(450))
+        else -> emptyList()
+    }
+
+    // ── gesture building blocks (absolute degrees from neutral) ──────────────
+    private fun head(deg: Double, ms: Int) =
+        MoveOp(targets = mapOf("neck" to (DockToolSchemas.degreesToUs("neck", deg) to fmtDeg(deg))), travelMs = ms)
+    private fun base(deg: Double, ms: Int) =
+        MoveOp(targets = mapOf("foot" to (DockToolSchemas.degreesToUs("foot", deg) to fmtDeg(deg))), travelMs = ms)
+    private fun pose(neck: Double, foot: Double, ms: Int) = MoveOp(
+        targets = mapOf(
+            "neck" to (DockToolSchemas.degreesToUs("neck", neck) to fmtDeg(neck)),
+            "foot" to (DockToolSchemas.degreesToUs("foot", foot) to fmtDeg(foot)),
+        ),
+        travelMs = ms,
+    )
+    private fun center(ms: Int) = pose(neck = 0.0, foot = 0.0, ms = ms)
+    private fun hold(ms: Long) = MoveOp(targets = emptyMap(), travelMs = 0, waitMs = ms)
+    private fun fmtDeg(deg: Double) = "${if (deg > 0) "+" else ""}${deg.toInt()}°"
 
     fun silence(): String {
         Timber.i("tool.silence")
@@ -253,6 +373,8 @@ class DockTools(
     fun stopBody() {
         bodyJob?.cancel()
         bodyJob = null
+        faceGestureJob?.cancel()
+        faceGestureJob = null
     }
 
     // ── BodyLink ──────────────────────────────────────────────────────
