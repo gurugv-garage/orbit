@@ -45,10 +45,10 @@ export function Observability() {
       for (const sess of detailed) if (sess?.turns) for (const t of sess.turns) vms.push(storedToVM(t, sess.source));
       vms.sort((a, b) => a.startedAt - b.startedAt);
       setTurns((live) => {
-        const have = new Set(live.map((t) => t.id));
-        const merged = [...vms.filter((t) => !have.has(t.id)), ...live].slice(-300);
+        const have = new Set(live.map((t) => turnKey(t.sessionId, t.id)));
+        const merged = [...vms.filter((t) => !have.has(turnKey(t.sessionId, t.id))), ...live].slice(-300);
         turnIndex.current.clear();
-        merged.forEach((t, i) => turnIndex.current.set(t.id, i));
+        merged.forEach((t, i) => turnIndex.current.set(turnKey(t.sessionId, t.id), i));
         return merged;
       });
     }).catch(() => {});
@@ -59,10 +59,13 @@ export function Observability() {
     const ev = frame.payload as AgentEventDto;
     setTurns((prev) => {
       const next = prev.slice();
-      let i = turnIndex.current.get(ev.turnId);
+      // key by session+turn: turn ids are unique only within a session, so two
+      // sessions reusing an id must not merge into one row.
+      const key = turnKey(ev.sessionId, ev.turnId);
+      let i = turnIndex.current.get(key);
       if (i == null) {
         i = next.length;
-        turnIndex.current.set(ev.turnId, i);
+        turnIndex.current.set(key, i);
         next.push({ id: ev.turnId, sessionId: ev.sessionId, startedAt: ev.ts, ended: false, steps: [], speech: [] });
       }
       const turn = { ...next[i]!, steps: next[i]!.steps.slice() };
@@ -267,6 +270,8 @@ function clock(ts: number): string { return new Date(ts).toLocaleTimeString('en-
 function clockMs(ts: number): string { return `${clock(ts)}.${String(ts % 1000).padStart(3, '0')}`; }
 function fullTime(ts: number): string { return new Date(ts).toLocaleString('en-GB', { timeZone: IST, hour12: false }) + ' IST'; }
 function pretty(v: unknown): string { try { return typeof v === 'string' ? v : JSON.stringify(v, null, 1); } catch { return String(v); } }
+/** turn ids are unique only within a session — key the live index by both. */
+function turnKey(sessionId: string, turnId: string): string { return `${sessionId} ${turnId}`; }
 
 function storedToVM(t: StoredTurn, source?: string): TurnVM {
   return {

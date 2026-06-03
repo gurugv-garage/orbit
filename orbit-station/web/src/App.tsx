@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useConnected } from './lib/useStation';
 import { DockStatus } from './components/DockStatus';
+import { ErrorBoundary } from './components/ErrorBoundary';
 import { Overview } from './modules/Overview';
 import { Observability } from './modules/Observability';
 import { Config } from './modules/Config';
@@ -69,7 +70,9 @@ export function App() {
           </div>
         </nav>
         <div className="scrim" onClick={() => setNavOpen(false)} />
-        <main>{VIEWS.find((v) => v.id === view)?.el}</main>
+        <main>
+          <ErrorBoundary key={view}>{VIEWS.find((v) => v.id === view)?.el}</ErrorBoundary>
+        </main>
       </div>
     </>
   );
