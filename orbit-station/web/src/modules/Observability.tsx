@@ -180,25 +180,39 @@ function TurnTimeline({ turn }: { turn: TurnVM }) {
         <div className="obs-msg user"><span className="obs-msg-who">user</span><span className="obs-msg-text">{turn.prompt}</span></div>
       )}
 
-      {/* ONE combined timeline for the whole turn: every step + tool on one bar */}
-      <div className="obs-track turn-track" title="turn timeline">
+      {/* Timeline: one labeled lane per step (and nested tool call). Each lane
+          shows WHAT it is, its bar, and clock-time + duration inline. */}
+      <div className="obs-lanes">
+        <div className="obs-lane axis">
+          <span className="obs-lane-label" />
+          <span className="obs-lane-track"><span className="obs-axis-start">{clockMs(turn.startedAt)}</span><span className="obs-axis-end">+{fmtMs(total)}</span></span>
+          <span className="obs-lane-when" />
+        </div>
         {turn.steps.map((s) => {
           const a = (s.startedAt ?? t0) - t0;
           const b = (s.endedAt ?? t0 + total) - t0;
           const kind = s.tools.length ? 'tool' : 'speak';
-          return <Bar key={`s${s.idx}`} start={a} len={b - a} total={total} cls={`step ${kind}`} title={`step ${s.idx} (${kind}) ${fmtMs(b - a)}`} />;
+          return (
+            <div key={`lane${s.idx}`}>
+              <div className="obs-lane">
+                <span className={`obs-lane-label ${kind}`}>step {s.idx} · {kind === 'tool' ? 'tool call' : 'reply'}</span>
+                <span className="obs-lane-track"><Bar start={a} len={b - a} total={total} cls={`step ${kind}`} title={`step ${s.idx}`} /></span>
+                <span className="obs-lane-when mono">@{fmtMs(a)} · {fmtMs(b - a)}</span>
+              </div>
+              {s.tools.map((tc) => {
+                const ta = (tc.startedAt ?? t0) - t0;
+                const tw = (tc.endedAt ?? tc.startedAt ?? t0) - (tc.startedAt ?? t0);
+                return (
+                  <div key={tc.id} className="obs-lane tool">
+                    <span className={`obs-lane-label tool${tc.isError ? ' err' : ''}`}>⚙ {tc.name}</span>
+                    <span className="obs-lane-track"><Bar start={ta} len={tw} total={total} cls={`tool${tc.isError ? ' err' : ''}`} title={tc.name} /></span>
+                    <span className="obs-lane-when mono">@{fmtMs(ta)} · {fmtMs(tw)}</span>
+                  </div>
+                );
+              })}
+            </div>
+          );
         })}
-        {turn.steps.flatMap((s) => s.tools).map((tc) => {
-          const a = (tc.startedAt ?? t0) - t0;
-          const w = (tc.endedAt ?? tc.startedAt ?? t0) - (tc.startedAt ?? t0);
-          return <Bar key={tc.id} start={a} len={w} total={total} cls={`tool${tc.isError ? ' err' : ''}`} title={`${tc.name} ${fmtMs(w)}`} />;
-        })}
-      </div>
-      <div className="obs-legend">
-        <span><i className="sw step tool" />step (tool)</span>
-        <span><i className="sw step speak" />step (reply)</span>
-        <span><i className="sw tool" />tool call</span>
-        <span className="muted">0–{fmtMs(total)}</span>
       </div>
 
       {/* per-step detail (no individual track now — the bar above is the timeline) */}

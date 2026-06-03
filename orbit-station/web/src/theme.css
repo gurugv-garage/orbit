@@ -193,13 +193,29 @@ label.field { display: flex; flex-direction: column; gap: 4px; font-size: 12px; 
 .obs-msg-text { color: var(--fg); }
 .obs-msg.user .obs-msg-text { font-weight: 500; }
 
-/* the ONE combined turn timeline */
-.obs-track.turn-track { height: 16px; margin: 6px 0 4px; }
-.obs-legend { display: flex; gap: 12px; align-items: center; font-size: 10px; color: var(--dim); margin-bottom: 8px; }
-.obs-legend i.sw { display: inline-block; width: 16px; height: 7px; border-radius: 2px; margin-right: 4px; vertical-align: middle; }
-.obs-legend i.sw.step.tool { background: var(--accent); opacity: .5; }
-.obs-legend i.sw.step.speak { background: var(--good); opacity: .5; }
-.obs-legend i.sw.tool { background: var(--accent-2); }
+/* timeline = labeled lanes (label · bar · when). One per step + nested tool. */
+.obs-lanes { margin: 6px 0 10px; border: 1px solid var(--line); border-radius: 6px; padding: 4px 6px; background: #0a0e1c; }
+.obs-lane { display: grid; grid-template-columns: 120px 1fr 96px; gap: 8px; align-items: center; height: 18px; }
+.obs-lane.tool { height: 15px; }
+.obs-lane-label { font-size: 10px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.obs-lane-label.tool { color: var(--accent-2); font-family: ui-monospace, monospace; padding-left: 10px; }
+.obs-lane-label.tool.err { color: var(--bad); }
+.obs-lane-label.speak { color: var(--good); }
+.obs-lane-label:not(.tool):not(.speak) { color: var(--accent); }
+.obs-lane-track { position: relative; height: 10px; background: #ffffff08; border-radius: 3px; }
+.obs-lane.tool .obs-lane-track { height: 7px; }
+.obs-lane-when { font-size: 10px; color: var(--dim); text-align: right; }
+.obs-lane.axis { height: 14px; }
+.obs-lane.axis .obs-lane-track { background: none; }
+.obs-axis-start { position: absolute; left: 0; top: 0; font-size: 9px; color: #5a647c; }
+.obs-axis-end { position: absolute; right: 0; top: 0; font-size: 9px; color: #5a647c; }
+/* bars fill their lane's track */
+.obs-lane .obs-bar { top: 0; bottom: 0; }
+.obs-lane .obs-bar.step { opacity: .45; }
+.obs-lane .obs-bar.step.tool { background: var(--accent); }
+.obs-lane .obs-bar.step.speak { background: var(--good); }
+.obs-lane .obs-bar.tool { background: var(--accent-2); box-shadow: 0 0 4px var(--accent-2); }
+.obs-lane .obs-bar.tool.err { background: var(--bad); box-shadow: 0 0 4px var(--bad); }
 
 /* a step — color-coded by kind (tool call vs spoken/LLM-only) */
 .obs-step { margin: 7px 0; padding-left: 8px; border-left: 3px solid var(--line); }
