@@ -363,6 +363,14 @@ fun DockScreen() {
                             .align(Alignment.TopEnd)
                             .padding(12.dp),
                     )
+                    // Clean exit: fully tears down the listening service +
+                    // notification and finishes/removes the task.
+                    dev.orbit.dock.ui.widgets.ExitButton(
+                        onExit = { dev.orbit.dock.service.PerceptionService.exit(ctx) },
+                        modifier = Modifier
+                            .align(Alignment.TopStart)
+                            .padding(12.dp),
+                    )
                     // The dock's "eye": a live thumbnail of what the camera (and
                     // the vision LLM) sees. Only while the camera is actually on.
                     if (camGranted && !camMuted) {

@@ -26,8 +26,14 @@ class MainActivity : ComponentActivity() {
     // kills the whole UI, not just the listening service.
     private val forceFinishReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
-            Timber.i("MainActivity received FORCE_FINISH from notification")
-            finish()
+            Timber.i("MainActivity received FORCE_FINISH — finishing + removing task")
+            // finishAndRemoveTask so a clean exit (Exit button or notification
+            // "Stop dock") also clears the app from Recents. The service has
+            // already dropped its notification + stopped itself; the now-empty
+            // process is harmless and the OS reaps it. We deliberately do NOT
+            // Process.killProcess() here — killing the process can race the
+            // foreground-notification removal and leave the notification stuck.
+            finishAndRemoveTask()
         }
     }
 

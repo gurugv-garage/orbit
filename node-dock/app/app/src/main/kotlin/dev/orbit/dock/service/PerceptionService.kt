@@ -38,17 +38,36 @@ class PerceptionService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == ACTION_STOP) {
             Timber.i("PerceptionService received ACTION_STOP — shutting down")
-            // Tell MainActivity to finish (if it's running) so the user gets
-            // a fully-killed app, not just a stopped service that the
-            // activity-level perception observers can resurrect.
-            sendBroadcast(
-                Intent(BROADCAST_FORCE_FINISH).setPackage(packageName),
-            )
-            stopForeground(STOP_FOREGROUND_REMOVE)
-            stopSelf()
+            shutdown()
             return START_NOT_STICKY
         }
-        return START_STICKY
+        // NOT_STICKY: if the system kills us (or the task is removed) we do NOT
+        // want Android to silently resurrect the listening service + its
+        // notification. The dock only listens while the user has it open.
+        return START_NOT_STICKY
+    }
+
+    /**
+     * The task was swiped away from Recents. A foreground mic service would
+     * otherwise keep running (with its notification) after the app is "closed";
+     * tear everything down so closing the app really closes it.
+     */
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        Timber.i("PerceptionService onTaskRemoved — app dismissed, shutting down")
+        shutdown()
+        super.onTaskRemoved(rootIntent)
+    }
+
+    /** Full teardown: stop the pipeline, drop the notification, stop the
+     *  service, and tell the activity (if any) to finish. */
+    private fun shutdown() {
+        // Drop the notification + stop the service FIRST (synchronously), THEN
+        // tell the activity to finish — the activity kills the process on that
+        // broadcast, so the notification must already be gone by then.
+        // (pipeline.stop() runs in onDestroy.)
+        stopForeground(STOP_FOREGROUND_REMOVE)
+        stopSelf()
+        sendBroadcast(Intent(BROADCAST_FORCE_FINISH).setPackage(packageName))
     }
 
     override fun onDestroy() {
@@ -124,6 +143,16 @@ class PerceptionService : Service() {
 
         fun stop(context: Context) {
             context.stopService(Intent(context, PerceptionService::class.java))
+        }
+
+        /** Full app shutdown: fire the service's ACTION_STOP path, which tears
+         *  down the pipeline + notification and broadcasts FORCE_FINISH so the
+         *  activity finishes too. Used by the in-app Exit button. Safe even if
+         *  the service isn't currently running. */
+        fun exit(context: Context) {
+            val i = Intent(context, PerceptionService::class.java).setAction(ACTION_STOP)
+            if (Build.VERSION.SDK_INT >= 26) context.startForegroundService(i)
+            else context.startService(i)
         }
     }
 }

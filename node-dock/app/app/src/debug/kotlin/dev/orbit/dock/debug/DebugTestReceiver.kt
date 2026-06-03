@@ -51,6 +51,13 @@ object DebugTestReceiver {
                         val active = intent.getStringExtra("active")?.toBoolean() ?: false
                         PerceptionBus.emit(PerceptionEvent.Speaking(active = active))
                     }
+                    "${PREFIX}EXIT" -> {
+                        // Exercise the in-app Exit teardown path (same call the
+                        // Exit button makes): full kill of service + notification
+                        // + task. adb ... EXIT
+                        Timber.i("DEBUG exit: tearing down")
+                        ctx?.let { dev.orbit.dock.service.PerceptionService.exit(it) }
+                    }
                     "${PREFIX}SETFACE" -> {
                         // Invoke set_face directly (skips the LLM turn) so the
                         // expression → config-driven body gesture → servos path
@@ -115,6 +122,7 @@ object DebugTestReceiver {
             addAction("${PREFIX}SAY")
             addAction("${PREFIX}SPEAKING")
             addAction("${PREFIX}SETFACE")
+            addAction("${PREFIX}EXIT")
             addAction("${PREFIX}FACE")
             addAction("${PREFIX}DUMPFRAME")
         }
