@@ -186,15 +186,16 @@ function TurnTimeline({ turn }: { turn: TurnVM }) {
   const t0 = turn.startedAt;
   const total = Math.max(turnSpan(turn), 1);
 
-  // Build a flat, time-ordered event list. Each LLM step splits into generate
-  // (StepStart→first token) + stream (first token→step end).
+  // Build a flat, time-ordered event list. Each LLM step splits into
+  // WaitForToken (StepStart→first token = time-to-first-token / model latency)
+  // + stream (first token→step end).
   const evs: Ev[] = [];
   for (const s of turn.steps) {
     const a = (s.startedAt ?? t0) - t0;
     const e = (s.endedAt ?? t0 + total) - t0;
-    const stream = s.streamStartedAt != null ? s.streamStartedAt - t0 : e; // gen→stream boundary
+    const stream = s.streamStartedAt != null ? s.streamStartedAt - t0 : e; // wait→stream boundary
     evs.push({
-      lane: 'llm', cls: 'gen', label: `step ${s.idx} · generate`, start: a, end: stream,
+      lane: 'llm', cls: 'gen', label: `step ${s.idx} · WaitForToken`, start: a, end: stream,
       detail: <>{s.model && <span className="pill acc sm">{s.model.split('/').pop()}</span>}{s.stopReason && <span className="muted sm mono">{s.stopReason}</span>}<span className="muted sm">tok {tok(s.inTok)}→{tok(s.outTok)}</span></>,
     });
     if (stream < e) {
@@ -210,7 +211,10 @@ function TurnTimeline({ turn }: { turn: TurnVM }) {
         lane: 'tool', cls: `tool${tc.isError ? ' err' : ''}`, label: `⚙ ${tc.name}`, start: ta, end: tb,
         detail: (
           <details className="obs-ev-tool">
-            <summary className="muted sm">{tc.isError ? 'error · ' : ''}params / response</summary>
+            <summary className="muted sm">
+              {tc.isError ? 'error · ' : ''}params / response
+              <span className="obs-ev-peek mono">{inlinePeek(tc.args, tc.result)}</span>
+            </summary>
             <div className="obs-kv"><span>params</span><pre>{pretty(tc.args)}</pre></div>
             {tc.result != null && <div className="obs-kv"><span>response</span><pre>{tc.result}</pre></div>}
           </details>
@@ -273,6 +277,17 @@ function clock(ts: number): string { return new Date(ts).toLocaleTimeString('en-
 function clockMs(ts: number): string { return `${clock(ts)}.${String(ts % 1000).padStart(3, '0')}`; }
 function fullTime(ts: number): string { return new Date(ts).toLocaleString('en-GB', { timeZone: IST, hour12: false }) + ' IST'; }
 function pretty(v: unknown): string { try { return typeof v === 'string' ? v : JSON.stringify(v, null, 1); } catch { return String(v); } }
+/** Compact one-line preview of a tool's args (+ result) shown next to the
+ *  "params / response" summary — collapsed whitespace, truncated. */
+function inlinePeek(args: unknown, result?: string): string {
+  const compact = (v: unknown) => {
+    const s = typeof v === 'string' ? v : (() => { try { return JSON.stringify(v); } catch { return String(v); } })();
+    return (s ?? '').replace(/\s+/g, ' ').trim();
+  };
+  let s = compact(args);
+  if (result) s += (s ? '  →  ' : '→ ') + compact(result);
+  return s.length > 160 ? s.slice(0, 160) + '…' : s;
+}
 /** turn ids are unique only within a session — key the live index by both. */
 function turnKey(sessionId: string, turnId: string): string { return `${sessionId} ${turnId}`; }
 
