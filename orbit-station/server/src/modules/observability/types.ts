@@ -47,7 +47,7 @@ export interface AgentEventDto {
     isError?: boolean;
     result?: string;
     text?: string;
-    prompt?: string;
+    trigger?: { kind: string; text?: string };
     stopReason?: string;
     /** usage if the host reports it on StepEnd / MessageEnd. */
     usage?: { inputTokens?: number; outputTokens?: number };
@@ -87,11 +87,19 @@ export interface StepRecord {
 /** A speech (TTS) window within a turn: dock was talking from startedAt→endedAt. */
 export interface SpeechWindow { startedAt: number; endedAt?: number }
 
+/**
+ * What started a turn. A turn is trigger-agnostic (AGENT-MODEL.md): today the
+ * only `kind` is "user" (speaks/types), `text` = the utterance. Future kinds —
+ * "heartbeat", "schedule", "node" (another orbit node), etc. — set a different
+ * kind and carry their own payload in `text`. The UI badges on `kind`.
+ */
+export interface Trigger { kind: string; text?: string }
+
 export interface TurnRecord {
   turnId: string;
   sessionId: string;
-  /** the user message / prompt that triggered this turn. */
-  prompt?: string;
+  /** what started this turn (user utterance today; see Trigger). */
+  trigger?: Trigger;
   /** TTS speaking windows (the dock may speak in multiple chunks). */
   speech?: SpeechWindow[];
   startedAt: number;

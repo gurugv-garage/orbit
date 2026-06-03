@@ -8,11 +8,12 @@ import type { AgentEventDto } from '../lib/protocol';
 interface ToolVM { id: string; name: string; args?: unknown; result?: string; isError?: boolean; startedAt?: number; endedAt?: number }
 interface StepVM { idx: number; model?: string; stopReason?: string; text?: string; tools: ToolVM[]; inTok?: number; outTok?: number; startedAt?: number; streamStartedAt?: number; endedAt?: number }
 interface SpeechVM { startedAt: number; endedAt?: number }
-interface TurnVM { id: string; sessionId: string; source?: string; prompt?: string; startedAt: number; endedAt?: number; ended: boolean; steps: StepVM[]; speech: SpeechVM[] }
+interface TriggerVM { kind: string; text?: string }
+interface TurnVM { id: string; sessionId: string; source?: string; trigger?: TriggerVM; startedAt: number; endedAt?: number; ended: boolean; steps: StepVM[]; speech: SpeechVM[] }
 
 interface StoredTool { toolCallId: string; toolName: string; args?: unknown; result?: string; isError?: boolean; startedAt?: number; endedAt?: number }
 interface StoredStep { index: number; model?: string; stopReason?: string; text?: string; tools: StoredTool[]; usage?: { inputTokens?: number; outputTokens?: number }; startedAt?: number; streamStartedAt?: number; endedAt?: number }
-interface StoredTurn { turnId: string; sessionId: string; prompt?: string; speech?: { startedAt: number; endedAt?: number }[]; startedAt: number; endedAt?: number; steps: StoredStep[] }
+interface StoredTurn { turnId: string; sessionId: string; trigger?: { kind: string; text?: string }; speech?: { startedAt: number; endedAt?: number }[]; startedAt: number; endedAt?: number; steps: StoredStep[] }
 interface StoredSession { sessionId: string; source?: string; turns: StoredTurn[] }
 interface SessionSummary { sessionId: string; source?: string }
 
@@ -156,7 +157,7 @@ function TurnRow({ turn, open, onToggle }: { turn: TurnVM; open: boolean; onTogg
         <span className="obs-caret">{open ? '▾' : '▸'}</span>
         <span className="obs-turn-time mono">{clockMs(turn.startedAt)}</span>
         <span className="obs-turn-id mono">{turn.id.replace('turn-', '')}</span>
-        {turn.prompt && <span className="obs-turn-prompt" title={turn.prompt}>“{turn.prompt}”</span>}
+        {turn.trigger?.text && <span className="obs-turn-prompt" title={turn.trigger.text}>“{turn.trigger.text}”</span>}
         <span className={`obs-turn-dur${dur(turn) > 4000 ? ' slow' : ''}`}>{fmtMs(dur(turn))}</span>
         <span className="muted sm">{turn.steps.length} step{turn.steps.length !== 1 ? 's' : ''}</span>
         {turn.steps.flatMap((s) => s.tools).map((tc) => (
@@ -220,8 +221,11 @@ function TurnTimeline({ turn }: { turn: TurnVM }) {
 
   return (
     <div className="obs-timeline">
-      {turn.prompt && (
-        <div className="obs-msg user"><span className="obs-msg-who">user</span><span className="obs-msg-text">{turn.prompt}</span></div>
+      {turn.trigger && (
+        <div className={`obs-msg trigger-${turn.trigger.kind}`}>
+          <span className="obs-msg-who">{turn.trigger.kind}</span>
+          {turn.trigger.text && <span className="obs-msg-text">{turn.trigger.text}</span>}
+        </div>
       )}
       <div className="obs-vaxis">{clockMs(turn.startedAt)} → +{fmtMs(total)} · {evs.length} events</div>
       <div className="obs-vt">
@@ -266,7 +270,7 @@ function pretty(v: unknown): string { try { return typeof v === 'string' ? v : J
 
 function storedToVM(t: StoredTurn, source?: string): TurnVM {
   return {
-    id: t.turnId, sessionId: t.sessionId, source, prompt: t.prompt, startedAt: t.startedAt, endedAt: t.endedAt, ended: t.endedAt != null,
+    id: t.turnId, sessionId: t.sessionId, source, trigger: t.trigger, startedAt: t.startedAt, endedAt: t.endedAt, ended: t.endedAt != null,
     speech: t.speech ?? [],
     steps: t.steps.map((s) => ({
       idx: s.index, model: s.model, stopReason: s.stopReason, text: s.text,
@@ -279,7 +283,7 @@ function storedToVM(t: StoredTurn, source?: string): TurnVM {
 function applyEvent(turn: TurnVM, ev: AgentEventDto): void {
   const last = turn.steps[turn.steps.length - 1];
   switch (ev.kind) {
-    case 'TurnStart': if (ev.data?.prompt != null) turn.prompt = ev.data.prompt as string; break;
+    case 'TurnStart': if (ev.data?.trigger != null) turn.trigger = ev.data.trigger as TriggerVM; break;
     case 'TurnEnd': turn.ended = true; turn.endedAt = ev.ts; break;
     case 'StepStart': turn.steps.push({ idx: turn.steps.length, tools: [], startedAt: ev.ts }); break;
     case 'StepEnd':

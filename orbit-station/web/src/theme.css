@@ -188,10 +188,12 @@ label.field { display: flex; flex-direction: column; gap: 4px; font-size: 12px; 
 /* user / bot message lines */
 .obs-msg { display: flex; gap: 6px; align-items: baseline; font-size: 12px; margin: 4px 0; }
 .obs-msg-who { flex: none; font-size: 9px; text-transform: uppercase; letter-spacing: .06em; padding: 1px 5px; border-radius: 4px; font-weight: 600; }
-.obs-msg.user .obs-msg-who { background: var(--accent-2); color: #0a0e1c; }
+/* trigger badge — violet for the 'user' kind; other trigger kinds default amber */
+.obs-msg[class*="trigger-"] .obs-msg-who { background: var(--warn); color: #0a0e1c; }
+.obs-msg.trigger-user .obs-msg-who { background: var(--accent-2); color: #0a0e1c; }
 .obs-msg.bot .obs-msg-who { background: var(--good); color: #0a0e1c; }
 .obs-msg-text { color: var(--fg); }
-.obs-msg.user .obs-msg-text { font-weight: 500; }
+.obs-msg[class*="trigger-"] .obs-msg-text { font-weight: 500; }
 
 /* VERTICAL timeline: one labeled row per event, time-ordered. No clipping. */
 .obs-vaxis { font-size: 9px; color: #5a647c; margin: 4px 0 4px 2px; font-family: ui-monospace, monospace; }
