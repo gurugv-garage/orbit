@@ -4,7 +4,6 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -111,12 +110,13 @@ private fun LinkDot(label: String, up: Boolean, sub: String? = null) {
                 .background(color),
         )
         Spacer(modifier = Modifier.width(5.dp))
-        Column {
-            Text(label, fontSize = 11.sp, color = color.copy(alpha = 0.95f))
-            if (sub != null) {
-                Text(sub, fontSize = 9.sp, color = color.copy(alpha = 0.6f))
-            }
-        }
+        // single line; any sub-text goes inline in brackets so the bar height
+        // doesn't grow (e.g. "station (192.168.1.10:8099)").
+        Text(
+            if (sub != null) "$label ($sub)" else label,
+            fontSize = 11.sp,
+            color = color.copy(alpha = 0.95f),
+        )
     }
 }
 

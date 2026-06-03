@@ -87,6 +87,8 @@ class PerceptionPipeline(private val appContext: Context) {
                 },
             )
         )
+        // Models constructed — the dock can now hear. Clears the UI "waking up".
+        PerceptionReady.set(true)
 
         val mic = MicCapture()
         // SpeechRecognizer needs exclusive access to the mic. Our continuous
@@ -249,6 +251,7 @@ class PerceptionPipeline(private val appContext: Context) {
         scope?.cancel()
         scope = null
         job = null
+        PerceptionReady.set(false)
         PerceptionBus.emit(PerceptionEvent.VoiceActivity(false, 0f))
         PerceptionBus.emit(PerceptionEvent.AudioLevel(0f))
         vadActive = false

@@ -1,12 +1,19 @@
 package dev.orbit.dock.ui.widgets
 
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -77,6 +84,37 @@ fun ExitButton(onExit: () -> Unit, modifier: Modifier = Modifier) {
             Spacer(modifier = Modifier.width(6.dp))
             Text("tap to exit", fontSize = 11.sp, color = accent)
         }
+    }
+}
+
+/**
+ * Brief "waking up…" hint shown while the perception models (wake-word / VAD /
+ * STT) finish loading on cold start — the face is up but the dock can't hear
+ * yet. A gently pulsing dot + label; disappears once perception is ready.
+ */
+@Composable
+fun WakingUpPill(modifier: Modifier = Modifier) {
+    val pulse by rememberInfiniteTransition(label = "wake").animateFloat(
+        initialValue = 0.35f, targetValue = 1f,
+        animationSpec = infiniteRepeatable(tween(700), RepeatMode.Reverse),
+        label = "pulse",
+    )
+    val c = Color(0xFF7FA8FF)
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = modifier
+            .clip(RoundedCornerShape(50))
+            .background(Color.White.copy(alpha = 0.06f))
+            .padding(horizontal = 12.dp, vertical = 6.dp),
+    ) {
+        Box(
+            modifier = Modifier
+                .height(7.dp).width(7.dp)
+                .clip(RoundedCornerShape(50))
+                .background(c.copy(alpha = pulse)),
+        )
+        Spacer(modifier = Modifier.width(7.dp))
+        Text("waking up…", fontSize = 12.sp, color = c.copy(alpha = 0.9f))
     }
 }
 

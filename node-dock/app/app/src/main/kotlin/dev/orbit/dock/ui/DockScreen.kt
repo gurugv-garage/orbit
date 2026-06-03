@@ -204,6 +204,9 @@ fun DockScreen() {
     }
     val bodyConnected by bodyComms.connected.collectAsState()
     val stationConnected by stationLink.connected.collectAsState()
+    // perception models warming up on cold start (wake-word/VAD/STT). Until
+    // ready, the dock can't hear — show a brief "waking up" hint.
+    val perceptionReady by dev.orbit.dock.perception.PerceptionReady.ready.collectAsState()
     val bodyIntent by bodyComms.intent.collectAsState()
     val agentState by agent.state.collectAsState()
     val wiring = remember(controller, agent) {
@@ -355,6 +358,13 @@ fun DockScreen() {
                             .align(Alignment.TopCenter)
                             .padding(top = 16.dp),
                     )
+                    if (micGranted && !perceptionReady) {
+                        dev.orbit.dock.ui.widgets.WakingUpPill(
+                            modifier = Modifier
+                                .align(Alignment.Center)
+                                .padding(top = 60.dp),
+                        )
+                    }
                     BodyBadge(
                         connected = bodyConnected,
                         intent = bodyIntent,
