@@ -4,6 +4,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -40,6 +41,7 @@ fun StatusBar(
     camOn: Boolean,
     bodyConnected: Boolean,
     stationConnected: Boolean,
+    stationAddr: String = "",
     onMicToggle: (() -> Unit)? = null,
     onCamToggle: (() -> Unit)? = null,
     onWakeClick: (() -> Unit)? = null,
@@ -62,6 +64,7 @@ fun StatusBar(
         LinkStatus(
             bodyConnected = bodyConnected,
             stationConnected = stationConnected,
+            stationAddr = stationAddr,
             onClick = onLinkClick,
         )
     }
@@ -76,6 +79,7 @@ fun StatusBar(
 private fun LinkStatus(
     bodyConnected: Boolean,
     stationConnected: Boolean,
+    stationAddr: String = "",
     onClick: (() -> Unit)? = null,
 ) {
     val mod = Modifier
@@ -84,14 +88,19 @@ private fun LinkStatus(
         .let { if (onClick != null) it.clickable { onClick() } else it }
         .padding(horizontal = 10.dp, vertical = 4.dp)
     Row(verticalAlignment = Alignment.CenterVertically, modifier = mod) {
-        LinkDot(label = "body", up = bodyConnected)
-        Spacer(modifier = Modifier.width(10.dp))
-        LinkDot(label = "stn", up = stationConnected)
+        LinkDot(label = "body", up = bodyConnected, sub = null)
+        Spacer(modifier = Modifier.width(12.dp))
+        // station: show the address when connected, "reconnecting…" when down.
+        LinkDot(
+            label = "station",
+            up = stationConnected,
+            sub = if (stationConnected) stationAddr.ifBlank { null } else "reconnecting…",
+        )
     }
 }
 
 @Composable
-private fun LinkDot(label: String, up: Boolean) {
+private fun LinkDot(label: String, up: Boolean, sub: String? = null) {
     val color = if (up) Color(0xFF7FE08C) else Color(0xFFFFBE5C)
     Row(verticalAlignment = Alignment.CenterVertically) {
         Box(
@@ -102,7 +111,12 @@ private fun LinkDot(label: String, up: Boolean) {
                 .background(color),
         )
         Spacer(modifier = Modifier.width(5.dp))
-        Text(label, fontSize = 11.sp, color = color.copy(alpha = 0.95f))
+        Column {
+            Text(label, fontSize = 11.sp, color = color.copy(alpha = 0.95f))
+            if (sub != null) {
+                Text(sub, fontSize = 9.sp, color = color.copy(alpha = 0.6f))
+            }
+        }
     }
 }
 

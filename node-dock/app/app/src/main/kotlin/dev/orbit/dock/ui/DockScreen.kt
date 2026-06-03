@@ -388,6 +388,8 @@ fun DockScreen() {
                 camOn = camGranted && !camMuted,
                 bodyConnected = bodyConnected,
                 stationConnected = stationConnected,
+                stationAddr = BuildConfig.STATION_URL
+                    .removePrefix("ws://").removePrefix("wss://").removeSuffix("/ws"),
                 onMicToggle = if (micGranted) ({ controller.toggleMic() }) else null,
                 onCamToggle = if (camGranted) ({ controller.toggleCam() }) else null,
                 onWakeClick = if (BuildConfig.DEBUG) {
