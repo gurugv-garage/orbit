@@ -1,62 +1,48 @@
 /**
- * Config module — central config management.
+ * Config module — central, persistent, versioned config with push-on-change.
  *
- *   - DEFAULTS live here in code (the safe baseline every device falls back to).
- *   - Overrides are applied at runtime via HTTP PATCH or the console.
- *   - On any change, the merged effective config (or just the changed keys) is
- *     PUSHED on the 'config' topic. The ESP32 firmware and the dock app
- *     subscribe to 'config' and apply pushes live — no polling.
+ *   - The REGISTRY (registry.ts) declares every knob: scope, value type, a Zod
+ *     schema, and a default. DEFAULTS are the safe baseline baked into device
+ *     builds, so a device works with NO station present.
+ *   - The ConfigStore (store.ts) persists overrides in orbit.db and stamps a
+ *     `lastUpdated` on each write. Reads merge override-over-default.
+ *   - On any change (or a force-push), the changed key is PUSHED on the
+ *     'config' topic as {scope,key,value,lastUpdated}. The ESP32 firmware and
+ *     dock app subscribe to 'config', compare lastUpdated, and apply live.
+ *   - On a peer joining, every effective entry is snapshotted to it so a
+ *     freshly-booted device syncs to the station's current values.
  *
- * Config is namespaced by scope so one device only listens to what's relevant:
- *   config.station.*   station-wide
- *   config.dock.*      dock app
- *   config.body.*      esp32 body firmware
+ * Scopes namespace by listener: config.station.* / config.dock.* / config.body.*
  *
- * Read:   GET   /api/config            full effective config
- *         GET   /api/config/:scope     one scope
- * Write:  PATCH /api/config/:scope     merge keys, push the delta
+ * Read:   GET  /api/config                 all effective entries (typed + lastUpdated + jsonSchema)
+ *         GET  /api/config/:scope          one scope
+ *         GET  /api/config/export          flat scope→key→value dump (build bake)
+ * Write:  PATCH /api/config/:scope         { key: value, ... } — validate, persist, push deltas
+ *         POST  /api/config/:scope/:key/push   re-push current value (force, no change)
+ *         POST  /api/config/:scope/:key/reset  drop override → registry default
  */
 
 import type { Bus } from '../../core/bus.js';
 import { json } from '../../core/http.js';
 import type { IncomingMessage } from 'node:http';
 import type { RouteContext, StationModule } from '../../core/module.js';
+import type { Scope } from './registry.js';
+import { ConfigStore, type EffectiveEntry, type ValidationError } from './store.js';
 
-type Scope = 'station' | 'dock' | 'body';
-type ConfigTree = Record<Scope, Record<string, unknown>>;
-
-const DEFAULTS: ConfigTree = {
-  station: {
-    logLevel: 'info',
-    heartbeatSec: 10,
-  },
-  dock: {
-    // mirrors knobs the dock app cares about; safe baseline.
-    idleAnimations: true,
-    gazeTracking: true,
-    ttsRate: 1.0,
-    cameraDefaultOn: false,
-    thinkingLevel: 'low',
-  },
-  body: {
-    // esp32 servo body knobs.
-    maxSpeedDegPerSec: 120,
-    neckPitchLimitDeg: 45,
-    footYawLimitDeg: 90,
-    idleGestures: true,
-  },
-};
+function isError(r: EffectiveEntry | ValidationError): r is ValidationError {
+  return (r as ValidationError).error != null;
+}
 
 export function configModule(): StationModule {
-  // deep copy so DEFAULTS stays pristine for fallback semantics.
-  const effective: ConfigTree = structuredClone(DEFAULTS);
+  const store = new ConfigStore();
   let bus: Bus;
 
-  function pushDelta(scope: Scope, delta: Record<string, unknown>): void {
+  /** Push one effective entry to listeners (changed or forced). */
+  function pushEntry(e: EffectiveEntry): void {
     bus.publish({
       topic: 'config',
       kind: 'changed',
-      payload: { scope, delta, effective: effective[scope] },
+      payload: { scope: e.scope, key: e.key, type: e.type, value: e.value, lastUpdated: e.lastUpdated },
       source: 'station',
     });
   }
@@ -64,24 +50,22 @@ export function configModule(): StationModule {
   return {
     name: 'config',
     topic: 'config',
-    description: 'central config: defaults + push-on-change to firmware/app',
+    description: 'central config: persistent, versioned, push-on-change to firmware/app',
 
     init(b) {
       bus = b;
-      // When a fresh peer subscribes, the console can request a snapshot; we
-      // also push the full config on the 'config' topic at boot so any peer
-      // already connected gets the baseline.
+      // A freshly-connected peer gets a full snapshot so it syncs to current
+      // values (then stays live via 'changed' pushes).
       bus.on('station', (msg) => {
         if (msg.kind === 'peer-joined') {
-          // re-broadcast current effective config so the new peer syncs.
-          (['station', 'dock', 'body'] as Scope[]).forEach((s) =>
+          for (const e of store.list()) {
             bus.publish({
               topic: 'config',
               kind: 'snapshot',
-              payload: { scope: s, effective: effective[s] },
+              payload: { scope: e.scope, key: e.key, type: e.type, value: e.value, lastUpdated: e.lastUpdated },
               source: 'station',
-            }),
-          );
+            });
+          }
         }
       });
     },
@@ -90,7 +74,32 @@ export function configModule(): StationModule {
       const { req, res, subPath } = ctx;
 
       if (subPath === '/' && req.method === 'GET') {
-        json(res, 200, { defaults: DEFAULTS, effective });
+        json(res, 200, { entries: store.list() });
+        return true;
+      }
+
+      if (subPath === '/export' && req.method === 'GET') {
+        json(res, 200, store.export());
+        return true;
+      }
+
+      // force re-push a single key's current value (no change needed).
+      const pushM = subPath.match(/^\/(station|dock|body)\/([^/]+)\/push$/);
+      if (pushM && req.method === 'POST') {
+        const e = store.get(pushM[1]!, decodeURIComponent(pushM[2]!));
+        if (!e) { json(res, 404, { error: 'unknown key' }); return true; }
+        pushEntry(e);
+        json(res, 200, { pushed: e });
+        return true;
+      }
+
+      // reset a key to its registry default.
+      const resetM = subPath.match(/^\/(station|dock|body)\/([^/]+)\/reset$/);
+      if (resetM && req.method === 'POST') {
+        const r = store.reset(resetM[1]!, decodeURIComponent(resetM[2]!));
+        if (isError(r)) { json(res, 404, r); return true; }
+        pushEntry(r);
+        json(res, 200, { reset: r });
         return true;
       }
 
@@ -98,14 +107,20 @@ export function configModule(): StationModule {
       if (scopeMatch) {
         const scope = scopeMatch[1] as Scope;
         if (req.method === 'GET') {
-          json(res, 200, { scope, effective: effective[scope], defaults: DEFAULTS[scope] });
+          json(res, 200, { scope, entries: store.list(scope) });
           return true;
         }
         if (req.method === 'PATCH' || req.method === 'POST') {
           const delta = JSON.parse(await readBody(req)) as Record<string, unknown>;
-          Object.assign(effective[scope], delta);
-          pushDelta(scope, delta);
-          json(res, 200, { scope, applied: delta, effective: effective[scope] });
+          const applied: EffectiveEntry[] = [];
+          const errors: Record<string, unknown> = {};
+          for (const [key, value] of Object.entries(delta)) {
+            const r = store.set(scope, key, value);
+            if (isError(r)) errors[key] = r.issues ?? r.error;
+            else { applied.push(r); pushEntry(r); }
+          }
+          const code = Object.keys(errors).length && !applied.length ? 400 : 200;
+          json(res, code, { scope, applied, errors });
           return true;
         }
       }

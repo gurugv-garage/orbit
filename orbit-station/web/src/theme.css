@@ -267,3 +267,27 @@ label.field { display: flex; flex-direction: column; gap: 4px; font-size: 12px; 
   .grid { grid-template-columns: 1fr; }
   .app.nav-open .scrim { display: block; position: fixed; inset: 0; background: #0008; z-index: 20; }
 }
+
+/* ── config module ─────────────────────────────────────────────────────────── */
+.cfg-entry { padding: 8px 0; border-bottom: 1px solid var(--line, #ffffff14); }
+.cfg-entry:last-child { border-bottom: none; }
+.cfg-entry-head { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+.cfg-key { font-weight: 600; font-size: 13px; }
+.cfg-entry input[type="number"], .cfg-entry input[type="text"] {
+  width: 100%; background: #0006; border: 1px solid #ffffff1f; color: var(--fg, #e8ecff);
+  border-radius: 6px; padding: 5px 8px; font-size: 13px;
+}
+.cfg-bool { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--dim, #aab); }
+.cfg-json textarea {
+  width: 100%; background: #05060c; border: 1px solid #ffffff1f; color: #cfe;
+  border-radius: 6px; padding: 8px; font-size: 12px; line-height: 1.45; resize: vertical;
+}
+.cfg-schema { margin-top: 4px; }
+.cfg-schema pre { max-height: 220px; overflow: auto; background: #05060c; border-radius: 6px; padding: 8px; }
+.cfg-err { color: #ff8c8c; font-size: 12px; margin: 4px 0; }
+.cfg-actions { gap: 8px; margin-top: 6px; flex-wrap: wrap; }
+.cfg-actions button { font-size: 12px; padding: 4px 10px; border-radius: 6px; cursor: pointer;
+  background: #ffffff12; border: 1px solid #ffffff20; color: var(--fg, #e8ecff); }
+.cfg-actions button.primary { background: var(--accent, #5b8cff); border-color: transparent; color: #06122e; font-weight: 600; }
+.cfg-actions button:disabled { opacity: .4; cursor: default; }
+.linklike { background: none; border: none; color: var(--accent, #7aa2ff); cursor: pointer; padding: 0; text-decoration: underline; }

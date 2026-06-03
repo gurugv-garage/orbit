@@ -16,7 +16,8 @@
   },
   "dependencies": {
     "better-sqlite3": "^11.10.0",
-    "ws": "^8.18.0"
+    "ws": "^8.18.0",
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.13",
