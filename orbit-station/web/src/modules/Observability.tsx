@@ -8,32 +8,34 @@ interface ToolVM { id: string; name: string; args?: unknown; result?: string; is
 interface StepVM { idx: number; model?: string; stopReason?: string; text?: string; tools: ToolVM[]; inTok?: number; outTok?: number; startedAt?: number; endedAt?: number }
 interface TurnVM { id: string; sessionId: string; source?: string; startedAt: number; endedAt?: number; ended: boolean; steps: StepVM[] }
 
-// server-stored shapes (observability/types.ts) for backfill
 interface StoredTool { toolCallId: string; toolName: string; args?: unknown; result?: string; isError?: boolean; startedAt?: number; endedAt?: number }
 interface StoredStep { index: number; model?: string; stopReason?: string; text?: string; tools: StoredTool[]; usage?: { inputTokens?: number; outputTokens?: number }; startedAt?: number; endedAt?: number }
 interface StoredTurn { turnId: string; sessionId: string; startedAt: number; endedAt?: number; steps: StoredStep[] }
 interface StoredSession { sessionId: string; source?: string; turns: StoredTurn[] }
 interface SessionSummary { sessionId: string; source?: string }
 
+const IST = 'Asia/Kolkata';
+
 export function Observability() {
   const [turns, setTurns] = useState<TurnVM[]>([]);
   const turnIndex = useRef(new Map<string, number>());
-  const [selected, setSelected] = useState<string | null>(null);
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());     // expanded turn ids
+  const [collapsedSessions, setCollapsedSessions] = useState<Set<string>>(new Set());
 
   // filters
-  const [fSource, setFSource] = useState('');     // dock/source
-  const [fTool, setFTool] = useState('');         // tool name
-  const [fErrors, setFErrors] = useState(false);  // errors only
-  const [fSearch, setFSearch] = useState('');     // text in speech/args/result
-  const [fSlow, setFSlow] = useState(false);      // sort by duration desc
+  const [fSession, setFSession] = useState('');
+  const [fSource, setFSource] = useState('');
+  const [fTool, setFTool] = useState('');
+  const [fErrors, setFErrors] = useState(false);
+  const [fSlow, setFSlow] = useState(false);
+  const [fSearch, setFSearch] = useState('');
 
-  // backfill stored turns on mount
   useEffect(() => {
     let cancelled = false;
     api.get<SessionSummary[]>('/observability/sessions').then(async (list) => {
       if (!list?.length) return;
       const detailed = await Promise.all(
-        list.slice(0, 8).map((s) => api.get<StoredSession>(`/observability/sessions/${encodeURIComponent(s.sessionId)}`).catch(() => null)),
+        list.slice(0, 12).map((s) => api.get<StoredSession>(`/observability/sessions/${encodeURIComponent(s.sessionId)}`).catch(() => null)),
       );
       if (cancelled) return;
       const vms: TurnVM[] = [];
@@ -41,7 +43,7 @@ export function Observability() {
       vms.sort((a, b) => a.startedAt - b.startedAt);
       setTurns((live) => {
         const have = new Set(live.map((t) => t.id));
-        const merged = [...vms.filter((t) => !have.has(t.id)), ...live].slice(-200);
+        const merged = [...vms.filter((t) => !have.has(t.id)), ...live].slice(-300);
         turnIndex.current.clear();
         merged.forEach((t, i) => turnIndex.current.set(t.id, i));
         return merged;
@@ -63,113 +65,154 @@ export function Observability() {
       const turn = { ...next[i]!, steps: next[i]!.steps.slice() };
       applyEvent(turn, ev);
       next[i] = turn;
-      return next.slice(-200);
+      return next.slice(-300);
     });
   }, []);
   useStationEvents('obs', onEvent);
 
+  const sessions = useMemo(() => [...new Set(turns.map((t) => t.sessionId))], [turns]);
   const sources = useMemo(() => [...new Set(turns.map((t) => t.source).filter(Boolean))] as string[], [turns]);
-  const tools = useMemo(() => [...new Set(turns.flatMap((t) => t.steps.flatMap((s) => s.tools.map((x) => x.name))))], [turns]);
+  const toolNames = useMemo(() => [...new Set(turns.flatMap((t) => t.steps.flatMap((s) => s.tools.map((x) => x.name))))], [turns]);
 
-  const filtered = useMemo(() => {
-    let r = turns.filter((t) => {
-      if (fSource && t.source !== fSource) return false;
-      if (fTool && !t.steps.some((s) => s.tools.some((x) => x.name === fTool))) return false;
-      if (fErrors && !t.steps.some((s) => s.tools.some((x) => x.isError))) return false;
-      if (fSearch) {
-        const hay = JSON.stringify(t).toLowerCase();
-        if (!hay.includes(fSearch.toLowerCase())) return false;
-      }
-      return true;
+  const filtered = useMemo(() => turns.filter((t) => {
+    if (fSession && t.sessionId !== fSession) return false;
+    if (fSource && t.source !== fSource) return false;
+    if (fTool && !t.steps.some((s) => s.tools.some((x) => x.name === fTool))) return false;
+    if (fErrors && !t.steps.some((s) => s.tools.some((x) => x.isError))) return false;
+    if (fSearch && !JSON.stringify(t).toLowerCase().includes(fSearch.toLowerCase())) return false;
+    return true;
+  }), [turns, fSession, fSource, fTool, fErrors, fSearch]);
+
+  // group filtered turns by session (newest session + newest turn first)
+  const groups = useMemo(() => {
+    const m = new Map<string, TurnVM[]>();
+    for (const t of filtered) (m.get(t.sessionId) ?? m.set(t.sessionId, []).get(t.sessionId)!).push(t);
+    const arr = [...m.entries()].map(([sid, ts]) => {
+      const sorted = ts.slice().sort((a, b) => (fSlow ? dur(b) - dur(a) : b.startedAt - a.startedAt));
+      return { sid, source: ts[0]?.source, turns: sorted, started: Math.min(...ts.map((t) => t.startedAt)), last: Math.max(...ts.map((t) => t.startedAt)) };
     });
-    r = r.slice().sort((a, b) => (fSlow ? dur(b) - dur(a) : b.startedAt - a.startedAt));
-    return r;
-  }, [turns, fSource, fTool, fErrors, fSearch, fSlow]);
+    arr.sort((a, b) => b.last - a.last);
+    return arr;
+  }, [filtered, fSlow]);
 
-  const sel = filtered.find((t) => t.id === selected) ?? filtered[0];
+  const toggleTurn = (id: string) => setExpanded((s) => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
+  const toggleSession = (sid: string) => setCollapsedSessions((s) => { const n = new Set(s); n.has(sid) ? n.delete(sid) : n.add(sid); return n; });
 
   return (
     <section className="obs">
       <h2 className="title">Observability</h2>
-      <p className="subtitle">agent-core Session ⊃ Turn ⊃ Step ⊃ LLM-call · {turns.length} turns</p>
+      <p className="subtitle">agent-core Session ⊃ Turn ⊃ Step ⊃ LLM-call · {sessions.length} sessions · {turns.length} turns · IST</p>
 
       <div className="obs-filters">
+        <select value={fSession} onChange={(e) => setFSession(e.target.value)}>
+          <option value="">all sessions</option>
+          {sessions.map((s) => <option key={s} value={s}>{s.replace('sess-', '')}</option>)}
+        </select>
         <select value={fSource} onChange={(e) => setFSource(e.target.value)}>
           <option value="">all docks</option>
           {sources.map((s) => <option key={s} value={s}>{s}</option>)}
         </select>
         <select value={fTool} onChange={(e) => setFTool(e.target.value)}>
           <option value="">all tools</option>
-          {tools.map((t) => <option key={t} value={t}>{t}</option>)}
+          {toolNames.map((t) => <option key={t} value={t}>{t}</option>)}
         </select>
         <label className="obs-chk"><input type="checkbox" checked={fErrors} onChange={(e) => setFErrors(e.target.checked)} /> errors</label>
         <label className="obs-chk"><input type="checkbox" checked={fSlow} onChange={(e) => setFSlow(e.target.checked)} /> slowest</label>
         <input className="obs-search" placeholder="search text / args / result…" value={fSearch} onChange={(e) => setFSearch(e.target.value)} />
-        <span className="muted obs-count">{filtered.length}</span>
       </div>
 
-      <div className="obs-split">
-        <div className="obs-list">
-          {filtered.length === 0 ? <div className="empty">No turns. Run the dock app (publishes on <code>obs</code>) or <code>npm run smoke</code>.</div> :
-            filtered.map((t) => (
-              <button key={t.id} className={`obs-row${sel?.id === t.id ? ' sel' : ''}`} onClick={() => setSelected(t.id)}>
-                <span className="obs-row-time">{clock(t.startedAt)}</span>
-                <span className="obs-row-id mono">{t.id.replace('turn-', '')}</span>
-                <span className="obs-row-src">{t.source ?? t.sessionId.replace('sess-', '')}</span>
-                <span className={`obs-row-dur${dur(t) > 4000 ? ' slow' : ''}`}>{fmtMs(dur(t))}</span>
-                <span className="obs-row-meta">{t.steps.length}s</span>
-                {t.steps.some((s) => s.tools.some((x) => x.isError)) && <span className="dot off" title="error" />}
-                {!t.ended && <span className="dot wait" title="running" />}
-              </button>
-            ))}
-        </div>
-        <div className="obs-detail">
-          {sel ? <TurnTimeline turn={sel} /> : <div className="empty">Select a turn.</div>}
-        </div>
-      </div>
+      {groups.length === 0 ? <div className="empty">No turns. Run the dock app or <code>npm run smoke</code>.</div> :
+        <div className="obs-sessions">
+          {groups.map((g) => {
+            const collapsed = collapsedSessions.has(g.sid);
+            return (
+              <div key={g.sid} className="obs-session">
+                <button className="obs-session-head" onClick={() => toggleSession(g.sid)}>
+                  <span className="obs-caret">{collapsed ? '▸' : '▾'}</span>
+                  <span className="mono obs-session-id">{g.sid}</span>
+                  <span className="pill acc sm">{g.source ?? '—'}</span>
+                  <span className="muted sm">{g.turns.length} turns</span>
+                  <span className="muted sm">· {clock(g.started)}–{clock(g.last)}</span>
+                </button>
+                {!collapsed && g.turns.map((t) => (
+                  <TurnRow key={t.id} turn={t} open={expanded.has(t.id)} onToggle={() => toggleTurn(t.id)} />
+                ))}
+              </div>
+            );
+          })}
+        </div>}
     </section>
   );
 }
 
-// ── turn timeline (right panel) ──────────────────────────────────────────────
+// ── one turn: header row + in-place expandable detail ────────────────────────
+function TurnRow({ turn, open, onToggle }: { turn: TurnVM; open: boolean; onToggle: () => void }) {
+  const err = turn.steps.some((s) => s.tools.some((x) => x.isError));
+  return (
+    <div className={`obs-turn${open ? ' open' : ''}`}>
+      <button className="obs-turn-head" onClick={onToggle}>
+        <span className="obs-caret">{open ? '▾' : '▸'}</span>
+        <span className="obs-turn-time mono">{clockMs(turn.startedAt)}</span>
+        <span className="obs-turn-id mono">{turn.id.replace('turn-', '')}</span>
+        <span className={`obs-turn-dur${dur(turn) > 4000 ? ' slow' : ''}`}>{fmtMs(dur(turn))}</span>
+        <span className="muted sm">{turn.steps.length} step{turn.steps.length !== 1 ? 's' : ''}</span>
+        {turn.steps.flatMap((s) => s.tools).map((tc) => (
+          <span key={tc.id} className={`pill sm ${tc.isError ? 'bad' : 'acc'}`}>{tc.name}</span>
+        ))}
+        {err && <span className="dot off" title="error" />}
+        {!turn.ended && <span className="dot wait" title="running" />}
+        <span className="spacer" />
+        <span className="muted sm obs-turn-fulltime">{fullTime(turn.startedAt)}</span>
+      </button>
+      {open && <TurnTimeline turn={turn} />}
+    </div>
+  );
+}
+
 function TurnTimeline({ turn }: { turn: TurnVM }) {
   const t0 = turn.startedAt;
   const total = Math.max(dur(turn), 1);
   return (
-    <div>
-      <div className="obs-th">
-        <b className="mono">{turn.id}</b>
-        <span className="muted">· {turn.source ?? turn.sessionId}</span>
-        <span className={`pill ${turn.ended ? 'good' : 'warn'}`}>{turn.ended ? 'done' : 'running'}</span>
-        <span className="muted">· {turn.steps.length} steps · {fmtMs(dur(turn))}</span>
-        <span className="muted">· {new Date(turn.startedAt).toLocaleString()}</span>
-      </div>
-      {turn.steps.map((s) => {
+    <div className="obs-timeline">
+      {turn.steps.map((s, si) => {
         const sStart = (s.startedAt ?? t0) - t0;
-        const sDur = (s.endedAt ?? t0 + total) - (s.startedAt ?? t0);
+        const sEnd = (s.endedAt ?? t0 + total) - t0;
+        const sDur = sEnd - sStart;
+        // gap before this step's first tool = the LLM "thinking" time.
+        const firstTool = s.tools[0];
+        const think = firstTool?.startedAt != null ? firstTool.startedAt - (s.startedAt ?? t0) : sDur;
+        const kind = s.tools.length ? 'tool' : 'speak';
         return (
-          <div key={s.idx} className="obs-step">
+          <div key={s.idx} className={`obs-step kind-${kind}`}>
             <div className="obs-step-head">
-              <span className="obs-step-n">step {s.idx}</span>
+              <span className={`obs-step-tag ${kind}`}>step {s.idx}</span>
               {s.model && <span className="pill acc sm">{s.model.split('/').pop()}</span>}
               {s.stopReason && <span className="muted mono sm">{s.stopReason}</span>}
-              {(s.inTok || s.outTok) != null && <span className="muted sm">{s.inTok ?? '?'}→{s.outTok ?? '?'} tok</span>}
-              <span className="muted sm">{fmtMs(sDur)}</span>
+              <span className="muted sm">tok {tok(s.inTok)}→{tok(s.outTok)}</span>
+              <span className="muted sm">think {fmtMs(Math.max(0, think))}</span>
+              <span className="muted sm">· {fmtMs(sDur)}</span>
+              <span className="muted sm mono">[{fmtMs(sStart)}–{fmtMs(sEnd)}]</span>
             </div>
-            <Bar start={sStart} len={sDur} total={total} kind="step" />
+            <div className="obs-track" title={`step ${s.idx}: ${fmtMs(sStart)}–${fmtMs(sEnd)}`}>
+              <Bar start={sStart} len={sDur} total={total} cls={`step ${kind}`} />
+              {s.tools.map((tc) => {
+                const a = (tc.startedAt ?? t0) - t0;
+                const w = (tc.endedAt ?? tc.startedAt ?? t0) - (tc.startedAt ?? t0);
+                return <Bar key={tc.id} start={a} len={w} total={total} cls={`tool${tc.isError ? ' err' : ''}`} title={`${tc.name} ${fmtMs(w)}`} />;
+              })}
+            </div>
             {s.text && <div className="obs-text">“{s.text}”</div>}
             {s.tools.map((tc) => {
-              const tcStart = (tc.startedAt ?? t0) - t0;
-              const tcDur = (tc.endedAt ?? tc.startedAt ?? t0) - (tc.startedAt ?? t0);
+              const a = (tc.startedAt ?? t0) - t0;
+              const w = (tc.endedAt ?? tc.startedAt ?? t0) - (tc.startedAt ?? t0);
               return (
-                <details key={tc.id} className="obs-tool">
+                <details key={tc.id} className="obs-tool" open={si === 0}>
                   <summary>
                     <span className={`obs-tool-name ${tc.isError ? 'err' : ''}`}>⚙ {tc.name}</span>
-                    <span className="muted sm">{fmtMs(tcDur)}</span>
+                    <span className="muted sm mono">start {fmtMs(a)} · end {fmtMs(a + w)} · {fmtMs(w)}</span>
                     {tc.isError && <span className="pill bad sm">error</span>}
-                    <span className="obs-tool-bar"><Bar start={tcStart} len={tcDur} total={total} kind="tool" /></span>
                   </summary>
-                  <div className="obs-kv"><span>args</span><pre>{pretty(tc.args)}</pre></div>
+                  <div className="obs-kv"><span>params</span><pre>{pretty(tc.args)}</pre></div>
                   {tc.result != null && <div className="obs-kv"><span>response</span><pre>{tc.result}</pre></div>}
                 </details>
               );
@@ -181,20 +224,19 @@ function TurnTimeline({ turn }: { turn: TurnVM }) {
   );
 }
 
-function Bar({ start, len, total, kind }: { start: number; len: number; total: number; kind: 'step' | 'tool' }) {
+function Bar({ start, len, total, cls, title }: { start: number; len: number; total: number; cls: string; title?: string }) {
   const left = Math.max(0, (start / total) * 100);
   const width = Math.max(0.8, (len / total) * 100);
-  return (
-    <div className="obs-track">
-      <div className={`obs-bar ${kind}`} style={{ left: `${left}%`, width: `${Math.min(width, 100 - left)}%` }} />
-    </div>
-  );
+  return <div className={`obs-bar ${cls}`} style={{ left: `${left}%`, width: `${Math.min(width, 100 - left)}%` }} title={title} />;
 }
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 function dur(t: TurnVM): number { return (t.endedAt ?? t.steps.at(-1)?.endedAt ?? t.startedAt) - t.startedAt; }
-function fmtMs(ms: number): string { return ms >= 1000 ? `${(ms / 1000).toFixed(2)}s` : `${ms}ms`; }
-function clock(ts: number): string { return new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }); }
+function fmtMs(ms: number): string { return ms >= 1000 ? `${(ms / 1000).toFixed(2)}s` : `${Math.round(ms)}ms`; }
+function tok(n?: number): string { return n != null && n > 0 ? String(n) : 'n/a'; }
+function clock(ts: number): string { return new Date(ts).toLocaleTimeString('en-GB', { timeZone: IST, hour: '2-digit', minute: '2-digit', second: '2-digit' }); }
+function clockMs(ts: number): string { return `${clock(ts)}.${String(ts % 1000).padStart(3, '0')}`; }
+function fullTime(ts: number): string { return new Date(ts).toLocaleString('en-GB', { timeZone: IST, hour12: false }) + ' IST'; }
 function pretty(v: unknown): string { try { return typeof v === 'string' ? v : JSON.stringify(v, null, 1); } catch { return String(v); } }
 
 function storedToVM(t: StoredTurn, source?: string): TurnVM {
