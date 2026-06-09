@@ -182,6 +182,13 @@ function OtaCard({ target, st, live, onChange }: { target: Target; st: TargetSta
           <button disabled={!!busy || !artifact || behindPeers.length === 0} onClick={() => post('announce')}>
             Re-announce{behindPeers.length ? ` (${behindPeers.length})` : ''}
           </button>
+          {target === 'app' && (
+            // Wired install over USB — for OEMs that block app self-install
+            // (e.g. MIUI). Runs `adb install -r` on the host. docs/OTA.md.
+            <button disabled={!!busy || !artifact} onClick={() => post('install-adb', undefined, 'install-adb')} title="Install the built APK over USB via adb (works when the phone OEM blocks app self-install)">
+              {busy === 'install-adb' ? 'Installing…' : 'Install via USB (adb)'}
+            </button>
+          )}
         </div>
       )}
 

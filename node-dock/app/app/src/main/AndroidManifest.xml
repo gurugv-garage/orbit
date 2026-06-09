@@ -72,6 +72,21 @@
             </intent-filter>
         </receiver>
 
+        <!-- Relaunch the dock after an OTA self-update (MY_PACKAGE_REPLACED) or a
+             phone reboot (BOOT_COMPLETED). After a self-update Android kills us
+             without relaunching; this receiver runs in the fresh post-update
+             process and starts the app back up. See docs/OTA.md §5. -->
+        <receiver
+            android:name=".ota.RelaunchReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+            </intent-filter>
+        </receiver>
+
     </application>
 
 </manifest>

@@ -20,6 +20,7 @@
 
 import { createReadStream, existsSync, readFileSync } from 'node:fs';
 import { networkInterfaces } from 'node:os';
+import { spawn } from 'node:child_process';
 import type { IncomingMessage } from 'node:http';
 import type { Bus } from '../../core/bus.js';
 import { json } from '../../core/http.js';
@@ -124,6 +125,31 @@ export function otaModule(getHub: () => Hub): StationModule {
       kind: 'state',
       source: 'station',
       payload: { target, artifact: meta, peers, build: build[target] },
+    });
+  }
+
+  /**
+   * WIRED app install over USB: `adb install -r <apk>`. The fallback for OEMs
+   * that block app-driven self-install (MIUI rejects PackageInstaller.commit);
+   * adb is the privileged path that works while the phone is tethered. Streams
+   * `ota` progress/result so the console phase bar reflects it, same as a
+   * wireless OTA — just driven from the host instead of the device.
+   */
+  function adbInstall(apk: string, build: number): void {
+    const emit = (kind: string, payload: object) =>
+      bus.publish({ topic: 'ota', kind, source: 'station', payload: { target: 'app', ...payload } });
+    emit('progress', { phase: 'applying', via: 'adb' });
+    const adb = process.env.ADB ?? 'adb';
+    const p = spawn(adb, ['install', '-r', apk]);
+    let out = '';
+    p.stdout.on('data', (d) => (out += d));
+    p.stderr.on('data', (d) => (out += d));
+    p.on('error', (e) => emit('result', { build, ok: false, error: `adb spawn failed: ${e.message}` }));
+    p.on('close', (code) => {
+      const ok = code === 0 && /Success/i.test(out);
+      if (ok) emit('result', { build, ok: true, via: 'adb' });
+      else emit('result', { build, ok: false, error: out.trim().split('\n').slice(-3).join(' ') || `adb exited ${code}` });
+      emitState('app');
     });
   }
 
@@ -283,6 +309,20 @@ export function otaModule(getHub: () => Hub): StationModule {
         if (!meta) { json(res, 404, { error: 'no artifact to announce' }); return true; }
         const sent = announce(target, to);
         json(res, 200, { announced: sent, build: meta.build });
+        return true;
+      }
+
+      // POST /:target/install-adb — WIRED install over USB (app only).
+      // The app can't self-install on every OEM (e.g. MIUI blocks app-driven
+      // PackageInstaller); `adb install -r` is the privileged path that always
+      // works while the phone is tethered. The station shells out to adb on the
+      // host and streams the result as ota progress/result for the console.
+      if (rest === 'install-adb' && req.method === 'POST' && target === 'app') {
+        const meta = store.meta('app');
+        const apk = store.artifactPath('app');
+        if (!meta || !existsSync(apk)) { json(res, 404, { error: 'no app artifact built yet' }); return true; }
+        adbInstall(apk, meta.build);
+        json(res, 202, { installing: true, build: meta.build, via: 'adb' });
         return true;
       }
 

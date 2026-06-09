@@ -195,7 +195,11 @@ class OtaUpdater(
                         confirm?.let { runCatching { context.startActivity(it) } }
                     }
                     PackageInstaller.STATUS_SUCCESS ->
-                        Timber.i("OTA: install succeeded (process will be replaced)")
+                        // Update applied; Android now kills us. Relaunch is NOT
+                        // done here (the dying process races the kill) — the new
+                        // post-update process gets MY_PACKAGE_REPLACED and
+                        // RelaunchReceiver starts the app back up. See docs/OTA.md §5.
+                        Timber.i("OTA: install succeeded — RelaunchReceiver will restart the new build")
                     else -> {
                         val msg = intent.getStringExtra(PackageInstaller.EXTRA_STATUS_MESSAGE)
                         Timber.w("OTA: install failed status=$status msg=$msg")
