@@ -171,7 +171,11 @@ export const REGISTRY: ConfigEntry[] = [
   // limits are owned by the body but the brain also reads them (to clamp), so
   // both components register interest — sharing, not ownership.
   entry({ key: 'maxSpeedDegPerSec', type: 'number', schema: z.number().int().min(10).max(360), default: 120, tags: ['body', 'brain'] }),
-  entry({ key: 'neckPitchLimitDeg', type: 'number', schema: z.number().min(0).max(90), default: 45, tags: ['body', 'brain'] }),
+  // Neck is gear-limited and ASYMMETRIC (positive = head down, 0 = straight).
+  // Calibrated on hardware: −60° (full up) … +35° (full down). Mirror of
+  // DockToolSchemas.DEGREE_LIMITS.
+  entry({ key: 'neckPitchMinDeg', type: 'number', schema: z.number().min(-90).max(0), default: -60, tags: ['body', 'brain'] }),
+  entry({ key: 'neckPitchMaxDeg', type: 'number', schema: z.number().min(0).max(90), default: 35, tags: ['body', 'brain'] }),
   entry({ key: 'footYawLimitDeg', type: 'number', schema: z.number().min(0).max(90), default: 90, tags: ['body', 'brain'] }),
   entry({ key: 'idleGestures', type: 'boolean', schema: z.boolean(), default: true, tags: ['body'] }),
 ];

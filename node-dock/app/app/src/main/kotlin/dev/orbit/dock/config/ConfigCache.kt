@@ -106,7 +106,7 @@ class ConfigCache(context: Context) {
         val INTEREST = listOf(
             "faceGestures", "bodyAddr", "idleAnimations", "gazeTracking",
             "ttsRate", "cameraDefaultOn", "thinkingLevel",
-            "neckPitchLimitDeg", "footYawLimitDeg", "maxSpeedDegPerSec",
+            "neckPitchMinDeg", "neckPitchMaxDeg", "footYawLimitDeg", "maxSpeedDegPerSec",
         )
     }
 }

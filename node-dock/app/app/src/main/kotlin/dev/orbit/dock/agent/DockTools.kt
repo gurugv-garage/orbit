@@ -262,8 +262,8 @@ class DockTools(
      * ends near neutral so the body doesn't get stuck in a pose. No-op when no
      * body is connected.
      *
-     * Joints (see [DockToolSchemas.DEGREE_RANGE]): `neck` = head tilt/nod, ±45°;
-     * `foot` = base swivel, ±90°. Degrees are absolute angles from neutral.
+     * Joints (see [DockToolSchemas.DEGREE_LIMITS]): `neck` = head tilt/nod,
+     * −60°…+35°; `foot` = base swivel, ±90°. Degrees are absolute from neutral.
      */
     private fun runExpressionGesture(expression: String) {
         val link = body

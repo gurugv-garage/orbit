@@ -5,22 +5,26 @@
  * The scale is FIXED and universal: -90° = 500µs, 0° = 1500µs, +90° = 2500µs
  * (1° ≈ 11.11µs). A degree is the same physical angle for every part.
  *
- * DEGREE_RANGE is a per-part LIMIT on the allowed command (not a rescale) — the
- * console clamps + labels to it. Change ONLY a part's number to widen/narrow it.
- * neck = gear-limited (±45°); foot = direct swivel (±90°).
+ * DEGREE_LIMITS is a per-part (min,max) LIMIT on the allowed command (not a
+ * rescale) — the console clamps + labels to it. Change ONLY a part's numbers to
+ * widen/narrow it. neck = gear-limited and ASYMMETRIC (−60°…+35°, tilts up more
+ * than down; positive = down, 0 = straight); foot = direct swivel (±90°).
  */
 
 const FULL_SWING_DEG = 90;
 
-export const DEGREE_RANGE: Record<string, number> = {
-  neck: 45,
-  foot: 90,
+export const DEGREE_LIMITS: Record<string, [number, number]> = {
+  neck: [-60, 35],
+  foot: [-90, 90],
 };
 
-/** Absolute angle (deg) → servo pulse width (µs): clamp to the part limit, then map on the fixed ±90° scale. */
+/** Part names with a known degree mapping (kept for callers that used DEGREE_RANGE). */
+export const DEGREE_RANGE = DEGREE_LIMITS;
+
+/** Absolute angle (deg) → servo pulse width (µs): clamp to the part (min,max), then map on the fixed ±90° scale. */
 export function degreesToUs(part: string, degrees: number): number {
-  const limit = DEGREE_RANGE[part] ?? FULL_SWING_DEG;
-  const clamped = Math.max(-limit, Math.min(limit, degrees));
+  const [lo, hi] = DEGREE_LIMITS[part] ?? [-FULL_SWING_DEG, FULL_SWING_DEG];
+  const clamped = Math.max(lo, Math.min(hi, degrees));
   return Math.round(1500 + (clamped / FULL_SWING_DEG) * 1000);
 }
 

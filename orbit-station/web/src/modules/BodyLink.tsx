@@ -60,12 +60,12 @@ function PartControl({ part, spec, state }: { part: string; spec: PartSpec; stat
   // deterministic — 0° for an angle part — instead of capturing a moving report.
   const [val, setVal] = useState<number>(home);
 
-  // The brain's LIMIT for this part — shown for reference. The console is NOT
-  // bound by it (drive past it to calibrate the real mechanical stop).
-  // NOTE: duplicated from the app's DEGREE_RANGE for now — shared store later.
-  const limitDeg = angles ? DEGREE_RANGE[part]! : 0;
-  const limitLoUs = angles ? degreesToUs(part, -limitDeg) : lo; // brain-limit endpoints in µs
-  const limitHiUs = angles ? degreesToUs(part, limitDeg) : hi;
+  // The brain's LIMIT for this part — shown for reference (asymmetric: min,max).
+  // The console is NOT bound by it (drive past it to calibrate the real stop).
+  // NOTE: duplicated from the app's DEGREE_LIMITS for now — shared store later.
+  const [limitLoDeg, limitHiDeg] = angles ? DEGREE_RANGE[part]! : [0, 0];
+  const limitLoUs = angles ? degreesToUs(part, limitLoDeg) : lo; // brain-limit endpoints in µs
+  const limitHiUs = angles ? degreesToUs(part, limitHiDeg) : hi;
 
   // Console degree↔µs uses the FIXED ±90° scale with NO brain-limit clamp, so
   // the +/- buttons can drive past the limit (only the servo's µs bounds apply).
@@ -91,7 +91,7 @@ function PartControl({ part, spec, state }: { part: string; spec: PartSpec; stat
 
   return (
     <div className="card">
-      <h3>{part}{angles && <span className="muted" style={{ fontWeight: 400, fontSize: 12 }}> · brain limit ±{limitDeg}°</span>}</h3>
+      <h3>{part}{angles && <span className="muted" style={{ fontWeight: 400, fontSize: 12 }}> · brain limit {limitLoDeg}°…+{limitHiDeg}°</span>}</h3>
       {spec.description && <div className="muted" style={{ marginBottom: 8 }}>{spec.description}</div>}
       <div className="row" style={{ marginBottom: 6 }}>
         <span className="muted">{main} ({ps.unit})</span>
@@ -99,7 +99,7 @@ function PartControl({ part, spec, state }: { part: string; spec: PartSpec; stat
         <span className="mono">
           cmd {val}
           {angles && (
-            <b style={{ color: Math.abs(cmdDeg ?? 0) > limitDeg ? 'var(--warn)' : 'var(--accent)' }}> {fmtDeg(cmdDeg)}</b>
+            <b style={{ color: (cmdDeg ?? 0) < limitLoDeg || (cmdDeg ?? 0) > limitHiDeg ? 'var(--warn)' : 'var(--accent)' }}> {fmtDeg(cmdDeg)}</b>
           )}
         </span>
         <span className="muted mono">· reported {reportedUs ?? '—'}{reportedDeg != null && ` ${fmtDeg(reportedDeg)}`}</span>
@@ -111,9 +111,9 @@ function PartControl({ part, spec, state }: { part: string; spec: PartSpec; stat
       <div className="row" style={{ marginTop: 10 }}>
         {/* min/max jump to the BRAIN LIMIT (the LLM's range). Use the slider or
             the +/- buttons to go PAST it for calibration. */}
-        <button onClick={() => send(limitLoUs)}>min{angles && ` ${fmtDeg(-limitDeg)}`}</button>
+        <button onClick={() => send(limitLoUs)}>min{angles && ` ${fmtDeg(limitLoDeg)}`}</button>
         <button onClick={() => send(home)}>home 0°</button>
-        <button onClick={() => send(limitHiUs)}>max{angles && ` +${limitDeg}°`}</button>
+        <button onClick={() => send(limitHiUs)}>max{angles && ` ${fmtDeg(limitHiDeg)}`}</button>
       </div>
       {angles && (
         <div className="row" style={{ marginTop: 8, gap: 4 }}>
