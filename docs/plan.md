@@ -184,8 +184,34 @@ same protocol so the phone-side stack can be developed and verified
 without hardware. Gaze tracking uses MediaPipe FaceMesh on-device.
 
 **Status:** Brain side + sim done and end-to-end verified (AVD + physical
-phone). ESP32 firmware deferred — hardware is fully designed, only
-firmware + assembly remain.
+phone). **ESP32 firmware live** — native ESP-IDF (esp_wifi + esp_http_server
+WS + mcpwm servo), runs on the XIAO ESP32-S3, dials orbit-station, obeys
+console commands. Only the physical body assembly remains.
+
+### Self-update (OTA)
+
+Both field devices update over the network with orbit-station as the update
+server (no app store, no cable in steady state). See
+[OTA.md](OTA.md) for the full design + decision log.
+
+- **Body (ESP32):** dual-slot A/B partitions + `esp_https_ota`; station offers
+  a newer build, the body streams it to the inactive slot, verifies sha256, and
+  reboots — marking the image valid only after it rejoins the station, else the
+  bootloader rolls back. **Verified on hardware** (build 1→2→3 OTA + rollback).
+- **App (Android):** the app receives an offer over the station WS, streams the
+  APK, verifies sha256, and installs via `PackageInstaller`; `RelaunchReceiver`
+  restarts it into the new build. Silent when the app is device-owner; otherwise
+  a one-tap confirm over Wi-Fi. **Verified on hardware** (wireless confirm-install
+  on a MIUI phone — note MIUI needs "MIUI optimization" off; Pixel/GrapheneOS has
+  no such gate). A wired `adb install` fallback exists for OEMs that block
+  app-driven install.
+- **Versioning:** one monotonic `build` int per device on the wire (firmware
+  `BL_FW_BUILD`, app `versionCode`) is the only thing compared; the station owns
+  human labels + release notes (entered at build time). Builds run in an
+  attachable tmux session; trigger + watch from the station console's Updates tab.
+
+The one bootstrap cable per device (first ESP32 flash; first app install +
+optional device-owner) is one-time provisioning, not part of the update loop.
 
 ### What runs at plat (central, for any dock)
 

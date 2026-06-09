@@ -132,6 +132,23 @@ Legend: `[x]` done · `[~]` in progress · `[ ]` not started · `[?]` open quest
 - [ ] Replacement schedule documented (~18 months expected)
 - [ ] CI: build app against next Android beta to catch API regressions early
 
+### 2.5 Self-update (OTA) — see [OTA.md](OTA.md)
+- [x] orbit-station `ota` module: artifact store, REST (serve/build/announce),
+  version-compare on connect + heartbeat, tmux-backed builds, release notes
+- [x] Console Updates tab: per-target cards, trigger buttons, live phase bar,
+  attachable build session; build numbers on Overview + roster
+- [x] **Body OTA** — dual-slot partitions + `esp_https_ota` + sha256 verify +
+  rollback-on-failed-rejoin. Verified on hardware (build 1→2→3 + rollback)
+- [x] **App OTA** — offer→stream-download→verify→PackageInstaller; RelaunchReceiver
+  restarts into the new build. Verified wireless confirm-install on MIUI
+  (needs MIUI-optimization off); wired `adb install` fallback for hostile OEMs
+- [x] Build-only versioning on the wire; station owns labels + notes
+- [x] Bootstrap scripts: gen-keystore, bootstrap-body, bootstrap-app
+- [ ] Silent OTA on the real dock phone (Pixel/GrapheneOS device-owner) — the
+  intended appliance; MIUI can't go silent (account catch-22)
+- [ ] Verify RelaunchReceiver auto-restart on-device (implemented, not yet watched live)
+- [ ] CI builds → station artifact store (currently the station host builds on demand)
+
 ### 2.4 Fallback path (if Android proves too painful)
 - [ ] Pi Zero 2 W + ReSpeaker XVF3800 + speaker setup ready as audio-only fallback
 - [ ] Same WebRTC client logic ported to Linux (Python `aiortc`)
@@ -241,10 +258,12 @@ or **shared**.
 - [ ] **BodyLink disconnect-detection bug** — body badge stays green
   after sim dies (WS keepalive disabled to keep the inquirer CLI happy;
   re-enable for phone-side use).
-- [ ] **BodyLink ESP32 firmware** — port the Python sim's behavior to
-  Arduino + the `BodyLinkComms` C++ lib. Hardware (BOM, assembly,
-  3D-print SCAD/STL) ready at
-  [../node-dock/hardware/](../node-dock/hardware/).
+- [x] **BodyLink ESP32 firmware** — native ESP-IDF on the XIAO ESP32-S3
+  (esp_wifi + esp_http_server WS + mcpwm servo + station_link client).
+  Runs on hardware, dials orbit-station, obeys console commands. Hardware
+  (BOM, assembly, 3D-print SCAD/STL) at
+  [../node-dock/hardware/](../node-dock/hardware/); physical body assembly
+  still pending.
 - [ ] **(A) Persistent memory / conversation history** — S. Local SQLite (or
   JSON) per dock keyed by turn. Surfaced as Koog recall tool. UX win:
   "what did I ask yesterday?". Revisit centralisation once there's >1 dock.
