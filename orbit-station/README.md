@@ -52,8 +52,13 @@ The startup banner prints the LAN + Android-emulator URLs to point clients at.
 ```bash
 npm install            # workspaces: server + web
 
-# dev (two processes, hot reload): Vite UI on :5173 proxying to backend on :8099
+# dev — ONE port: backend serves the UI on :8099; web + server both rebuild on
+# change. Everything (UI, /api, /ws, devices) is http://localhost:8099
 npm run dev
+
+# dev:split — two ports, Vite HMR (faster UI hot-reload): UI :5173 proxying to
+# backend :8099. Use only if you want instant UI hot-reload.
+npm run dev:split
 
 # prod-style (single process): build the UI, serve it from the backend
 npm run build

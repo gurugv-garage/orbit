@@ -6,6 +6,7 @@
   "description": "orbit-station browser UI — React + Vite, space-themed",
   "scripts": {
     "dev": "vite",
+    "watch": "vite build --watch",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
     "typecheck": "tsc -b --noEmit"

@@ -186,7 +186,6 @@ fun DockScreen() {
     val otaUpdater = remember {
         dev.orbit.dock.ota.OtaUpdater(
             context = ctx,
-            scope = scope,
             currentVersionCode = BuildConfig.VERSION_CODE,
             publish = { kind, payload -> stationLink.publish("ota", kind, payload) },
         ).also { otaUpdaterRef.value = it }
@@ -403,10 +402,12 @@ fun DockScreen() {
                             .align(Alignment.TopEnd)
                             .padding(12.dp),
                     )
-                    // Clean exit: fully tears down the listening service +
-                    // notification and finishes/removes the task.
-                    dev.orbit.dock.ui.widgets.ExitButton(
-                        onExit = { dev.orbit.dock.service.PerceptionService.exit(ctx) },
+                    // Version label (top-start) — what build is running, handy
+                    // for confirming OTA updates landed. Replaces the old exit X.
+                    androidx.compose.material3.Text(
+                        text = "v${BuildConfig.VERSION_NAME} · build ${BuildConfig.VERSION_CODE}",
+                        color = Color.White.copy(alpha = 0.4f),
+                        fontSize = 11.sp,
                         modifier = Modifier
                             .align(Alignment.TopStart)
                             .padding(12.dp),

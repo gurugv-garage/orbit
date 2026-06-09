@@ -9,6 +9,7 @@ import android.content.IntentFilter
 import android.content.pm.PackageInstaller
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.withContext
@@ -16,8 +17,10 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import timber.log.Timber
+import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
+import java.security.DigestInputStream
 import java.security.MessageDigest
 
 /**
@@ -36,11 +39,17 @@ import java.security.MessageDigest
  */
 class OtaUpdater(
     private val context: Context,
-    private val scope: CoroutineScope,
     private val currentVersionCode: Int,
     private val publish: (kind: String, payload: JsonObject) -> Unit,
 ) {
     private val installing = Mutex()
+
+    // OWN, application-lifetime scope — an OTA download/install must NOT be tied
+    // to a Compose composition (which recomposes/leaves constantly on the dock's
+    // animated face, cancelling the update mid-flight with
+    // LeftCompositionCancellationException). SupervisorJob so one failure doesn't
+    // poison future offers; IO dispatcher for the network + file work.
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     companion object {
         private const val INSTALL_ACTION = "dev.orbit.dock.ota.INSTALL_RESULT"
@@ -73,60 +82,75 @@ class OtaUpdater(
     }
 
     private suspend fun runUpdate(build: Int, url: String, wantSha: String) {
-        progress("downloading", 0)
-        val apk = withContext(Dispatchers.IO) { download(url) }
+        // Stream to a file, never into RAM: a release APK is ~200 MB and a
+        // ByteArray of that size OOMs low-heap phones instantly. download()
+        // computes the sha256 as it writes, so there's no second full read.
+        val staged = File(context.cacheDir, "ota-$build.apk")
+        try {
+            progress("downloading", 0)
+            val gotSha = withContext(Dispatchers.IO) { downloadTo(url, staged) }
 
-        progress("verifying", null)
-        val gotSha = withContext(Dispatchers.IO) { sha256Hex(apk) }
-        if (!gotSha.equals(wantSha, ignoreCase = true)) {
-            result(build, ok = false, error = "sha256 mismatch")
-            return
+            progress("verifying", null)
+            if (!gotSha.equals(wantSha, ignoreCase = true)) {
+                result(build, ok = false, error = "sha256 mismatch")
+                return
+            }
+
+            progress("applying", null)
+            withContext(Dispatchers.IO) { installApk(staged) }
+            // On a successful silent install the process is replaced; we won't
+            // reach here. With the confirm dialog, the user acts asynchronously.
+            // Either way the new versionCode in the next `hello` is the proof.
+            Timber.i("OTA: install committed for build $build")
+        } finally {
+            // PackageInstaller has copied the bytes into its own session by the
+            // time commit returns; the staged file is no longer needed.
+            staged.delete()
         }
-
-        progress("applying", null)
-        withContext(Dispatchers.IO) { installApk(apk) }
-        // On a successful silent install the process is replaced; we won't reach
-        // here. With the confirm dialog, the user acts asynchronously. Either
-        // way the new versionCode in the next `hello` is the real confirmation.
-        Timber.i("OTA: install committed for build $build")
     }
 
-    /** Stream the APK to a private session staging file. */
-    private fun download(url: String): ByteArray {
+    /**
+     * Stream the APK from `url` to `dest`, hashing as we go. Returns the sha256
+     * hex. Constant memory (64 KB buffer) regardless of APK size.
+     */
+    private fun downloadTo(url: String, dest: File): String {
+        val md = MessageDigest.getInstance("SHA-256")
         val conn = (URL(url).openConnection() as HttpURLConnection).apply {
             connectTimeout = 15000; readTimeout = 30000
         }
         try {
             val total = conn.contentLength
-            conn.inputStream.use { input ->
-                val out = java.io.ByteArrayOutputStream(if (total > 0) total else 1 shl 20)
-                val buf = ByteArray(64 * 1024)
-                var read: Int
-                var got = 0
-                var lastPct = -1
-                while (input.read(buf).also { read = it } != -1) {
-                    out.write(buf, 0, read)
-                    got += read
-                    if (total > 0) {
-                        val pct = (got.toLong() * 100 / total).toInt()
-                        if (pct != lastPct && pct % 10 == 0) { lastPct = pct; progress("downloading", pct) }
+            DigestInputStream(conn.inputStream, md).use { input ->
+                dest.outputStream().use { out ->
+                    val buf = ByteArray(64 * 1024)
+                    var read: Int
+                    var got = 0L
+                    var lastPct = -1
+                    while (input.read(buf).also { read = it } != -1) {
+                        out.write(buf, 0, read)
+                        got += read
+                        if (total > 0) {
+                            val pct = (got * 100 / total).toInt()
+                            if (pct != lastPct && pct % 10 == 0) { lastPct = pct; progress("downloading", pct) }
+                        }
                     }
                 }
-                return out.toByteArray()
             }
         } finally {
             conn.disconnect()
         }
+        return md.digest().joinToString("") { "%02x".format(it) }
     }
 
-    /** Write the APK into a PackageInstaller session and commit it. */
-    private fun installApk(apk: ByteArray) {
+    /** Stream the staged APK file into a PackageInstaller session and commit. */
+    private fun installApk(apk: File) {
         val pi = context.packageManager.packageInstaller
         val params = PackageInstaller.SessionParams(PackageInstaller.SessionParams.MODE_FULL_INSTALL)
         val sessionId = pi.createSession(params)
         pi.openSession(sessionId).use { session ->
-            session.openWrite("dock.apk", 0, apk.size.toLong()).use { os ->
-                os.write(apk); session.fsync(os)
+            session.openWrite("dock.apk", 0, apk.length()).use { os ->
+                apk.inputStream().use { it.copyTo(os, 64 * 1024) }
+                session.fsync(os)
             }
             val intent = Intent(INSTALL_ACTION).setPackage(context.packageName)
             val flags = PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_MUTABLE
@@ -139,11 +163,6 @@ class OtaUpdater(
     fun isDeviceOwner(): Boolean {
         val dpm = context.getSystemService(Context.DEVICE_POLICY_SERVICE) as DevicePolicyManager
         return dpm.isDeviceOwnerApp(context.packageName)
-    }
-
-    private fun sha256Hex(bytes: ByteArray): String {
-        val d = MessageDigest.getInstance("SHA-256").digest(bytes)
-        return d.joinToString("") { "%02x".format(it) }
     }
 
     private fun progress(phase: String, pct: Int?) =
