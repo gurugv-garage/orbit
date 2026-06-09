@@ -95,13 +95,14 @@ class DockToolsAdapterTest {
     }
 
     @Test fun perPartLimitClampsBeyondRange() = runTest {
-        // neck limit is ±45°. Scale is FIXED (90°=1000µs), so +45° = 2000µs.
-        // Commanding +90° must CLAMP to +45° → ~2000µs, NOT go to the full 2500.
+        // neck limit is -60°…+35° (asymmetric, per DockToolSchemas.DEGREE_LIMITS).
+        // Scale is FIXED (90°=1000µs), so +35° = 1500 + (35/90)*1000 ≈ 1889µs.
+        // Commanding +90° must CLAMP to the +35° max, NOT go to the full 2500.
         tool("move").execute("1", args("""{"steps":[{"part":"neck","degrees":90}]}"""), null)
         waitAngles(1)
         val us = body.angles.first().second
-        assertThat(us).isAtLeast(1960)   // +45° = 1500 + (45/90)*1000 = 2000
-        assertThat(us).isAtMost(2040)
+        assertThat(us).isAtLeast(1849)   // +35° ≈ 1889µs (allow ±40 slop)
+        assertThat(us).isAtMost(1929)
     }
 
     @Test fun centerDegreesMapsToMidpoint() = runTest {
