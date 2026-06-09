@@ -217,6 +217,21 @@ esp_err_t station_link_start(esp_ip4_addr_t our_ip) {
         .uri = STATION_URL,
         .reconnect_timeout_ms = 5000,
         .network_timeout_ms = 8000,
+        // Keep auto-reconnect ON (default) and make a silently-dead link get
+        // NOTICED so it actually re-dials. Without keepalive pings, a dropped
+        // connection (station restart, WiFi blip) can leave the client stuck
+        // "connected" in name only — never reconnecting until a manual reset.
+        .disable_auto_reconnect = false,
+        // WS-level keepalive: ping every 10s; if no pong in 3 tries, tear the
+        // socket down → triggers reconnect.
+        .ping_interval_sec = 10,
+        .pingpong_timeout_sec = 20,
+        // TCP-level keepalive as a second line of defence against half-open
+        // sockets the OS would otherwise keep forever.
+        .keep_alive_enable = true,
+        .keep_alive_idle = 6,
+        .keep_alive_interval = 3,
+        .keep_alive_count = 3,
     };
     s_client = esp_websocket_client_init(&cfg);
     if (!s_client) {
