@@ -160,7 +160,8 @@ Legend: `[x]` done · `[~]` in progress · `[ ]` not started · `[?]` open quest
 > **Renamed `plat` → `orbit-station` + split (2026-06-02).** The **control
 > plane** is built (`orbit-station/`, Node/TS): one WebSocket, browser UI, and
 > modules — observability (agent-core trace ingest), config push, bodylink
-> console, `mind` stub, bench viewer (moved from `node-dock/app/bench`). See
+> console, `mind` stub, bench viewer (moved from `node-dock/app/bench`), ota
+> (self-update for body + app, [OTA.md](OTA.md)). See
 > `orbit-station/README.md` + `TESTING.md` and decision log "orbit-station
 > split". The **media pipeline below** (WebRTC/STT/TTS) is a deferred separate
 > sidecar — the checkboxes still stand for that.
@@ -172,7 +173,11 @@ Legend: `[x]` done · `[~]` in progress · `[ ]` not started · `[?]` open quest
 - [x] BodyLink console: direct body control (profile-driven), bypassing the app
 - [x] Mind: stub subscriber (no actions yet)
 - [x] Bench viewer folded in; browser UI (space-themed, responsive); verified in-browser
-- [ ] Wire real producers: dock app (emulator + device) + ESP32 firmware over WS
+- [x] Wire real producers: dock app (device) + ESP32 firmware dial the station
+  over WS — both verified live (app reports build/heartbeat, ESP32 sends
+  profile/state + obeys console commands)
+- [x] OTA module + Updates console tab (self-update for body + app, [OTA.md](OTA.md))
+- [x] Config: flat global keys + per-peer interest push + build-time bake
 - [ ] `mind` gains triggers (rules, then maybe LLM supervisor)
 - [ ] HTTPS in real deployment; auth on the WS for non-LAN
 

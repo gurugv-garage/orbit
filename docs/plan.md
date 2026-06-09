@@ -464,6 +464,17 @@ No cloud STT. All inference on local plat (laptop / home server). Per-dock mute 
 ### Form factor (dock): desk-resident, optionally expressive
 "Sits with you and reacts to what you're doing" is the dock's headline behavior. Stationary; expressiveness (gaze, servo body) is the differentiator from a passive smart speaker.
 
+### Self-update (OTA) rides orbit-station, no app store
+Both field devices update over the network with **orbit-station as the update
+server** — it already holds the one WebSocket each device connects to, so OTA is
+one more module + topic, not a new service or an app store. The wire carries one
+monotonic `build` int (the gate); the station owns human labels/notes. Body uses
+A/B partitions + `esp_https_ota` with rollback-on-failed-rejoin; app uses
+`PackageInstaller` (silent as device-owner, else one Wi-Fi confirm tap). **Not
+an app store**: Play/F-Droid add account/review/propagation overhead and cede
+update timing — wrong for an appliance the operator controls. Full rationale +
+decision log in [OTA.md](OTA.md).
+
 ---
 
 ## 10. Where features live — the decision frame
