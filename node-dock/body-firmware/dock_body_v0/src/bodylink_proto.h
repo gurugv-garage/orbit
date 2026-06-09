@@ -13,13 +13,13 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include "cJSON.h"
+#include "version.h"   // BL_FW_VERSION + BL_FW_BUILD — single source of truth (docs/OTA.md §3.2)
 
 #define BL_PROTOCOL_VERSION   0
 #define BL_WS_PORT            17317
 
 #define BL_DEVICE_ID          "xiao-esp32-001"
 #define BL_DEVICE_NAME        "dock-body-smoke-v0"
-#define BL_FW_VERSION         "0.0.1"
 
 // ── Encoders (return malloc'd string, caller frees) ─────────────────────
 

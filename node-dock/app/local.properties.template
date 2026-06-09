@@ -31,6 +31,17 @@ BODY_HOST=192.168.1.14:17317
 STATION_URL=
 DOCK_NAME=anne-bot
 
+# --- OTA release signing (docs/OTA.md §5.1) ---
+# Required to produce a SIGNED release APK that can self-update over the air.
+# Generate the keystore with: orbit-station/scripts/gen-keystore.sh (it prints
+# these lines). If left blank, the release build falls back to the debug key —
+# it builds, but the APK is NOT installable as an OTA update. Never commit the
+# keystore or these passwords.
+RELEASE_STORE_FILE=
+RELEASE_STORE_PASSWORD=
+RELEASE_KEY_ALIAS=dock
+RELEASE_KEY_PASSWORD=
+
 # --- Local model alternatives (laptop on the LAN), if not using cloud ---
 #   gemma4:e2b via Ollama (local, has vision):
 #     OLLAMA_BASE_URL=http://<laptop-lan-ip>:11434

@@ -25,6 +25,9 @@
 #include "bodylink_motion.h"
 #include "bodylink_ws.h"   // bl_ws_has_client()
 #include "bodylink_proto.h"   // bl_build_part / bl_build_param_spec / BL_DEVICE_* / BL_WS_PORT
+#include "station_link.h"
+#include "station_ota.h"   // station_ota_begin / station_ota_on_link_ready
+#include "version.h"       // BL_FW_VERSION / BL_FW_BUILD
 
 static const char *TAG = "station";
 
@@ -83,6 +86,15 @@ static void publish(const char *topic, const char *kind, cJSON *payload) {
     }
 }
 
+// Public wrapper for other modules (station_ota) to publish on the link.
+void station_link_publish(const char *topic, const char *kind, cJSON *payload) {
+    publish(topic, kind, payload);
+}
+
+bool station_link_ready(void) {
+    return s_client && esp_websocket_client_is_connected(s_client) && s_profile_sent;
+}
+
 static void send_hello(void) {
     cJSON *f = cJSON_CreateObject();
     cJSON_AddStringToObject(f, "t", "hello");
@@ -91,12 +103,15 @@ static void send_hello(void) {
     cJSON_AddStringToObject(f, "dock", DOCK_NAME);
     cJSON_AddStringToObject(f, "bodyAddr", s_body_addr);
     cJSON_AddStringToObject(f, "label", BL_DEVICE_NAME);
+    // OTA gate (docs/OTA.md §3): `build` is the monotonic version. It's the
+    // ONLY version on the wire — the station maps build→label as metadata.
+    cJSON_AddNumberToObject(f, "build", BL_FW_BUILD);
     char *s = cJSON_PrintUnformatted(f);
     cJSON_Delete(f);
     if (s) { esp_websocket_client_send_text(s_client, s, strlen(s), portMAX_DELAY); free(s); }
 
-    // subscribe to console commands + config pushes
-    const char *sub = "{\"t\":\"subscribe\",\"topics\":[\"bodylink\",\"config\"]}";
+    // subscribe to console commands + config pushes + OTA offers
+    const char *sub = "{\"t\":\"subscribe\",\"topics\":[\"bodylink\",\"config\",\"ota\"]}";
     esp_websocket_client_send_text(s_client, sub, strlen(sub), portMAX_DELAY);
 }
 
@@ -131,10 +146,22 @@ static void handle_event(cJSON *f) {
     const cJSON *topic = cJSON_GetObjectItemCaseSensitive(f, "topic");
     const cJSON *kind  = cJSON_GetObjectItemCaseSensitive(f, "kind");
     if (!cJSON_IsString(topic) || !cJSON_IsString(kind)) return;
+    cJSON *payload = cJSON_GetObjectItemCaseSensitive(f, "payload");
+
+    // ── ota/available: the station is offering us a newer firmware ────────
+    // payload = { target:"body", build, version, url, sha256, size }. Hand it
+    // to station_ota, which runs esp_https_ota on its OWN task — we must NOT
+    // block this WS event callback (docs/OTA.md §4.2). station_ota guards
+    // against re-entry and stale (non-newer build) offers itself.
+    if (strcmp(topic->valuestring, "ota") == 0 &&
+        strcmp(kind->valuestring, "available") == 0) {
+        if (payload) station_ota_begin(payload);
+        return;
+    }
+
     if (strcmp(topic->valuestring, "bodylink") != 0) return;
     if (strcmp(kind->valuestring, "command") != 0) return;
 
-    cJSON *payload = cJSON_GetObjectItemCaseSensitive(f, "payload");
     if (!payload) return;
     // payload == set_target body ({parts:{...}}) → same motion path as the phone.
     bl_emit_t emits[8];
@@ -168,6 +195,10 @@ static void on_ws_event(void *arg, esp_event_base_t base, int32_t id, void *data
                 if (strcmp(t->valuestring, "welcome") == 0 && !s_profile_sent) {
                     publish("bodylink", "profile", build_profile_payload());
                     s_profile_sent = true;
+                    // Link is now fully up (Wi-Fi + station + profile accepted).
+                    // If we're a freshly-OTA'd image in pending-verify, this is
+                    // the proof it works → cancel rollback (docs/OTA.md §4.3).
+                    station_ota_on_link_ready();
                 } else if (strcmp(t->valuestring, "event") == 0) {
                     handle_event(f);
                 }
@@ -192,6 +223,10 @@ static void station_task(void *arg) {
                 last_hb = now;
                 cJSON *hb = cJSON_CreateObject();
                 cJSON_AddNumberToObject(hb, "ts", (double)now);
+                // OTA build in every heartbeat (docs/OTA.md §3) — keeps the
+                // station's version view fresh + self-healing without waiting
+                // for a full reconnect. Just the gate int; small payload.
+                cJSON_AddNumberToObject(hb, "build", BL_FW_BUILD);
                 // report our own links so the station knows the mesh: is a
                 // phone/brain currently driving us over the :17317 BodyLink server?
                 cJSON *links = cJSON_CreateObject();

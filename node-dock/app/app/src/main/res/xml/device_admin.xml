@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Device-admin policies for OTA self-update (docs/OTA.md §5.1). We need no
+     special admin powers here — being device-owner is what unlocks silent
+     PackageInstaller; this descriptor just has to exist for the receiver. -->
+<device-admin xmlns:android="http://schemas.android.com/apk/res/android">
+    <uses-policies />
+</device-admin>

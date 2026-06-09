@@ -25,6 +25,8 @@ export interface RosterEntry {
   label?: string;
   dock?: string;
   bodyAddr?: string;
+  /** OTA running build (docs/OTA.md §3): the monotonic gate — the only version a device reports. */
+  build?: number;
   /** peer's remote IP, captured server-side from the socket. */
   ip?: string;
   /** ms epoch of the last frame received from this peer (incl. heartbeats). */
@@ -45,6 +47,8 @@ interface Peer {
   dock?: string;
   /** firmware only: its phone-facing BodyLink address ("<ip>:17317"). */
   bodyAddr?: string;
+  /** OTA running build (docs/OTA.md §3): the monotonic gate. */
+  build?: number;
   /** remote IP from the socket. */
   ip?: string;
   lastSeen: number;
@@ -92,6 +96,7 @@ export class Hub {
       label: p.label,
       dock: p.dock,
       bodyAddr: p.bodyAddr,
+      build: p.build,
       ip: p.ip,
       lastSeen: p.lastSeen,
       connectedAt: p.connectedAt,
@@ -136,10 +141,12 @@ export class Hub {
         peer.label = f.label;
         peer.dock = f.dock;
         peer.bodyAddr = f.bodyAddr;
+        peer.build = f.build;
         peer.announced = true;
         this.#send(peer.ws, { t: 'welcome', id: peer.id, serverTime: Date.now() });
         this.#announce('peer-joined', {
-          role: peer.role, id: peer.id, label: peer.label, dock: peer.dock, bodyAddr: peer.bodyAddr,
+          role: peer.role, id: peer.id, label: peer.label, dock: peer.dock,
+          bodyAddr: peer.bodyAddr, build: peer.build,
         });
         break;
       case 'subscribe':
@@ -152,8 +159,19 @@ export class Hub {
         // Capture the mesh links a peer reports in its heartbeat (app: body/llm;
         // firmware: phoneClient) so the roster shows who's connected to what.
         if (f.kind === 'heartbeat') {
-          const links = (f.payload as { links?: Record<string, boolean> } | null)?.links;
-          if (links && typeof links === 'object') peer.links = links;
+          const hb = f.payload as { links?: Record<string, boolean>; build?: number } | null;
+          if (hb?.links && typeof hb.links === 'object') peer.links = hb.links;
+          // OTA build in the heartbeat (docs/OTA.md §3): refresh the roster
+          // version so it stays current without a reconnect (e.g. after an OTA
+          // where the device rebooted but the socket/peer entry persisted).
+          if (typeof hb?.build === 'number' && hb.build !== peer.build) {
+            peer.build = hb.build;
+            // a build change is OTA-relevant — let modules re-evaluate (the ota
+            // module re-checks behind/uptodate + refreshes its console card).
+            this.#announce('peer-updated', {
+              role: peer.role, id: peer.id, dock: peer.dock, build: peer.build,
+            });
+          }
         }
         this.#bus.publish({ topic: f.topic, kind: f.kind, payload: f.payload, source: peer.id });
         break;

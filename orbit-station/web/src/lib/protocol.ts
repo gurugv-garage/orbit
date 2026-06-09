@@ -3,7 +3,7 @@
  * Source of truth: server/src/core/protocol.ts — keep in sync.
  */
 
-export type Topic = 'obs' | 'config' | 'bodylink' | 'mind' | 'station';
+export type Topic = 'obs' | 'config' | 'bodylink' | 'mind' | 'station' | 'ota';
 export type PeerRole = 'browser' | 'firmware' | 'app' | 'fake';
 
 export interface EventFrame {
@@ -45,13 +45,13 @@ export interface AgentEventDto {
 
 export interface PeerInfo {
   role: PeerRole; id: string; label?: string; dock?: string; bodyAddr?: string;
-  ip?: string; lastSeen: number; connectedAt: number; links?: Record<string, boolean>; topics: Topic[];
+  ip?: string; lastSeen: number; connectedAt: number; build?: number; links?: Record<string, boolean>; topics: Topic[];
 }
 
 // dock directory (mirror of server/.../core/protocol.ts) ──────────────────────
 export interface DockMember {
   role: PeerRole; id: string; label?: string; online: boolean; ip?: string; lastSeen?: number;
-  links?: Record<string, boolean>;
+  build?: number; links?: Record<string, boolean>;
 }
 export interface DockInfo {
   name: string;

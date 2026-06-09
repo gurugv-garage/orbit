@@ -18,6 +18,7 @@ import { bodylinkModule } from './modules/bodylink/index.js';
 import { mindModule } from './modules/mind/index.js';
 import { benchModule } from './modules/bench/index.js';
 import { docksModule } from './modules/docks/index.js';
+import { otaModule } from './modules/ota/index.js';
 import { stationModule } from './modules/station.js';
 
 const PORT = Number(process.env.PORT ?? 8099);
@@ -40,6 +41,7 @@ async function main() {
 
   // these need the hub (live roster); add after it exists.
   modules.push(docksModule(() => hub));
+  modules.push(otaModule(() => hub));   // OTA: version-compare against live roster
   // station meta module needs the registry + hub; add it last.
   modules.push(stationModule(() => modules, () => hub));
 

@@ -16,7 +16,7 @@ captures/
 .externalNativeBuild/
 .cxx/
 
-# Keystore
+# Keystore — incl. the OTA release signing keystore (dock-release.jks). NEVER commit.
 *.jks
 *.keystore
 

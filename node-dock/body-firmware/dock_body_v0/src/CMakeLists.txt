@@ -7,6 +7,7 @@ idf_component_register(
         "bodylink_motion.c"
         "bodylink_ws.c"
         "station_link.c"
+        "station_ota.c"
     INCLUDE_DIRS "." "../include"
     REQUIRES
         esp_wifi
@@ -18,4 +19,8 @@ idf_component_register(
         esp_timer
         json
         esp_websocket_client
+        esp_https_ota   # OTA over the station link (docs/OTA.md §4)
+        app_update      # esp_ota_ops: slot select, mark-valid, rollback
+        esp_http_client
+        mbedtls         # sha256 verify of the downloaded image
 )

@@ -90,8 +90,8 @@ export function docksModule(getHub: () => Hub): StationModule {
 }
 
 function member(
-  p: { role: PeerRole; id: string; label?: string; ip?: string; lastSeen: number; links?: Record<string, boolean> },
+  p: { role: PeerRole; id: string; label?: string; ip?: string; lastSeen: number; build?: number; links?: Record<string, boolean> },
   online: boolean,
 ): DockMember {
-  return { role: p.role, id: p.id, label: p.label, online, ip: p.ip, lastSeen: p.lastSeen, links: p.links };
+  return { role: p.role, id: p.id, label: p.label, online, ip: p.ip, lastSeen: p.lastSeen, build: p.build, links: p.links };
 }

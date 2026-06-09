@@ -17,7 +17,19 @@
 
 #include "esp_err.h"
 #include "esp_netif.h"
+#include "cJSON.h"
+#include <stdbool.h>
 
 // Start the station client. `our_ip` is this device's STA IP (for bodyAddr).
 // No-op (returns ESP_OK) if STATION_URL is empty.
 esp_err_t station_link_start(esp_ip4_addr_t our_ip);
+
+// Publish a frame { t:"publish", topic, kind, payload } on the station link.
+// Takes ownership of `payload` (frees it). No-op if not connected. Used by
+// station_ota to stream OTA progress/result on the `ota` topic (docs/OTA.md §1).
+void station_link_publish(const char *topic, const char *kind, cJSON *payload);
+
+// True once the station WS is connected AND we've sent our profile — i.e. the
+// link is fully usable. station_ota uses this as the "reconnected to station"
+// half of the rollback-validate gate (docs/OTA.md §4.3).
+bool station_link_ready(void);

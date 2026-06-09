@@ -12,6 +12,9 @@
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <!-- OTA self-update (docs/OTA.md §5): install its own downloaded APK. As a
+         device-owner the install is silent; otherwise a system confirm dialog. -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
     <uses-feature android:name="android.hardware.microphone" android:required="true" />
     <uses-feature android:name="android.hardware.camera.any" android:required="false" />
@@ -51,6 +54,23 @@
             android:exported="false"
             android:stopWithTask="false"
             android:foregroundServiceType="microphone" />
+
+        <!-- Device-admin receiver for OTA (docs/OTA.md §5.1). Provisioned ONCE
+             via `adb shell dpm set-device-owner dev.orbit.dock/.ota.DockDeviceAdminReceiver`
+             on a fresh phone; being device-owner unlocks SILENT PackageInstaller
+             updates (no per-install tap). Harmless if never provisioned — the
+             updater falls back to the system confirm dialog. -->
+        <receiver
+            android:name=".ota.DockDeviceAdminReceiver"
+            android:permission="android.permission.BIND_DEVICE_ADMIN"
+            android:exported="true">
+            <meta-data
+                android:name="android.app.device_admin"
+                android:resource="@xml/device_admin" />
+            <intent-filter>
+                <action android:name="android.app.action.DEVICE_ADMIN_ENABLED" />
+            </intent-filter>
+        </receiver>
 
     </application>
 

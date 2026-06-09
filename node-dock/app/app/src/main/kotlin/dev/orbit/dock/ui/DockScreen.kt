@@ -138,6 +138,11 @@ fun DockScreen() {
     // new transport/model takes effect immediately; default comes from the build.
     val modelStore = remember { dev.orbit.dock.agent.ModelStore(ctx) }
     var selectedModel by remember { mutableStateOf(modelStore.selected()) }
+    // OTA self-update (docs/OTA.md §5). Holds a forward ref so onOtaOffer below
+    // can hand offers to it; the updater publishes progress/result back via the
+    // station link. Silent install when the app is device-owner, else a system
+    // confirm dialog.
+    val otaUpdaterRef = remember { mutableStateOf<dev.orbit.dock.ota.OtaUpdater?>(null) }
     // Optional orbit-station link (observability + presence). Empty STATION_URL
     // → disabled; the dock is fully functional without it.
     val stationLink = remember {
@@ -146,6 +151,7 @@ fun DockScreen() {
             dock = BuildConfig.DOCK_NAME,
             appId = "${BuildConfig.DOCK_NAME}-app",
             scope = scope,
+            build = BuildConfig.VERSION_CODE,
             // report our own links so the station knows the full mesh.
             linkStatus = {
                 dev.orbit.dock.station.AppLinks(
@@ -164,7 +170,31 @@ fun DockScreen() {
             },
             // announce the keys we care about; the station pushes only these.
             configInterest = dev.orbit.dock.config.ConfigCache.INTEREST,
+            // hand `ota/available` offers to the updater (downloads + installs).
+            onOtaOffer = { payload ->
+                val p = { k: String -> (payload[k] as? kotlinx.serialization.json.JsonPrimitive) }
+                otaUpdaterRef.value?.onOffer(
+                    target = p("target")?.content,
+                    build = p("build")?.content?.toIntOrNull(),
+                    url = p("url")?.content,
+                    sha256 = p("sha256")?.content,
+                )
+            },
         ).also { it.start() }
+    }
+    // Build the updater now that the link exists (it publishes via the link).
+    val otaUpdater = remember {
+        dev.orbit.dock.ota.OtaUpdater(
+            context = ctx,
+            scope = scope,
+            currentVersionCode = BuildConfig.VERSION_CODE,
+            publish = { kind, payload -> stationLink.publish("ota", kind, payload) },
+        ).also { otaUpdaterRef.value = it }
+    }
+    // Surface confirm-dialog / failure results from PackageInstaller.
+    DisposableEffect(otaUpdater) {
+        val unregister = otaUpdater.registerInstallResultReceiver()
+        onDispose { unregister() }
     }
     val agent = remember(tools, selectedModel) {
         DockAgent(

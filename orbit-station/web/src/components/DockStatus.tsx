@@ -45,6 +45,7 @@ function MemberLine({ kind, m, now }: { kind: string; m?: DockMember; now: numbe
 function memberTitle(kind: string, m?: DockMember): string {
   if (!m) return `${kind}: not connected`;
   const parts = [m.id];
+  if (m.build != null) parts.push(`build ${m.build}`);
   if (m.ip) parts.push(m.ip);
   if (m.lastSeen) parts.push(`seen ${new Date(m.lastSeen).toLocaleTimeString()}`);
   return `${kind}: ${m.online ? 'online' : 'offline'} · ${parts.join(' · ')}`;

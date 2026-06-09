@@ -8,6 +8,7 @@ import { Config } from './modules/Config';
 import { BodyLink } from './modules/BodyLink';
 import { Mind } from './modules/Mind';
 import { Bench } from './modules/Bench';
+import { Ota } from './modules/Ota';
 
 interface ViewDef { id: string; label: string; ico: string; el: React.ReactNode; }
 
@@ -16,6 +17,7 @@ const VIEWS: ViewDef[] = [
   { id: 'observability', label: 'Observability', ico: '📡', el: <Observability /> },
   { id: 'config', label: 'Config', ico: '⚙', el: <Config /> },
   { id: 'bodylink', label: 'BodyLink', ico: '🦾', el: <BodyLink /> },
+  { id: 'ota', label: 'Updates', ico: '⬆', el: <Ota /> },
   { id: 'mind', label: 'Mind', ico: '✦', el: <Mind /> },
   { id: 'bench', label: 'Benchmarks', ico: '📊', el: <Bench /> },
 ];

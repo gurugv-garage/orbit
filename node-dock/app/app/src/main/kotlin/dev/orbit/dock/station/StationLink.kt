@@ -64,6 +64,19 @@ class StationLink(
      * these keys (snapshot now + live changes). Empty = announce nothing.
      */
     private val configInterest: List<String> = emptyList(),
+    /**
+     * OTA gate (docs/OTA.md §3): the app's running build (versionCode). Sent in
+     * `hello` + each heartbeat so the station can compare and offer an update.
+     * It's the ONLY version on the wire — the station owns build→label metadata.
+     * 0 = don't advertise a build.
+     */
+    private val build: Int = 0,
+    /**
+     * Called for each `ota/available` offer on the `ota` topic, with the frame
+     * payload { target, build, version, url, sha256, size }. Wired to
+     * [dev.orbit.dock.ota.OtaUpdater.onOffer]. Default no-op.
+     */
+    private val onOtaOffer: (JsonObject) -> Unit = {},
 ) {
     private val _connected = MutableStateFlow(false)
     val connected: StateFlow<Boolean> = _connected.asStateFlow()
@@ -105,10 +118,12 @@ class StationLink(
         s.send(json.encodeToString(JsonObject.serializer(), buildJsonObject {
             put("t", "hello"); put("role", "app"); put("id", appId)
             put("dock", dock); put("label", "$dock phone")
+            // OTA gate (docs/OTA.md §3): build is the only version on the wire.
+            if (build > 0) put("build", build)
         }))
         s.send(json.encodeToString(JsonObject.serializer(), buildJsonObject {
             put("t", "subscribe")
-            put("topics", buildJsonArray { add("config"); add("station") })
+            put("topics", buildJsonArray { add("config"); add("station"); add("ota") })
         }))
         // Announce which config keys we care about. The station replies with a
         // directed snapshot of just these, then pushes their changes live.
@@ -137,10 +152,15 @@ class StationLink(
         val frame = runCatching { json.parseToJsonElement(text).jsonObject }.getOrNull() ?: return
         // station wraps published events as {t:'event', topic, kind, payload, ...}
         val topic = frame["topic"]?.jsonPrimitive?.content
+        val kind = frame["kind"]?.jsonPrimitive?.content
         if (topic == "config") {
             val payload = frame["payload"] as? JsonObject ?: return
             runCatching { onConfigFrame(payload) }
                 .onFailure { Timber.d("config frame handling failed: ${it.message}") }
+        } else if (topic == "ota" && kind == "available") {
+            val payload = frame["payload"] as? JsonObject ?: return
+            runCatching { onOtaOffer(payload) }
+                .onFailure { Timber.d("ota offer handling failed: ${it.message}") }
         }
     }
 
@@ -149,6 +169,10 @@ class StationLink(
             val links = linkStatus()
             publish("station", "heartbeat", buildJsonObject {
                 put("role", "app")
+                // OTA build in every heartbeat (docs/OTA.md §3) — keeps the
+                // station's version view fresh + self-healing without a full
+                // reconnect. Just the gate int; small payload.
+                if (build > 0) put("build", build)
                 // links the station can't see itself — drives its mesh view.
                 put("links", buildJsonObject {
                     put("body", links.bodyConnected)

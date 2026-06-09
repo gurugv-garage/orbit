@@ -295,3 +295,54 @@ label.field { display: flex; flex-direction: column; gap: 4px; font-size: 12px; 
 .cfg-actions button.primary { background: var(--accent, #5b8cff); border-color: transparent; color: #06122e; font-weight: 600; }
 .cfg-actions button:disabled { opacity: .4; cursor: default; }
 .linklike { background: none; border: none; color: var(--accent, #7aa2ff); cursor: pointer; padding: 0; text-decoration: underline; }
+
+/* ── OTA / Updates console (docs/OTA.md §7) ─────────────────────────────── */
+.ota-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 16px; }
+
+.ota-card { border: 1px solid var(--line); border-radius: var(--radius); background: var(--panel);
+  padding: 16px 18px; display: flex; flex-direction: column; gap: 14px; }
+.ota-card-head { display: flex; align-items: flex-start; justify-content: space-between; }
+.ota-card-head h3 { margin: 0; font-size: 15px; color: var(--fg); font-weight: 600; }
+.ota-sub { font-size: 11px; color: var(--dim); letter-spacing: .04em; text-transform: uppercase; }
+.ota-build-tag { font: 600 12px ui-monospace, Menlo, monospace; color: var(--accent);
+  background: #5db8ff14; border: 1px solid #5db8ff33; border-radius: 20px; padding: 2px 10px; }
+
+.ota-section { display: flex; flex-direction: column; gap: 6px; }
+.ota-section-label { text-transform: uppercase; letter-spacing: .05em; font-size: 10px; margin-bottom: 2px; }
+.ota-row { display: flex; align-items: center; gap: 10px; min-height: 22px; }
+.ota-key { flex: 0 0 64px; font-size: 11px; color: var(--dim); text-transform: uppercase; letter-spacing: .04em; }
+.ota-val { font-size: 13px; color: var(--fg); }
+.ota-val.dim, .dim { color: var(--dim); }
+.ota-notes { white-space: pre-wrap; line-height: 1.4; }
+.ota-device .ota-val { font: 13px ui-monospace, Menlo, monospace; }
+
+.ota-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.ota-notes-form { display: flex; flex-direction: column; gap: 8px; border: 1px solid var(--line);
+  border-radius: 8px; padding: 10px; background: var(--bg-2); }
+.ota-notes-input { width: 100%; resize: vertical; background: var(--bg); color: var(--fg);
+  border: 1px solid var(--line); border-radius: 6px; padding: 8px; font: 13px inherit; }
+.ota-notes-input:focus { outline: none; border-color: var(--accent); box-shadow: var(--glow); }
+
+button.mini { font-size: 11px; padding: 2px 9px; border-radius: 6px; }
+button.mini.ghost { background: transparent; }
+
+.ota-phasebar { border-top: 1px solid var(--line); padding-top: 10px; display: flex; flex-direction: column; gap: 6px; }
+.ota-phasebar-track { display: flex; flex-wrap: wrap; gap: 4px; }
+.ota-phase { font-size: 11px; padding: 2px 8px; border-radius: 20px; color: var(--dim);
+  border: 1px solid var(--line); transition: color .2s, border-color .2s, background .2s; }
+.ota-phase.done { color: var(--good); border-color: #4ad6a033; }
+.ota-phase.active { color: var(--accent); border-color: #5db8ff66; background: #5db8ff12;
+  animation: ota-pulse 1.2s ease-in-out infinite; }
+.ota-phasebar.failed .ota-phase { opacity: .5; }
+.ota-phase-now { font-size: 12px; color: var(--accent); }
+.ota-phase-fail { font-size: 12px; color: var(--bad); }
+@keyframes ota-pulse { 0%,100% { opacity: 1; } 50% { opacity: .55; } }
+
+.ota-buildstrip { border-top: 1px solid var(--line); padding-top: 10px; display: flex; flex-direction: column; gap: 6px; }
+.ota-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--dim); flex: 0 0 auto; }
+.ota-dot.running { background: var(--accent); animation: ota-pulse 1s ease-in-out infinite; }
+.ota-dot.done { background: var(--good); }
+.ota-dot.failed { background: var(--bad); }
+.ota-log { font: 11px ui-monospace, Menlo, monospace; max-height: 160px; overflow: auto;
+  background: var(--bg); color: var(--dim); border: 1px solid var(--line); border-radius: 6px;
+  padding: 8px; margin: 0; white-space: pre-wrap; word-break: break-all; }

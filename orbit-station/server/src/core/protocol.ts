@@ -23,7 +23,8 @@ export type Topic =
   | 'config'       // config push: defaults + live changes
   | 'bodylink'     // direct body control + reported state
   | 'mind'         // mind module's awareness/announcements (stub for now)
-  | 'station';     // station-level: peer presence, health
+  | 'station'      // station-level: peer presence, health
+  | 'ota';         // self-update: availability offers + progress/result (docs/OTA.md)
 
 // ── peer → station ─────────────────────────────────────────────────────────
 
@@ -47,6 +48,14 @@ export interface HelloFrame {
   bodyAddr?: string;
   /** Optional human label for the console. */
   label?: string;
+  /**
+   * OTA gate (docs/OTA.md §3): monotonic build number of the running artifact
+   * (app: versionCode; firmware: BL_FW_BUILD). The ONLY version a device sends —
+   * the station owns build→label metadata (release notes, build time) in its
+   * meta.json. The ota module compares this against the latest artifact to
+   * decide whether to offer an update. `browser` peers omit it.
+   */
+  build?: number;
 }
 
 export interface SubscribeFrame {
@@ -112,6 +121,8 @@ export interface DockMember {
   ip?: string;
   /** ms epoch of the last frame seen from this member (incl. heartbeats). */
   lastSeen?: number;
+  /** OTA running build (docs/OTA.md §3) — the device's monotonic version. */
+  build?: number;
   /** mesh links this member reports (app: body/llm; firmware: phoneClient). */
   links?: Record<string, boolean>;
 }

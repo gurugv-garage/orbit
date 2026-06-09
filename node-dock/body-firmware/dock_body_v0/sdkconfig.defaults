@@ -50,3 +50,25 @@ CONFIG_ESP_MAIN_TASK_STACK_SIZE=6144
 # Off by default in esp_http_server. Enables httpd_ws_recv_frame /
 # httpd_ws_send_frame and the .is_websocket URI flag.
 CONFIG_HTTPD_WS_SUPPORT=y
+
+# ── OTA: dual-slot partitions + rollback (docs/OTA.md §4) ──────────────
+# The XIAO ESP32-S3 has 8 MB flash; IDF defaults to 2 MB, which can't hold the
+# dual 3 MB OTA slots. Pin it to 8 MB so the partition table + esptool agree.
+CONFIG_ESPTOOLPY_FLASHSIZE_8MB=y
+CONFIG_ESPTOOLPY_FLASHSIZE="8MB"
+
+# Custom partition table (partitions.csv) carrying ota_0/ota_1 + otadata,
+# so esp_https_ota can write the inactive slot and the bootloader can flip.
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+
+# Rollback: a freshly-OTA'd image boots in pending-verify and the bootloader
+# auto-reverts to the last-good slot unless the firmware calls
+# esp_ota_mark_app_valid_cancel_rollback() — which station_ota only does after
+# it has rejoined Wi-Fi AND reconnected to the station (docs/OTA.md §4.3).
+CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
+
+# esp_https_ota over the station's plain-HTTP artifact URL on the LAN. sha256 is
+# checked in firmware before the slot is marked bootable (integrity floor); TLS
+# is only needed if the station ever leaves the trusted LAN (docs/OTA.md §6).
+CONFIG_ESP_HTTPS_OTA_ALLOW_HTTP=y

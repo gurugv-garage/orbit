@@ -7,6 +7,8 @@ certs/*.key
 certs/*.crt
 # runtime state (observability traces persisted to disk during dev)
 .data/
+# OTA artifact store: built firmware .bin / app .apk + meta + logs (rebuildable)
+var/
 
 # TS incremental build cache
 *.tsbuildinfo

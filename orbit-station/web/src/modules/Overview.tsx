@@ -56,13 +56,14 @@ export function Overview() {
           <div className="muted">No peers connected. Start the dock app, ESP32, or run <code>npm run smoke</code>.</div>
         ) : (
           <table>
-            <thead><tr><th>role</th><th>id</th><th>dock</th><th>ip</th><th>seen</th><th>body addr</th></tr></thead>
+            <thead><tr><th>role</th><th>id</th><th>dock</th><th>build</th><th>ip</th><th>seen</th><th>body addr</th></tr></thead>
             <tbody>
               {peers.map((p) => (
                 <tr key={p.id + p.role}>
                   <td><span className={`pill ${roleClass(p.role)}`}>{p.role}</span></td>
                   <td className="mono">{p.id}</td>
                   <td className="mono">{p.dock ?? '—'}</td>
+                  <td className="mono">{p.build ?? '—'}</td>
                   <td className="muted mono">{p.ip ?? '—'}</td>
                   <td className="muted" title={new Date(p.lastSeen).toLocaleString()}>{relTime(p.lastSeen, now)}</td>
                   <td className="muted mono">{p.bodyAddr ?? ''}</td>
@@ -103,7 +104,7 @@ function MemberRow({ kind, m, now, extra }: { kind: string; m?: DockMember; now:
       </div>
       {m && (
         <div className="muted mono" style={{ fontSize: 11, marginLeft: 18 }}>
-          {m.id}{m.ip ? ` · ${m.ip}` : ''}{extra ? ` · ${extra}` : ''}
+          {m.id}{m.build != null ? ` · build ${m.build}` : ''}{m.ip ? ` · ${m.ip}` : ''}{extra ? ` · ${extra}` : ''}
         </div>
       )}
       {m?.links && (

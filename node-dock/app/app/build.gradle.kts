@@ -101,6 +101,31 @@ android {
         )
     }
 
+    // Release signing for OTA (docs/OTA.md §5.1). A stable key is required: the
+    // OTA APK must be signed with the SAME key as the installed app or Android
+    // refuses the update, and silent device-owner install needs a real identity
+    // (not the throwaway debug key). The keystore lives OUTSIDE the repo; its
+    // path + passwords come from local.properties (gitignored) — generate it
+    // with orbit-station/scripts/gen-keystore.sh. If unconfigured, release falls
+    // back to debug signing so a fresh checkout still builds (just not OTA-able).
+    val signProps = Properties().apply {
+        val f = rootProject.file("local.properties")
+        if (f.exists()) FileInputStream(f).use { load(it) }
+    }
+    val releaseStoreFile = signProps.getProperty("RELEASE_STORE_FILE", "")
+    val hasReleaseSigning = releaseStoreFile.isNotBlank() && rootProject.file(releaseStoreFile).exists()
+
+    signingConfigs {
+        if (hasReleaseSigning) {
+            create("release") {
+                storeFile = rootProject.file(releaseStoreFile)
+                storePassword = signProps.getProperty("RELEASE_STORE_PASSWORD", "")
+                keyAlias = signProps.getProperty("RELEASE_KEY_ALIAS", "")
+                keyPassword = signProps.getProperty("RELEASE_KEY_PASSWORD", "")
+            }
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = false
@@ -108,6 +133,14 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
+            signingConfig = if (hasReleaseSigning) {
+                signingConfigs.getByName("release")
+            } else {
+                // No keystore configured → debug-signed so the build still works.
+                // Not installable as an OTA update; run gen-keystore.sh first.
+                logger.warn("node-dock: release signing not configured (RELEASE_STORE_FILE in local.properties) — using debug key. OTA updates require a real keystore; see docs/OTA.md §5.1.")
+                signingConfigs.getByName("debug")
+            }
         }
         debug {
             isMinifyEnabled = false
