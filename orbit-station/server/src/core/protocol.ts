@@ -24,7 +24,8 @@ export type Topic =
   | 'bodylink'     // direct body control + reported state
   | 'mind'         // mind module's awareness/announcements (stub for now)
   | 'station'      // station-level: peer presence, health
-  | 'ota';         // self-update: availability offers + progress/result (docs/OTA.md)
+  | 'ota'          // self-update: availability offers + progress/result (docs/OTA.md)
+  | 'media';       // WebRTC live A/V: SDP/ICE signaling for the in-process SFU
 
 // ── peer → station ─────────────────────────────────────────────────────────
 

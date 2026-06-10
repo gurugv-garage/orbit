@@ -77,6 +77,13 @@ class StationLink(
      * [dev.orbit.dock.ota.OtaUpdater.onOffer]. Default no-op.
      */
     private val onOtaOffer: (JsonObject) -> Unit = {},
+    /**
+     * Called for each inbound `media` frame (WebRTC signaling) with (kind,
+     * payload) — `producer-answer`, `producer-ice`. Wired to
+     * [dev.orbit.dock.perception.MediaStreamer]. Default no-op so the link is
+     * usable without streaming.
+     */
+    private val onMediaFrame: (String, JsonObject) -> Unit = { _, _ -> },
 ) {
     private val _connected = MutableStateFlow(false)
     val connected: StateFlow<Boolean> = _connected.asStateFlow()
@@ -123,7 +130,7 @@ class StationLink(
         }))
         s.send(json.encodeToString(JsonObject.serializer(), buildJsonObject {
             put("t", "subscribe")
-            put("topics", buildJsonArray { add("config"); add("station"); add("ota") })
+            put("topics", buildJsonArray { add("config"); add("station"); add("ota"); add("media") })
         }))
         // Announce which config keys we care about. The station replies with a
         // directed snapshot of just these, then pushes their changes live.
@@ -161,6 +168,10 @@ class StationLink(
             val payload = frame["payload"] as? JsonObject ?: return
             runCatching { onOtaOffer(payload) }
                 .onFailure { Timber.d("ota offer handling failed: ${it.message}") }
+        } else if (topic == "media" && kind != null) {
+            val payload = frame["payload"] as? JsonObject ?: return
+            runCatching { onMediaFrame(kind, payload) }
+                .onFailure { Timber.d("media frame handling failed: ${it.message}") }
         }
     }
 

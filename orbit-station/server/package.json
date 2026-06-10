@@ -11,11 +11,14 @@
     "dev": "tsx watch src/main.ts",
     "start": "tsx src/main.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "tsx --test --test-force-exit src/**/*.test.ts",
     "certs": "node scripts/gen-certs.mjs",
-    "smoke": "tsx src/dev/smoke-client.ts"
+    "smoke": "tsx src/dev/smoke-client.ts",
+    "smoke:media": "tsx src/dev/fake-dock-media.ts"
   },
   "dependencies": {
     "better-sqlite3": "^11.10.0",
+    "werift": "^0.23.0",
     "ws": "^8.18.0",
     "zod": "^4.4.3"
   },

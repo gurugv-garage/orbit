@@ -48,10 +48,18 @@ class MicCapture(
             var offset = 0
             while (offset < shorts.size) {
                 val n = minOf(frameSize - carryLen, shorts.size - offset)
+                // Defensive: if a stale/concurrent state ever leaves carryLen at or
+                // past frameSize (n <= 0), flush what we have and resync rather than
+                // arraycopy a negative length (was crashing AudioRecordJavaThread:
+                // System.arraycopy length=-160 when two startCapture sinks raced).
+                if (n <= 0) {
+                    carryLen = 0
+                    continue
+                }
                 System.arraycopy(shorts, offset, carry, carryLen, n)
                 carryLen += n
                 offset += n
-                if (carryLen == frameSize) {
+                if (carryLen >= frameSize) {
                     trySendBlocking(carry.copyOf(frameSize))
                     carryLen = 0
                 }

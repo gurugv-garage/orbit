@@ -15,6 +15,7 @@ import type { StationModule } from './core/module.js';
 import { observabilityModule } from './modules/observability/index.js';
 import { configModule } from './modules/config/index.js';
 import { bodylinkModule } from './modules/bodylink/index.js';
+import { mediaModule } from './modules/media/index.js';
 import { mindModule } from './modules/mind/index.js';
 import { benchModule } from './modules/bench/index.js';
 import { docksModule } from './modules/docks/index.js';
@@ -32,6 +33,7 @@ async function main() {
     observabilityModule(),
     configModule(),
     bodylinkModule(),
+    mediaModule(),   // WebRTC SFU — bus-only, no hub; lift to a sidecar later by dropping this line.
     mindModule(),
     benchModule(),
   ];

@@ -2,6 +2,9 @@ package dev.orbit.dock.perception
 
 import android.content.Context
 import android.media.MediaRecorder
+import org.webrtc.DefaultVideoDecoderFactory
+import org.webrtc.DefaultVideoEncoderFactory
+import org.webrtc.EglBase
 import org.webrtc.PeerConnectionFactory
 import org.webrtc.audio.JavaAudioDeviceModule
 import timber.log.Timber
@@ -38,6 +41,11 @@ object WebRtcAudio {
 
     private var nativeInitialized = false
     private var adm: JavaAudioDeviceModule? = null
+
+    /** Shared EGL context for video encode/decode + the capturer's surface. */
+    private var egl: EglBase? = null
+    /** The one factory streaming attaches to (ADM + video). Built lazily. */
+    private var factory: PeerConnectionFactory? = null
 
     /** A consumer of processed (AEC'd) mic frames as raw PCM-16 little-endian bytes. */
     fun interface FrameSink {
@@ -113,6 +121,13 @@ object WebRtcAudio {
      * with `requestStopRecording()` left the AEC effect attached and starved
      * SpeechRecognizer of audio (it heard pure silence → "no match"). The next
      * [startCapture] rebuilds the ADM from scratch.
+     *
+     * NOTE (streaming, plan Option B): this release is what makes the live
+     * stream's audio glitch during STT — the [factory]'s audio source draws from
+     * this ADM. We accept the glitch for now (video keeps flowing); the next
+     * [startCapture] rebuilds the ADM and the existing audio track resumes. The
+     * shared [factory]/[egl] are deliberately NOT torn down here, so the
+     * PeerConnection + tracks survive an ADM rebuild.
      */
     @Synchronized
     fun stopCapture() {
@@ -123,5 +138,38 @@ object WebRtcAudio {
         }
         adm = null
         Timber.d("WebRtcAudio capture released")
+    }
+
+    /** The shared EGL base (for video encoder + the capturer's SurfaceTextureHelper). */
+    @Synchronized
+    fun eglBase(context: Context): EglBase {
+        ensureNativeInit(context)
+        return egl ?: EglBase.create().also { egl = it }
+    }
+
+    /**
+     * The single [PeerConnectionFactory] the live stream attaches to — built once
+     * with **this** module's AEC'd [JavaAudioDeviceModule] as its ADM (so an audio
+     * track carries the echo-cancelled mic) plus HW video encode/decode. Requires
+     * [startCapture] to have run so the ADM exists. Lazily built and reused.
+     *
+     * Owning the factory here (not in the streamer) keeps the "one factory/ADM,
+     * owned once" invariant: the factory outlives ADM rebuilds across STT turns.
+     */
+    @Synchronized
+    fun sharedFactory(context: Context): PeerConnectionFactory? {
+        factory?.let { return it }
+        val module = adm ?: run {
+            Timber.w("sharedFactory before startCapture — no ADM; call startCapture first")
+            return null
+        }
+        ensureNativeInit(context)
+        val e = eglBase(context)
+        return PeerConnectionFactory.builder()
+            .setAudioDeviceModule(module)
+            .setVideoEncoderFactory(DefaultVideoEncoderFactory(e.eglBaseContext, true, true))
+            .setVideoDecoderFactory(DefaultVideoDecoderFactory(e.eglBaseContext))
+            .createPeerConnectionFactory()
+            .also { factory = it; Timber.d("WebRtcAudio shared factory created") }
     }
 }

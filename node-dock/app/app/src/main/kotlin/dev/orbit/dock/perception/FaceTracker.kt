@@ -45,6 +45,16 @@ class FaceTracker(private val appContext: Context) : CameraFrameProvider {
     /** [CameraFrameProvider]: most recent frame as base64 JPEG, or null. */
     override fun latestJpegBase64(): String? = latestJpeg
 
+    /**
+     * Optional sink for the raw upright camera [Bitmap], invoked on the analyzer
+     * thread (~1 Hz) right as each frame is captured — before JPEG encoding, so
+     * the live WebRTC stream ([FaceFrameCapturer]) gets the decoded frame without
+     * a re-decode. Null when nothing is streaming. The bitmap is reused/recycled
+     * by the caller path, so the sink must copy what it needs synchronously
+     * (FaceFrameCapturer converts to I420 immediately).
+     */
+    @Volatile var onBitmapFrame: ((Bitmap) -> Unit)? = null
+
     private val executor = Executors.newSingleThreadExecutor()
     private val detector = FaceDetection.getClient(
         FaceDetectorOptions.Builder()
@@ -231,6 +241,8 @@ class FaceTracker(private val appContext: Context) : CameraFrameProvider {
         val imgH = bitmap.height.toFloat()
         // Recent frame as a base64 JPEG for vision LLM turns (downscaled).
         latestJpeg = encodeJpegBase64(uprightForVision(bitmap))
+        // Feed the live stream (if any) the same upright frame, pre-JPEG.
+        onBitmapFrame?.let { sink -> try { sink(uprightForVision(bitmap)) } catch (t: Throwable) { Timber.w(t, "frame sink failed") } }
 
         // Detect from the bitmap copy (rotation already applied → 0 here).
         detector.process(InputImage.fromBitmap(bitmap, 0))

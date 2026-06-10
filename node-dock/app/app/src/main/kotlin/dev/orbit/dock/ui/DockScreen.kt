@@ -143,6 +143,10 @@ fun DockScreen() {
     // station link. Silent install when the app is device-owner, else a system
     // confirm dialog.
     val otaUpdaterRef = remember { mutableStateOf<dev.orbit.dock.ota.OtaUpdater?>(null) }
+    // Live A/V streamer (WebRTC → station SFU). Forward ref so the station link's
+    // onMediaFrame can route signaling answers/ICE into it; it's built after the
+    // link (publishes via the link).
+    val mediaStreamerRef = remember { mutableStateOf<dev.orbit.dock.perception.MediaStreamer?>(null) }
     // Optional orbit-station link (observability + presence). Empty STATION_URL
     // → disabled; the dock is fully functional without it.
     val stationLink = remember {
@@ -180,7 +184,18 @@ fun DockScreen() {
                     sha256 = p("sha256")?.content,
                 )
             },
+            // route WebRTC signaling (producer-answer / producer-ice) to the streamer.
+            onMediaFrame = { kind, payload -> mediaStreamerRef.value?.onMediaFrame(kind, payload) },
         ).also { it.start() }
+    }
+    // The live A/V streamer. Publishes producer-offer/ICE via the station link.
+    val mediaStreamer = remember {
+        dev.orbit.dock.perception.MediaStreamer(
+            context = ctx,
+            faceTracker = faceTracker,
+            label = BuildConfig.DOCK_NAME,
+            publish = { kind, payload -> stationLink.publish("media", kind, payload) },
+        ).also { mediaStreamerRef.value = it }
     }
     // Build the updater now that the link exists (it publishes via the link).
     val otaUpdater = remember {
@@ -255,6 +270,22 @@ fun DockScreen() {
     }
 
     LaunchedEffect(Unit) { wiring.attach(scope) }
+
+    // Start the live A/V stream once the station is connected AND perception is
+    // warm (mic ADM up, so WebRtcAudio.sharedFactory has its audio device module).
+    // Retry a few times: the ADM can lag perceptionReady by a beat, and start()
+    // is idempotent + bails (logs) if the factory isn't up yet. Tearing down on
+    // dispose; the shared factory/ADM stay owned by WebRtcAudio.
+    LaunchedEffect(stationConnected, perceptionReady) {
+        if (stationConnected && perceptionReady) {
+            repeat(10) {
+                if (mediaStreamer.isStreaming()) return@LaunchedEffect
+                mediaStreamer.start()
+                kotlinx.coroutines.delay(500)
+            }
+        }
+    }
+    DisposableEffect(Unit) { onDispose { mediaStreamer.stop() } }
 
     val state by controller.state.collectAsState()
     val gaze by controller.gaze.collectAsState()

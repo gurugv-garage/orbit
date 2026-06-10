@@ -11,7 +11,7 @@ import type { EventFrame, OutboundFrame, Topic } from './protocol';
 type EventListener = (e: EventFrame) => void;
 type StatusListener = (connected: boolean) => void;
 
-const ALL_TOPICS: Topic[] = ['obs', 'config', 'bodylink', 'mind', 'station', 'ota'];
+const ALL_TOPICS: Topic[] = ['obs', 'config', 'bodylink', 'mind', 'station', 'ota', 'media'];
 
 export class StationClient {
   #ws: WebSocket | null = null;
@@ -61,6 +61,17 @@ export class StationClient {
 
   onEvent(l: EventListener): () => void { this.#listeners.add(l); return () => this.#listeners.delete(l); }
   onStatus(l: StatusListener): () => void { this.#statusListeners.add(l); return () => this.#statusListeners.delete(l); }
+
+  /**
+   * Publish a frame into a topic over the WS (browser → station). Used for WebRTC
+   * signaling on the `media` topic; control elsewhere goes via REST. Dropped if the
+   * socket isn't open (the caller re-publishes on the next signaling step).
+   */
+  publish(topic: Topic, kind: string, payload: unknown): void {
+    if (this.#ws?.readyState === WebSocket.OPEN) {
+      this.#ws.send(JSON.stringify({ t: 'publish', topic, kind, payload }));
+    }
+  }
 
   close(): void {
     this.#closed = true;
