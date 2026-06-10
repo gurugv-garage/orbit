@@ -64,6 +64,10 @@ class PerceptionWiring(
     @Volatile private var faceCurrentlyPresent = false   // for the arrival edge
     @Volatile private var listeningActive = false        // a session is open
     @Volatile private var dockSpeaking = false           // TTS playing
+    // Cool-off: after an auto-listen fires, suppress the next for this long so a
+    // face flickering at the edge of detection doesn't keep re-arming listening.
+    @Volatile private var lastAutoListenMs = 0L
+    private val autoListenCooldownMs = 8_000L
 
     @Volatile private var lastFaceMs = 0L
     @Volatile private var lastVoiceMs = 0L
@@ -157,7 +161,10 @@ class PerceptionWiring(
                         // after the face leaves (FaceLost) and returns.
                         if (!faceCurrentlyPresent) {
                             faceCurrentlyPresent = true
-                            if (!dockSpeaking && !listeningActive) {
+                            val now = System.currentTimeMillis()
+                            val cooledDown = now - lastAutoListenMs >= autoListenCooldownMs
+                            if (!dockSpeaking && !listeningActive && cooledDown) {
+                                lastAutoListenMs = now
                                 Timber.i("auto-listen: new face appeared → start listening")
                                 PerceptionBus.emit(PerceptionEvent.WakeWord(label = "(face)"))
                             }
