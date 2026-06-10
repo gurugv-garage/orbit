@@ -28,6 +28,7 @@ import type { Bus } from '../../core/bus.js';
 import { json } from '../../core/http.js';
 import type { RouteContext, StationModule } from '../../core/module.js';
 import { Sfu } from './sfu.js';
+import { tapFromEnv } from './tap.js';
 
 export function mediaModule(): StationModule {
   let sfu: Sfu;
@@ -38,11 +39,19 @@ export function mediaModule(): StationModule {
     description: 'WebRTC live A/V SFU (dock → station → viewers)',
 
     init(bus: Bus) {
+      // Optional processing tap. With MEDIA_SINK set (e.g. udp://127.0.0.1:5004)
+      // every producer's media is forwarded to a sidecar for STT/vision/recording.
+      // For SAME-BOX processing instead, swap tapFromEnv() for
+      //   new InProcessTap((streamId, kind, rtp) => { /* your handler */ })
+      // (import it from './tap.js'). See docs/MEDIA-PROCESSING.md.
+      const tap = tapFromEnv() ?? undefined;
+
       // The SFU emits signaling by publishing directed `media` frames; the hub
       // delivers each to the addressed peer (dock or browser).
       sfu = new Sfu({
         signal: (kind, payload, to) =>
           bus.publish({ topic: 'media', kind, payload, source: 'station', to }),
+        tap,
       });
 
       bus.on('media', (msg) => {

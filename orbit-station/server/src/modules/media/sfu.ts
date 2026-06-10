@@ -25,6 +25,7 @@ import {
   type MediaStreamTrack,
   type RTCIceCandidateInit,
 } from 'werift';
+import type { MediaKind, MediaTap } from './tap.js';
 
 /** How the engine emits signaling: a directed `media` publish to one peer. */
 export interface SfuSignal {
@@ -62,9 +63,12 @@ export class Sfu {
   #viewers = new Map<string, Viewer>();
   /** "browserId|streamId" the browser asked for before the stream had tracks. */
   #waiting = new Set<string>();
+  /** optional processor tapping every producer's inbound media (STT/vision/…). */
+  #tap?: MediaTap;
 
-  constructor(opts: { signal: SfuSignal }) {
+  constructor(opts: { signal: SfuSignal; tap?: MediaTap }) {
     this.#signal = opts.signal;
+    this.#tap = opts.tap;
   }
 
   // ── producers (the docks) ──────────────────────────────────────────────────
@@ -92,6 +96,9 @@ export class Sfu {
     pc.onTrack.subscribe((track) => {
       if (track.kind === 'audio') producer.audio = track;
       else if (track.kind === 'video') producer.video = track;
+      // Hand the track to the processing tap (if any) — STT/vision/recording see
+      // the same inbound RTP the SFU forwards to viewers. See tap.ts.
+      this.#tap?.onTrack(streamId, track.kind as MediaKind, track);
       // A new track arrived — admit waiters for THIS stream + (re)offer its viewers.
       this.#admitWaiting(streamId);
       for (const v of this.#viewersOf(streamId)) void this.#offerViewer(v);
@@ -234,6 +241,7 @@ export class Sfu {
   #closeProducer(streamId: string): void {
     const p = this.#producers.get(streamId);
     if (!p) return;
+    this.#tap?.onProducerGone(streamId); // let the processor flush/close per-stream state
     void p.pc.close();
     this.#producers.delete(streamId);
     // Tear down everyone watching this stream — their tracks are gone. The UI

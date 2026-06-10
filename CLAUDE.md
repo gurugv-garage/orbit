@@ -80,10 +80,14 @@ station's dock registry — groups peers by dock name and brokers the ESP32's
 Session/Turn/Step trace ingest — mirrors `agent-core/AGENT-MODEL.md`), config
 (defaults + push-on-change to firmware/app), bodylink (direct body console),
 mind (stub), bench (the moved dock-LLM viewer), ota (over-the-air self-update
-for the ESP32 body + Android app — [docs/OTA.md](docs/OTA.md)). See
-[orbit-station/README.md](orbit-station/README.md) and
-[orbit-station/TESTING.md](orbit-station/TESTING.md). The real-time **media**
-brain (WebRTC/STT/TTS) from plan.md §5 is a separate later sidecar — not this.
+for the ESP32 body + Android app — [docs/OTA.md](docs/OTA.md)), media (in-process
+WebRTC **SFU** — the dock streams live A/V here and the console's "Live Wall"
+fans it out to viewers; a **processing tap** lets STT/vision/recording observe
+each stream in-process or via a sidecar — [docs/MEDIA-PROCESSING.md](docs/MEDIA-PROCESSING.md)).
+See [orbit-station/README.md](orbit-station/README.md) and
+[orbit-station/TESTING.md](orbit-station/TESTING.md). The heavier real-time STT/
+TTS **media brain** from plan.md §5 can still live as a separate sidecar fed by
+the media tap; the SFU + Live Wall are the first piece of it.
 
 ## Conventions
 
