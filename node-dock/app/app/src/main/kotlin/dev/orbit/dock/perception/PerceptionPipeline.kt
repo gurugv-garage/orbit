@@ -337,13 +337,14 @@ class PerceptionPipeline(private val appContext: Context) {
             Timber.tag("VAD_LIVE").i("maxP=%.4f thresh=0.05".format(maxP))
             maxP = 0f
         }
-        // Barge-in detection (during TTS only). The dock's own voice survives AEC
-        // weakly — mostly ~0.005 but with brief spikes (~0.18 seen on-device). The
-        // user's real speech is a *sustained* high probability (~1.0). So barge-in
-        // requires a HIGH, SUSTAINED VAD prob, after a short grace window (the
-        // user's trailing question + AEC settling at TTS start would otherwise
-        // self-trigger). Tuned against the automated self-interrupt test.
-        if (dockSpeaking) {
+        // Voice barge-in is DISABLED: the phone's hardware AEC is too weak — it
+        // leaves the dock's own voice in the mic at VAD ~0.98, so a VAD-during-TTS
+        // trigger SELF-INTERRUPTS the dock on its own speech. The fix (route TTS
+        // through a WebRTC loopback so software AEC cancels it — proven in
+        // EchoLoopTest, see docs/barge-in-findings.md) isn't productionized yet.
+        // Until then, interruption is tap-only. Keep BARGE_IN_ENABLED=false.
+        @Suppress("ConstantConditionIf")
+        if (BARGE_IN_ENABLED && dockSpeaking) {
             val sinceStart = System.currentTimeMillis() - speakStartMs
             if (sinceStart >= BARGE_GRACE_MS && p > BARGE_VAD_THRESH) {
                 bargeAbove++
@@ -387,6 +388,9 @@ class PerceptionPipeline(private val appContext: Context) {
         // Barge-in (VAD during TTS) tuning. Initial values from on-device data:
         // dock's AEC'd residual peaks ~0.18 briefly; real speech is sustained ~1.0.
         // Validated/iterated via the automated self-interrupt test (AecSelfTest).
+        // Voice barge-in needs strong AEC the hardware path doesn't provide; it
+        // self-interrupts. Off until the WebRTC-loopback AEC is productionized.
+        const val BARGE_IN_ENABLED = false
         const val BARGE_GRACE_MS = 400L     // ignore barge-in this long after TTS start
         const val BARGE_VAD_THRESH = 0.6f   // prob must exceed this (well above residual)
         const val BARGE_VAD_FRAMES = 5      // sustained ~150 ms (vs brief residual spikes)
