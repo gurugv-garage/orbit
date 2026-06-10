@@ -62,14 +62,18 @@ class AecSelfTest(
             AecTestMode.enabled = true
 
             var peakRms = 0f
-            var spoke = false   // TTS actually started (onStart → Speaking(true))
+            var spoke = false        // TTS actually started (onStart → Speaking(true))
+            var selfInterrupted = false  // BargeIn fired while WE were silent = FAIL
             val heard = StringBuilder()
 
-            // Collect: did TTS actually start? what did STT transcribe?
+            // Collect: did TTS start? did barge-in self-trigger? what did STT hear?
+            // (We never speak during this test, so any BargeIn is the dock firing
+            // on its own AEC'd voice — a self-interrupt bug.)
             val collector = PerceptionBus.events
                 .onEach { ev ->
                     when (ev) {
                         is PerceptionEvent.Speaking -> if (ev.active) spoke = true
+                        is PerceptionEvent.BargeIn -> if (spoke) selfInterrupted = true
                         is PerceptionEvent.Transcript ->
                             if (ev.isFinal && ev.text.isNotBlank()) {
                                 if (heard.isNotEmpty()) heard.append(" ")
@@ -110,6 +114,8 @@ class AecSelfTest(
                     "TTS never started (still loading / muted?) — retry in a moment"
                 peakRms <= minPlaybackRms -> Outcome.INCONCLUSIVE to
                     "TTS started but no audio energy (volume up? muted?) — retry"
+                selfInterrupted -> Outcome.FAIL to
+                    "SELF-INTERRUPT — barge-in fired on the dock's own voice (no one else spoke)"
                 leaked.isBlank() -> Outcome.PASS to
                     "dock spoke but STT heard nothing → AEC cancelled the dock's own voice"
                 else -> Outcome.FAIL to
@@ -117,8 +123,8 @@ class AecSelfTest(
             }
             AecTestState.publish(Result(outcome, verdict, peakRms, leaked))
             Timber.tag(TAG).i(
-                "RESULT: %s — %s | spoke=%s peakRms=%.4f heard=\"%s\"".format(
-                    outcome, verdict, spoke, peakRms, leaked,
+                "RESULT: %s — %s | spoke=%s selfInterrupt=%s peakRms=%.4f heard=\"%s\"".format(
+                    outcome, verdict, spoke, selfInterrupted, peakRms, leaked,
                 ),
             )
         }

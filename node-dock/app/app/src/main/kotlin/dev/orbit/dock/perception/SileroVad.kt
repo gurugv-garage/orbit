@@ -25,26 +25,34 @@ class SileroVad private constructor(
 ) : Closeable {
 
     private var state = FloatArray(2 * 1 * 128)
+
+    // Silero V5 prepends the last CONTEXT_SIZE samples of the previous chunk to
+    // the current frame, feeding the model CONTEXT_SIZE + FRAME_SIZE samples per
+    // call. Omitting this context makes the LSTM state diverge and the output
+    // freeze near zero — i.e. the VAD never fires. Starts as silence (zeros).
+    private val context = FloatArray(CONTEXT_SIZE)
+
     private val sr: OnnxTensor = OnnxTensor.createTensor(
         env,
         LongBuffer.wrap(longArrayOf(SAMPLE_RATE.toLong())),
         longArrayOf(),
     )
 
-    private var callCount = 0
-
     /** Returns speech probability [0..1] for the given 512-sample frame. */
     fun probability(frame: FloatArray): Float {
         require(frame.size == FRAME_SIZE) {
             "Silero V5 requires exactly $FRAME_SIZE samples, got ${frame.size}"
         }
-        val x = OnnxTensor.createTensor(env, FloatBuffer.wrap(frame), longArrayOf(1, FRAME_SIZE.toLong()))
+        // Build the effective input: context (prev tail) + this frame = 576.
+        val input = FloatArray(CONTEXT_SIZE + FRAME_SIZE)
+        System.arraycopy(context, 0, input, 0, CONTEXT_SIZE)
+        System.arraycopy(frame, 0, input, CONTEXT_SIZE, FRAME_SIZE)
+        // Save the last CONTEXT_SIZE samples of this window for the next call.
+        System.arraycopy(input, input.size - CONTEXT_SIZE, context, 0, CONTEXT_SIZE)
+
+        val x = OnnxTensor.createTensor(env, FloatBuffer.wrap(input), longArrayOf(1, input.size.toLong()))
         val s = OnnxTensor.createTensor(env, FloatBuffer.wrap(state), longArrayOf(2, 1, 128))
         val output = session.run(mapOf("input" to x, "state" to s, "sr" to sr))
-        callCount++
-        if (callCount <= 3) {
-            Timber.tag("VAD_LIVE").i("CALL #$callCount frameSize=${frame.size} frameMax=${frame.max()}")
-        }
         try {
             @Suppress("UNCHECKED_CAST")
             val prob = (output[0].value as Array<FloatArray>)[0][0]
@@ -64,6 +72,7 @@ class SileroVad private constructor(
 
     fun reset() {
         state = FloatArray(state.size)
+        context.fill(0f)
     }
 
     override fun close() {
@@ -74,6 +83,8 @@ class SileroVad private constructor(
     companion object {
         const val SAMPLE_RATE = 16_000
         const val FRAME_SIZE = 512
+        /** Silero V5 prepends this many samples of prior context per call (16 kHz). */
+        const val CONTEXT_SIZE = 64
 
         const val ASSET_PATH = "models/silero_vad.onnx"
 

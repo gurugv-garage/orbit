@@ -48,6 +48,12 @@ class PerceptionPipeline(private val appContext: Context) {
     // True while the dock is speaking (TTS). When the (echo-cancelled) VAD goes
     // active during this window, the user is talking over the dock → barge-in.
     @Volatile private var dockSpeaking = false
+    // When TTS started (ms). Barge-in ignores a grace window after this so the
+    // user's trailing question + AEC settling don't self-trigger.
+    @Volatile private var speakStartMs = 0L
+    // Consecutive high-VAD frames during TTS — barge-in needs this sustained, so
+    // brief AEC residual spikes of the dock's own voice don't trip it.
+    private var bargeAbove = 0
 
     // When true, the echo gate is disabled so STT stays armed through TTS — used
     // only by the AEC self-test to measure whether the dock transcribes itself.
@@ -225,6 +231,10 @@ class PerceptionPipeline(private val appContext: Context) {
                     }
                     is PerceptionEvent.Speaking -> {
                         dockSpeaking = event.active
+                        if (event.active) {
+                            speakStartMs = System.currentTimeMillis()
+                            bargeAbove = 0
+                        }
                         // One-shot model: the listening session already ended
                         // when the transcript came in, so there's nothing to
                         // gate here. If the dock somehow starts speaking while
@@ -327,23 +337,34 @@ class PerceptionPipeline(private val appContext: Context) {
             Timber.tag("VAD_LIVE").i("maxP=%.4f thresh=0.05".format(maxP))
             maxP = 0f
         }
+        // Barge-in detection (during TTS only). The dock's own voice survives AEC
+        // weakly — mostly ~0.005 but with brief spikes (~0.18 seen on-device). The
+        // user's real speech is a *sustained* high probability (~1.0). So barge-in
+        // requires a HIGH, SUSTAINED VAD prob, after a short grace window (the
+        // user's trailing question + AEC settling at TTS start would otherwise
+        // self-trigger). Tuned against the automated self-interrupt test.
+        if (dockSpeaking) {
+            val sinceStart = System.currentTimeMillis() - speakStartMs
+            if (sinceStart >= BARGE_GRACE_MS && p > BARGE_VAD_THRESH) {
+                bargeAbove++
+                if (bargeAbove >= BARGE_VAD_FRAMES) {
+                    dockSpeaking = false
+                    bargeAbove = 0
+                    Timber.i("barge-in: sustained voice during TTS (p=%.3f)".format(p))
+                    PerceptionBus.emit(PerceptionEvent.BargeIn)
+                }
+            } else if (p <= BARGE_VAD_THRESH) {
+                bargeAbove = 0
+            }
+        }
+
+        // General VAD-active state (drives the user/silent indicator).
         if (p > 0.05f) {
             aboveCount++
             belowCount = 0
             if (!vadActive && aboveCount >= 3) {
                 vadActive = true
                 PerceptionBus.emit(PerceptionEvent.VoiceActivity(true, p))
-                // Voice talked over the dock → barge-in. VAD (like STT) keys on
-                // speech-structure, which AEC removes from the dock's own voice —
-                // so a VAD hit during TTS is the user, not the echo. (RMS can't do
-                // this: AEC leaves variable residual energy that trips a loudness
-                // threshold.) NOTE: dormant until Silero VAD is fixed — it
-                // currently outputs a frozen ~0, so this never fires yet.
-                if (dockSpeaking) {
-                    dockSpeaking = false
-                    Timber.i("barge-in: voice during TTS (p=%.3f)".format(p))
-                    PerceptionBus.emit(PerceptionEvent.BargeIn)
-                }
             }
         } else if (p < 0.02f) {
             belowCount++
@@ -360,5 +381,14 @@ class PerceptionPipeline(private val appContext: Context) {
         if (idx >= 0) {
             PerceptionBus.emit(PerceptionEvent.WakeWord(wake.label))
         }
+    }
+
+    private companion object {
+        // Barge-in (VAD during TTS) tuning. Initial values from on-device data:
+        // dock's AEC'd residual peaks ~0.18 briefly; real speech is sustained ~1.0.
+        // Validated/iterated via the automated self-interrupt test (AecSelfTest).
+        const val BARGE_GRACE_MS = 400L     // ignore barge-in this long after TTS start
+        const val BARGE_VAD_THRESH = 0.6f   // prob must exceed this (well above residual)
+        const val BARGE_VAD_FRAMES = 5      // sustained ~150 ms (vs brief residual spikes)
     }
 }
