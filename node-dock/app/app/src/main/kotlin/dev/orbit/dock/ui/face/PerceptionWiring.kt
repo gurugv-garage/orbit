@@ -59,6 +59,12 @@ class PerceptionWiring(
     private val _sttArmed = MutableStateFlow(false)
     val sttArmed: StateFlow<Boolean> = _sttArmed.asStateFlow()
 
+    // Auto-listen-on-face: arm a listening session once when a NEW face appears
+    // (absent → present edge), unless the dock is speaking or already listening.
+    @Volatile private var faceCurrentlyPresent = false   // for the arrival edge
+    @Volatile private var listeningActive = false        // a session is open
+    @Volatile private var dockSpeaking = false           // TTS playing
+
     @Volatile private var lastFaceMs = 0L
     @Volatile private var lastVoiceMs = 0L
     @Volatile private var lastGazeVoiceWakeMs = 0L
@@ -101,12 +107,14 @@ class PerceptionWiring(
                         // Tap-to-stop. Pipeline tears down STT; face → idle here
                         // too so UI + audio agree immediately.
                         _sttArmed.value = false
+                        listeningActive = false
                         controller.silence()
                     }
                     is PerceptionEvent.Speaking -> {
-                        // Face speaking-state is driven directly by the TTS
-                        // callback (DockTts). Nothing to do here; branch keeps
-                        // the when exhaustive.
+                        // Track TTS state so auto-listen-on-face doesn't fire
+                        // while the dock is talking. Face speaking-state itself is
+                        // driven directly by the TTS callback (DockTts).
+                        dockSpeaking = event.active
                     }
                     is PerceptionEvent.BargeIn -> {
                         // Voice barge-in is handled in DockScreen (stops TTS +
@@ -118,9 +126,10 @@ class PerceptionWiring(
                         // the Speaker). Nothing to do here; keeps when exhaustive.
                     }
                     is PerceptionEvent.WakeWord -> {
-                        // Now only fired by tap-to-start. Begin a listening
-                        // session.
-                        Timber.i("tap-to-listen: ${event.label}")
+                        // Fired by tap-to-start OR auto-listen-on-face. Begin a
+                        // listening session.
+                        Timber.i("listen: ${event.label}")
+                        listeningActive = true
                         controller.listen()
                         _transcript.value = TranscriptState()
                         onWake()
@@ -142,6 +151,17 @@ class PerceptionWiring(
                     is PerceptionEvent.FaceSeen -> {
                         lastFaceMs = System.currentTimeMillis()
                         _facePresent.value = true
+                        // Auto-listen-on-face: on the absent→present edge (a NEW
+                        // face arrival), start a listening session once — unless
+                        // the dock is speaking or already listening. Re-arms only
+                        // after the face leaves (FaceLost) and returns.
+                        if (!faceCurrentlyPresent) {
+                            faceCurrentlyPresent = true
+                            if (!dockSpeaking && !listeningActive) {
+                                Timber.i("auto-listen: new face appeared → start listening")
+                                PerceptionBus.emit(PerceptionEvent.WakeWord(label = "(face)"))
+                            }
+                        }
                         perception?.onFaceSeen(event.x, event.y)
                         // Map face position to eye gaze. Damp the magnitude so
                         // the eyes track but don't go full-corner.
@@ -152,6 +172,7 @@ class PerceptionWiring(
                     }
                     is PerceptionEvent.FaceLost -> {
                         _facePresent.value = false
+                        faceCurrentlyPresent = false  // re-arm for the next arrival
                         perception?.onFaceLost()
                         controller.setGaze(GazeOffset())
                     }
@@ -185,6 +206,7 @@ class PerceptionWiring(
                         // tap-stop / transcript handed off).
                         if (event.message == "session_ended") {
                             _sttArmed.value = false
+                            listeningActive = false
                             val s = controller.state.value
                             if (s == FaceState.Listening || s == FaceState.Engaged) {
                                 Timber.i("listening session ended → face back to Idle")
