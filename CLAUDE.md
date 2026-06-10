@@ -12,7 +12,7 @@ root; all paths in these docs are relative to it.
 | `docs/` | plan.md (architecture + decision log), TODO.md (progress) — **read these first** | living |
 | `node-dock/` | Stationary desk companion: an Android phone (the brain — LLM + camera + voice) optionally driving an ESP32 servo body over a Wi-Fi WebSocket (**BodyLink**) | **active** |
 | `node-rover/` | Mobile floor robot, linorobot2-based, ROS2. Sim works through nav; hardware/manipulation next | sim done |
-| `orbit-station/` | Central **control & observability plane**: Node/TS, one WebSocket for all firmware/apps, browser UI. Modules: observability (agent-core traces), config push, bodylink console, mind (stub), bench viewer, ota (self-update for body + app — [docs/OTA.md](docs/OTA.md)). (Renamed from `plat`; the WebRTC/STT/TTS **media brain** from plan.md §5 is a separate later sidecar, not this.) | **active** |
+| `orbit-station/` | Central **control & observability plane**: Node/TS, one WebSocket for all firmware/apps, browser UI. Modules: docks (dock registry — brokers body addr to the matching app), observability (agent-core traces), config push, bodylink console, mind (stub), bench viewer, ota (self-update for body + app — [docs/OTA.md](docs/OTA.md)). (Renamed from `plat`; the WebRTC/STT/TTS **media brain** from plan.md §5 is a separate later sidecar, not this.) | **active** |
 
 ## node-dock (the part under active development)
 
@@ -20,6 +20,11 @@ A phone runs a sideloaded Android/Kotlin/Compose app that is the dock's brain;
 it owns intent and talks to a separate ESP32 (servos) that executes motion. The
 app is an agentic loop (LLM with tool-calling) wired to a face UI, camera
 perception, mic/STT, and TTS.
+
+Subfolders: **`app/`** (the Android brain — Gradle root, see below),
+**`body-firmware/`** (the ESP32 servo controller, `dock_body_v0`; see Firmware
+below), **`bodylink/`** (the phone↔ESP32 WebSocket protocol — `DESIGN.md` +
+a `sim/` body simulator), **`hardware/`** (physical build — `3dprinting/`).
 
 ### Build & run (node-dock/app — Gradle root is `node-dock/app/`)
 
@@ -69,11 +74,13 @@ npm run build && npm run start   # single process, served from :8099
 npm run smoke    # manual end-to-end: fake dock + body peers (server must be up)
 ```
 
-Modules each own a bus topic + REST mount (`/api/<module>`): observability
-(agent-core Session/Turn/Step trace ingest — mirrors `agent-core/AGENT-MODEL.md`),
-config (defaults + push-on-change to firmware/app), bodylink (direct body
-console), mind (stub), bench (the moved dock-LLM viewer), ota (over-the-air
-self-update for the ESP32 body + Android app — [docs/OTA.md](docs/OTA.md)). See
+Modules each own a bus topic + REST mount (`/api/<module>`): docks (the
+station's dock registry — groups peers by dock name and brokers the ESP32's
+`bodyAddr` to the matching app; `GET /api/docks`), observability (agent-core
+Session/Turn/Step trace ingest — mirrors `agent-core/AGENT-MODEL.md`), config
+(defaults + push-on-change to firmware/app), bodylink (direct body console),
+mind (stub), bench (the moved dock-LLM viewer), ota (over-the-air self-update
+for the ESP32 body + Android app — [docs/OTA.md](docs/OTA.md)). See
 [orbit-station/README.md](orbit-station/README.md) and
 [orbit-station/TESTING.md](orbit-station/TESTING.md). The real-time **media**
 brain (WebRTC/STT/TTS) from plan.md §5 is a separate later sidecar — not this.
