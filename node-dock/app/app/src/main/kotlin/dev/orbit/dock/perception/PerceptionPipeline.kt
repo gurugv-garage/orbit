@@ -333,10 +333,12 @@ class PerceptionPipeline(private val appContext: Context) {
             if (!vadActive && aboveCount >= 3) {
                 vadActive = true
                 PerceptionBus.emit(PerceptionEvent.VoiceActivity(true, p))
-                // Voice talked over the dock → barge-in. Safe to act on because
-                // the mic is echo-cancelled (WebRTC AEC), so this is the user,
-                // not the dock hearing its own TTS. The UI stops TTS + the turn
-                // and re-arms listening.
+                // Voice talked over the dock → barge-in. VAD (like STT) keys on
+                // speech-structure, which AEC removes from the dock's own voice —
+                // so a VAD hit during TTS is the user, not the echo. (RMS can't do
+                // this: AEC leaves variable residual energy that trips a loudness
+                // threshold.) NOTE: dormant until Silero VAD is fixed — it
+                // currently outputs a frozen ~0, so this never fires yet.
                 if (dockSpeaking) {
                     dockSpeaking = false
                     Timber.i("barge-in: voice during TTS (p=%.3f)".format(p))

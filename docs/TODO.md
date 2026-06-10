@@ -108,8 +108,21 @@ Legend: `[x]` done · `[~]` in progress · `[ ]` not started · `[?]` open quest
 - [ ] LiveKit (or Pion) SFU running on laptop
 - [ ] Server-side participant SDK pulls phone tracks into Python pipeline
 - [ ] First end-to-end test: speak into phone → see audio frames on agent
-- [ ] Hardware AEC validated: TTS playback does not get re-transcribed
-- [ ] Half-duplex barge-in implemented (mute mic during first ~200ms of TTS)
+- [x] Hardware AEC validated: TTS playback does not get re-transcribed
+      (WebRTC ADM, VOICE_COMMUNICATION + HW AEC; verified on-device via the
+      STT-based AEC self-test in the dev DEBUG tab — dock speaks a full passage
+      with STT armed through it, STT transcribes nothing). See `WebRtcAudio.kt`.
+- [~] Voice barge-in during TTS — **wired but dormant**, blocked on the VAD fix
+      below. The trigger (VAD hit during TTS → stop TTS + re-listen) is in
+      `PerceptionPipeline.runVad`; the AEC keeps the mic open during TTS so it
+      can work. An RMS-loudness stopgap was tried and reverted: AEC leaves
+      variable residual energy (mic RMS ~0.02–0.19 during TTS), so a loudness
+      threshold self-interrupts unpredictably. VAD (like STT) keys on
+      speech-structure, which AEC removes — the correct, robust signal.
+- [ ] **Fix Silero VAD** (unblocks barge-in) — broken since initial import: LSTM
+      state diverges (magnitude ~30) and probability is frozen ~0.0005 for any
+      input (incl. a synthetic full-scale signal). Likely the state round-trip
+      layout in `SileroVad.kt` or the V5 context-window input requirement.
 
 ### 2.2 Multi-node (2+ phones)
 - [ ] Deploy second phone with same app, different room ID
@@ -278,10 +291,10 @@ or **shared**.
 - [ ] **(D) `remember(text)` + `recall(query)` tools** — M. Builds on (A);
   explicit user-managed notes with naive text retrieval. Vector search
   later if scale demands it.
-- [ ] **(F) Voice barge-in during TTS** — M. RMS threshold on mic during
-  TTS playback → stop TTS + start STT. Needs concurrent audio capture
-  (mic open while speaker is active) → check AEC, may need WebRTC APM
-  for echo cancel. UX win: conversational, not walkie-talkie.
+- [~] **(F) Voice barge-in during TTS** — wired, blocked on the VAD fix. WebRTC
+  AEC keeps the mic open during TTS (the hard part, done). The RMS-threshold
+  approach envisioned here was tried and reverted — AEC residual energy makes
+  loudness self-interrupt; VAD (speech-structure) is the right detector. See §2.1.
 - [ ] **(G) Smaller APK / signed release build** — S. ABI splits, drop
   unused WebRTC dep, R8 minification, signing config. 245 MB → ~80 MB.
   Required to share the app with anyone outside this laptop.
