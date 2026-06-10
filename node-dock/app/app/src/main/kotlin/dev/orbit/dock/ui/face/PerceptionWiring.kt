@@ -108,6 +108,15 @@ class PerceptionWiring(
                         // callback (DockTts). Nothing to do here; branch keeps
                         // the when exhaustive.
                     }
+                    is PerceptionEvent.BargeIn -> {
+                        // Voice barge-in is handled in DockScreen (stops TTS +
+                        // the turn, then re-arms). Nothing to do here; branch
+                        // keeps the when exhaustive.
+                    }
+                    is PerceptionEvent.RunAecTest -> {
+                        // Debug AEC self-test is handled in DockScreen (it owns
+                        // the Speaker). Nothing to do here; keeps when exhaustive.
+                    }
                     is PerceptionEvent.WakeWord -> {
                         // Now only fired by tap-to-start. Begin a listening
                         // session.

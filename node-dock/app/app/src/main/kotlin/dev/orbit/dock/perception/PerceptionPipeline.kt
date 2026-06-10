@@ -45,6 +45,14 @@ class PerceptionPipeline(private val appContext: Context) {
 
     @Volatile private var sttBusy = false
 
+    // True while the dock is speaking (TTS). When the (echo-cancelled) VAD goes
+    // active during this window, the user is talking over the dock → barge-in.
+    @Volatile private var dockSpeaking = false
+
+    // When true, the echo gate is disabled so STT stays armed through TTS — used
+    // only by the AEC self-test to measure whether the dock transcribes itself.
+    private val aecTestMode: Boolean get() = AecTestMode.enabled
+
     // ── Continuous listening session (TAP-ONLY) ───────────────────────────
     // Tap starts a session; it keeps re-arming SpeechRecognizer (one-shot) so
     // it stays listening forever. The session ends ONLY when:
@@ -90,7 +98,7 @@ class PerceptionPipeline(private val appContext: Context) {
         // Models constructed — the dock can now hear. Clears the UI "waking up".
         PerceptionReady.set(true)
 
-        val mic = MicCapture()
+        val mic = MicCapture(appContext)
         // SpeechRecognizer needs exclusive access to the mic. Our continuous
         // AudioRecord (here) blocks it on some devices. Pause our capture
         // while STT is active, resume on Transcript/Error/Status(final).
@@ -160,11 +168,14 @@ class PerceptionPipeline(private val appContext: Context) {
                         autoRelisten.onSessionStarted()
 
                         // Release our mic before starting STT. cancelAndJoin()
-                        // waits for AudioRecord to actually release so SR never
-                        // races it for the mic.
+                        // waits for the WebRTC ADM to fully release (detaching the
+                        // hardware AEC effect) so SR gets a clean input path — not
+                        // the silenced mic that caused "no match". The delay lets
+                        // the input HAL settle after AEC teardown (heavier than a
+                        // plain AudioRecord release, so a bit longer).
                         if (micJob.isActive) {
                             micJob.cancelAndJoin()
-                            kotlinx.coroutines.delay(120)
+                            kotlinx.coroutines.delay(250)
                         }
                         startStt()
                         armWatchdog()
@@ -213,12 +224,16 @@ class PerceptionPipeline(private val appContext: Context) {
                         unstick("tap-stop")
                     }
                     is PerceptionEvent.Speaking -> {
+                        dockSpeaking = event.active
                         // One-shot model: the listening session already ended
                         // when the transcript came in, so there's nothing to
                         // gate here. If the dock somehow starts speaking while
                         // SR is still armed (e.g. a system reply), stop SR so
                         // the mic doesn't transcribe the dock's own voice.
-                        if (event.active && listeningActive) {
+                        // EXCEPT in AEC test mode: we deliberately keep STT armed
+                        // through TTS to measure whether AEC stops the dock from
+                        // hearing itself (the echo gate would otherwise mask it).
+                        if (event.active && listeningActive && !aecTestMode) {
                             listeningActive = false
                             try { stt?.stop() } catch (_: Throwable) {}
                         }
@@ -318,6 +333,15 @@ class PerceptionPipeline(private val appContext: Context) {
             if (!vadActive && aboveCount >= 3) {
                 vadActive = true
                 PerceptionBus.emit(PerceptionEvent.VoiceActivity(true, p))
+                // Voice talked over the dock → barge-in. Safe to act on because
+                // the mic is echo-cancelled (WebRTC AEC), so this is the user,
+                // not the dock hearing its own TTS. The UI stops TTS + the turn
+                // and re-arms listening.
+                if (dockSpeaking) {
+                    dockSpeaking = false
+                    Timber.i("barge-in: voice during TTS (p=%.3f)".format(p))
+                    PerceptionBus.emit(PerceptionEvent.BargeIn)
+                }
             }
         } else if (p < 0.02f) {
             belowCount++

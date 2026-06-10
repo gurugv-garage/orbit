@@ -97,6 +97,7 @@ fun DevPanel(controller: FaceController, modifier: Modifier = Modifier) {
                         DevTab.STATE -> StateTab(controller)
                         DevTab.LLM -> LlmTab()
                         DevTab.BODY -> BodyTab()
+                        DevTab.DEBUG -> DebugTab()
                     }
                 }
             }
@@ -109,7 +110,8 @@ private enum class DevTab(val label: String) {
     EMOTION("emotion"),
     STATE("state"),
     LLM("llm"),
-    BODY("body");
+    BODY("body"),
+    DEBUG("debug");
 
     fun next(): DevTab = entries[(ordinal + 1) % entries.size]
 }
@@ -222,6 +224,39 @@ private fun EmotionTab(controller: FaceController) {
             )
         }
         Chip(label = "wink!", onClick = { controller.wink() }, accent = true)
+    }
+}
+
+// ── DEBUG ─────────────────────────────────────────────────────────────
+
+@Composable
+private fun DebugTab() {
+    val result by dev.orbit.dock.perception.AecTestState.result.collectAsState()
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Chip("run aec test", accent = true) {
+            dev.orbit.dock.perception.PerceptionBus.emit(
+                dev.orbit.dock.perception.PerceptionEvent.RunAecTest,
+            )
+        }
+        val r = result
+        val (text, color) = when (r?.outcome) {
+            null -> "speaker ON, out loud → dock speaks, STT listens for echo" to
+                MaterialTheme.colorScheme.onBackground.copy(alpha = 0.6f)
+            dev.orbit.dock.perception.AecSelfTest.Outcome.RUNNING ->
+                "speaking — listening for echo…" to Color(0xFFFFBE5C)
+            dev.orbit.dock.perception.AecSelfTest.Outcome.PASS ->
+                "PASS — STT heard nothing → AEC works" to Color(0xFF7CE38B)
+            dev.orbit.dock.perception.AecSelfTest.Outcome.FAIL ->
+                "FAIL — STT heard the dock: \"${r.heard}\"" to Color(0xFFFF7C7C)
+            dev.orbit.dock.perception.AecSelfTest.Outcome.INCONCLUSIVE ->
+                "no audio — turn volume up + retry (rms=%.2f)".format(r.peakRms) to
+                    Color(0xFFFFBE5C)
+        }
+        Text(text, fontSize = 11.sp, color = color)
     }
 }
 

@@ -1,6 +1,7 @@
 package dev.orbit.dock.tts
 
 import android.content.Context
+import android.media.AudioAttributes
 import android.os.Bundle
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
@@ -45,6 +46,18 @@ class DockTts(
             // Slight character: speak slightly faster than default to feel responsive
             tts?.setSpeechRate(1.0f)
             tts?.setPitch(1.05f)
+            // Keep TTS on the normal media/assistant output so it's clearly
+            // audible on the speaker. The platform AEC on the VOICE_COMMUNICATION
+            // *capture* path cancels against the device's speaker output mix, so
+            // it still subtracts our TTS from the mic without us having to hijack
+            // playback routing (USAGE_VOICE_COMMUNICATION can route to earpiece /
+            // go silent outside a call). Capture-side AEC, audible playback.
+            tts?.setAudioAttributes(
+                AudioAttributes.Builder()
+                    .setUsage(AudioAttributes.USAGE_ASSISTANT)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                    .build(),
+            )
             ready.set(true)
             flushPending()
         } else {

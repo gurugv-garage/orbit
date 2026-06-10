@@ -1,5 +1,6 @@
 package dev.orbit.dock.perception
 
+import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.google.common.truth.Truth.assertThat
 import kotlinx.coroutines.flow.first
@@ -39,7 +40,7 @@ class MicCaptureDiagnosticTest {
 
     @Test
     fun captureFifteenFramesAndReportAmplitude() = runTest {
-        val mic = MicCapture()
+        val mic = MicCapture(ApplicationProvider.getApplicationContext())
         val frames: List<ShortArray> = try {
             mic.frames().take(15).toList()
         } catch (t: Throwable) {

@@ -37,6 +37,18 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    // Debug-only: fire the AEC self-test from adb without UI taps:
+    //   adb shell am broadcast -a dev.orbit.dock.RUN_AEC_TEST
+    // Verdict lands in logcat under the AEC_TEST tag.
+    private val aecTestReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            Timber.i("MainActivity received RUN_AEC_TEST")
+            dev.orbit.dock.perception.PerceptionBus.emit(
+                dev.orbit.dock.perception.PerceptionEvent.RunAecTest,
+            )
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         ContextCompat.registerReceiver(
@@ -45,6 +57,14 @@ class MainActivity : ComponentActivity() {
             IntentFilter(PerceptionService.BROADCAST_FORCE_FINISH),
             ContextCompat.RECEIVER_NOT_EXPORTED,
         )
+        if (BuildConfig.DEBUG) {
+            ContextCompat.registerReceiver(
+                this,
+                aecTestReceiver,
+                IntentFilter("dev.orbit.dock.RUN_AEC_TEST"),
+                ContextCompat.RECEIVER_EXPORTED,
+            )
+        }
 
         // Stay awake — the dock never sleeps.
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
@@ -75,6 +95,9 @@ class MainActivity : ComponentActivity() {
 
     override fun onDestroy() {
         try { unregisterReceiver(forceFinishReceiver) } catch (_: Throwable) {}
+        if (BuildConfig.DEBUG) {
+            try { unregisterReceiver(aecTestReceiver) } catch (_: Throwable) {}
+        }
         super.onDestroy()
     }
 }

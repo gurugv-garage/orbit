@@ -274,6 +274,15 @@ fun DockScreen() {
     val micGranted = perms.mic
     val camGranted = perms.camera
 
+    // Ground-truth mic state from Android (actual OS recording sessions), not our
+    // own model — so the badge is honest about whether the mic is really live.
+    val micLiveState = remember { dev.orbit.dock.perception.MicLiveState(ctx) }
+    val micLive by micLiveState.live.collectAsState()
+    DisposableEffect(Unit) {
+        micLiveState.start()
+        onDispose { micLiveState.stop() }
+    }
+
     LaunchedEffect(micGranted, micMuted) {
         if (micGranted && !micMuted) PerceptionService.start(ctx)
         else PerceptionService.stop(ctx)
@@ -287,6 +296,46 @@ fun DockScreen() {
             faceTracker.start(lifecycleOwner)
         }
         onDispose { faceTracker.stop() }
+    }
+
+    // Barge-in: cut the dock's speech + current turn and immediately start a
+    // fresh listening session so the user can talk over it. Shared by the
+    // tap-during-speech gesture and the voice-triggered BargeIn event (VAD
+    // firing during TTS on echo-cancelled audio).
+    //
+    // Emit WakeWord FIRST: it opens a fresh listening session (via
+    // AutoRelisten.onSessionStarted, clearing any pending voice-turn re-arm) so
+    // the trailing Speaking(false) from tts.stop() can't fire a second, racing
+    // re-arm. The pipeline's WakeWord handler then stops TTS and waits for the
+    // audio route to settle before arming STT (see BARGE_IN_SETTLE_MS) — arming
+    // too early, while TTS is still tearing down, gives SR a dead mic.
+    val bargeIn = remember {
+        {
+            PerceptionBus.emit(PerceptionEvent.WakeWord(label = "(barge-in)"))
+            tts.stop()
+            agentRef.value?.stop()
+            PerceptionBus.emit(PerceptionEvent.Speaking(active = false))
+        }
+    }
+
+    // Voice barge-in: the pipeline emits BargeIn when the user speaks during TTS.
+    LaunchedEffect(Unit) {
+        PerceptionBus.events.collect { event ->
+            if (event is PerceptionEvent.BargeIn) bargeIn()
+        }
+    }
+
+    // Debug AEC self-test: speak a known phrase out loud and measure whether the
+    // mic hears it (echo leaked) or not (AEC cancelled it). Verdict → logcat
+    // under the AEC_TEST tag. Triggered by the debug button below.
+    val aecTestScope = androidx.compose.runtime.rememberCoroutineScope()
+    val aecTest = remember {
+        dev.orbit.dock.perception.AecSelfTest(speaker = tts, scope = aecTestScope)
+    }
+    LaunchedEffect(Unit) {
+        PerceptionBus.events.collect { event ->
+            if (event is PerceptionEvent.RunAecTest) aecTest.run()
+        }
     }
 
     // The tap-gesture lambda below is set up once (pointerInput keyed on
@@ -305,17 +354,9 @@ fun DockScreen() {
                     onTap = {
                         when (currentState.value) {
                             FaceState.Speaking -> {
-                                // BARGE-IN: tap while the dock is talking → cut
-                                // the speech and immediately start listening so
-                                // the user can interrupt and talk over it.
-                                // Emit WakeWord FIRST: it opens a fresh listening
-                                // session (clearing any pending auto-relisten) so
-                                // the trailing Speaking(false) from tts.stop()
-                                // can't fire a second, racing re-arm.
-                                PerceptionBus.emit(PerceptionEvent.WakeWord(label = "(barge-in)"))
-                                tts.stop()
-                                agentRef.value?.stop()
-                                PerceptionBus.emit(PerceptionEvent.Speaking(active = false))
+                                // Tap while the dock is talking → barge-in (same
+                                // path as the voice-triggered BargeIn event).
+                                bargeIn()
                             }
                             FaceState.Idle -> {
                                 // Start listening.
@@ -433,7 +474,10 @@ fun DockScreen() {
             StatusBar(
                 audioLevel = audioLevel,
                 speaker = speaker,
-                micOn = micGranted && !micMuted,
+                // Real OS capture state, not inferred: shows OFF the instant the
+                // framework stops/silences our mic, ON whenever it's truly live
+                // (incl. during TTS, since AEC keeps it capturing for barge-in).
+                micOn = micLive,
                 camOn = camGranted && !camMuted,
                 bodyConnected = bodyConnected,
                 stationConnected = stationConnected,

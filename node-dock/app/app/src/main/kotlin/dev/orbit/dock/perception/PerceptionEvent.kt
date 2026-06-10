@@ -20,6 +20,17 @@ sealed class PerceptionEvent {
     /** Request to end an in-progress listening session early (tap-to-stop). */
     data object StopListening : PerceptionEvent()
 
+    /** Debug-only: run the acoustic echo-cancellation self-test (AecSelfTest). */
+    data object RunAecTest : PerceptionEvent()
+
+    /**
+     * The user spoke while the dock was talking → barge-in. Detected by the
+     * pipeline (VAD active during TTS, on echo-cancelled audio so it isn't the
+     * dock hearing itself). The UI handles it exactly like a tap-during-speech:
+     * stop TTS + the agent turn, then start a fresh listening session.
+     */
+    data object BargeIn : PerceptionEvent()
+
     /** The dock started/stopped speaking (TTS). Drives the STT echo gate:
      *  STT pauses while speaking so the mic doesn't hear the dock itself. */
     data class Speaking(val active: Boolean) : PerceptionEvent()
