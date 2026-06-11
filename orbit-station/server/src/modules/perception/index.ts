@@ -17,14 +17,22 @@ import type { Bus } from '../../core/bus.js';
 import { json } from '../../core/http.js';
 import type { IncomingMessage } from 'node:http';
 import type { RouteContext, StationModule } from '../../core/module.js';
+import { fileURLToPath } from 'node:url';
 import type { ProcessingHub } from './hub.js';
 import { PerceptionState } from './state.js';
 import { presenceProcessor } from './processors/presence.js';
+import { faceRecognitionProcessor } from './processors/face-recognition.js';
+import { Gallery } from './face/gallery.js';
 import { makeResult, type PerceptionResult } from './result.js';
+
+// Gallery persists next to the server's data (alongside the db). One file.
+const GALLERY_PATH = fileURLToPath(new URL('../../../data/face-gallery.json', import.meta.url));
 
 export function perceptionModule(getHub: () => ProcessingHub): StationModule {
   let state: PerceptionState;
   let bus: Bus;
+  const gallery = new Gallery(GALLERY_PATH);
+  const face = faceRecognitionProcessor(gallery);
 
   /** Publish a result directed to its dock + an undirected copy (state/console). */
   function fanResult(r: PerceptionResult): void {
@@ -41,8 +49,9 @@ export function perceptionModule(getHub: () => ProcessingHub): StationModule {
       bus = b;
       state = new PerceptionState(bus);
       const hub = getHub();
-      // Always-on processors. More land here as phases progress (face, audio, …).
+      // Always-on processors. More land here as phases progress (audio, …).
       hub.register(presenceProcessor());
+      hub.register(face);
     },
 
     async route(ctx: RouteContext) {
@@ -50,6 +59,28 @@ export function perceptionModule(getHub: () => ProcessingHub): StationModule {
 
       if (req.method === 'GET' && subPath === '/') {
         json(res, 200, state.all());
+        return true;
+      }
+      // Gallery: list enrolled people / remove one.
+      if (req.method === 'GET' && subPath === '/gallery') {
+        json(res, 200, { names: gallery.names() });
+        return true;
+      }
+      // Enroll the face currently on screen for a dock: { streamId, name }.
+      if (req.method === 'POST' && subPath === '/enroll') {
+        const body = JSON.parse(await readBody(req)) as { streamId?: string; name?: string };
+        if (!body.streamId || !body.name) {
+          json(res, 400, { error: 'enroll needs streamId + name' });
+          return true;
+        }
+        const result = await face.enrollCurrent(body.streamId, body.name.trim());
+        json(res, result.ok ? 200 : 409, result);
+        return true;
+      }
+      if (req.method === 'POST' && subPath === '/gallery/remove') {
+        const body = JSON.parse(await readBody(req)) as { name?: string };
+        const removed = body.name ? gallery.remove(body.name) : false;
+        json(res, 200, { removed });
         return true;
       }
       if (req.method === 'GET' && subPath.length > 1) {

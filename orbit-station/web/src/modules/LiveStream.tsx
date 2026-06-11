@@ -189,7 +189,35 @@ function StreamTile({ streamId, label, audioOn, onToggleAudio, onClose }: {
       >
         {audioOn ? '🔊 Audio on' : '🔇 Enable audio'}
       </button>
+      <EnrollButton streamId={streamId} />
       <button onClick={onClose} style={{ position: 'absolute', top: 4, right: 4 }} aria-label="close">✕</button>
     </div>
+  );
+}
+
+/** "Enroll this person" — names the face currently on screen into the gallery. */
+function EnrollButton({ streamId }: { streamId: string }) {
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<string | null>(null);
+  const enroll = async () => {
+    const name = window.prompt('Name this person (enrolls the face on screen):')?.trim();
+    if (!name) return;
+    setBusy(true); setMsg(null);
+    try {
+      const r = await api.post<{ ok: boolean; reason?: string }>('/perception/enroll', { streamId, name });
+      setMsg(r.ok ? `✓ enrolled ${name}` : `✗ ${r.reason ?? 'failed'}`);
+    } catch { setMsg('✗ error'); }
+    setBusy(false);
+    setTimeout(() => setMsg(null), 4000);
+  };
+  return (
+    <button
+      onClick={enroll}
+      disabled={busy}
+      title="Enroll the face currently on screen"
+      style={{ position: 'absolute', bottom: 6, right: 6, padding: '4px 8px' }}
+    >
+      {busy ? '…' : msg ?? '🪪 Enroll'}
+    </button>
   );
 }
