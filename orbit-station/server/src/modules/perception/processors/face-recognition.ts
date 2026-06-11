@@ -27,6 +27,8 @@ const ADOPT_FRAMES = 2;
 /** consecutive MISSES before clearing the held name (~CLEAR_FRAMES × 500ms). At
  *  8 that's ~4s of no-match before the hint drops — survives blur/angle blips. */
 const CLEAR_FRAMES = 8;
+/** consecutive NO-FACE frames before clearing (camera covered/gone) — fast. */
+const GONE_FRAMES = 2;
 /** re-push the current identity this often so the app's state stays fresh. */
 const KEEPALIVE_MS = 3000;
 /** wider band for a TENTATIVE match — the agent asks "are you X?" to confirm. */
@@ -40,7 +42,8 @@ interface Stream {
   current: string | null;  // last EMITTED (held) identity name
   pending: string | null;  // a DIFFERENT name building up to adoption
   pendingCount: number;    // consecutive reads of `pending`
-  missCount: number;       // consecutive misses while holding `current`
+  missCount: number;       // consecutive misses (face present, no match) holding current
+  goneCount: number;       // consecutive NO-FACE frames (covered/gone)
   lastConfidence: number;  // confidence of the current identity
   keepalive?: ReturnType<typeof setInterval>;
 }
@@ -61,41 +64,48 @@ export function faceRecognitionProcessor(gallery: Gallery): StreamProcessor & {
     s.busy = true;
     try {
       const descriptor = await describeFace(jpeg);
+      const faceVisible = descriptor !== null; // a face was DETECTED (matched or not)
       let name: string | null = null;
       let confidence = 0;
       if (descriptor) {
         const m = gallery.match(descriptor);
         if (m) { name = m.name; confidence = Math.max(0, 1 - m.distance); }
       }
-      // ASYMMETRIC hysteresis so the hint doesn't flicker. Recognition at ~2fps
-      // misses individual frames (blur/angle/light), so a single miss must NOT
-      // wipe the name. We ADOPT a recognized name quickly (ADOPT_FRAMES good
-      // reads) but only CLEAR/CHANGE it after MANY consecutive disagreeing reads
-      // (CLEAR_FRAMES ≈ a few seconds). A held name through brief misses is exactly
-      // what a best-effort hint should do; recollect_face recomputes fresh anyway.
+      // Distinguish "no face at all" (camera covered / person gone) from "face
+      // present but this frame didn't match" (the flicker case). We only HOLD the
+      // name through the flicker case; if NO face is visible we clear FAST, so
+      // covering the camera drops the name almost immediately.
       if (name !== null && name === s.current) {
-        // continued match — refresh + reset the miss counter.
+        // continued match — refresh + reset miss counters.
         s.lastConfidence = confidence;
-        s.missCount = 0;
+        s.missCount = 0; s.goneCount = 0;
         s.pending = null; s.pendingCount = 0;
       } else if (name !== null && name !== s.current) {
         // a DIFFERENT recognized name — adopt after a few consistent reads.
         if (name === s.pending) s.pendingCount++; else { s.pending = name; s.pendingCount = 1; }
-        s.missCount = 0;
+        s.missCount = 0; s.goneCount = 0;
         if (s.pendingCount >= ADOPT_FRAMES) {
           s.current = name; s.lastConfidence = confidence;
           s.pending = null; s.pendingCount = 0;
           emitIdentity(s, name, confidence);
         }
       } else {
-        // name === null (no face / no match this frame).
         s.pending = null; s.pendingCount = 0;
         if (s.current !== null) {
-          // hold the current name through brief misses; clear only after many.
-          s.missCount++;
-          if (s.missCount >= CLEAR_FRAMES) {
-            s.current = null; s.lastConfidence = 0; s.missCount = 0;
-            emitIdentity(s, null, 0);
+          if (!faceVisible) {
+            // NO face in frame (covered / gone) → clear fast.
+            s.goneCount++;
+            if (s.goneCount >= GONE_FRAMES) {
+              s.current = null; s.lastConfidence = 0; s.goneCount = 0; s.missCount = 0;
+              emitIdentity(s, null, 0);
+            }
+          } else {
+            // face present but unmatched this frame → hold through brief misses.
+            s.missCount++;
+            if (s.missCount >= CLEAR_FRAMES) {
+              s.current = null; s.lastConfidence = 0; s.missCount = 0; s.goneCount = 0;
+              emitIdentity(s, null, 0);
+            }
           }
         }
       }
@@ -118,7 +128,7 @@ export function faceRecognitionProcessor(gallery: Gallery): StreamProcessor & {
     onStreamStart(ctx: StreamContext) {
       const grabber = new FrameGrabber();
       grabber.start();
-      const s: Stream = { ctx, grabber, lastRunMs: 0, busy: false, current: null, pending: null, pendingCount: 0, missCount: 0, lastConfidence: 0 };
+      const s: Stream = { ctx, grabber, lastRunMs: 0, busy: false, current: null, pending: null, pendingCount: 0, missCount: 0, goneCount: 0, lastConfidence: 0 };
       // Keepalive: re-push the current identity every ~5 s so the app's "who's in
       // frame now" stays fresh even with no change (and self-heals a missed frame).
       s.keepalive = setInterval(() => emitIdentity(s, s.current, s.lastConfidence), KEEPALIVE_MS);
@@ -172,7 +182,7 @@ export function faceRecognitionProcessor(gallery: Gallery): StreamProcessor & {
       }
       if (captured === 0) return { ok: false, reason: 'no face detected in frame' };
       // reset so the new identity reflects immediately on the next recognize.
-      s.current = null; s.pending = null; s.pendingCount = 0; s.missCount = 0;
+      s.current = null; s.pending = null; s.pendingCount = 0; s.missCount = 0; s.goneCount = 0;
       return { ok: true };
     },
 
@@ -211,7 +221,7 @@ export function faceRecognitionProcessor(gallery: Gallery): StreamProcessor & {
       const descriptor = await describeFace(jpeg);
       if (!descriptor) return { ok: false };
       gallery.enroll(name, descriptor, undefined, true); // append (keep prior angles)
-      s.current = null; s.pending = null; s.pendingCount = 0; s.missCount = 0;
+      s.current = null; s.pending = null; s.pendingCount = 0; s.missCount = 0; s.goneCount = 0;
       return { ok: true };
     },
 
