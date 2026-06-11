@@ -32,7 +32,6 @@ export class FrameGrabber {
   #wroteHeader = false;
   #width = 0;
   #height = 0;
-  #seenKeyframe = false;
 
   start(): void {
     if (this.#started) return;
@@ -48,24 +47,24 @@ export class FrameGrabber {
     this.#ff.on('exit', () => { this.#started = false; });
   }
 
-  /** Feed one inbound RTP packet. We assemble frames on the timestamp boundary. */
+  /**
+   * Feed one inbound RTP packet. We collect all packets of one frame (same RTP
+   * timestamp) and emit the assembled frame when the timestamp advances. We do
+   * NOT also flush on the marker bit — a frame can span packets after the marker
+   * in some senders, and double-flushing split frames, producing the corrupted
+   * (smeared) images. One frame = one contiguous run of equal timestamps.
+   */
   feed(rtp: RtpPacket): void {
     if (!this.#started || !this.#ff?.stdin?.writable) return;
     const ts = rtp.header.timestamp;
     if (this.#curTs === null) this.#curTs = ts;
-    // a new timestamp = a new frame → flush the buffered packets as one frame.
-    if (ts !== this.#curTs && this.#pktBuf.length) {
-      this.#emitFrame(this.#pktBuf);
+    if (ts !== this.#curTs) {
+      // timestamp advanced → the previous frame is complete.
+      if (this.#pktBuf.length) this.#emitFrame(this.#pktBuf);
       this.#pktBuf = [];
       this.#curTs = ts;
     }
     this.#pktBuf.push(rtp);
-    // also flush on the marker bit (last packet of a frame).
-    if (rtp.header.marker && this.#pktBuf.length) {
-      this.#emitFrame(this.#pktBuf);
-      this.#pktBuf = [];
-      this.#curTs = null;
-    }
   }
 
   latest(): Buffer | null { return this.#latest; }
@@ -76,7 +75,7 @@ export class FrameGrabber {
     try { this.#ff?.kill('SIGKILL'); } catch { /* */ }
     this.#ff = undefined; this.#latest = null;
     this.#out = []; this.#pktBuf = []; this.#curTs = null;
-    this.#wroteHeader = false; this.#seenKeyframe = false;
+    this.#wroteHeader = false;
   }
 
   // ── frame assembly → IVF → ffmpeg ──────────────────────────────────────────
@@ -86,16 +85,16 @@ export class FrameGrabber {
     try { frame = dePacketizeRtpPackets('VP8', packets); } catch { return; }
     if (!frame?.data?.length) return;
     const data = frame.data;
-
-    // Wait for the first keyframe so we can size the IVF header from it.
-    if (!this.#seenKeyframe) {
+    // We must START from a keyframe (for the IVF size + a decodable reference).
+    // After that we pass P-frames too — keyframes alone are too rare (the dock
+    // only sends one at connect), so keyframe-only starved recognition. With the
+    // packet-assembly fixed (group by timestamp, no marker double-flush), the
+    // frames decode cleanly. Drop P-frames only until the first keyframe lands.
+    if (!this.#wroteHeader) {
       if (!frame.isKeyframe) return;
       const dims = vp8KeyframeSize(data);
       if (!dims) return;
       this.#width = dims.w; this.#height = dims.h;
-      this.#seenKeyframe = true;
-    }
-    if (!this.#wroteHeader) {
       this.#write(ivfHeader(this.#width, this.#height));
       this.#wroteHeader = true;
     }

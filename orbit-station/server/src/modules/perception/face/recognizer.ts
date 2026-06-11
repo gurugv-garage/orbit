@@ -38,8 +38,15 @@ export async function describeFace(input: tf.Tensor3D | Buffer): Promise<number[
     ? (tf.node.decodeImage(input, 3) as tf.Tensor3D)
     : input;
   try {
+    // Lower minConfidence (default 0.5): our frames are small (320×240), often
+    // at an angle or in poor light, so the detector needs to be more lenient to
+    // find a face at all. 0.2 catches harder faces; a false-detect just yields a
+    // non-matching descriptor (rejected by the gallery threshold), so it's safe.
     const det = await faceapi
-      .detectSingleFace(tensor as unknown as faceapi.TNetInput)
+      .detectSingleFace(
+        tensor as unknown as faceapi.TNetInput,
+        new faceapi.SsdMobilenetv1Options({ minConfidence: 0.2 }),
+      )
       .withFaceLandmarks()
       .withFaceDescriptor();
     return det ? Array.from(det.descriptor) : null;
