@@ -174,6 +174,14 @@ fun DockScreen() {
                         put("name", kotlinx.serialization.json.JsonPrimitive(name))
                     })
             },
+            // forget_face → tell the station to drop the wrong name.
+            onForgetRequest = { name ->
+                stationLinkRef.value?.publish(
+                    "perception", "forget-request",
+                    kotlinx.serialization.json.buildJsonObject {
+                        put("name", kotlinx.serialization.json.JsonPrimitive(name))
+                    })
+            },
         ).also { dev.orbit.dock.agent.ToolsTestController.tools = it }
     }
     // Runtime model selection (persisted). Changing it rebuilds the agent so the
@@ -271,9 +279,12 @@ fun DockScreen() {
                         val reqId = prim(envelope, "reqId")?.content
                         val name = prim(envelope, "name")?.takeIf { it.isString }?.content
                         val tentative = prim(envelope, "tentative")?.takeIf { it.isString }?.content
+                        val conf = prim(envelope, "confidence")?.content?.toFloatOrNull() ?: 0f
                         val noFace = prim(envelope, "noFace")?.content?.toBooleanStrictOrNull() ?: false
-                        reqId?.let { pendingRecognize.remove(it) }
-                            ?.complete(dev.orbit.dock.agent.RecognizeOutcome(name, tentative, noFace))
+                        val outcome = dev.orbit.dock.agent.RecognizeOutcome(name, tentative, conf, noFace)
+                        // Cache a confident result (also feeds the background STT trigger).
+                        if (name != null) perception.onIdentity(name, conf)
+                        reqId?.let { pendingRecognize.remove(it) }?.complete(outcome)
                         null
                     }
                     else -> null
@@ -365,6 +376,25 @@ fun DockScreen() {
 
     LaunchedEffect(Unit) { wiring.attach(scope) }
 
+    // Background, NON-BLOCKING recollect on STT start: when listening arms and a
+    // face is visible (on-device), fire one recognize-request so the cache is
+    // fresh by the time the user finishes speaking. Fire-and-forget — the turn
+    // never waits; the async recognize-result updates the snapshot cache.
+    LaunchedEffect(Unit) {
+        dev.orbit.dock.perception.PerceptionBus.events.collect { ev ->
+            if (ev is dev.orbit.dock.perception.PerceptionEvent.SttListening && ev.armed &&
+                perception.facts.facePresent
+            ) {
+                stationLinkRef.value?.publish(
+                    "perception", "recognize-request",
+                    kotlinx.serialization.json.buildJsonObject {
+                        put("reqId", kotlinx.serialization.json.JsonPrimitive("stt-${System.currentTimeMillis()}"))
+                    },
+                )
+            }
+        }
+    }
+
     // Start the live A/V stream once the station is connected AND perception is
     // warm (mic ADM up, so WebRtcAudio.sharedFactory has its audio device module).
     // Retry a few times: the ADM can lag perceptionReady by a beat, and start()
@@ -395,18 +425,16 @@ fun DockScreen() {
     val facePresent by wiring.facePresent.collectAsState()
     val sttArmed by wiring.sttArmed.collectAsState()
 
-    // The identity the station last recognized (its delay means it lags a new
-    // face by a couple seconds; showing it on screen makes that visible). Driven
-    // by UserIdentified events on the PerceptionBus; cleared when no face / null.
+    // Badge: the last recognized person (from the snapshot cache, updated by
+    // recollect / the STT-trigger). Polled so it reflects the single source of
+    // truth. Shows "guru" when a face is present, "guru (away)" when remembered
+    // but no face now.
     var seenName by remember { mutableStateOf<String?>(null) }
     LaunchedEffect(Unit) {
-        dev.orbit.dock.perception.PerceptionBus.events.collect { ev ->
-            when (ev) {
-                is dev.orbit.dock.perception.PerceptionEvent.UserIdentified -> seenName = ev.name
-                is dev.orbit.dock.perception.PerceptionEvent.RemotePresence -> if (!ev.present) seenName = null
-                is dev.orbit.dock.perception.PerceptionEvent.FaceLost -> seenName = null
-                else -> {}
-            }
+        while (true) {
+            val f = perception.facts
+            seenName = f.identity?.let { if (f.facePresent) it else "$it (away)" }
+            kotlinx.coroutines.delay(500)
         }
     }
 

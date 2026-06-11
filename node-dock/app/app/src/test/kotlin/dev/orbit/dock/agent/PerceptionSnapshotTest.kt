@@ -21,7 +21,7 @@ class PerceptionSnapshotTest {
         val s = PerceptionSnapshot()
         s.onFaceSeen(0f, 0f)
         assertThat(s.facts.facePresent).isTrue()
-        assertThat(s.describe()).isEqualTo("You can see someone (they are toward your center).")
+        assertThat(s.describe()).isEqualTo("You can see someone (toward your center) — recollect_face to find out who.")
     }
 
     @Test
@@ -43,7 +43,7 @@ class PerceptionSnapshotTest {
         s.onEmotion("Happy")
         assertThat(s.facts.emotion).isEqualTo("happy")
         assertThat(s.describe()).isEqualTo(
-            "You can see someone (they are toward your center); they appear happy.",
+            "You can see someone (toward your center); they appear happy — recollect_face to find out who.",
         )
     }
 
@@ -66,38 +66,56 @@ class PerceptionSnapshotTest {
         s.onFaceSeen(0f, 0f); s.onEmotion("Surprised"); s.onFaceLost()
         s.onFaceSeen(0.8f, 0f) // back, now to the right
         assertThat(s.describe())
-            .isEqualTo("You can see someone (they are toward your right); they appear surprised.")
+            .isEqualTo("You can see someone (toward your right); they appear surprised — recollect_face to find out who.")
     }
 
     @Test
-    fun identityHintNamesThePersonInTheDescription() {
-        // The pushed identity hint names the person in the prompt line (best-effort;
-        // recollect_face recomputes fresh when certainty is needed).
+    fun confidentIdentityNamesThePerson() {
         val s = PerceptionSnapshot()
         s.onFaceSeen(0f, 0f)
-        s.onIdentity("guru")
+        s.onIdentity("guru", 0.9f)
         s.onEmotion("Happy")
         assertThat(s.facts.identity).isEqualTo("guru")
         assertThat(s.describe())
-            .isEqualTo("You can see guru (they are toward your center); they appear happy.")
+            .isEqualTo("You can see guru (toward your center); they appear happy.")
     }
 
     @Test
-    fun unrecognizedIdentityFallsBackToTheUser() {
+    fun lowConfidenceIdentityIsHedged() {
         val s = PerceptionSnapshot()
         s.onFaceSeen(0f, 0f)
-        s.onIdentity("guru")
-        s.onIdentity(null) // recognition lost
-        assertThat(s.describe()).isEqualTo("You can see someone (they are toward your center).")
+        s.onIdentity("guru", 0.3f) // below LOW_CONF
+        assertThat(s.describe())
+            .isEqualTo("You can see someone (toward your center) (you think it might be guru, but you're not sure — recollect_face to check).")
     }
 
     @Test
-    fun identityClearedOnlyByExplicitNullFromStation() {
-        // One writer: identity changes ONLY via onIdentity. The station clears it by
-        // sending null (unrecognized) — nothing else (presence, face-lost) touches it.
+    fun cachedIdentityKeptWhenFaceLeaves_reportedAsLastSeen() {
+        // pull-only cache: a confident identity persists; when the face leaves, we
+        // report "no one now, but last was X" instead of forgetting.
         val s = PerceptionSnapshot()
-        s.onFaceSeen(0f, 0f); s.onIdentity("guru")
-        s.onIdentity(null)
+        s.onFaceSeen(0f, 0f); s.onIdentity("guru", 0.9f)
+        s.onFaceLost()
+        assertThat(s.facts.identity).isEqualTo("guru") // remembered
+        assertThat(s.describe())
+            .isEqualTo("No one is in front of you right now; the last person you saw was guru.")
+    }
+
+    @Test
+    fun nullIdentityDoesNotWipeTheCache() {
+        // a "no one / unrecognized" recollect result must NOT erase a known person.
+        val s = PerceptionSnapshot()
+        s.onFaceSeen(0f, 0f); s.onIdentity("guru", 0.9f)
+        s.onIdentity(null) // no-op
+        assertThat(s.facts.identity).isEqualTo("guru")
+    }
+
+    @Test
+    fun clearIdentityWipesTheCache() {
+        // forget_face / re-enroll explicitly clears.
+        val s = PerceptionSnapshot()
+        s.onFaceSeen(0f, 0f); s.onIdentity("guru", 0.9f)
+        s.clearIdentity()
         assertThat(s.facts.identity).isNull()
     }
 }

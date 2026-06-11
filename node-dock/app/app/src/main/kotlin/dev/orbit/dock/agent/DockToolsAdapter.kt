@@ -32,7 +32,7 @@ object DockToolsAdapter {
 
     fun tools(dock: DockTools): List<AgentTool> =
         listOf(SetFaceTool(dock), MoveTool(dock), ComputeTool(),
-            RememberFaceTool(dock), RecollectFaceTool(dock), ConfirmFaceTool(dock))
+            RememberFaceTool(dock), RecollectFaceTool(dock), ConfirmFaceTool(dock), ForgetFaceTool(dock))
 
     /** Human phrase for the live status line, e.g. "looking left", "smiling". */
     fun statusPhrase(toolName: String, args: JsonObject): String {
@@ -158,6 +158,19 @@ object DockToolsAdapter {
         override suspend fun execute(id: String, params: JsonObject, onUpdate: AgentToolUpdateCallback?): AgentToolResult<Any?> {
             val name = params["name"]?.jsonPrimitive?.content.orEmpty()
             val r = dock.confirmFace(name)
+            return AgentToolResult(listOf(TextContent(r)), details = mapOf("name" to name))
+        }
+    }
+
+    /** "That's not me" → station forgets the wrong association. */
+    private class ForgetFaceTool(private val dock: DockTools) : AgentTool(
+        name = "forget_face",
+        description = DockToolSchemas.FORGET_FACE_DESC,
+        parameters = DockToolSchemas.forgetFace,
+    ) {
+        override suspend fun execute(id: String, params: JsonObject, onUpdate: AgentToolUpdateCallback?): AgentToolResult<Any?> {
+            val name = params["name"]?.jsonPrimitive?.content.orEmpty()
+            val r = dock.forgetFace(name)
             return AgentToolResult(listOf(TextContent(r)), details = mapOf("name" to name))
         }
     }

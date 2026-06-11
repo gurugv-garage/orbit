@@ -80,6 +80,10 @@ export function perceptionModule(getHub: () => ProcessingHub): StationModule {
           // confirm_face: user said "yes I'm X" → append this frame as more data.
           const name = (msg.payload as { name?: string } | null)?.name?.trim();
           if (name) void face.confirmCurrent(msg.source, name);
+        } else if (msg.kind === 'forget-request') {
+          // forget_face: "that's not me" → drop the wrong association.
+          const name = (msg.payload as { name?: string } | null)?.name?.trim();
+          if (name) void face.forgetCurrent(msg.source, name);
         }
       });
 

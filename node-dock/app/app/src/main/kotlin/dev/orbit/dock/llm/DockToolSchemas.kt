@@ -224,6 +224,18 @@ object DockToolSchemas {
         putJsonArray("required") { add("name") }
     }
 
+    /** `forget_face` — the user said a guess was wrong ("that's not me"). */
+    val forgetFace: JsonObject = buildJsonObject {
+        put("type", "object")
+        putJsonObject("properties") {
+            putJsonObject("name") {
+                put("type", "string")
+                put("description", "the WRONG name you mistakenly used for them")
+            }
+        }
+        putJsonArray("required") { add("name") }
+    }
+
     // Descriptions live next to the schemas so the model-facing surface is one place.
     const val REMEMBER_FACE_DESC = "Remember the person you can currently see in your camera, by name. " +
         "Call this when someone tells you who they are (\"I'm guru\", \"remember me as Alice\", \"this is my friend Bob\"). " +
@@ -234,6 +246,9 @@ object DockToolSchemas {
     const val CONFIRM_FACE_DESC = "Confirm a tentative face guess after the person says yes. When recollect_face said " +
         "\"I think you might be X\" and they confirm they ARE X, call confirm_face with that name — it makes your " +
         "recognition of them stronger for next time. Only call after they actually confirm."
+    const val FORGET_FACE_DESC = "Call when the person says a face guess was WRONG (\"that's not me\", \"I'm not X\"). " +
+        "Pass the wrong name X you mistakenly used — you'll forget that face so you stop mis-recognizing. Then ask " +
+        "who they really are and use remember_face."
     const val COMPUTE_DESC = "Evaluate a SAFE arithmetic or random-number expression and get the result back " +
         "(e.g. math, or \"random(1,10)\", or \"random(1,10) > 5\"). Use this whenever you'd otherwise want to " +
         "\"run code\" for a number or a calculation — you have NO general code execution, only this."

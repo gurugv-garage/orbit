@@ -17,12 +17,21 @@ import java.util.concurrent.atomic.AtomicReference
  */
 class PerceptionSnapshot {
 
-    /** An immutable read of the senses. `null` emotion = not yet classified. */
+    /**
+     * An immutable read of the senses.
+     * - [facePresent] = a face is visible RIGHT NOW (on-device ML Kit). Live.
+     * - [identity]/[identityConf]/[identityAt] = the CACHED result of the last
+     *   `recollect_face` (the station's pull recognition). The conversation
+     *   "remembers" who it last saw; recollect refreshes it. May be stale if the
+     *   person changed and nothing re-recollected — that's expected.
+     */
     data class Facts(
         val facePresent: Boolean = false,
-        val emotion: String? = null,        // "happy", "sad", … (lowercased Kind)
-        val gaze: String? = null,           // "left" | "right" | "center" | "up" | "down"
-        val identity: String? = null,       // recognized name from the station, or null
+        val emotion: String? = null,
+        val gaze: String? = null,
+        val identity: String? = null,       // last recognized name (cached)
+        val identityConf: Float = 0f,        // confidence of that match
+        val identityAt: Long = 0L,           // when it was last refreshed (ms)
     )
 
     private val ref = AtomicReference(Facts())
@@ -44,42 +53,60 @@ class PerceptionSnapshot {
     }
 
     /**
-     * The identity HINT pushed by the station (the only writer of `identity`).
-     * This is best-effort display context — the prompt line + on-screen badge —
-     * and is allowed to lag. `recollect_face` recomputes fresh when the agent
-     * actually needs the truth, so a stale hint here is harmless. Nothing else
-     * (presence, face-lost) touches `identity` — one signal, one writer, no races.
+     * Cache the result of a recollect (the station's pull recognition). Only a
+     * RECOGNIZED name updates the cache — a "no one / unrecognized" result does NOT
+     * wipe a previously-known person, so the conversation keeps "last I was talking
+     * to X" even when you briefly look away. `faceVisibleNow` (facePresent) tells
+     * the agent whether you're in view right now.
      */
-    fun onIdentity(name: String?) {
-        ref.updateAndGet { it.copy(identity = name) }
+    fun onIdentity(name: String?, confidence: Float = 0f) {
+        if (name == null) return // keep the cached person; absence is faceVisibleNow's job
+        ref.updateAndGet { it.copy(identity = name, identityConf = confidence, identityAt = System.currentTimeMillis()) }
+    }
+
+    /** Explicit clear (forget_face / re-enroll), when we KNOW the cache is wrong. */
+    fun clearIdentity() {
+        ref.updateAndGet { it.copy(identity = null, identityConf = 0f, identityAt = 0L) }
     }
 
     /**
-     * One-line description for the prompt, or null when the dock sees nothing
-     * (so [DockTools] can omit it rather than say "no face", which reads oddly).
+     * One-line description for the per-turn prompt, weaving together what the dock
+     * sees NOW (on-device face presence) and who it last recognized (the cache):
      *
-     * Examples:
-     *   "You can see guru (they are toward your left); they appear happy."
-     *   "You can see someone; they appear neutral."  (face present, no name yet)
-     *   null  (no face in view)
-     *
-     * The name here is the station's best-effort HINT (it may lag a second or two).
-     * That's fine: it's just "who you're probably talking to". When the agent needs
-     * certainty it calls recollect_face, which recomputes fresh on the server.
+     *   face now + known   → "You can see guru (toward your left); they appear happy."
+     *   face now + unsure  → "You can see someone (you think it might be guru, but
+     *                         you're not sure)."
+     *   face now + unknown → "You can see someone you don't recognize yet."
+     *   no face + cached   → "No one is in front of you right now; the last person
+     *                         you saw was guru."
+     *   no face + nothing  → null (omit).
      */
     fun describe(): String? {
         val f = ref.get()
-        if (!f.facePresent) return null
-        val who = f.identity ?: "someone"
-        val where = f.gaze?.let { " (they are toward your $it)" } ?: ""
-        val mood = f.emotion?.let { "; they appear $it" } ?: ""
-        return "You can see $who$where$mood."
+        if (f.facePresent) {
+            val where = f.gaze?.let { " (toward your $it)" } ?: ""
+            val mood = f.emotion?.let { "; they appear $it" } ?: ""
+            val who = when {
+                f.identity != null && f.identityConf >= LOW_CONF ->
+                    "You can see ${f.identity}$where$mood."
+                f.identity != null ->
+                    "You can see someone$where$mood (you think it might be ${f.identity}, but you're not sure — recollect_face to check)."
+                else ->
+                    "You can see someone$where$mood — recollect_face to find out who."
+            }
+            return who
+        }
+        // No face in view: report the remembered person if we have one.
+        return f.identity?.let { "No one is in front of you right now; the last person you saw was $it." }
     }
 
     /** Whether a face is currently visible (drives the "always recollect" rule). */
     val facePresent: Boolean get() = ref.get().facePresent
 
     private companion object {
+        /** Below this match confidence, the agent should hedge / offer to confirm. */
+        const val LOW_CONF = 0.45f
+
         /** Map mirror-corrected NDC coords to a coarse direction word. Center
          *  band is generous so small movements don't read as "looking away". */
         fun gazeLabel(x: Float, y: Float): String = when {

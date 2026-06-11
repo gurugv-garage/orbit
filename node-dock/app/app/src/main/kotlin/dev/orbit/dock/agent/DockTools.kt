@@ -21,7 +21,7 @@ import java.util.concurrent.atomic.AtomicBoolean
  * - [tentative]: a near-match we should CONFIRM with the user ("are you X?").
  * - [noFace]: nothing recognizable in frame.
  */
-data class RecognizeOutcome(val name: String?, val tentative: String?, val noFace: Boolean)
+data class RecognizeOutcome(val name: String?, val tentative: String?, val confidence: Float, val noFace: Boolean)
 
 /**
  * Side-effecting actions the agent can take on the dock's face, voice, body,
@@ -81,6 +81,8 @@ class DockTools(
      * append the current frame as more training data for that name.
      */
     private val onConfirmRequest: ((String) -> Unit)? = null,
+    /** `forget_face`: "that's not me" → tell the station to drop the wrong name. */
+    private val onForgetRequest: ((String) -> Unit)? = null,
 ) {
 
     private val spokeThisTurn = AtomicBoolean(false)
@@ -193,31 +195,37 @@ class DockTools(
     }
 
     /**
-     * `recollect_face` tool: who is in front of the camera RIGHT NOW. Asks the
-     * station to recognize its current frame fresh (authoritative), with a short
-     * wait; if that doesn't come back (slow/offline), falls back to the snapshot
-     * hint ("I think it's X"). This is why a stale hint can't cause a wrong answer.
+     * `recollect_face` tool: who am I talking to? Does a fresh server recognition,
+     * updates the cache, and answers from BOTH "is a face visible now" and the
+     * remembered last person:
+     *   - recognized now            → "This is X."
+     *   - low-confidence/tentative  → "I think you might be X, but I'm not sure…"
+     *   - face now, unknown         → "Someone I don't recognize — tell me who…"
+     *   - NO face now, but cached   → "I don't see anyone now, but last I was talking to X."
+     *   - nothing                   → "No one's here and I haven't recognized anyone."
      */
     suspend fun recollectFace(): String {
-        // Fresh server recognition first.
         val fresh = onRecognizeRequest?.invoke()
-        if (fresh != null) {
+        // Cache any confident result for the rest of the conversation.
+        if (fresh?.name != null) perception?.onIdentity(fresh.name, fresh.confidence)
+
+        val faceNow = perception?.facts?.facePresent ?: (fresh?.noFace == false)
+        if (fresh != null && !fresh.noFace) {
             return when {
-                fresh.noFace -> "There's no one in front of me right now."
                 fresh.name != null -> "This is ${fresh.name}."
-                // A near-match → ASK to confirm. If the user says yes, the agent
-                // should call confirm_face(name) so I learn this face better.
                 fresh.tentative != null ->
-                    "I think you might be ${fresh.tentative} — is that right? " +
-                        "(If yes, I'll remember your face better. Call confirm_face with the name once they confirm.)"
-                else -> "There's someone here, but I don't recognize them. If you tell me who you are I can remember you (remember_face)."
+                    "I think you might be ${fresh.tentative}, but I'm not certain. Is that you? " +
+                        "(if they say yes, call confirm_face; if they say no, call forget_face)"
+                else -> "There's someone here I don't recognize yet. Tell me who you are and I'll remember (remember_face)."
             }
         }
-        // Fallback: the best-effort hint from the snapshot.
-        val f = perception?.facts
-        if (f == null || !f.facePresent) return "There's no one in front of me right now."
-        return f.identity?.let { "I think it's $it." }
-            ?: "There's someone here, but I don't recognize them."
+        // No face visible now (or no fresh result): fall back to the remembered person.
+        val last = perception?.facts?.identity
+        return when {
+            faceNow && last != null -> "I think it's $last."           // had a face but no fresh result
+            last != null -> "I don't see anyone in front of me right now, but the last person I was talking to was $last."
+            else -> "There's no one in front of me right now, and I haven't recognized anyone yet."
+        }
     }
 
     /**
@@ -230,6 +238,20 @@ class DockTools(
         if (clean.isBlank()) return "I need the name to confirm."
         onConfirmRequest?.invoke(clean) ?: return "I can't update my memory right now."
         return "Got it — I'll remember your face better now, $clean."
+    }
+
+    /**
+     * `forget_face` tool: the user said a guess was wrong ("that's not me"). Drop
+     * that name's stored face on the station so it stops mis-matching, and clear
+     * the local cache. The agent should then ask who they really are and call
+     * remember_face. [name] = the WRONG name we mistakenly used.
+     */
+    fun forgetFace(name: String): String {
+        val clean = name.trim()
+        if (clean.isBlank()) return "Which name should I forget?"
+        onForgetRequest?.invoke(clean) ?: return "I can't update my memory right now."
+        perception?.clearIdentity()
+        return "Sorry about that — I've forgotten that. Who are you, so I can remember correctly?"
     }
 
     /**
