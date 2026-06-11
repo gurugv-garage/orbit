@@ -23,6 +23,13 @@ import { PerceptionState } from './state.js';
 import { presenceProcessor } from './processors/presence.js';
 import { faceRecognitionProcessor } from './processors/face-recognition.js';
 import { Gallery } from './face/gallery.js';
+import { describeFace } from './face/recognizer.js';
+
+/** A base64 JPEG (the dock's on-device camera frame) → its face descriptor. */
+async function describeBase64(b64: string): Promise<number[] | null> {
+  try { return await describeFace(Buffer.from(b64, 'base64')); } catch { return null; }
+}
+const MATCH = 0.62, TENTATIVE = 0.78;
 import { makeResult, type PerceptionResult } from './result.js';
 
 // Gallery persists next to the server's data (alongside the db). One file.
@@ -59,27 +66,40 @@ export function perceptionModule(getHub: () => ProcessingHub): StationModule {
       // `enroll-result` directed back to that dock.
       bus.on('perception', (msg) => {
         if (msg.source === 'station') return;
+        const p = msg.payload as { name?: string; reqId?: string; photo?: string } | null;
+        // The dock sends `photo` = its CLEAN on-device camera JPEG (base64). We
+        // recognize/enroll from THAT directly — no dependency on the live WebRTC
+        // stream (which decodes lossily and drops). This is the on-demand path.
         if (msg.kind === 'enroll-request') {
-          const name = (msg.payload as { name?: string } | null)?.name?.trim();
-          if (!name) {
-            bus.publish({ topic: 'perception', kind: 'enroll-result', payload: { ok: false, reason: 'no name' }, source: 'station', to: msg.source });
+          const name = p?.name?.trim();
+          if (!name || !p?.photo) {
+            bus.publish({ topic: 'perception', kind: 'enroll-result', payload: { ok: false, reason: name ? 'no photo' : 'no name' }, source: 'station', to: msg.source });
             return;
           }
-          void face.enrollCurrent(msg.source, name).then((r) => {
-            bus.publish({ topic: 'perception', kind: 'enroll-result', payload: { name, ...r }, source: 'station', to: msg.source });
+          void describeBase64(p.photo).then((d) => {
+            const ok = !!d;
+            if (d) gallery.enroll(name, d, p.photo);
+            bus.publish({ topic: 'perception', kind: 'enroll-result', payload: { name, ok, reason: ok ? undefined : 'no face detected' }, source: 'station', to: msg.source });
           });
         } else if (msg.kind === 'recognize-request') {
-          // recollect_face: fresh authoritative recognition of the dock's current
-          // frame, replied directly to the dock. Carries `tentative` (a near-match
-          // the agent can confirm) so the dock can ask "are you X?".
-          const reqId = (msg.payload as { reqId?: string } | null)?.reqId;
-          void face.recognizeCurrent(msg.source).then((r) => {
-            bus.publish({ topic: 'perception', kind: 'recognize-result', payload: { reqId, ...r }, source: 'station', to: msg.source });
+          const reqId = p?.reqId;
+          void describeBase64(p?.photo ?? '').then((d) => {
+            let out: { name: string | null; tentative: string | null; confidence: number; noFace: boolean };
+            if (!d) out = { name: null, tentative: null, confidence: 0, noFace: true };
+            else {
+              const m = gallery.match(d, MATCH);
+              if (m) out = { name: m.name, tentative: null, confidence: Math.max(0, 1 - m.distance), noFace: false };
+              else {
+                const t = gallery.match(d, TENTATIVE);
+                out = { name: null, tentative: t?.name ?? null, confidence: t ? Math.max(0, 1 - t.distance) : 0, noFace: false };
+              }
+            }
+            bus.publish({ topic: 'perception', kind: 'recognize-result', payload: { reqId, ...out }, source: 'station', to: msg.source });
           });
         } else if (msg.kind === 'confirm-request') {
-          // confirm_face: user said "yes I'm X" → append this frame as more data.
-          const name = (msg.payload as { name?: string } | null)?.name?.trim();
-          if (name) void face.confirmCurrent(msg.source, name);
+          // confirm_face: user said "yes I'm X" → append this photo as more data.
+          const name = p?.name?.trim();
+          if (name && p?.photo) void describeBase64(p.photo).then((d) => { if (d) gallery.enroll(name, d, undefined, true); });
         } else if (msg.kind === 'forget-request') {
           // forget_face: "that's not me" → drop the wrong association.
           const name = (msg.payload as { name?: string } | null)?.name?.trim();

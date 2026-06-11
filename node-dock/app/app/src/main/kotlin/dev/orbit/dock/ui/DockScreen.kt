@@ -139,19 +139,22 @@ fun DockScreen() {
             perception = perception,
             onTurnSettled = { wiringRef.value?.clearTranscript() },
             config = configCache,
-            // remember_face → ask the station to enroll the on-camera face.
+            // remember_face → send the CLEAN on-device camera JPEG for the station
+            // to enroll. No dependency on the WebRTC stream (which is lossy + drops).
             onEnrollRequest = { name ->
+                val photo = faceTracker.latestJpegBase64()
                 stationLinkRef.value?.publish(
                     "perception", "enroll-request",
                     kotlinx.serialization.json.buildJsonObject {
                         put("name", kotlinx.serialization.json.JsonPrimitive(name))
+                        if (photo != null) put("photo", kotlinx.serialization.json.JsonPrimitive(photo))
                     },
                 )
             },
-            // recollect_face → fresh server recognition: publish a request with a
-            // reqId, await the matching recognize-result (≤1s), else null (→ hint).
+            // recollect_face → send the current on-device JPEG, await the result.
             onRecognizeRequest = {
                 val link = stationLinkRef.value
+                val photo = faceTracker.latestJpegBase64()
                 if (link == null) null else {
                     val reqId = java.util.UUID.randomUUID().toString()
                     val deferred = kotlinx.coroutines.CompletableDeferred<dev.orbit.dock.agent.RecognizeOutcome>()
@@ -159,19 +162,21 @@ fun DockScreen() {
                     link.publish("perception", "recognize-request",
                         kotlinx.serialization.json.buildJsonObject {
                             put("reqId", kotlinx.serialization.json.JsonPrimitive(reqId))
+                            if (photo != null) put("photo", kotlinx.serialization.json.JsonPrimitive(photo))
                         })
-                    val result = kotlinx.coroutines.withTimeoutOrNull(1200) { deferred.await() }
+                    val result = kotlinx.coroutines.withTimeoutOrNull(2000) { deferred.await() }
                     pendingRecognize.remove(reqId)
                     result
                 }
             },
-            // confirm_face → tell the station the user confirmed a tentative guess
-            // (append the current frame as more training data).
+            // confirm_face → append the current on-device JPEG as more training data.
             onConfirmRequest = { name ->
+                val photo = faceTracker.latestJpegBase64()
                 stationLinkRef.value?.publish(
                     "perception", "confirm-request",
                     kotlinx.serialization.json.buildJsonObject {
                         put("name", kotlinx.serialization.json.JsonPrimitive(name))
+                        if (photo != null) put("photo", kotlinx.serialization.json.JsonPrimitive(photo))
                     })
             },
             // forget_face → tell the station to drop the wrong name.
@@ -385,10 +390,12 @@ fun DockScreen() {
             if (ev is dev.orbit.dock.perception.PerceptionEvent.SttListening && ev.armed &&
                 perception.facts.facePresent
             ) {
+                val photo = faceTracker.latestJpegBase64()
                 stationLinkRef.value?.publish(
                     "perception", "recognize-request",
                     kotlinx.serialization.json.buildJsonObject {
                         put("reqId", kotlinx.serialization.json.JsonPrimitive("stt-${System.currentTimeMillis()}"))
+                        if (photo != null) put("photo", kotlinx.serialization.json.JsonPrimitive(photo))
                     },
                 )
             }

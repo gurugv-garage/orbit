@@ -7,6 +7,7 @@ import kotlinx.serialization.json.int
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
+import kotlinx.coroutines.launch
 import org.webrtc.IceCandidate
 import org.webrtc.MediaConstraints
 import org.webrtc.MediaStreamTrack
@@ -51,8 +52,49 @@ class MediaStreamer(
     private var capturer: FaceFrameCapturer? = null
     @Volatile private var started = false
 
+    // Recovery: ICE can DISCONNECT/FAIL (network blip, SFU restart). The dead
+    // PeerConnection never heals itself, leaving the station with no video
+    // (producers:[]) until the app restarts — the cause of "I don't see anyone".
+    // We restart the stream when that happens.
+    private val scope = kotlinx.coroutines.CoroutineScope(
+        kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.Dispatchers.Main,
+    )
+    private var recoverJob: kotlinx.coroutines.Job? = null
+
     /** True once the PeerConnection + tracks are up. */
     fun isStreaming(): Boolean = started
+
+    /** Tear down + rebuild the PeerConnection (after an ICE failure). */
+    @Synchronized
+    private fun restart() {
+        Timber.i("MediaStreamer: restarting after ICE drop")
+        stop()
+        start()
+    }
+
+    /** React to ICE state: recover on FAILED now, on sustained DISCONNECTED. */
+    private fun onIceState(s: PeerConnection.IceConnectionState?) {
+        Timber.i("MediaStreamer ice=$s")
+        when (s) {
+            PeerConnection.IceConnectionState.CONNECTED,
+            PeerConnection.IceConnectionState.COMPLETED -> {
+                recoverJob?.cancel(); recoverJob = null // healed — cancel any pending restart
+            }
+            PeerConnection.IceConnectionState.FAILED -> {
+                recoverJob?.cancel()
+                recoverJob = scope.launch { restart() } // unrecoverable → rebuild now
+            }
+            PeerConnection.IceConnectionState.DISCONNECTED -> {
+                // may self-heal; wait a few seconds, then restart if still not back.
+                recoverJob?.cancel()
+                recoverJob = scope.launch {
+                    kotlinx.coroutines.delay(4000)
+                    restart()
+                }
+            }
+            else -> {}
+        }
+    }
 
     @Synchronized
     fun start() {
@@ -75,7 +117,7 @@ class MediaStreamer(
                 })
             }
             override fun onIceConnectionChange(s: PeerConnection.IceConnectionState?) {
-                Timber.i("MediaStreamer ice=$s")
+                onIceState(s)
             }
             override fun onSignalingChange(s: PeerConnection.SignalingState?) {}
             override fun onIceConnectionReceivingChange(p0: Boolean) {}
