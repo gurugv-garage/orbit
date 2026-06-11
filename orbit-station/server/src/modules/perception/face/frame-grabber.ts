@@ -19,9 +19,13 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { dePacketizeRtpPackets } from 'werift';
 import type { RtpPacket } from 'werift';
 
+/** A decoded frame older than this is considered stale (camera paused/covered). */
+const FRAME_FRESH_MS = 1500;
+
 export class FrameGrabber {
   #ff?: ChildProcess;
   #latest: Buffer | null = null;
+  #latestAt = 0; // when #latest was produced (ms epoch)
   #out: Buffer[] = [];
   #started = false;
 
@@ -67,7 +71,17 @@ export class FrameGrabber {
     this.#pktBuf.push(rtp);
   }
 
-  latest(): Buffer | null { return this.#latest; }
+  /**
+   * The latest decoded JPEG, or null if it's STALE. When the camera is covered or
+   * the dock pauses sending frames, ffmpeg stops emitting new JPEGs and #latest
+   * would otherwise return an old frame (with a face that's no longer there) —
+   * which made recollect_face say "I see guru" while covered. We only return a
+   * frame produced within FRAME_FRESH_MS.
+   */
+  latest(): Buffer | null {
+    if (!this.#latest || Date.now() - this.#latestAt > FRAME_FRESH_MS) return null;
+    return this.#latest;
+  }
 
   stop(): void {
     this.#started = false;
@@ -114,6 +128,7 @@ export class FrameGrabber {
     const start = end >= 0 ? joined.lastIndexOf(Buffer.from([0xff, 0xd8]), end) : -1; // SOI
     if (end > start && start >= 0) {
       this.#latest = joined.subarray(start, end + 2);
+      this.#latestAt = Date.now();
       this.#out = [joined.subarray(end + 2)];
     }
     if (joined.length > 4_000_000) this.#out = [joined.subarray(joined.length - 1_000_000)];
