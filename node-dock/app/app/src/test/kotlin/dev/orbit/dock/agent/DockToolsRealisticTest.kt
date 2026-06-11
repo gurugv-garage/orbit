@@ -210,7 +210,7 @@ class DockToolsRealisticTest {
         val t = DockTools(face = face, tts = tts, onSubtitle = {}, body = null, perception = perception)
         val ctx = t.currentContext()
         assertThat(ctx).contains("Current face: neutral")
-        assertThat(ctx).contains("You can see the user")
+        assertThat(ctx).contains("You can see someone")
         assertThat(ctx).contains("they appear happy")
     }
 
@@ -218,6 +218,6 @@ class DockToolsRealisticTest {
     fun contextOmitsVisionWhenNoFaceInView() {
         val perception = PerceptionSnapshot() // nothing seen
         val t = DockTools(face = face, tts = tts, onSubtitle = {}, body = null, perception = perception)
-        assertThat(t.currentContext()).doesNotContain("You can see the user")
+        assertThat(t.currentContext()).doesNotContain("You can see")
     }
 }

@@ -170,10 +170,11 @@ class FaceTracker(private val appContext: Context) : CameraFrameProvider {
         }.getOrDefault(android.view.Surface.ROTATION_0)
         val a = ImageAnalysis.Builder()
             .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
-            // 320×240 (was 640×480): the analyzer only needs a small frame for
-            // face detect / FER / the vision JPEG, and a smaller analysis stream
-            // frees camera/ISP bandwidth + buffers for the live PREVIEW, which
-            // was choppy on the Redmi's 2018 ISP when sharing with a 480p stream.
+            // 640×480: on-device ML Kit only needs a small frame, but this same
+            // frame is streamed to the station for face RECOGNITION, which needs a
+            // larger face to detect+embed reliably (320×240 gave "no face detected"
+            // on the station). 640×480 ~quadruples the face's pixels. (Was 320×240
+            // to spare a 2018 Redmi's ISP; modern docks/tablets handle 480p fine.)
             .setTargetResolution(Size(320, 240))
             .setTargetRotation(displayRotation)
             .build()

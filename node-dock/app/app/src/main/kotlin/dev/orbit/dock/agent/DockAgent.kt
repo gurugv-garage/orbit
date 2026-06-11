@@ -283,7 +283,9 @@ class DockAgent(
             is AgentEvent.StepEnd -> "step_end"
             is AgentEvent.TurnEnd -> "TURN_END"
         }
-        _events.tryEmit("+${dt}ms  $line")
+        // UI log: no timestamp prefix (cleaner; the params are what matter).
+        _events.tryEmit(line)
+        // logcat keeps the +Nms timing for debugging.
         if (BuildConfig.DEBUG) Timber.tag(EVT).i("+${dt}ms  $line")
     }
 

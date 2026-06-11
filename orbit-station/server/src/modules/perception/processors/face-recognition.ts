@@ -21,26 +21,36 @@ import { FrameGrabber } from '../face/frame-grabber.js';
 import { Gallery } from '../face/gallery.js';
 import { describeFace, loadFaceModels } from '../face/recognizer.js';
 
-const RECOGNIZE_EVERY_MS = 1000;
-/** consecutive identical reads before a name is treated as stable (debounce). */
-const STABLE_FRAMES = 2;
+const RECOGNIZE_EVERY_MS = 500;   // 2 fps.
+/** good reads to ADOPT a new recognized name (fast). */
+const ADOPT_FRAMES = 2;
+/** consecutive MISSES before clearing the held name (~CLEAR_FRAMES × 500ms). At
+ *  8 that's ~4s of no-match before the hint drops — survives blur/angle blips. */
+const CLEAR_FRAMES = 8;
 /** re-push the current identity this often so the app's state stays fresh. */
-const KEEPALIVE_MS = 5000;
+const KEEPALIVE_MS = 3000;
+/** wider band for a TENTATIVE match — the agent asks "are you X?" to confirm. */
+const TENTATIVE_THRESHOLD = 0.78;
 
 interface Stream {
   ctx: StreamContext;
   grabber: FrameGrabber;
   lastRunMs: number;
   busy: boolean;
-  current: string | null;  // last EMITTED (stable) identity name
-  pending: string | null;  // name seen in the most recent run(s)
-  pendingCount: number;    // how many consecutive runs saw `pending`
+  current: string | null;  // last EMITTED (held) identity name
+  pending: string | null;  // a DIFFERENT name building up to adoption
+  pendingCount: number;    // consecutive reads of `pending`
+  missCount: number;       // consecutive misses while holding `current`
   lastConfidence: number;  // confidence of the current identity
   keepalive?: ReturnType<typeof setInterval>;
 }
 
 export function faceRecognitionProcessor(gallery: Gallery): StreamProcessor & {
   enrollCurrent(streamId: string, name: string): Promise<{ ok: boolean; reason?: string }>;
+  recognizeCurrent(streamId: string): Promise<{ name: string | null; tentative: string | null; noFace: boolean }>;
+  /** Confirm a tentative identity: append the current frame as more data for `name`. */
+  confirmCurrent(streamId: string, name: string): Promise<{ ok: boolean }>;
+  currentFrame(streamId: string): Buffer | null;
 } {
   const streams = new Map<string, Stream>();
   void loadFaceModels(); // warm the models at construction
@@ -57,22 +67,37 @@ export function faceRecognitionProcessor(gallery: Gallery): StreamProcessor & {
         const m = gallery.match(descriptor);
         if (m) { name = m.name; confidence = Math.max(0, 1 - m.distance); }
       }
-      // Debounce HERE (the processor sees every frame): require N consecutive
-      // identical reads before treating it as stable, so a single mis-frame
-      // doesn't flip the name. Then emit only when the STABLE identity changes —
-      // the state module trusts this directly (no second debounce).
-      if (name === s.pending) {
-        s.pendingCount++;
-      } else {
-        s.pending = name;
-        s.pendingCount = 1;
-      }
-      if (s.pendingCount >= STABLE_FRAMES && name !== s.current) {
-        s.current = name;
+      // ASYMMETRIC hysteresis so the hint doesn't flicker. Recognition at ~2fps
+      // misses individual frames (blur/angle/light), so a single miss must NOT
+      // wipe the name. We ADOPT a recognized name quickly (ADOPT_FRAMES good
+      // reads) but only CLEAR/CHANGE it after MANY consecutive disagreeing reads
+      // (CLEAR_FRAMES ≈ a few seconds). A held name through brief misses is exactly
+      // what a best-effort hint should do; recollect_face recomputes fresh anyway.
+      if (name !== null && name === s.current) {
+        // continued match — refresh + reset the miss counter.
         s.lastConfidence = confidence;
-        emitIdentity(s, name, confidence);
-      } else if (name === s.current) {
-        s.lastConfidence = confidence; // refresh confidence on continued match
+        s.missCount = 0;
+        s.pending = null; s.pendingCount = 0;
+      } else if (name !== null && name !== s.current) {
+        // a DIFFERENT recognized name — adopt after a few consistent reads.
+        if (name === s.pending) s.pendingCount++; else { s.pending = name; s.pendingCount = 1; }
+        s.missCount = 0;
+        if (s.pendingCount >= ADOPT_FRAMES) {
+          s.current = name; s.lastConfidence = confidence;
+          s.pending = null; s.pendingCount = 0;
+          emitIdentity(s, name, confidence);
+        }
+      } else {
+        // name === null (no face / no match this frame).
+        s.pending = null; s.pendingCount = 0;
+        if (s.current !== null) {
+          // hold the current name through brief misses; clear only after many.
+          s.missCount++;
+          if (s.missCount >= CLEAR_FRAMES) {
+            s.current = null; s.lastConfidence = 0; s.missCount = 0;
+            emitIdentity(s, null, 0);
+          }
+        }
       }
     } catch { /* a bad frame — try again next tick */ } finally {
       s.busy = false;
@@ -93,7 +118,7 @@ export function faceRecognitionProcessor(gallery: Gallery): StreamProcessor & {
     onStreamStart(ctx: StreamContext) {
       const grabber = new FrameGrabber();
       grabber.start();
-      const s: Stream = { ctx, grabber, lastRunMs: 0, busy: false, current: null, pending: null, pendingCount: 0, lastConfidence: 0 };
+      const s: Stream = { ctx, grabber, lastRunMs: 0, busy: false, current: null, pending: null, pendingCount: 0, missCount: 0, lastConfidence: 0 };
       // Keepalive: re-push the current identity every ~5 s so the app's "who's in
       // frame now" stays fresh even with no change (and self-heals a missed frame).
       s.keepalive = setInterval(() => emitIdentity(s, s.current, s.lastConfidence), KEEPALIVE_MS);
@@ -121,18 +146,78 @@ export function faceRecognitionProcessor(gallery: Gallery): StreamProcessor & {
       streams.delete(streamId);
     },
 
-    /** Enroll the face currently on screen for a dock under `name` (overwrites). */
+    /**
+     * Enroll the face on screen under `name`. Captures SEVERAL frames over ~1.5s
+     * (the person naturally shifts a little) so the gallery holds multiple
+     * descriptors — a much more robust match than a single shot, which is what
+     * caused weak matches / "I don't recognize them". First descriptor overwrites
+     * any prior face for the name; the rest append.
+     */
     async enrollCurrent(streamId, name) {
       const s = streams.get(streamId);
       if (!s) return { ok: false, reason: 'dock not streaming' };
-      const jpeg = s.grabber.latest();
-      if (!jpeg) return { ok: false, reason: 'no frame yet' };
-      const descriptor = await describeFace(jpeg);
-      if (!descriptor) return { ok: false, reason: 'no face detected in frame' };
-      gallery.enroll(name, descriptor); // overwrite (default) — "remember as X" replaces
+      let captured = 0;
+      let thumb: string | undefined;
+      for (let i = 0; i < 5; i++) {
+        const jpeg = s.grabber.latest();
+        if (jpeg) {
+          const descriptor = await describeFace(jpeg);
+          if (descriptor) {
+            gallery.enroll(name, descriptor, thumb ? undefined : jpeg.toString('base64'), captured > 0);
+            thumb ??= jpeg.toString('base64');
+            captured++;
+          }
+        }
+        if (i < 4) await new Promise((r) => setTimeout(r, 350)); // ~1.4s of angles
+      }
+      if (captured === 0) return { ok: false, reason: 'no face detected in frame' };
       // reset so the new identity reflects immediately on the next recognize.
-      s.current = null; s.pending = null; s.pendingCount = 0;
+      s.current = null; s.pending = null; s.pendingCount = 0; s.missCount = 0;
       return { ok: true };
+    },
+
+    /**
+     * Fresh, authoritative recognition of the dock's CURRENT frame — backs
+     * recollect_face. Recomputes on demand (doesn't read the cached hint), so the
+     * agent always gets the truth when it asks. null name = a face but no match;
+     * `noFace` = nothing recognizable in frame.
+     */
+    async recognizeCurrent(streamId) {
+      const s = streams.get(streamId);
+      if (!s) return { name: null, tentative: null, noFace: true };
+      const jpeg = s.grabber.latest();
+      if (!jpeg) return { name: null, tentative: null, noFace: true };
+      const descriptor = await describeFace(jpeg);
+      if (!descriptor) return { name: null, tentative: null, noFace: true };
+      // confident match within the normal threshold ...
+      const m = gallery.match(descriptor);
+      if (m) return { name: m.name, tentative: null, noFace: false };
+      // ... else a TENTATIVE match in a wider band → the agent asks to confirm,
+      // and confirm_face enrolls this frame as more data (the learning loop).
+      const t = gallery.match(descriptor, TENTATIVE_THRESHOLD);
+      return { name: null, tentative: t?.name ?? null, noFace: false };
+    },
+
+    /**
+     * Confirm-and-learn: the user said "yes, I'm X" to a tentative guess. APPEND
+     * the current frame's descriptor to X so the gallery gets a real sample from
+     * THIS camera/lighting — recognition self-improves with each confirmation.
+     */
+    async confirmCurrent(streamId, name) {
+      const s = streams.get(streamId);
+      if (!s) return { ok: false };
+      const jpeg = s.grabber.latest();
+      if (!jpeg) return { ok: false };
+      const descriptor = await describeFace(jpeg);
+      if (!descriptor) return { ok: false };
+      gallery.enroll(name, descriptor, undefined, true); // append (keep prior angles)
+      s.current = null; s.pending = null; s.pendingCount = 0; s.missCount = 0;
+      return { ok: true };
+    },
+
+    /** DEBUG: the grabber's latest decoded JPEG (to inspect what we're seeing). */
+    currentFrame(streamId: string): Buffer | null {
+      return streams.get(streamId)?.grabber.latest() ?? null;
     },
   };
 }

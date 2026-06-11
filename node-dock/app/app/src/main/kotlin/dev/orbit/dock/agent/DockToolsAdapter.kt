@@ -31,7 +31,8 @@ object DockToolsAdapter {
     private val FACES = DockToolSchemas.FACES
 
     fun tools(dock: DockTools): List<AgentTool> =
-        listOf(SetFaceTool(dock), MoveTool(dock), ComputeTool(), RememberFaceTool(dock), RecollectFaceTool(dock))
+        listOf(SetFaceTool(dock), MoveTool(dock), ComputeTool(),
+            RememberFaceTool(dock), RecollectFaceTool(dock), ConfirmFaceTool(dock))
 
     /** Human phrase for the live status line, e.g. "looking left", "smiling". */
     fun statusPhrase(toolName: String, args: JsonObject): String {
@@ -136,7 +137,7 @@ object DockToolsAdapter {
         }
     }
 
-    /** Who is in front of the dock right now (reads the last station identity). */
+    /** Who is in front of the dock right now (fresh server recognition). */
     private class RecollectFaceTool(private val dock: DockTools) : AgentTool(
         name = "recollect_face",
         description = DockToolSchemas.RECOLLECT_FACE_DESC,
@@ -145,6 +146,19 @@ object DockToolsAdapter {
         override suspend fun execute(id: String, params: JsonObject, onUpdate: AgentToolUpdateCallback?): AgentToolResult<Any?> {
             val r = dock.recollectFace()
             return AgentToolResult(listOf(TextContent(r)), details = emptyMap<String, Any?>())
+        }
+    }
+
+    /** Confirm a tentative identity → station learns the face better. */
+    private class ConfirmFaceTool(private val dock: DockTools) : AgentTool(
+        name = "confirm_face",
+        description = DockToolSchemas.CONFIRM_FACE_DESC,
+        parameters = DockToolSchemas.confirmFace,
+    ) {
+        override suspend fun execute(id: String, params: JsonObject, onUpdate: AgentToolUpdateCallback?): AgentToolResult<Any?> {
+            val name = params["name"]?.jsonPrimitive?.content.orEmpty()
+            val r = dock.confirmFace(name)
+            return AgentToolResult(listOf(TextContent(r)), details = mapOf("name" to name))
         }
     }
 }

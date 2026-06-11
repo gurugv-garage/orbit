@@ -207,8 +207,10 @@ class PerceptionWiring(
                         perception?.onIdentity(event.name)
                     }
                     is PerceptionEvent.RemotePresence -> {
+                        // Station-side coarse presence — informational only. It does
+                        // NOT touch identity (one writer: UserIdentified), so it can't
+                        // race the name. Kept for any future presence-only UI.
                         Timber.d("station presence: ${event.present}")
-                        perception?.onRemotePresence(event.present)
                     }
                     is PerceptionEvent.Status -> {
                         _pipelineStatus.value = event.message

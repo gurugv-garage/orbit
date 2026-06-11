@@ -212,12 +212,28 @@ object DockToolSchemas {
         putJsonObject("properties") {}
     }
 
+    /** `confirm_face` — the user confirmed a tentative identity guess. */
+    val confirmFace: JsonObject = buildJsonObject {
+        put("type", "object")
+        putJsonObject("properties") {
+            putJsonObject("name") {
+                put("type", "string")
+                put("description", "the name the person just confirmed they are")
+            }
+        }
+        putJsonArray("required") { add("name") }
+    }
+
     // Descriptions live next to the schemas so the model-facing surface is one place.
     const val REMEMBER_FACE_DESC = "Remember the person you can currently see in your camera, by name. " +
         "Call this when someone tells you who they are (\"I'm guru\", \"remember me as Alice\", \"this is my friend Bob\"). " +
         "You'll recognize them by face from now on, even after a restart. Overwrites if the name already exists."
     const val RECOLLECT_FACE_DESC = "Find out who is in front of you right now — returns their name if you've met them, " +
-        "or that you don't recognize them, or that no one is there. Use it when asked \"do you know me?\" / \"who am I?\"."
+        "or that you don't recognize them, or that no one is there. Use it when asked \"do you know me?\" / \"who am I?\". " +
+        "If it comes back unsure (\"I think you might be X — is that right?\"), ASK them, and if they say yes call confirm_face."
+    const val CONFIRM_FACE_DESC = "Confirm a tentative face guess after the person says yes. When recollect_face said " +
+        "\"I think you might be X\" and they confirm they ARE X, call confirm_face with that name — it makes your " +
+        "recognition of them stronger for next time. Only call after they actually confirm."
     const val COMPUTE_DESC = "Evaluate a SAFE arithmetic or random-number expression and get the result back " +
         "(e.g. math, or \"random(1,10)\", or \"random(1,10) > 5\"). Use this whenever you'd otherwise want to " +
         "\"run code\" for a number or a calculation — you have NO general code execution, only this."

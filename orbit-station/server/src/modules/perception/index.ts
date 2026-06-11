@@ -68,6 +68,18 @@ export function perceptionModule(getHub: () => ProcessingHub): StationModule {
           void face.enrollCurrent(msg.source, name).then((r) => {
             bus.publish({ topic: 'perception', kind: 'enroll-result', payload: { name, ...r }, source: 'station', to: msg.source });
           });
+        } else if (msg.kind === 'recognize-request') {
+          // recollect_face: fresh authoritative recognition of the dock's current
+          // frame, replied directly to the dock. Carries `tentative` (a near-match
+          // the agent can confirm) so the dock can ask "are you X?".
+          const reqId = (msg.payload as { reqId?: string } | null)?.reqId;
+          void face.recognizeCurrent(msg.source).then((r) => {
+            bus.publish({ topic: 'perception', kind: 'recognize-result', payload: { reqId, ...r }, source: 'station', to: msg.source });
+          });
+        } else if (msg.kind === 'confirm-request') {
+          // confirm_face: user said "yes I'm X" → append this frame as more data.
+          const name = (msg.payload as { name?: string } | null)?.name?.trim();
+          if (name) void face.confirmCurrent(msg.source, name);
         }
       });
 
@@ -89,9 +101,20 @@ export function perceptionModule(getHub: () => ProcessingHub): StationModule {
         json(res, 200, state.all());
         return true;
       }
+      // DEBUG: dump the current decoded frame the face processor sees, to inspect
+      // what's actually being recognized.  GET /api/perception/frame/:streamId
+      if (req.method === 'GET' && subPath.startsWith('/frame/')) {
+        const streamId = decodeURIComponent(subPath.slice('/frame/'.length));
+        const buf = face.currentFrame(streamId);
+        if (!buf) { json(res, 404, { error: 'no frame' }); return true; }
+        res.writeHead(200, { 'content-type': 'image/jpeg' });
+        res.end(buf);
+        return true;
+      }
       // Gallery: list enrolled people / remove one.
       if (req.method === 'GET' && subPath === '/gallery') {
-        json(res, 200, { names: gallery.names() });
+        // names (back-compat) + people [{name, photo}] for the console thumbnails.
+        json(res, 200, { names: gallery.names(), people: gallery.people() });
         return true;
       }
       // Enroll the face currently on screen for a dock: { streamId, name }.

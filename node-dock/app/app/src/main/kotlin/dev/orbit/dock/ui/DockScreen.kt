@@ -126,6 +126,9 @@ fun DockScreen() {
     // Forward ref so DockTools' remember_face can publish via the station link
     // (the link is built below, after the tools).
     val stationLinkRef = remember { mutableStateOf<dev.orbit.dock.station.StationLink?>(null) }
+    // In-flight recollect_face requests: reqId → deferred result, resolved by the
+    // inbound `recognize-result` frame.
+    val pendingRecognize = remember { java.util.concurrent.ConcurrentHashMap<String, kotlinx.coroutines.CompletableDeferred<dev.orbit.dock.agent.RecognizeOutcome>>() }
     val tools = remember(controller, tts, bodyComms, configCache) {
         DockTools(
             controller,
@@ -144,6 +147,32 @@ fun DockScreen() {
                         put("name", kotlinx.serialization.json.JsonPrimitive(name))
                     },
                 )
+            },
+            // recollect_face → fresh server recognition: publish a request with a
+            // reqId, await the matching recognize-result (≤1s), else null (→ hint).
+            onRecognizeRequest = {
+                val link = stationLinkRef.value
+                if (link == null) null else {
+                    val reqId = java.util.UUID.randomUUID().toString()
+                    val deferred = kotlinx.coroutines.CompletableDeferred<dev.orbit.dock.agent.RecognizeOutcome>()
+                    pendingRecognize[reqId] = deferred
+                    link.publish("perception", "recognize-request",
+                        kotlinx.serialization.json.buildJsonObject {
+                            put("reqId", kotlinx.serialization.json.JsonPrimitive(reqId))
+                        })
+                    val result = kotlinx.coroutines.withTimeoutOrNull(1200) { deferred.await() }
+                    pendingRecognize.remove(reqId)
+                    result
+                }
+            },
+            // confirm_face → tell the station the user confirmed a tentative guess
+            // (append the current frame as more training data).
+            onConfirmRequest = { name ->
+                stationLinkRef.value?.publish(
+                    "perception", "confirm-request",
+                    kotlinx.serialization.json.buildJsonObject {
+                        put("name", kotlinx.serialization.json.JsonPrimitive(name))
+                    })
             },
         ).also { dev.orbit.dock.agent.ToolsTestController.tools = it }
     }
@@ -234,6 +263,17 @@ fun DockScreen() {
                         val nm = prim(envelope, "name")?.content
                         val reason = prim(envelope, "reason")?.content
                         Timber.i("enroll-result: ok=$ok name=$nm reason=$reason")
+                        null
+                    }
+                    // recognize-result: fresh recollect_face answer → resolve the
+                    // pending request so the suspended tool returns.
+                    "recognize-result" -> {
+                        val reqId = prim(envelope, "reqId")?.content
+                        val name = prim(envelope, "name")?.takeIf { it.isString }?.content
+                        val tentative = prim(envelope, "tentative")?.takeIf { it.isString }?.content
+                        val noFace = prim(envelope, "noFace")?.content?.toBooleanStrictOrNull() ?: false
+                        reqId?.let { pendingRecognize.remove(it) }
+                            ?.complete(dev.orbit.dock.agent.RecognizeOutcome(name, tentative, noFace))
                         null
                     }
                     else -> null
@@ -355,6 +395,21 @@ fun DockScreen() {
     val facePresent by wiring.facePresent.collectAsState()
     val sttArmed by wiring.sttArmed.collectAsState()
 
+    // The identity the station last recognized (its delay means it lags a new
+    // face by a couple seconds; showing it on screen makes that visible). Driven
+    // by UserIdentified events on the PerceptionBus; cleared when no face / null.
+    var seenName by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(Unit) {
+        dev.orbit.dock.perception.PerceptionBus.events.collect { ev ->
+            when (ev) {
+                is dev.orbit.dock.perception.PerceptionEvent.UserIdentified -> seenName = ev.name
+                is dev.orbit.dock.perception.PerceptionEvent.RemotePresence -> if (!ev.present) seenName = null
+                is dev.orbit.dock.perception.PerceptionEvent.FaceLost -> seenName = null
+                else -> {}
+            }
+        }
+    }
+
     val perms = rememberPermissions()
     val micGranted = perms.mic
     val camGranted = perms.camera
@@ -464,15 +519,20 @@ fun DockScreen() {
             },
     ) {
         Column(modifier = Modifier.fillMaxSize()) {
-            Row(
+            Box(
                 modifier = Modifier
                     .fillMaxWidth()
                     .weight(1f)
                     .padding(8.dp),
-                verticalAlignment = Alignment.CenterVertically,
             ) {
-                dev.orbit.dock.ui.widgets.EventLog(events = agent.events)
-                Box(modifier = Modifier.weight(1f).fillMaxSize()) {
+                // Debug HUD: agent loop events overlaid on the LEFT edge, so it
+                // doesn't push the face off-centre (it's ambient telemetry around
+                // the frame, not a layout column).
+                dev.orbit.dock.ui.widgets.EventLog(
+                    events = agent.events,
+                    modifier = Modifier.align(Alignment.CenterStart),
+                )
+                Box(modifier = Modifier.fillMaxSize()) {
                     FaceRenderer(
                         state = state,
                         gaze = gaze,
@@ -482,6 +542,19 @@ fun DockScreen() {
                         // the mic/mouth/everything else stays alive).
                         eyesClosed = camMuted && !privacy,
                     )
+                    // Who the station last recognized (lags a new face by ~1-2s).
+                    // Right edge, below the model card — clear of the centre READY
+                    // pill and the top badges (the whole frame border is debug HUD).
+                    seenName?.let { who ->
+                        Text(
+                            "👤 $who",
+                            fontSize = 13.sp,
+                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
+                            modifier = Modifier
+                                .align(Alignment.CenterEnd)
+                                .padding(end = 16.dp, bottom = 64.dp), // sits above the model chip
+                        )
+                    }
                     Subtitle(
                         state = state,
                         privacy = privacy,
@@ -543,8 +616,10 @@ fun DockScreen() {
                     if (camGranted && !camMuted) {
                         CameraPreview(
                             setSurface = { faceTracker.setPreviewSurface(it) },
+                            // bottom-RIGHT so it doesn't sit over the tool-call event
+                            // log on the left edge.
                             modifier = Modifier
-                                .align(Alignment.BottomStart)
+                                .align(Alignment.BottomEnd)
                                 .padding(12.dp),
                         )
                     }
@@ -552,7 +627,7 @@ fun DockScreen() {
                 dev.orbit.dock.ui.widgets.ModelChip(
                     selected = selectedModel,
                     onSelect = { opt -> modelStore.select(opt); selectedModel = opt },
-                    modifier = Modifier.width(120.dp).padding(8.dp),
+                    modifier = Modifier.align(Alignment.CenterEnd).width(120.dp).padding(8.dp),
                 )
             }
             DevBarHost(controller = controller)

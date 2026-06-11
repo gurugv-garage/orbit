@@ -43,15 +43,15 @@ class PerceptionSnapshot {
         ref.updateAndGet { it.copy(emotion = kind.lowercase()) }
     }
 
-    /** Identity recognized by the station (face/voice). null name = unrecognized. */
+    /**
+     * The identity HINT pushed by the station (the only writer of `identity`).
+     * This is best-effort display context — the prompt line + on-screen badge —
+     * and is allowed to lag. `recollect_face` recomputes fresh when the agent
+     * actually needs the truth, so a stale hint here is harmless. Nothing else
+     * (presence, face-lost) touches `identity` — one signal, one writer, no races.
+     */
     fun onIdentity(name: String?) {
         ref.updateAndGet { it.copy(identity = name) }
-    }
-
-    /** Station-sourced coarse presence (distinct from on-device face presence). */
-    fun onRemotePresence(present: Boolean) {
-        // If the station says no one's there, drop a stale identity.
-        ref.updateAndGet { if (present) it else it.copy(identity = null) }
     }
 
     /**
@@ -59,19 +59,25 @@ class PerceptionSnapshot {
      * (so [DockTools] can omit it rather than say "no face", which reads oddly).
      *
      * Examples:
-     *   "You can see the user (looking to your left); they appear happy."
-     *   "You can see the user; they appear neutral."
+     *   "You can see guru (they are toward your left); they appear happy."
+     *   "You can see someone; they appear neutral."  (face present, no name yet)
      *   null  (no face in view)
+     *
+     * The name here is the station's best-effort HINT (it may lag a second or two).
+     * That's fine: it's just "who you're probably talking to". When the agent needs
+     * certainty it calls recollect_face, which recomputes fresh on the server.
      */
     fun describe(): String? {
         val f = ref.get()
         if (!f.facePresent) return null
-        // "the user" → "guru" when the station has recognized them.
-        val who = f.identity ?: "the user"
+        val who = f.identity ?: "someone"
         val where = f.gaze?.let { " (they are toward your $it)" } ?: ""
         val mood = f.emotion?.let { "; they appear $it" } ?: ""
         return "You can see $who$where$mood."
     }
+
+    /** Whether a face is currently visible (drives the "always recollect" rule). */
+    val facePresent: Boolean get() = ref.get().facePresent
 
     private companion object {
         /** Map mirror-corrected NDC coords to a coarse direction word. Center

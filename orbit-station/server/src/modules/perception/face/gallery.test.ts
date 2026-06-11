@@ -68,7 +68,7 @@ test('multiple descriptors per person; match uses the nearest', () => {
   try {
     const g = new Gallery(path);
     g.enroll('alice', vec(0.0));
-    g.enroll('alice', vec(0.9)); // a second angle
+    g.enroll('alice', vec(0.9), undefined, true); // append a second angle
     // query near the second descriptor still matches alice
     const m = g.match(vec(0.92));
     assert.equal(m?.name, 'alice');

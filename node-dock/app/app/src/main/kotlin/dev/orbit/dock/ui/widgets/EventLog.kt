@@ -46,7 +46,7 @@ fun EventLog(
     }
 
     Column(
-        modifier = modifier.width(120.dp).fillMaxHeight().padding(6.dp),
+        modifier = modifier.width(280.dp).fillMaxHeight().padding(6.dp),
         verticalArrangement = Arrangement.Bottom,
     ) {
         LazyColumn(state = listState) {
@@ -55,7 +55,8 @@ fun EventLog(
                     line,
                     fontSize = 9.sp,
                     color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.42f),
-                    maxLines = 1,
+                    // wrap so tool params (e.g. remember_face{name:guru}) aren't cut off.
+                    maxLines = 3,
                     overflow = TextOverflow.Ellipsis,
                 )
             }

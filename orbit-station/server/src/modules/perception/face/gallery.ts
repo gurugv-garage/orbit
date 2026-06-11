@@ -11,11 +11,17 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 
 export interface GalleryEntry {
+  /** display name as the user typed it ("Guru"); matched case-insensitively. */
   name: string;
   /** one or more enrolled descriptors for this person (averaged for matching). */
   descriptors: number[][];
+  /** small JPEG of the enrolled face, base64 (for the console). Optional. */
+  photo?: string;
   enrolledAt: number;
 }
+
+/** Names are matched case/space-insensitively ("Guru" == "guru " == "GURU"). */
+const key = (name: string) => name.trim().toLowerCase();
 
 export interface MatchResult {
   name: string;
@@ -23,8 +29,14 @@ export interface MatchResult {
   distance: number;
 }
 
-/** face-api's default same-person threshold. */
-export const MATCH_THRESHOLD = 0.6;
+/**
+ * Same-person distance threshold. face-api's default is 0.6, but that's tuned for
+ * clean front-facing photos; our frames are a low-res ~2fps webcam-ish stream at
+ * an angle, so genuine same-person distances run a bit higher (~0.5-0.6). 0.62
+ * gives a little headroom so a true match on a slightly-off frame still passes,
+ * without letting strangers in (different people are typically >0.8 apart).
+ */
+export const MATCH_THRESHOLD = 0.62;
 
 export function euclidean(a: number[], b: number[]): number {
   let s = 0;
@@ -42,28 +54,36 @@ export class Gallery {
   }
 
   /**
-   * Enroll a face under `name`. By default this OVERWRITES any prior descriptors
-   * for that name (the agent-driven "remember this is X" replaces, doesn't pile
-   * on — and avoids same-face-two-names flip-flop). Pass `append` to keep prior
-   * angles. Persists immediately.
+   * Enroll a face under `name` (case-insensitive — "Guru" and "guru" are the same
+   * person). OVERWRITES any prior descriptors for that name by default ("remember
+   * this is X" replaces). `photo` is an optional base64 JPEG thumbnail.
    */
-  enroll(name: string, descriptor: number[], append = false): void {
-    const e = append
-      ? (this.#people.get(name) ?? { name, descriptors: [], enrolledAt: Date.now() })
-      : { name, descriptors: [], enrolledAt: Date.now() };
+  enroll(name: string, descriptor: number[], photo?: string, append = false): void {
+    const k = key(name);
+    const prev = this.#people.get(k);
+    const e: GalleryEntry = append && prev
+      ? prev
+      : { name: name.trim(), descriptors: [], enrolledAt: Date.now() };
+    e.name = name.trim(); // refresh display name to the latest casing
     e.descriptors.push(descriptor);
     if (e.descriptors.length > 5) e.descriptors.shift();
-    this.#people.set(name, e);
+    if (photo) e.photo = photo;
+    this.#people.set(k, e);
     this.#save();
   }
 
   remove(name: string): boolean {
-    const had = this.#people.delete(name);
+    const had = this.#people.delete(key(name));
     if (had) this.#save();
     return had;
   }
 
-  names(): string[] { return [...this.#people.keys()]; }
+  /** Display names (original casing). */
+  names(): string[] { return [...this.#people.values()].map((e) => e.name); }
+  /** Names + photo thumbnails for the console. */
+  people(): { name: string; photo?: string }[] {
+    return [...this.#people.values()].map((e) => ({ name: e.name, photo: e.photo }));
+  }
   size(): number { return this.#people.size; }
 
   /**
@@ -85,7 +105,20 @@ export class Gallery {
     if (!existsSync(this.#path)) return;
     try {
       const raw = JSON.parse(readFileSync(this.#path, 'utf-8')) as GalleryEntry[];
-      for (const e of raw) this.#people.set(e.name, e);
+      let merged = false;
+      for (const e of raw) {
+        const k = key(e.name);
+        const prev = this.#people.get(k);
+        if (prev) {
+          // merge case-dupes ("Guru" + "guru"): combine descriptors, keep a photo.
+          prev.descriptors = [...prev.descriptors, ...e.descriptors].slice(-5);
+          prev.photo ??= e.photo;
+          merged = true;
+        } else {
+          this.#people.set(k, e);
+        }
+      }
+      if (merged) this.#save(); // persist the de-duplicated gallery
     } catch { /* corrupt gallery → start empty */ }
   }
 

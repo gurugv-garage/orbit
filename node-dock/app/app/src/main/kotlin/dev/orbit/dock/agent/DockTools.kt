@@ -16,6 +16,14 @@ import timber.log.Timber
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
+ * Result of a fresh server recognition for recollect_face.
+ * - [name]: a confident match (we're sure).
+ * - [tentative]: a near-match we should CONFIRM with the user ("are you X?").
+ * - [noFace]: nothing recognizable in frame.
+ */
+data class RecognizeOutcome(val name: String?, val tentative: String?, val noFace: Boolean)
+
+/**
  * Side-effecting actions the agent can take on the dock's face, voice, body,
  * and subtitle. [DockAgent] calls these directly after parsing the model's
  * structured-output JSON (reply / face / body).
@@ -61,6 +69,18 @@ class DockTools(
      * remembering faces is unavailable (the tool says so).
      */
     private val onEnrollRequest: ((String) -> Unit)? = null,
+    /**
+     * Fresh, authoritative face recognition for `recollect_face`: round-trips to
+     * the station ("recognize your current frame now") and returns the result, or
+     * null on timeout/no-link. When null, recollect falls back to the snapshot
+     * hint. See DockScreen for the publish + await wiring.
+     */
+    private val onRecognizeRequest: (suspend () -> RecognizeOutcome?)? = null,
+    /**
+     * `confirm_face`: the user confirmed a tentative identity → ask the station to
+     * append the current frame as more training data for that name.
+     */
+    private val onConfirmRequest: ((String) -> Unit)? = null,
 ) {
 
     private val spokeThisTurn = AtomicBoolean(false)
@@ -173,15 +193,43 @@ class DockTools(
     }
 
     /**
-     * `recollect_face` tool: who is in front of the camera right now, per the
-     * station's last-pushed identity held in the snapshot. No round-trip — reads
-     * local state. Distinguishes "don't recognize" from "no one here".
+     * `recollect_face` tool: who is in front of the camera RIGHT NOW. Asks the
+     * station to recognize its current frame fresh (authoritative), with a short
+     * wait; if that doesn't come back (slow/offline), falls back to the snapshot
+     * hint ("I think it's X"). This is why a stale hint can't cause a wrong answer.
      */
-    fun recollectFace(): String {
+    suspend fun recollectFace(): String {
+        // Fresh server recognition first.
+        val fresh = onRecognizeRequest?.invoke()
+        if (fresh != null) {
+            return when {
+                fresh.noFace -> "There's no one in front of me right now."
+                fresh.name != null -> "This is ${fresh.name}."
+                // A near-match → ASK to confirm. If the user says yes, the agent
+                // should call confirm_face(name) so I learn this face better.
+                fresh.tentative != null ->
+                    "I think you might be ${fresh.tentative} — is that right? " +
+                        "(If yes, I'll remember your face better. Call confirm_face with the name once they confirm.)"
+                else -> "There's someone here, but I don't recognize them. If you tell me who you are I can remember you (remember_face)."
+            }
+        }
+        // Fallback: the best-effort hint from the snapshot.
         val f = perception?.facts
         if (f == null || !f.facePresent) return "There's no one in front of me right now."
-        return f.identity?.let { "This is $it." }
-            ?: "There's someone here, but I don't recognize them yet."
+        return f.identity?.let { "I think it's $it." }
+            ?: "There's someone here, but I don't recognize them."
+    }
+
+    /**
+     * `confirm_face` tool: the user confirmed they are [name] (after a tentative
+     * guess). Tell the station to append the current frame as more training data,
+     * so recognition improves. Reuses the enroll-request path with a confirm flag.
+     */
+    fun confirmFace(name: String): String {
+        val clean = name.trim()
+        if (clean.isBlank()) return "I need the name to confirm."
+        onConfirmRequest?.invoke(clean) ?: return "I can't update my memory right now."
+        return "Got it — I'll remember your face better now, $clean."
     }
 
     /**

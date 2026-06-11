@@ -50,11 +50,17 @@ export class FrameGrabber {
 
     this.#sock = createSocket('udp4');
     this.#ff = spawn('ffmpeg', [
-      '-loglevel', 'error',
+      '-loglevel', 'warning',
+      // VP8 size is carried IN the keyframe, not the SDP — at low/variable fps
+      // ffmpeg was giving up ("unspecified size") before a keyframe arrived. Give
+      // it a long analyze window + big probe so it waits for the first keyframe.
+      '-analyzeduration', '10M', '-probesize', '20M',
       '-protocol_whitelist', 'file,udp,rtp',
       '-i', this.#sdpPath,
       '-r', '1', '-f', 'image2pipe', '-vcodec', 'mjpeg', 'pipe:1',
     ]);
+    this.#ff.stderr?.on('data', (d) => console.log(`[grabber:ffmpeg] ${String(d).trim().slice(0, 200)}`));
+    this.#ff.on('exit', (code, sig) => console.log(`[grabber:ffmpeg] exited code=${code} sig=${sig}`));
     this.#collect();
   }
 
