@@ -286,7 +286,18 @@ fun DockScreen() {
                         val tentative = prim(envelope, "tentative")?.takeIf { it.isString }?.content
                         val conf = prim(envelope, "confidence")?.content?.toFloatOrNull() ?: 0f
                         val noFace = prim(envelope, "noFace")?.content?.toBooleanStrictOrNull() ?: false
-                        val outcome = dev.orbit.dock.agent.RecognizeOutcome(name, tentative, conf, noFace)
+                        // people[] = every face in frame (multi-person); each {name?, tentative?, confidence, side}.
+                        val peopleArr = envelope["people"] as? kotlinx.serialization.json.JsonArray
+                        val people = peopleArr?.mapNotNull { el ->
+                            val o = el as? kotlinx.serialization.json.JsonObject ?: return@mapNotNull null
+                            dev.orbit.dock.agent.RecognizedFace(
+                                name = prim(o, "name")?.takeIf { it.isString }?.content,
+                                tentative = prim(o, "tentative")?.takeIf { it.isString }?.content,
+                                confidence = prim(o, "confidence")?.content?.toFloatOrNull() ?: 0f,
+                                side = prim(o, "side")?.content ?: "center",
+                            )
+                        } ?: emptyList()
+                        val outcome = dev.orbit.dock.agent.RecognizeOutcome(name, tentative, conf, noFace, people)
                         // Cache a confident result (also feeds the background STT trigger).
                         if (name != null) perception.onIdentity(name, conf)
                         reqId?.let { pendingRecognize.remove(it) }?.complete(outcome)

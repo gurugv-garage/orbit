@@ -54,3 +54,48 @@ export async function describeFace(input: tf.Tensor3D | Buffer): Promise<number[
     if (Buffer.isBuffer(input)) tensor.dispose(); // only dispose what we created
   }
 }
+
+/** One detected face: its descriptor + where it sits in the frame (for "left/right"). */
+export interface DetectedFace {
+  descriptor: number[];
+  /** normalized box center, 0..1 (x: 0=left,1=right; y: 0=top,1=bottom). */
+  cx: number;
+  cy: number;
+  score: number;
+}
+
+/**
+ * ALL faces in the image, each with its own descriptor + frame position. Same
+ * detector/threshold as {@link describeFace}; the only difference is detectAll
+ * vs detectSingle. Returned left-to-right (by box center x) so the caller can
+ * say "Guru on the left, Shweta on the right" without re-sorting.
+ */
+export async function describeAllFaces(input: tf.Tensor3D | Buffer): Promise<DetectedFace[]> {
+  if (!loaded) await loadFaceModels();
+  const tensor = Buffer.isBuffer(input)
+    ? (tf.node.decodeImage(input, 3) as tf.Tensor3D)
+    : input;
+  try {
+    const dets = await faceapi
+      .detectAllFaces(
+        tensor as unknown as faceapi.TNetInput,
+        new faceapi.SsdMobilenetv1Options({ minConfidence: 0.2 }),
+      )
+      .withFaceLandmarks()
+      .withFaceDescriptors();
+    const [, , w, h] = [0, 0, (tensor as tf.Tensor3D).shape[1], (tensor as tf.Tensor3D).shape[0]];
+    return dets
+      .map((d) => {
+        const b = d.detection.box;
+        return {
+          descriptor: Array.from(d.descriptor),
+          cx: (b.x + b.width / 2) / (w || 1),
+          cy: (b.y + b.height / 2) / (h || 1),
+          score: d.detection.score,
+        };
+      })
+      .sort((a, b) => a.cx - b.cx);
+  } finally {
+    if (Buffer.isBuffer(input)) tensor.dispose();
+  }
+}

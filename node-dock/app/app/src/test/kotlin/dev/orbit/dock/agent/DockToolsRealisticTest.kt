@@ -220,4 +220,52 @@ class DockToolsRealisticTest {
         val t = DockTools(face = face, tts = tts, onSubtitle = {}, body = null, perception = perception)
         assertThat(t.currentContext()).doesNotContain("You can see")
     }
+
+    // ── recollect_face: multiple people in one frame ─────────────────────
+    // (when the station reports >1 face, recollect lists each by position.)
+
+    private fun toolsReturning(outcome: RecognizeOutcome) =
+        DockTools(face = face, tts = tts, onSubtitle = {}, body = null,
+            perception = PerceptionSnapshot(), onRecognizeRequest = { outcome })
+
+    @Test
+    fun recollectListsMultiplePeopleByPosition() = kotlinx.coroutines.test.runTest {
+        val t = toolsReturning(RecognizeOutcome(
+            name = "Guru", tentative = null, confidence = 0.9f, noFace = false,
+            people = listOf(
+                RecognizedFace("Guru", null, 0.9f, "left"),
+                RecognizedFace("Sia", null, 0.8f, "right"),
+            ),
+        ))
+        val said = t.recollectFace()
+        assertThat(said).contains("2 people")
+        assertThat(said).contains("Guru on the left")
+        assertThat(said).contains("Sia on the right")
+    }
+
+    @Test
+    fun recollectFlagsUnknownsInACrowdAndOffersToRemember() = kotlinx.coroutines.test.runTest {
+        val t = toolsReturning(RecognizeOutcome(
+            name = "Guru", tentative = null, confidence = 0.9f, noFace = false,
+            people = listOf(
+                RecognizedFace("Guru", null, 0.9f, "left"),
+                RecognizedFace(null, null, 0f, "center"),       // stranger
+                RecognizedFace(null, "Sia", 0.4f, "right"),     // tentative
+            ),
+        ))
+        val said = t.recollectFace()
+        assertThat(said).contains("3 people")
+        assertThat(said).contains("I don't recognize")
+        assertThat(said).contains("might be Sia")
+        assertThat(said).contains("remember_face") // offers to learn the unknown
+    }
+
+    @Test
+    fun recollectSinglePersonStillSaysThisIsX() = kotlinx.coroutines.test.runTest {
+        val t = toolsReturning(RecognizeOutcome(
+            name = "Guru", tentative = null, confidence = 0.9f, noFace = false,
+            people = listOf(RecognizedFace("Guru", null, 0.9f, "center")),
+        ))
+        assertThat(t.recollectFace()).isEqualTo("This is Guru.")
+    }
 }

@@ -15,13 +15,24 @@ import kotlinx.serialization.json.jsonPrimitive
 import timber.log.Timber
 import java.util.concurrent.atomic.AtomicBoolean
 
+/** One recognized face in the frame: a name (confident), a tentative guess, or
+ *  neither (unknown), plus where it sits ("left"/"center"/"right"). */
+data class RecognizedFace(val name: String?, val tentative: String?, val confidence: Float, val side: String)
+
 /**
  * Result of a fresh server recognition for recollect_face.
- * - [name]: a confident match (we're sure).
+ * - [name]: the primary confident match (we're sure) — for the single-identity cache.
  * - [tentative]: a near-match we should CONFIRM with the user ("are you X?").
  * - [noFace]: nothing recognizable in frame.
+ * - [people]: EVERY face detected (multi-person), left-to-right.
  */
-data class RecognizeOutcome(val name: String?, val tentative: String?, val confidence: Float, val noFace: Boolean)
+data class RecognizeOutcome(
+    val name: String?,
+    val tentative: String?,
+    val confidence: Float,
+    val noFace: Boolean,
+    val people: List<RecognizedFace> = emptyList(),
+)
 
 /**
  * Side-effecting actions the agent can take on the dock's face, voice, body,
@@ -210,6 +221,10 @@ class DockTools(
         if (fresh?.name != null) perception?.onIdentity(fresh.name, fresh.confidence)
 
         val faceNow = perception?.facts?.facePresent ?: (fresh?.noFace == false)
+        // MULTIPLE people in frame → list each by position, naming who we know.
+        if (fresh != null && fresh.people.size > 1) {
+            return describeCrowd(fresh.people)
+        }
         if (fresh != null && !fresh.noFace) {
             return when {
                 fresh.name != null -> "This is ${fresh.name}."
@@ -226,6 +241,27 @@ class DockTools(
             last != null -> "I don't see anyone in front of me right now, but the last person I was talking to was $last."
             else -> "There's no one in front of me right now, and I haven't recognized anyone yet."
         }
+    }
+
+    /**
+     * Render several faces in one frame as a natural sentence, e.g.
+     * "I can see 3 people: Guru on the left, someone I don't recognize in the
+     * center (maybe Shweta), and Sia on the right." Faces arrive left-to-right.
+     */
+    private fun describeCrowd(people: List<RecognizedFace>): String {
+        fun who(f: RecognizedFace): String = when {
+            f.name != null -> "${f.name} on the ${f.side}"
+            f.tentative != null -> "someone on the ${f.side} I think might be ${f.tentative}"
+            else -> "someone on the ${f.side} I don't recognize"
+        }
+        val parts = people.map(::who)
+        val joined = when (parts.size) {
+            2 -> "${parts[0]} and ${parts[1]}"
+            else -> parts.dropLast(1).joinToString(", ") + ", and " + parts.last()
+        }
+        val known = people.count { it.name != null }
+        val tail = if (known < people.size) " Tell me who I don't know and I'll remember them (remember_face)." else ""
+        return "I can see ${people.size} people: $joined.$tail"
     }
 
     /**

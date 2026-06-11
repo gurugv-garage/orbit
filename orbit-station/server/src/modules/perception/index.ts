@@ -23,11 +23,19 @@ import { PerceptionState } from './state.js';
 import { presenceProcessor } from './processors/presence.js';
 import { faceRecognitionProcessor } from './processors/face-recognition.js';
 import { Gallery } from './face/gallery.js';
-import { describeFace } from './face/recognizer.js';
+import { describeFace, describeAllFaces, type DetectedFace } from './face/recognizer.js';
 
 /** A base64 JPEG (the dock's on-device camera frame) → its face descriptor. */
 async function describeBase64(b64: string): Promise<number[] | null> {
   try { return await describeFace(Buffer.from(b64, 'base64')); } catch { return null; }
+}
+/** All faces in a base64 JPEG, left-to-right. Empty on decode/parse failure. */
+async function describeAllBase64(b64: string): Promise<DetectedFace[]> {
+  try { return await describeAllFaces(Buffer.from(b64, 'base64')); } catch { return []; }
+}
+/** A horizontal position word from a normalized x (0=left … 1=right). */
+function sideOf(cx: number): 'left' | 'center' | 'right' {
+  return cx < 0.4 ? 'left' : cx > 0.6 ? 'right' : 'center';
 }
 // MATCH: confident "this is X". TENTATIVE: the "might be X" hedge band.
 // 0.78 was far too loose — different people sit ~0.7-0.9 apart in this 320px
@@ -87,17 +95,28 @@ export function perceptionModule(getHub: () => ProcessingHub): StationModule {
           });
         } else if (msg.kind === 'recognize-request') {
           const reqId = p?.reqId;
-          void describeBase64(p?.photo ?? '').then((d) => {
-            let out: { name: string | null; tentative: string | null; confidence: number; noFace: boolean };
-            if (!d) out = { name: null, tentative: null, confidence: 0, noFace: true };
-            else {
-              const m = gallery.match(d, MATCH);
-              if (m) out = { name: m.name, tentative: null, confidence: Math.max(0, 1 - m.distance), noFace: false };
-              else {
-                const t = gallery.match(d, TENTATIVE);
-                out = { name: null, tentative: t?.name ?? null, confidence: t ? Math.max(0, 1 - t.distance) : 0, noFace: false };
-              }
-            }
+          void describeAllBase64(p?.photo ?? '').then((faces) => {
+            // Classify EVERY face: confident name, tentative name, or unknown —
+            // each tagged with its side (left/center/right) so the dock can say
+            // "Guru on the left, someone I don't know on the right".
+            const people = faces.map((f) => {
+              const m = gallery.match(f.descriptor, MATCH);
+              if (m) return { name: m.name, tentative: null, confidence: Math.max(0, 1 - m.distance), side: sideOf(f.cx) };
+              const t = gallery.match(f.descriptor, TENTATIVE);
+              return { name: null, tentative: t?.name ?? null, confidence: t ? Math.max(0, 1 - t.distance) : 0, side: sideOf(f.cx) };
+            });
+            // Back-compat single fields (the dock caches one identity): pick the
+            // best confident match, else the best tentative.
+            const confident = people.filter((x) => x.name).sort((a, b) => b.confidence - a.confidence);
+            const tentatives = people.filter((x) => !x.name && x.tentative).sort((a, b) => b.confidence - a.confidence);
+            const primary = confident[0] ?? tentatives[0];
+            const out = {
+              name: confident[0]?.name ?? null,
+              tentative: confident[0] ? null : (tentatives[0]?.tentative ?? null),
+              confidence: primary?.confidence ?? 0,
+              noFace: faces.length === 0,
+              people, // the full per-face list (multi-person)
+            };
             bus.publish({ topic: 'perception', kind: 'recognize-result', payload: { reqId, ...out }, source: 'station', to: msg.source });
           });
         } else if (msg.kind === 'confirm-request') {
