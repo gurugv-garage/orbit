@@ -383,11 +383,15 @@ fun DockScreen() {
         ).also { wiringRef.value = it }
     }
 
+    // Keyed on `agent`: a model switch rebuilds the agent, and THIS effect's
+    // re-run shuts the previous one down (scope + HTTP client). Keyed on Unit
+    // it captured the FIRST agent forever — every switched-away agent leaked
+    // and final disposal hit a stale instance.
+    DisposableEffect(agent) {
+        onDispose { agent.shutdown() }
+    }
     DisposableEffect(Unit) {
-        onDispose {
-            agent.shutdown()
-            tts.shutdown()
-        }
+        onDispose { tts.shutdown() }
     }
 
     LaunchedEffect(Unit) { wiring.attach(scope) }
@@ -444,17 +448,11 @@ fun DockScreen() {
     val sttArmed by wiring.sttArmed.collectAsState()
 
     // Badge: the last recognized person (from the snapshot cache, updated by
-    // recollect / the STT-trigger). Polled so it reflects the single source of
-    // truth. Shows "guru" when a face is present, "guru (away)" when remembered
-    // but no face now.
-    var seenName by remember { mutableStateOf<String?>(null) }
-    LaunchedEffect(Unit) {
-        while (true) {
-            val f = perception.facts
-            seenName = f.identity?.let { if (f.facePresent) it else "$it (away)" }
-            kotlinx.coroutines.delay(500)
-        }
-    }
+    // recollect / the STT-trigger). Observed from the snapshot's StateFlow —
+    // shows "guru" when a face is present, "guru (away)" when remembered but
+    // no face now.
+    val senses by perception.factsFlow.collectAsState()
+    val seenName = senses.identity?.let { if (senses.facePresent) it else "$it (away)" }
 
     val perms = rememberPermissions()
     val micGranted = perms.mic
@@ -492,15 +490,15 @@ fun DockScreen() {
     // Emit WakeWord FIRST: it opens a fresh listening session (via
     // AutoRelisten.onSessionStarted, clearing any pending voice-turn re-arm) so
     // the trailing Speaking(false) from tts.stop() can't fire a second, racing
-    // re-arm. The pipeline's WakeWord handler then stops TTS and waits for the
-    // audio route to settle before arming STT (see BARGE_IN_SETTLE_MS) — arming
+    // re-arm. The pipeline's WakeWord handler releases the mic (cancelAndJoin)
+    // and waits a beat for the input HAL to settle before arming STT — arming
     // too early, while TTS is still tearing down, gives SR a dead mic.
     val bargeIn = remember {
         {
             PerceptionBus.emit(PerceptionEvent.WakeWord(label = "(barge-in)"))
-            tts.stop()
+            tts.stop()   // emits the Speaking(false) edge itself (SpeakingEdgeGate)
             agentRef.value?.stop()
-            PerceptionBus.emit(PerceptionEvent.Speaking(active = false))
+            Unit
         }
     }
 
@@ -549,8 +547,17 @@ fun DockScreen() {
                                 PerceptionBus.emit(PerceptionEvent.WakeWord(label = "(tap)"))
                             }
                             else -> {
-                                // Listening/Engaged → tap stops.
+                                // Listening/Engaged → tap stops the session.
                                 PerceptionBus.emit(PerceptionEvent.StopListening)
+                                // If a turn is mid-flight (the face stays
+                                // Listening through Waiting/Thinking/tool
+                                // calls), tap cancels the turn too — otherwise
+                                // the only way out of a slow "thinking…" was
+                                // long-press, and taps felt ignored.
+                                if (agentRef.value?.state?.value !is AgentState.Idle) {
+                                    tts.stop()
+                                    agentRef.value?.stop()
+                                }
                                 controller.silence()
                             }
                         }

@@ -52,10 +52,10 @@ class DockTools(
      *  transcript (otherwise an action-only turn leaves it on screen). */
     private val onTurnSettled: () -> Unit = {},
     /**
-     * Optional body. When non-null and connected, [makeBodyMovements] forwards
-     * moves to it via the brain-side state catalog. When null or disconnected
-     * it returns a "no body connected" string so the reply still speaks but no
-     * servo commands are sent. A [BodyController] (not the concrete
+     * Optional body. When non-null and connected, [makeMove] sends the timed
+     * degree sequence to it. When null or disconnected it returns a "no body
+     * connected" string so the reply still speaks but no servo commands are
+     * sent. A [BodyController] (not the concrete
      * [dev.orbit.dock.body.BodyLinkComms]) so tests can drive a mock body.
      */
     private val body: BodyController? = null,
@@ -120,6 +120,10 @@ class DockTools(
     fun beginTurn() {
         spokeThisTurn.set(false)
         lastSpoken = null
+        // Tell the speaker a turn is open: sentences will stream in, so a
+        // momentarily-empty TTS queue mid-turn is NOT end-of-speech (the gap
+        // between streamed sentences must not drop the speaking signal).
+        tts.onTurnBegin()
         // Do NOT optimistically set Speaking here. The model may take seconds
         // (or hang) before any audio — showing "Speaking" the whole time looks
         // like the dock is stuck talking silently. DockTts.onStart() flips the
@@ -139,6 +143,10 @@ class DockTools(
      * so the UI doesn't freeze on the user's transcript / a half state.
      */
     fun endTurn() {
+        // Close the speaker's turn window: once the TTS queue drains (or now,
+        // if it already has) the speaking signal falls — exactly once, at the
+        // true end of the reply.
+        tts.onTurnEnd()
         if (!spokeThisTurn.get()) {
             face.silence()
             onSubtitle("")
@@ -548,78 +556,11 @@ class DockTools(
     }
 
     // ── BodyLink ──────────────────────────────────────────────────────
-    // Drive a connected physical body (sim or ESP32). State names live
-    // brain-side in BodyStateCatalog (see app/src/main/assets/states.json).
+    // Drive a connected physical body (sim or ESP32) via the `move` tool.
     // If no body is connected this returns a "not connected" string so the
     // reply still speaks. v0 firmware exposes `neck` + `foot` only.
-
-    fun makeBodyMovements(
-
-        sequence: String,
-    ): String {
-        val link = body
-        if (link == null || !link.connected.value) {
-            // Log the intended sequence even when offline, so "why didn't it
-            // move?" is debuggable from logcat — the LLM still requested it.
-            Timber.i("tool.makeBodyMovements: no body connected — would have run: \"$sequence\"")
-            return "no body connected; nothing happened"
-        }
-        val catalog = link.validatedCatalog
-        val steps = sequence.split(";").map { it.trim() }.filter { it.isNotEmpty() }
-        if (steps.isEmpty()) return "empty sequence"
-
-        TurnLog.toolCalled("makeBodyMovements", sequence)
-
-        // Validate steps NOW (synchronously) so the LLM gets immediate
-        // feedback on bad steps. Build a clean list of executable ops.
-        val ops = mutableListOf<MoveOp>()
-        val problems = mutableListOf<String>()
-        for (step in steps) {
-            val p = step.split(":").map { it.trim() }
-            if (p.size != 2) { problems.add("bad step '$step'"); continue }
-            val (key, value) = p
-            when (key.lowercase()) {
-                "wait" -> {
-                    val ms = value.toLongOrNull()
-                    if (ms == null || ms < 0) problems.add("bad wait '$step'")
-                    else ops.add(MoveOp(waitMs = ms.coerceAtMost(5000L)))
-                }
-                "neck", "foot" -> {
-                    val cmd = catalog.resolve(key.lowercase(), value)
-                    if (cmd == null) problems.add("unknown $key state '$value'")
-                    else ops.add(MoveOp(part = key.lowercase(), state = value, travelMs = cmd.durationMs.coerceIn(0, 5000)))
-                }
-                else -> problems.add("unknown part '$key' in '$step'")
-            }
-        }
-
-        // FIRE-AND-FORGET: run the timed sequence in the background so the
-        // agent loop + speech aren't blocked for the whole gesture. Each move
-        // auto-waits its travel time so moves don't preempt each other.
-        val moves = ops.count { it.part != null }
-        if (ops.isNotEmpty()) {
-            onToolCall("sequence")
-            // A new sequence preempts any still-running one (e.g. user
-            // interrupts a "wiggle" with a new command).
-            bodyJob?.cancel()
-            bodyJob = bodyScope.launch {
-                try {
-                    for (op in ops) {
-                        if (op.part != null && op.state != null) {
-                            link.setState(op.part, op.state)
-                            kotlinx.coroutines.delay(op.travelMs + 40L)
-                        } else {
-                            kotlinx.coroutines.delay(op.waitMs)
-                        }
-                    }
-                } finally {
-                    onToolCall(null)
-                }
-            }
-        }
-        return if (problems.isEmpty()) "ok — running $moves moves"
-               else "running $moves moves; issues: ${problems.joinToString()}"
-    }
+    // (The legacy named-state `makeBodyMovements` path was removed — the
+    // degree-based `move` tool replaced it and nothing called it anymore.)
 
     /**
      * The `move` tool's executor: an ordered sequence of degree-targeted steps.
@@ -709,13 +650,8 @@ class DockTools(
 
     /** One step of a body-movement sequence: a set of joint targets that move
      *  TOGETHER (part → (pulse_width_us, label)) over `travelMs`, then a pause.
-     *  A single-joint step is just a one-entry map. (`state`/`pulseWidthUs` below
-     *  are kept for the legacy named-state [makeBodyMovements] path.) */
+     *  A single-joint step is just a one-entry map; an empty map is a pause. */
     private data class MoveOp(
-        val part: String? = null,
-        val state: String? = null,
-        val pulseWidthUs: Int? = null,
-        val label: String? = null,
         val targets: Map<String, Pair<Int, String>> = emptyMap(),
         val travelMs: Int = 0,
         val waitMs: Long = 0L,

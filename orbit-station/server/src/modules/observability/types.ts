@@ -24,7 +24,9 @@ export type AgentEventKind =
   | 'ToolExecutionEnd'
   // synthetic markers the dock emits (not agent-core events):
   | 'SpeakStart'
-  | 'SpeakEnd';
+  | 'SpeakEnd'
+  // the TTS tail drained after TurnEnd → the whole user-perceived turn is over.
+  | 'TurnSettled';
 
 /**
  * One agent-core event as it crosses the wire. The host stamps it with the
@@ -104,6 +106,8 @@ export interface TurnRecord {
   speech?: SpeechWindow[];
   startedAt: number;
   endedAt?: number;
+  /** when the TTS tail finished after endedAt — the real end of the UX turn. */
+  settledAt?: number;
   steps: StepRecord[];
   /** llm calls = steps that emitted tool calls + 1 (per AGENT-MODEL.md). */
   llmCalls: number;

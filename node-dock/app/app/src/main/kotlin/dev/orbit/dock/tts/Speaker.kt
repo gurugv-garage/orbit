@@ -11,4 +11,13 @@ interface Speaker {
 
     /** Stop speaking immediately and drop anything queued. */
     fun stop()
+
+    /**
+     * A turn opened/closed: between these, more sentences may still stream in,
+     * so a momentarily-empty TTS queue must NOT be treated as "stopped
+     * speaking" (see [SpeakingEdgeGate]). Default no-ops keep test fakes and
+     * simple speakers unaffected.
+     */
+    fun onTurnBegin() {}
+    fun onTurnEnd() {}
 }

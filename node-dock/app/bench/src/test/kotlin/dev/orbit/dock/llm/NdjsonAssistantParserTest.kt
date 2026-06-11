@@ -87,3 +87,22 @@ class NdjsonAssistantParserTest {
         assertThat(p.accept(line("""{"message":{"content":"late"}}"""))).isEmpty()
     }
 }
+
+/** Ollama's final NDJSON object carries token counts → Done message usage. */
+class NdjsonUsageTest {
+    private val model = Model("gemma4:e2b", "gemma4:e2b", "openai-completions", "ollama")
+    private val json = Json { ignoreUnknownKeys = true; isLenient = true }
+    private fun line(s: String) = json.parseToJsonElement(s).jsonObject
+
+    @Test
+    fun tokenCountsFromFinalObjectLandOnDone() {
+        val p = NdjsonAssistantParser(model)
+        val events =
+            p.accept(line("""{"message":{"role":"assistant","content":"hi"}}""")) +
+            p.accept(line("""{"message":{"role":"assistant","content":""},"done":true,"prompt_eval_count":222,"eval_count":11}"""))
+        val done = events.last() as AssistantMessageEvent.Done
+        assertThat(done.message.usage.input).isEqualTo(222)
+        assertThat(done.message.usage.output).isEqualTo(11)
+        assertThat(done.message.usage.totalTokens).isEqualTo(233)
+    }
+}

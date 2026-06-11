@@ -87,6 +87,10 @@ export class ObsStore {
         if (open) open.endedAt = ev.ts;
         break;
       }
+      case 'TurnSettled':
+        // TTS tail drained after TurnEnd — the real end of the UX turn.
+        turn.settledAt = ev.ts;
+        break;
       case 'ToolExecutionStart': {
         const step = last(turn.steps);
         if (step && ev.data?.toolCallId) {
@@ -186,6 +190,15 @@ export class ObsStore {
       session.lastSeen = Math.max(session.lastSeen, turn.endedAt ?? turn.startedAt);
       if (!session.turns.find((t) => t.turnId === turn.turnId)) session.turns.push(turn);
     }
+  }
+
+  /** The most recent [limit] turns across all sessions, newest first — feeds
+   *  the /health summary. Served from the in-memory working set. */
+  recentTurns(limit: number): TurnRecord[] {
+    return [...this.#sessions.values()]
+      .flatMap((s) => s.turns)
+      .sort((a, b) => b.startedAt - a.startedAt)
+      .slice(0, limit);
   }
 
   list(): Array<Omit<SessionRecord, 'turns'> & { turns: number }> {

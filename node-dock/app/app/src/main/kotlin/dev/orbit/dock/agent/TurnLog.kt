@@ -25,7 +25,14 @@ object TurnLog {
 
     private var building: TurnRecord? = null
 
-    fun startTurn(transcript: String) {
+    // All mutation goes through this lock: tools execute concurrently (the
+    // loop fired `move` + `set_face` 7ms apart in production), and an
+    // unsynchronized add-while-snapshot threw ConcurrentModificationException
+    // *into a tool result* the model then read. One lock, tiny critical
+    // sections — contention is negligible at turn cadence.
+    private val lock = Any()
+
+    fun startTurn(transcript: String) = synchronized(lock) {
         building = TurnRecord(
             startMs = System.currentTimeMillis(),
             transcript = transcript,
@@ -33,26 +40,26 @@ object TurnLog {
         _current.value = building
     }
 
-    fun attemptModel(modelId: String, attempt: Int, total: Int) {
+    fun attemptModel(modelId: String, attempt: Int, total: Int) = synchronized(lock) {
         val b = building ?: return
         b.attempts.add(ModelTry(modelId = modelId, attempt = attempt, of = total))
         _current.value = b.snapshot()
     }
 
-    fun attemptFailed(error: String) {
+    fun attemptFailed(error: String) = synchronized(lock) {
         val b = building ?: return
         b.attempts.lastOrNull()?.error = error.take(200)
         _current.value = b.snapshot()
     }
 
-    fun attemptSucceeded(modelId: String) {
+    fun attemptSucceeded(modelId: String) = synchronized(lock) {
         val b = building ?: return
         b.attempts.lastOrNull()?.success = true
         b.winningModel = modelId
         _current.value = b.snapshot()
     }
 
-    fun toolCalled(name: String, arg: String?) {
+    fun toolCalled(name: String, arg: String?) = synchronized(lock) {
         val b = building ?: return
         b.tools.add(ToolInvocation(
             name = name,
@@ -62,7 +69,7 @@ object TurnLog {
         _current.value = b.snapshot()
     }
 
-    fun endTurn(reply: String?) {
+    fun endTurn(reply: String?) = synchronized(lock) {
         val b = building ?: return
         b.reply = reply?.take(500)
         b.endMs = System.currentTimeMillis()

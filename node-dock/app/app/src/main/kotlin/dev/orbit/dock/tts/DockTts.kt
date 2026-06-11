@@ -34,6 +34,10 @@ class DockTts(
     private val ready = AtomicBoolean(false)
     private val pending = mutableListOf<String>()
     private val activeUtterances = mutableSetOf<String>()
+    // Rising/falling edges of the public "speaking" signal. Turn-aware so the
+    // gap between streamed sentences never reads as "stopped speaking" — that
+    // false edge mid-reply is what re-armed the mic over the dock's own voice.
+    private val gate = SpeakingEdgeGate()
 
     private val tts: TextToSpeech = TextToSpeech(appCtx) { status ->
         if (status == TextToSpeech.SUCCESS) {
@@ -68,7 +72,7 @@ class DockTts(
             override fun onStart(utteranceId: String?) {
                 Timber.v("TTS start: $utteranceId")
                 face.speak()
-                onSpeakingChanged(true)
+                if (gate.onUtteranceStarted()) onSpeakingChanged(true)
             }
 
             override fun onDone(utteranceId: String?) {
@@ -91,23 +95,46 @@ class DockTts(
                 Timber.w("TTS error: $utteranceId code=$errorCode")
                 finishUtterance(utteranceId)
             }
+
+            override fun onStop(utteranceId: String?, interrupted: Boolean) {
+                // tts.stop() routes the current utterance HERE, not onDone/
+                // onError — without this override a stop left the utterance
+                // forever "active" and the speaking signal never fell.
+                Timber.v("TTS stopped: $utteranceId interrupted=$interrupted")
+                finishUtterance(utteranceId)
+            }
         })
     }
 
     /**
-     * Shared cleanup for an utterance ending (success OR error). Removes it
-     * from the active set; when nothing is left to speak, silences the face
-     * and signals speaking=false so the wake gate reopens. Called from both
-     * onDone and onError — an error path that skips this is what stuck the
-     * face in Speaking.
+     * Shared cleanup for an utterance ending (done / error / stopped). Removes
+     * it from the active set; the speaking signal falls only when the gate
+     * says the whole speech run is over (queue drained AND turn closed) — a
+     * momentarily-empty queue mid-turn is just the LLM still streaming.
      */
     private fun finishUtterance(utteranceId: String?) {
-        synchronized(activeUtterances) {
-            if (utteranceId != null) activeUtterances.remove(utteranceId)
-            if (activeUtterances.isEmpty() && pending.isEmpty()) {
-                face.silence()
-                onSpeakingChanged(false)
-            }
+        if (utteranceId != null) synchronized(activeUtterances) { activeUtterances.remove(utteranceId) }
+        if (queueDrained() && gate.onQueueDrained()) {
+            face.silence()
+            onSpeakingChanged(false)
+        }
+    }
+
+    private fun queueDrained(): Boolean =
+        synchronized(activeUtterances) { activeUtterances.isEmpty() } &&
+            synchronized(pending) { pending.isEmpty() }
+
+    /** A turn opened: sentences will stream in; gaps are not end-of-speech. */
+    override fun onTurnBegin() {
+        gate.onTurnOpened()
+    }
+
+    /** The turn's loop ended: once the queue drains (or if it already has),
+     *  the speaking signal falls. */
+    override fun onTurnEnd() {
+        if (gate.onTurnClosed(queueDrained())) {
+            face.silence()
+            onSpeakingChanged(false)
         }
     }
 
@@ -128,6 +155,13 @@ class DockTts(
             synchronized(pending) { pending.clear() }
         } catch (t: Throwable) {
             Timber.w(t, "TTS stop failed")
+        }
+        // A hard stop ends speech NOW (even mid-turn): without this falling
+        // edge the pipeline kept believing the dock was talking after a
+        // long-press/barge-in, which suppressed auto-listen until the next turn.
+        if (gate.onStopped()) {
+            face.silence()
+            onSpeakingChanged(false)
         }
     }
 

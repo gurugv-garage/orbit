@@ -141,6 +141,12 @@ class PerceptionWiring(
                     is PerceptionEvent.Transcript -> {
                         Timber.d("transcript: \"${event.text}\" final=${event.isFinal}")
                         _transcript.value = TranscriptState(event.text, event.isFinal)
+                        // A final transcript ends the listening session (the
+                        // pipeline clears its own flag the same way). Without
+                        // this, an action-only turn (no TTS → no re-arm → no
+                        // session_ended) left the flag stuck true and
+                        // auto-listen-on-face dead until the next manual tap.
+                        if (event.isFinal) listeningActive = false
                         if (!event.isFinal && controller.state.value == FaceState.Engaged) {
                             controller.listen()
                         }

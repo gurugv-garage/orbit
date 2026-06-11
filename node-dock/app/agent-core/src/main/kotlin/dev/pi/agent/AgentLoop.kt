@@ -14,6 +14,7 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.toList
 import kotlinx.serialization.json.JsonObject
+import kotlin.coroutines.cancellation.CancellationException
 
 /**
  * Kotlin port of pi-agent-core `src/agent-loop.ts`.
@@ -407,6 +408,8 @@ private suspend fun prepareToolCall(
         Prepared(toolCall, tool, validated)
     } catch (e: ToolValidationException) {
         Immediate(errorResult(e.message ?: "Validation failed"), true)
+    } catch (e: CancellationException) {
+        throw e // cancellation must unwind the loop, not become a tool "result"
     } catch (e: Exception) {
         Immediate(errorResult(e.message ?: e.toString()), true)
     }
@@ -429,6 +432,8 @@ private suspend fun executePrepared(prepared: Prepared, emit: AgentEventSink): P
             )
         }
         result to false
+    } catch (e: CancellationException) {
+        throw e // cancellation must unwind the loop, not become a tool "result"
     } catch (e: Exception) {
         for (partial in updates) {
             emit.emit(
@@ -464,6 +469,8 @@ private suspend fun finalizeExecuted(
                 )
                 isError = after.isError ?: isError
             }
+        } catch (e: CancellationException) {
+            throw e // cancellation must unwind the loop, not become a tool "result"
         } catch (e: Exception) {
             result = errorResult(e.message ?: e.toString())
             isError = true

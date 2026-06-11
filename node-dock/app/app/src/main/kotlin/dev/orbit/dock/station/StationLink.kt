@@ -101,6 +101,16 @@ class StationLink(
     @Volatile private var session: io.ktor.client.plugins.websocket.DefaultClientWebSocketSession? = null
     private var loopJob: Job? = null
     private var heartbeatJob: Job? = null
+    private var senderJob: Job? = null
+
+    // Outgoing frames, drained by ONE sender coroutine per session so frames
+    // leave in publish order (a launch-per-frame sender reordered obs `seq`
+    // under load). Bounded + drop-oldest: when the station is slow/unreachable
+    // we shed telemetry instead of growing a queue on the phone.
+    private val outbox = kotlinx.coroutines.channels.Channel<String>(
+        capacity = 256,
+        onBufferOverflow = kotlinx.coroutines.channels.BufferOverflow.DROP_OLDEST,
+    )
 
     /** Begin connecting (and auto-reconnecting). No-op if url is blank. */
     fun start() {
@@ -153,6 +163,17 @@ class StationLink(
         Timber.i("StationLink: connected to $url (dock=$dock); announced ${configInterest.size} config keys")
         heartbeatJob?.cancel()
         heartbeatJob = scope.launch { heartbeatLoop() }
+        senderJob?.cancel()
+        senderJob = scope.launch {
+            for (text in outbox) {
+                try {
+                    s.send(text)
+                } catch (t: Throwable) {
+                    Timber.d("StationLink send failed: ${t.message}")
+                    break // session is dead; the reconnect loop builds a new sender
+                }
+            }
+        }
 
         // Drain inbound. Config pushes/snapshots (topic 'config') feed the
         // ConfigCache via onConfigFrame; everything else keeps the socket
@@ -205,26 +226,21 @@ class StationLink(
         }
     }
 
-    /** Publish one frame on a topic. Silently dropped if not connected. */
+    /** Publish one frame on a topic. Queued in order; silently dropped if not
+     *  connected (the dock is fully functional without a station). */
     fun publish(topic: String, kind: String, payload: JsonObject) {
-        val s = session ?: return
-        scope.launch {
-            try {
-                s.send(json.encodeToString(JsonObject.serializer(), buildJsonObject {
-                    put("t", "publish"); put("topic", topic); put("kind", kind)
-                    put("payload", payload)
-                }))
-            } catch (t: Throwable) {
-                Timber.d("StationLink publish failed: ${t.message}")
-            }
-        }
+        if (session == null) return
+        outbox.trySend(json.encodeToString(JsonObject.serializer(), buildJsonObject {
+            put("t", "publish"); put("topic", topic); put("kind", kind)
+            put("payload", payload)
+        }))
     }
 
     /** Publish one agent-core event on the `obs` topic. */
     fun emitAgentEvent(dto: JsonObject) = publish("obs", "event", dto)
 
     fun stop() {
-        loopJob?.cancel(); heartbeatJob?.cancel()
+        loopJob?.cancel(); heartbeatJob?.cancel(); senderJob?.cancel()
         session = null
         _connected.value = false
         client.close()

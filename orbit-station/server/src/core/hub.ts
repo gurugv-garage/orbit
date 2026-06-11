@@ -83,6 +83,16 @@ export class Hub {
         if (!peer.topics.has(msg.topic)) continue;
         // directed message: only the addressed peer receives it.
         if (msg.to != null && peer.id !== msg.to) continue;
+        // never echo a publisher's own frame back to it — the dock's
+        // recognize-request photos (~15KB base64 each) were bouncing back to
+        // the phone on every listen. No peer consumes its own publishes
+        // (browsers await station replies; the dock awaits station results).
+        if (peer.announced && peer.id === msg.source) continue;
+        // backpressure guard: a stalled peer (sleeping browser tab, dead
+        // phone link) buffers sends in process memory without bound. Shed
+        // BROADCAST traffic to it past 1MB buffered; directed frames
+        // (signaling, results) still send — they're small and must arrive.
+        if (msg.to == null && peer.ws.bufferedAmount > 1_000_000) continue;
         peer.ws.send(json);
       }
     });

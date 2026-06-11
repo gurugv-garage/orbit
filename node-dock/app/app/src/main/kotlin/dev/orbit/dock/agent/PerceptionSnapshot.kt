@@ -1,6 +1,9 @@
 package dev.orbit.dock.agent
 
-import java.util.concurrent.atomic.AtomicReference
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 
 /**
  * The dock's live "senses" at the moment a turn starts — what the camera sees
@@ -34,22 +37,27 @@ class PerceptionSnapshot {
         val identityAt: Long = 0L,           // when it was last refreshed (ms)
     )
 
-    private val ref = AtomicReference(Facts())
+    // StateFlow rather than AtomicReference: same atomic-swap semantics, but
+    // the UI can observe it (e.g. the "who I see" badge) instead of polling.
+    private val ref = MutableStateFlow(Facts())
 
-    val facts: Facts get() = ref.get()
+    /** Observable senses for the UI. */
+    val factsFlow: StateFlow<Facts> = ref.asStateFlow()
+
+    val facts: Facts get() = ref.value
 
     /** Face appeared at normalised, mirror-corrected coords (see FaceSeen). */
     fun onFaceSeen(x: Float, y: Float) {
-        ref.updateAndGet { it.copy(facePresent = true, gaze = gazeLabel(x, y)) }
+        ref.update { it.copy(facePresent = true, gaze = gazeLabel(x, y)) }
     }
 
     fun onFaceLost() {
         // Keep the last emotion (stale but harmless); drop presence + gaze.
-        ref.updateAndGet { it.copy(facePresent = false, gaze = null) }
+        ref.update { it.copy(facePresent = false, gaze = null) }
     }
 
     fun onEmotion(kind: String) {
-        ref.updateAndGet { it.copy(emotion = kind.lowercase()) }
+        ref.update { it.copy(emotion = kind.lowercase()) }
     }
 
     /**
@@ -61,12 +69,12 @@ class PerceptionSnapshot {
      */
     fun onIdentity(name: String?, confidence: Float = 0f) {
         if (name == null) return // keep the cached person; absence is faceVisibleNow's job
-        ref.updateAndGet { it.copy(identity = name, identityConf = confidence, identityAt = System.currentTimeMillis()) }
+        ref.update { it.copy(identity = name, identityConf = confidence, identityAt = System.currentTimeMillis()) }
     }
 
     /** Explicit clear (forget_face / re-enroll), when we KNOW the cache is wrong. */
     fun clearIdentity() {
-        ref.updateAndGet { it.copy(identity = null, identityConf = 0f, identityAt = 0L) }
+        ref.update { it.copy(identity = null, identityConf = 0f, identityAt = 0L) }
     }
 
     /**
@@ -82,7 +90,7 @@ class PerceptionSnapshot {
      *   no face + nothing  → null (omit).
      */
     fun describe(): String? {
-        val f = ref.get()
+        val f = ref.value
         if (f.facePresent) {
             val where = f.gaze?.let { " (toward your $it)" } ?: ""
             val mood = f.emotion?.let { "; they appear $it" } ?: ""
@@ -101,7 +109,7 @@ class PerceptionSnapshot {
     }
 
     /** Whether a face is currently visible (drives the "always recollect" rule). */
-    val facePresent: Boolean get() = ref.get().facePresent
+    val facePresent: Boolean get() = ref.value.facePresent
 
     private companion object {
         /** Below this match confidence, the agent should hedge / offer to confirm. */

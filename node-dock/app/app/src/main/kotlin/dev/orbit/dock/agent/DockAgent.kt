@@ -89,6 +89,9 @@ class DockAgent(
      *  to orbit-station's `obs` topic as an AgentEventDto. Null → no station
      *  (the dock is fully functional without it). */
     private val stationLink: dev.orbit.dock.station.StationLink? = null,
+    /** Turn wall-clock ceiling. Overridable so tests exercise the timeout path
+     *  without waiting a minute. */
+    private val turnTimeoutMs: Long = TURN_TIMEOUT_MS,
 ) {
     val isConfigured: Boolean get() = baseUrl.isNotBlank() && model.isNotBlank()
 
@@ -118,6 +121,17 @@ class DockAgent(
     private var extractor = StreamingReplyExtractor()
     @Volatile private var spokeThisTurn = false
     @Volatile private var turnStartMs = 0L
+    // A tool ran (successfully) this turn — used to soften the failure line when
+    // a LATER step dies: the action happened, so don't announce total failure
+    // (seen live: "remember_face → remembered Guru" then step-2 transport error
+    // spoke "couldn't reach my model" — wrong message for what the user saw).
+    @Volatile private var toolRanThisTurn = false
+    // True while runTurn is executing. SpeakEnd after the turn closed = the TTS
+    // tail finished → ship the TurnSettled obs marker (end of the whole UX turn).
+    @Volatile private var turnActive = false
+    // State to restore when a tool finishes. onToolCall(null) used to force
+    // Idle, stomping Waiting/Thinking/Speaking mid-turn (UI flashed idle).
+    @Volatile private var stateBeforeTool: AgentState? = null
 
     // Observability threading (orbit-station obs topic). One DockAgent = one
     // session; each turn gets a fresh id; seq orders events within a turn.
@@ -129,6 +143,8 @@ class DockAgent(
     @Volatile private var obsTriggerKind = "user"
     @Volatile private var obsTriggerText = ""
     private var obsSeq = 0
+    // First MessageUpdate of the current step already shipped (see shipToStation).
+    @Volatile private var shippedStreamStart = false
 
     private val agent: Agent = Agent(
         AgentOptions(
@@ -161,9 +177,17 @@ class DockAgent(
     }
 
     fun stop() {
+        // Cancel but KEEP the job reference: a respond() that follows must
+        // cancelAndJoin this still-unwinding run, or its prompt races the
+        // `activeRun` reset and gets dropped as "busy" (a stop-then-speak
+        // immediately after would silently ignore the new utterance).
         currentTurn?.cancel()
-        currentTurn = null
-        agent.reset()              // clear pi-kt's activeRun so the next turn isn't "busy"
+        // NOTE: no agent.reset() here — that wiped the whole conversation
+        // history on every barge-in/long-press (and never cleared activeRun,
+        // which lives in the run's own finally). Cancellation now unwinds
+        // cleanly (agent-core rethrows it); the transcript survives the
+        // interruption, and sanitizeHistory() patches any tool call the
+        // cancellation left unanswered before the next prompt.
         tools.silence()
         _state.value = AgentState.Idle
     }
@@ -174,10 +198,13 @@ class DockAgent(
         tools.beginTurn()
         extractor = StreamingReplyExtractor()
         spokeThisTurn = false
+        toolRanThisTurn = false
+        turnActive = true
         turnStartMs = System.currentTimeMillis()
         TurnLog.startTurn(userText)
         if (BuildConfig.DEBUG) Timber.tag(EVT).i("+0ms  TURN_START  \"$userText\"")
         _state.value = AgentState.Waiting(model)
+        sanitizeHistory()
 
         // Live grounding (face-present / emotion / gaze) goes into this turn's
         // system context; the camera frame (if any) rides the user message.
@@ -196,28 +223,93 @@ class DockAgent(
             emptyList()
         }
 
+        var completedNormally = false
         try {
-            withTimeout(TURN_TIMEOUT_MS) {
+            withTimeout(turnTimeoutMs) {
                 agent.prompt(UserMessage(buildList {
                     add(TextContent(userText)); addAll(images)
                 }).let { listOf(it) })
             }
+            completedNormally = true
+        } catch (t: kotlinx.coroutines.TimeoutCancellationException) {
+            // The hard 60s ceiling fired (hung model / endless loop). This is a
+            // TimeoutCancellationException — which IS a CancellationException —
+            // so it must be handled BEFORE the generic cancellation rethrow or
+            // the user gets a silent freeze-to-idle with no explanation.
+            Timber.e("agent turn timed out after ${turnTimeoutMs}ms")
+            TurnLog.attemptFailed("turn timeout")
+            _state.value = AgentState.Failed("turn timed out")
+            tools.speakSystem("That took too long, sorry — ask me again?")
         } catch (t: Throwable) {
+            // User-initiated cancellation (barge-in / superseding utterance):
+            // unwind silently — it is not an error and must not speak.
             if (t is kotlinx.coroutines.CancellationException) throw t
             if (t is AgentBusyException) { Timber.w("agent busy — ignoring overlapping turn"); return }
             Timber.e(t, "agent turn failed")
             TurnLog.attemptFailed(t.message ?: t::class.simpleName.orEmpty())
             _state.value = AgentState.Failed("model unreachable")
-            tools.speakSystem("I couldn't reach my local model. Check it's running.")
+            tools.speakSystem("I couldn't reach my model. Check the connection.")
         } finally {
-            // Flush any trailing clause (last sentence may lack terminal punctuation).
-            extractor.flush()?.let(::speak)
+            turnActive = false
+            // Flush any trailing clause (last sentence may lack terminal
+            // punctuation) — but only for a turn that actually finished. A
+            // cancelled/timed-out turn must not leak its half-sentence into
+            // the next turn's TTS queue.
+            if (completedNormally) extractor.flush()?.let(::speak)
             try { tools.endTurn() } catch (_: Throwable) {}
             TurnLog.endTurn(tools.lastSpokenReplyOrNull())
             if (!spokeThisTurn && _state.value !is AgentState.Failed) {
                 _state.value = AgentState.Idle
             }
         }
+    }
+
+    /**
+     * Repair + bound the transcript before a new prompt.
+     *
+     * 1. An interrupted turn can leave an assistant message whose tool calls
+     *    have no ToolResultMessage (the cancellation unwound the loop between
+     *    call and result). OpenAI-style endpoints reject such a history, which
+     *    would make every turn after an interruption fail — so patch each
+     *    unanswered call with a synthetic "(interrupted)" result.
+     * 2. Cap the history at [MAX_HISTORY_MESSAGES], trimming whole turns from
+     *    the front (cut at a user-message boundary so tool call/result pairs
+     *    are never split). Unbounded history made every turn's prompt grow
+     *    forever — a per-turn latency tax on a realtime device.
+     */
+    private fun sanitizeHistory() {
+        val msgs = agent.state.messages
+        if (msgs.isEmpty()) return
+        val answered = msgs.filterIsInstance<dev.pi.ai.ToolResultMessage>().map { it.toolCallId }.toSet()
+        val repaired = mutableListOf<dev.pi.ai.AgentMessage>()
+        for (m in msgs) {
+            repaired.add(m)
+            if (m is AssistantMessage) {
+                m.content.filterIsInstance<dev.pi.ai.ToolCall>()
+                    .filter { it.id !in answered }
+                    .forEach { tc ->
+                        repaired.add(
+                            dev.pi.ai.ToolResultMessage(
+                                toolCallId = tc.id, toolName = tc.name,
+                                content = listOf(TextContent("(interrupted before completing)")),
+                                isError = false,
+                            ),
+                        )
+                    }
+            }
+        }
+        var result: List<dev.pi.ai.AgentMessage> = repaired
+        if (result.size > MAX_HISTORY_MESSAGES) {
+            // Cut at the first user message at/after the cap boundary, so a
+            // turn's assistant/tool-result block is never split. If no user
+            // message exists past the boundary (one pathological mega-turn),
+            // leave the history alone rather than corrupt it.
+            val boundary = (result.size - MAX_HISTORY_MESSAGES until result.size)
+                .firstOrNull { result[it] is UserMessage }
+            if (boundary != null && boundary > 0) result = result.drop(boundary)
+        }
+        val changed = result.size != msgs.size || repaired.size != msgs.size
+        if (changed) agent.state.messages = result.toMutableList()
     }
 
     /**
@@ -241,8 +333,11 @@ class DockAgent(
                 // Live per-action status (UX capability 3). The tool itself runs
                 // fire-and-forget inside DockToolsAdapter → body moves NOW, in
                 // parallel with whatever speech is streaming.
-                _state.value = AgentState.ToolCalling(DockToolsAdapter.statusPhrase(event.toolName, event.args))
+                setToolCalling(DockToolsAdapter.statusPhrase(event.toolName, event.args))
                 TurnLog.toolCalled(event.toolName, event.args.toString())
+            }
+            is AgentEvent.ToolExecutionEnd -> {
+                if (!event.isError) toolRanThisTurn = true
             }
             is AgentEvent.TurnEnd -> {
                 if (!spokeThisTurn && _state.value !is AgentState.Failed) _state.value = AgentState.Idle
@@ -250,8 +345,14 @@ class DockAgent(
             is AgentEvent.MessageEnd -> {
                 val m = event.message
                 if (m is AssistantMessage && m.errorMessage != null) {
-                    _state.value = AgentState.Failed("model unreachable")
-                    tools.speakSystem("I couldn't reach my local model. Check it's running.")
+                    _state.value = AgentState.Failed("model error")
+                    // If the turn already DID something (spoke / ran a tool),
+                    // the action succeeded — only the follow-up narration died.
+                    // Don't announce total failure over a completed action.
+                    tools.speakSystem(
+                        if (spokeThisTurn || toolRanThisTurn) "Sorry, I lost my train of thought there."
+                        else "I couldn't reach my model. Check the connection.",
+                    )
                 }
             }
             else -> {}
@@ -301,6 +402,14 @@ class DockAgent(
             obsSeq = 0
         }
         if (obsTurnId.isEmpty()) return  // events outside a turn (shouldn't happen)
+        // MessageUpdate fires per stream delta; the station only uses the FIRST
+        // one (streamStartedAt = time-to-first-token). Shipping every delta was
+        // one WS frame per token chunk on the hot streaming path — ship one.
+        if (event is AgentEvent.MessageUpdate) {
+            if (shippedStreamStart) return
+            shippedStreamStart = true
+        }
+        if (event is AgentEvent.StepStart) shippedStreamStart = false
 
         val kind = when (event) {
             is AgentEvent.TurnStart -> "TurnStart"
@@ -365,7 +474,16 @@ class DockAgent(
     internal fun isVisionIntent(text: String): Boolean = VISION_INTENT.containsMatchIn(text)
 
     internal fun setToolCalling(name: String?) {
-        _state.value = if (name == null) AgentState.Idle else AgentState.ToolCalling(name)
+        if (name != null) {
+            val cur = _state.value
+            if (cur !is AgentState.ToolCalling) stateBeforeTool = cur
+            _state.value = AgentState.ToolCalling(name)
+        } else if (_state.value is AgentState.ToolCalling) {
+            // Restore what the turn was doing before the tool — forcing Idle
+            // here flashed "idle" mid-stream after every set_face/move and
+            // stomped Speaking when a background body sequence finished.
+            _state.value = stateBeforeTool ?: AgentState.Idle
+        }
     }
 
     internal fun setSpeaking(speaking: Boolean) {
@@ -374,6 +492,11 @@ class DockAgent(
         // ship a speech-phase marker to obs (SpeakStart/SpeakEnd) so the timeline
         // can show when the dock was actually talking, separate from LLM/tools.
         shipObsMarker(if (speaking) "SpeakStart" else "SpeakEnd")
+        // The TTS tail drained after the turn closed → the WHOLE user-perceived
+        // turn is now over. TurnSettled lets the station measure the real
+        // end-to-end window (TurnEnd only marks the LLM loop's end) and makes
+        // post-turn speech attribution trustworthy.
+        if (!speaking && !turnActive) shipObsMarker("TurnSettled")
     }
 
     /** Emit a synthetic obs event (not an agent-core AgentEvent) on the current
@@ -432,6 +555,10 @@ class DockAgent(
          *  + a cold model load. This wall-clock timeout is the *only* bound on
          *  the loop today — there is no per-turn tool-call count cap. */
         private const val TURN_TIMEOUT_MS = 60_000L
+
+        /** History cap (messages, not turns) — see [sanitizeHistory]. ~15-20
+         *  recent turns at the dock's typical 2-3 messages per turn. */
+        private const val MAX_HISTORY_MESSAGES = 48
 
         // The dock's system prompt lives in dev/orbit/dock/llm ([DockPrompt.SYSTEM])
         // so the live dock and the :bench harness prompt models identically.

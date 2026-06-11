@@ -17,6 +17,7 @@
 import type { Bus } from '../../core/bus.js';
 import { json } from '../../core/http.js';
 import type { RouteContext, StationModule } from '../../core/module.js';
+import { healthSummary } from './health.js';
 import { ObsStore } from './store.js';
 import type { AgentEventDto } from './types.js';
 
@@ -62,6 +63,16 @@ export function observabilityModule(): StationModule {
 
       if (subPath === '/sessions' && req.method === 'GET') {
         json(res, 200, store.list());
+        return true;
+      }
+
+      // UX-health summary over the last N turns (default 100): latency
+      // percentiles + reliability counters. The regression tripwire for
+      // "snappy and reliable" — see health.ts for what each metric catches.
+      if (subPath === '/health' && req.method === 'GET') {
+        const url = new URL(req.url ?? '', 'http://x');
+        const window = Math.max(1, Math.min(2000, Number(url.searchParams.get('window')) || 100));
+        json(res, 200, healthSummary(store.recentTurns(window)));
         return true;
       }
 

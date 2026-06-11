@@ -120,7 +120,7 @@ class DockToolsRealisticTest {
         // crucially the spoken reply is unaffected.
         tools.setFace("happy")
         tools.speak("Turning left!")
-        val r = tools.makeBodyMovements("foot:left")
+        val r = tools.makeMove(moveSteps("""[{"part":"foot","degrees":-30}]"""))
         assertThat(tts.spoken).containsExactly("Turning left!")
         assertThat(r).contains("no body connected")
     }
@@ -171,10 +171,13 @@ class DockToolsRealisticTest {
     // ── body tools with no body never throw ──────────────────────────────
 
     @Test
-    fun makeBodyMovementsWithNoBodyReports() {
-        val r = tools.makeBodyMovements("foot:left; foot:right")
+    fun makeMoveWithNoBodyReports() {
+        val r = tools.makeMove(moveSteps("""[{"part":"foot","degrees":-30},{"part":"foot","degrees":30}]"""))
         assertThat(r).contains("no body connected")
     }
+
+    private fun moveSteps(json: String): kotlinx.serialization.json.JsonArray =
+        kotlinx.serialization.json.Json.parseToJsonElement(json) as kotlinx.serialization.json.JsonArray
 
     // ── situational context for the LLM ──────────────────────────────────
 

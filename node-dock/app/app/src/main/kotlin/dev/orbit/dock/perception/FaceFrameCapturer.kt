@@ -52,6 +52,7 @@ class FaceFrameCapturer(private val source: VideoSource) {
         val safe = if (bitmap.config == Bitmap.Config.ARGB_8888) bitmap
         else bitmap.copy(Bitmap.Config.ARGB_8888, false)
         safe.copyPixelsToBuffer(argb)
+        if (safe !== bitmap) safe.recycle()
         argb.rewind()
 
         val i420 = JavaI420Buffer.allocate(w, h)

@@ -170,11 +170,14 @@ class FaceTracker(private val appContext: Context) : CameraFrameProvider {
         }.getOrDefault(android.view.Surface.ROTATION_0)
         val a = ImageAnalysis.Builder()
             .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
-            // 640×480: on-device ML Kit only needs a small frame, but this same
-            // frame is streamed to the station for face RECOGNITION, which needs a
-            // larger face to detect+embed reliably (320×240 gave "no face detected"
-            // on the station). 640×480 ~quadruples the face's pixels. (Was 320×240
-            // to spare a 2018 Redmi's ISP; modern docks/tablets handle 480p fine.)
+            // 320×240 analysis frames (this is ALSO what feeds recognition
+            // photos + the vision LLM, downscaled to ≤320px in
+            // encodeJpegBase64). Recognition currently works at this size with
+            // the on-device-JPEG pull path, and the gallery match thresholds
+            // were tuned against it — if recognition reliability needs more
+            // pixels, bump BOTH this and encodeJpegBase64's maxEdge together
+            // and re-validate the thresholds (perception/index.ts MATCH/
+            // TENTATIVE), at extra ISP cost on a 2018-class phone.
             .setTargetResolution(Size(320, 240))
             .setTargetRotation(displayRotation)
             .build()

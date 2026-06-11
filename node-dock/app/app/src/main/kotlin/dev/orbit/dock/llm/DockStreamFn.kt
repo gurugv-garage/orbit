@@ -265,6 +265,10 @@ class DockStreamFn(
         // endpoints that tolerate it — never to googleapis.
         if (!baseUrl.contains("googleapis", ignoreCase = true)) {
             putJsonObject("chat_template_kwargs") { put("enable_thinking", false) }
+            // Ask for token usage on the final stream chunk (OpenRouter/llama.cpp
+            // honor this; without it `usage` never arrives on a stream). Feeds
+            // the obs StepEnd usage so the station can watch prompt growth.
+            putJsonObject("stream_options") { put("include_usage", true) }
         }
         val lastUserIdx = context.messages.indexOfLast { it.role == "user" }
         putJsonArray("messages") {
@@ -343,6 +347,7 @@ class NdjsonAssistantParser(private val model: Model) {
     private val textBuf = StringBuilder()
     private val toolCalls = mutableListOf<ToolCall>()
     private var nextToolIndex = 0
+    private var usage: Usage = Usage.EMPTY
 
     fun accept(obj: JsonObject): List<AssistantMessageEvent> {
         if (finished) return emptyList()
@@ -358,7 +363,15 @@ class NdjsonAssistantParser(private val model: Model) {
         message?.get("tool_calls")?.let { tcEl ->
             runCatching { tcEl.jsonArray }.getOrNull()?.forEach { parseToolCall(it.jsonObject, events) }
         }
-        if (obj["done"]?.jsonPrimitive?.contentOrNull == "true") return events + finish()
+        if (obj["done"]?.jsonPrimitive?.contentOrNull == "true") {
+            // The final object carries Ollama's token counts → obs usage.
+            val input = obj["prompt_eval_count"]?.jsonPrimitive?.intOrNull ?: 0
+            val output = obj["eval_count"]?.jsonPrimitive?.intOrNull ?: 0
+            if (input > 0 || output > 0) {
+                usage = Usage(input = input, output = output, totalTokens = input + output)
+            }
+            return events + finish()
+        }
         return events
     }
 
@@ -386,7 +399,7 @@ class NdjsonAssistantParser(private val model: Model) {
         return AssistantMessage(
             content = blocks,
             api = model.api, provider = model.provider, model = model.id,
-            usage = Usage.EMPTY,
+            usage = usage,
             stopReason = if (toolCalls.isNotEmpty()) StopReason.TOOL_USE else StopReason.STOP,
         )
     }
@@ -406,6 +419,7 @@ class SseAssistantParser(private val model: Model) {
     private var finished = false
     private val textBuf = StringBuilder()
     private var finishReason: String? = null
+    private var usage: Usage = Usage.EMPTY
     private class Frag { var id: String? = null; var name: String? = null; val args = StringBuilder() }
     private val frags = LinkedHashMap<Int, Frag>()
 
@@ -415,6 +429,16 @@ class SseAssistantParser(private val model: Model) {
         if (p.isEmpty()) return emptyList()
         if (p == "[DONE]") return finish()
         val root = runCatching { json.parseToJsonElement(p).jsonObject }.getOrNull() ?: return emptyList()
+
+        // Token usage rides the final chunk when stream_options.include_usage is
+        // set (OpenRouter/llama.cpp). Capture it for the Done message's usage.
+        root["usage"]?.let { runCatching { it.jsonObject }.getOrNull() }?.let { u ->
+            usage = Usage(
+                input = u["prompt_tokens"]?.jsonPrimitive?.intOrNull ?: 0,
+                output = u["completion_tokens"]?.jsonPrimitive?.intOrNull ?: 0,
+                totalTokens = u["total_tokens"]?.jsonPrimitive?.intOrNull ?: 0,
+            )
+        }
 
         root["error"]?.let { err ->
             finished = true
@@ -475,7 +499,7 @@ class SseAssistantParser(private val model: Model) {
             addAll(calls)
         }.ifEmpty { listOf(TextContent("")) }
         return AssistantMessage(
-            blocks, model.api, model.provider, model.id, Usage.EMPTY,
+            blocks, model.api, model.provider, model.id, usage,
             if (calls.isNotEmpty() || finishReason == "tool_calls") StopReason.TOOL_USE else StopReason.STOP,
         )
     }

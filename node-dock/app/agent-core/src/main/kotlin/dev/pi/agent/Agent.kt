@@ -234,6 +234,12 @@ class Agent(private val options: AgentOptions = AgentOptions()) {
         state.errorMessage = null
         try {
             executor()
+        } catch (e: kotlin.coroutines.cancellation.CancellationException) {
+            // Cancellation is NOT a model failure: rethrow so the caller's job
+            // unwinds normally. Synthesizing an error MessageEnd here made every
+            // user interruption (barge-in / superseding utterance / timeout)
+            // look like "model unreachable" downstream — and speak it.
+            throw e
         } catch (e: Throwable) {
             handleRunFailure(e)
         } finally {

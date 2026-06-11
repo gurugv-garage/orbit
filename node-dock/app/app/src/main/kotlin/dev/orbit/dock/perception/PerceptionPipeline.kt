@@ -77,7 +77,11 @@ class PerceptionPipeline(private val appContext: Context) {
     private val autoRelisten = AutoRelisten()
 
     fun start() {
-        if (job?.isActive == true) {
+        // Guard on the SCOPE, not the mic job: unstick() replaces the mic job
+        // at runtime, so a stale `job` reference could read inactive while the
+        // pipeline is very much running — and a second start() would then
+        // double-run the whole pipeline (two mics, two bus subscriptions).
+        if (scope != null) {
             Timber.w("PerceptionPipeline already running")
             return
         }
@@ -284,6 +288,8 @@ class PerceptionPipeline(private val appContext: Context) {
         belowCount = 0
         frameIndex = 0
         sttBusy = false
+        listeningActive = false
+        gotTranscript = false
     }
 
     /**

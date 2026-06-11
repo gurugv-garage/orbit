@@ -83,3 +83,36 @@ class SseAssistantParserTest {
         assertThat(p.finish().single()).isInstanceOf(AssistantMessageEvent.Done::class.java)
     }
 }
+
+/**
+ * Usage capture: with `stream_options.include_usage`, the final chunk carries
+ * `usage` — it must land on the Done message (feeds the obs StepEnd metrics).
+ */
+class SseUsageTest {
+    private val model = Model("m", "m", "openai-completions", "openrouter")
+
+    @Test
+    fun usageFromFinalChunkLandsOnDone() {
+        val p = SseAssistantParser(model)
+        val events =
+            p.accept("""{"choices":[{"delta":{"role":"assistant","content":"hi"}}]}""") +
+            p.accept("""{"choices":[{"delta":{},"finish_reason":"stop"}]}""") +
+            p.accept("""{"choices":[],"usage":{"prompt_tokens":123,"completion_tokens":45,"total_tokens":168}}""") +
+            p.accept("[DONE]")
+        val done = events.last() as AssistantMessageEvent.Done
+        assertThat(done.message.usage.input).isEqualTo(123)
+        assertThat(done.message.usage.output).isEqualTo(45)
+        assertThat(done.message.usage.totalTokens).isEqualTo(168)
+    }
+
+    @Test
+    fun missingUsageStaysEmpty() {
+        val p = SseAssistantParser(model)
+        val events =
+            p.accept("""{"choices":[{"delta":{"content":"hi"},"finish_reason":"stop"}]}""") +
+            p.accept("[DONE]")
+        val done = events.last() as AssistantMessageEvent.Done
+        assertThat(done.message.usage.input).isEqualTo(0)
+        assertThat(done.message.usage.output).isEqualTo(0)
+    }
+}
