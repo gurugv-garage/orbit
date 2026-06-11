@@ -224,13 +224,13 @@ object DockToolSchemas {
         putJsonArray("required") { add("name") }
     }
 
-    /** `forget_face` — the user said a guess was wrong ("that's not me"). */
+    /** `forget_face` — erase a gallery entry stored under the wrong name. */
     val forgetFace: JsonObject = buildJsonObject {
         put("type", "object")
         putJsonObject("properties") {
             putJsonObject("name") {
                 put("type", "string")
-                put("description", "the WRONG name you mistakenly used for them")
+                put("description", "the name whose stored face should be erased")
             }
         }
         putJsonArray("required") { add("name") }
@@ -242,13 +242,14 @@ object DockToolSchemas {
         "You'll recognize them by face from now on, even after a restart. Overwrites if the name already exists."
     const val RECOLLECT_FACE_DESC = "Find out who is in front of you right now — returns their name if you've met them, " +
         "or that you don't recognize them, or that no one is there. Use it when asked \"do you know me?\" / \"who am I?\". " +
-        "If it comes back unsure (\"I think you might be X — is that right?\"), ASK them, and if they say yes call confirm_face."
+        "If it comes back unsure (\"I think you might be X — is that right?\"), ASK them: if YES call confirm_face; if NO " +
+        "they are simply someone new — ask their name and call remember_face (do NOT forget_face)."
     const val CONFIRM_FACE_DESC = "Confirm a tentative face guess after the person says yes. When recollect_face said " +
         "\"I think you might be X\" and they confirm they ARE X, call confirm_face with that name — it makes your " +
         "recognition of them stronger for next time. Only call after they actually confirm."
-    const val FORGET_FACE_DESC = "Call when the person says a face guess was WRONG (\"that's not me\", \"I'm not X\"). " +
-        "Pass the wrong name X you mistakenly used — you'll forget that face so you stop mis-recognizing. Then ask " +
-        "who they really are and use remember_face."
+    const val FORGET_FACE_DESC = "Erase a face you've stored under a wrong name — ONLY when someone explicitly asks you " +
+        "to delete a stored identity (\"delete that\", \"don't remember me as X\"). Do NOT call this just because a guess " +
+        "was wrong: if you mis-guessed and the person is actually someone new, use remember_face with their real name instead."
     const val COMPUTE_DESC = "Evaluate a SAFE arithmetic or random-number expression and get the result back " +
         "(e.g. math, or \"random(1,10)\", or \"random(1,10) > 5\"). Use this whenever you'd otherwise want to " +
         "\"run code\" for a number or a calculation — you have NO general code execution, only this."

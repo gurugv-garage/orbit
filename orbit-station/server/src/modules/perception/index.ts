@@ -29,7 +29,11 @@ import { describeFace } from './face/recognizer.js';
 async function describeBase64(b64: string): Promise<number[] | null> {
   try { return await describeFace(Buffer.from(b64, 'base64')); } catch { return null; }
 }
-const MATCH = 0.62, TENTATIVE = 0.78;
+// MATCH: confident "this is X". TENTATIVE: the "might be X" hedge band.
+// 0.78 was far too loose — different people sit ~0.7-0.9 apart in this 320px
+// embedding space, so a genuinely NEW face kept getting scooped up as "might be
+// <some enrolled person>". Tightened so an unknown face reads as unknown.
+const MATCH = 0.6, TENTATIVE = 0.66;
 import { makeResult, type PerceptionResult } from './result.js';
 
 // Gallery persists next to the server's data (alongside the db). One file.
