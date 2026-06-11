@@ -84,6 +84,13 @@ class StationLink(
      * usable without streaming.
      */
     private val onMediaFrame: (String, JsonObject) -> Unit = { _, _ -> },
+    /**
+     * Called for each inbound `perception` frame (station stream-processing
+     * results) with (kind, payload) — e.g. `identity`, `presence`. Wired in
+     * DockScreen to emit onto the PerceptionBus so the agent re-grounds. Default
+     * no-op so the link is usable without perception.
+     */
+    private val onPerceptionFrame: (String, JsonObject) -> Unit = { _, _ -> },
 ) {
     private val _connected = MutableStateFlow(false)
     val connected: StateFlow<Boolean> = _connected.asStateFlow()
@@ -130,7 +137,7 @@ class StationLink(
         }))
         s.send(json.encodeToString(JsonObject.serializer(), buildJsonObject {
             put("t", "subscribe")
-            put("topics", buildJsonArray { add("config"); add("station"); add("ota"); add("media") })
+            put("topics", buildJsonArray { add("config"); add("station"); add("ota"); add("media"); add("perception") })
         }))
         // Announce which config keys we care about. The station replies with a
         // directed snapshot of just these, then pushes their changes live.
@@ -172,6 +179,10 @@ class StationLink(
             val payload = frame["payload"] as? JsonObject ?: return
             runCatching { onMediaFrame(kind, payload) }
                 .onFailure { Timber.d("media frame handling failed: ${it.message}") }
+        } else if (topic == "perception" && kind != null) {
+            val payload = frame["payload"] as? JsonObject ?: return
+            runCatching { onPerceptionFrame(kind, payload) }
+                .onFailure { Timber.d("perception frame handling failed: ${it.message}") }
         }
     }
 

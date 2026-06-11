@@ -11,7 +11,7 @@ import type { EventFrame, OutboundFrame, Topic } from './protocol';
 type EventListener = (e: EventFrame) => void;
 type StatusListener = (connected: boolean) => void;
 
-const ALL_TOPICS: Topic[] = ['obs', 'config', 'bodylink', 'mind', 'station', 'ota', 'media'];
+const ALL_TOPICS: Topic[] = ['obs', 'config', 'bodylink', 'mind', 'station', 'ota', 'media', 'client', 'perception'];
 
 export class StationClient {
   #ws: WebSocket | null = null;

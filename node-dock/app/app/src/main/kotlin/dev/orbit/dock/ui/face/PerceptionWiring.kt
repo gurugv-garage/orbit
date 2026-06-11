@@ -200,6 +200,16 @@ class PerceptionWiring(
                         perception?.onEmotion(event.kind.name)
                         controller.setExpressionPassive(mirrored)
                     }
+                    is PerceptionEvent.UserIdentified -> {
+                        // Station recognized (or un-recognized) the user → fold the
+                        // name into the snapshot so the next turn's prompt names them.
+                        Timber.i("station identity: ${event.name ?: "unrecognized"} conf=${"%.2f".format(event.confidence)}")
+                        perception?.onIdentity(event.name)
+                    }
+                    is PerceptionEvent.RemotePresence -> {
+                        Timber.d("station presence: ${event.present}")
+                        perception?.onRemotePresence(event.present)
+                    }
                     is PerceptionEvent.Status -> {
                         _pipelineStatus.value = event.message
                         Timber.d("perception status: ${event.source} - ${event.message}")

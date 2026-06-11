@@ -68,4 +68,31 @@ class PerceptionSnapshotTest {
         assertThat(s.describe())
             .isEqualTo("You can see the user (they are toward your right); they appear surprised.")
     }
+
+    @Test
+    fun stationIdentityNamesTheUserInTheDescription() {
+        val s = PerceptionSnapshot()
+        s.onFaceSeen(0f, 0f)
+        s.onIdentity("guru")
+        s.onEmotion("Happy")
+        assertThat(s.describe())
+            .isEqualTo("You can see guru (they are toward your center); they appear happy.")
+    }
+
+    @Test
+    fun unrecognizedIdentityFallsBackToTheUser() {
+        val s = PerceptionSnapshot()
+        s.onFaceSeen(0f, 0f)
+        s.onIdentity("guru")
+        s.onIdentity(null) // recognition lost
+        assertThat(s.describe()).isEqualTo("You can see the user (they are toward your center).")
+    }
+
+    @Test
+    fun remoteAbsenceClearsIdentity() {
+        val s = PerceptionSnapshot()
+        s.onFaceSeen(0f, 0f); s.onIdentity("guru")
+        s.onRemotePresence(false)
+        assertThat(s.facts.identity).isNull()
+    }
 }

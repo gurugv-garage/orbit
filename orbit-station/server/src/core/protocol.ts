@@ -25,7 +25,9 @@ export type Topic =
   | 'mind'         // mind module's awareness/announcements (stub for now)
   | 'station'      // station-level: peer presence, health
   | 'ota'          // self-update: availability offers + progress/result (docs/OTA.md)
-  | 'media';       // WebRTC live A/V: SDP/ICE signaling for the in-process SFU
+  | 'media'        // WebRTC live A/V: SDP/ICE signaling for the in-process SFU
+  | 'client'       // dock → station client facts (battery, on-device vad/face) for processing
+  | 'perception';  // processor results (identity/presence/…) → dock agent + console
 
 // ── peer → station ─────────────────────────────────────────────────────────
 

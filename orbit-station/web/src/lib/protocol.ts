@@ -3,7 +3,7 @@
  * Source of truth: server/src/core/protocol.ts — keep in sync.
  */
 
-export type Topic = 'obs' | 'config' | 'bodylink' | 'mind' | 'station' | 'ota' | 'media';
+export type Topic = 'obs' | 'config' | 'bodylink' | 'mind' | 'station' | 'ota' | 'media' | 'client' | 'perception';
 export type PeerRole = 'browser' | 'firmware' | 'app' | 'fake';
 
 export interface EventFrame {

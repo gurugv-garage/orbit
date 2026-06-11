@@ -28,9 +28,15 @@ import type { Bus } from '../../core/bus.js';
 import { json } from '../../core/http.js';
 import type { RouteContext, StationModule } from '../../core/module.js';
 import { Sfu } from './sfu.js';
-import { tapFromEnv } from './tap.js';
+import { tapFromEnv, type MediaTap } from './tap.js';
 
-export function mediaModule(): StationModule {
+/**
+ * @param getTap optional provider for the media tap (the perception module's
+ *   ProcessingHub). When given, it takes precedence over MEDIA_SINK; the hub is
+ *   responsible for any sidecar forwarding. Omitted → fall back to tapFromEnv().
+ *   This keeps `media` import-free of `perception` (main.ts wires the two).
+ */
+export function mediaModule(getTap?: () => MediaTap | undefined): StationModule {
   let sfu: Sfu;
 
   return {
@@ -39,12 +45,11 @@ export function mediaModule(): StationModule {
     description: 'WebRTC live A/V SFU (dock → station → viewers)',
 
     init(bus: Bus) {
-      // Optional processing tap. With MEDIA_SINK set (e.g. udp://127.0.0.1:5004)
-      // every producer's media is forwarded to a sidecar for STT/vision/recording.
-      // For SAME-BOX processing instead, swap tapFromEnv() for
-      //   new InProcessTap((streamId, kind, rtp) => { /* your handler */ })
-      // (import it from './tap.js'). See docs/MEDIA-PROCESSING.md.
-      const tap = tapFromEnv() ?? undefined;
+      // Processing tap: the perception module's ProcessingHub if wired (main.ts),
+      // else MEDIA_SINK forwarding (e.g. udp://127.0.0.1:5004). The hub multiplexes
+      // to N processors; tapFromEnv is the standalone fallback. See
+      // docs/MEDIA-PROCESSING.md + the perception module.
+      const tap = getTap?.() ?? tapFromEnv() ?? undefined;
 
       // The SFU emits signaling by publishing directed `media` frames; the hub
       // delivers each to the addressed peer (dock or browser).

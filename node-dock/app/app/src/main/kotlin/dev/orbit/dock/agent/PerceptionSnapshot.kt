@@ -22,6 +22,7 @@ class PerceptionSnapshot {
         val facePresent: Boolean = false,
         val emotion: String? = null,        // "happy", "sad", … (lowercased Kind)
         val gaze: String? = null,           // "left" | "right" | "center" | "up" | "down"
+        val identity: String? = null,       // recognized name from the station, or null
     )
 
     private val ref = AtomicReference(Facts())
@@ -42,6 +43,17 @@ class PerceptionSnapshot {
         ref.updateAndGet { it.copy(emotion = kind.lowercase()) }
     }
 
+    /** Identity recognized by the station (face/voice). null name = unrecognized. */
+    fun onIdentity(name: String?) {
+        ref.updateAndGet { it.copy(identity = name) }
+    }
+
+    /** Station-sourced coarse presence (distinct from on-device face presence). */
+    fun onRemotePresence(present: Boolean) {
+        // If the station says no one's there, drop a stale identity.
+        ref.updateAndGet { if (present) it else it.copy(identity = null) }
+    }
+
     /**
      * One-line description for the prompt, or null when the dock sees nothing
      * (so [DockTools] can omit it rather than say "no face", which reads oddly).
@@ -54,9 +66,11 @@ class PerceptionSnapshot {
     fun describe(): String? {
         val f = ref.get()
         if (!f.facePresent) return null
+        // "the user" → "guru" when the station has recognized them.
+        val who = f.identity ?: "the user"
         val where = f.gaze?.let { " (they are toward your $it)" } ?: ""
         val mood = f.emotion?.let { "; they appear $it" } ?: ""
-        return "You can see the user$where$mood."
+        return "You can see $who$where$mood."
     }
 
     private companion object {

@@ -72,6 +72,20 @@ sealed class PerceptionEvent {
         enum class Kind { Neutral, Happy, Sad, Surprised, Sleepy, Angry }
     }
 
+    /**
+     * Identity recognized by the STATION's stream processing (face/voice fused),
+     * not the on-device camera. Lets the agent address the user by name. `name`
+     * null = a person is present but not recognized. Arrives over the station's
+     * `perception` topic (see StationLink.onPerceptionFrame).
+     */
+    data class UserIdentified(val name: String?, val confidence: Float) : PerceptionEvent()
+
+    /**
+     * Coarse presence from the station's processing (a dock is streaming / a face
+     * is visible server-side), distinct from the on-device [FaceSeen]/[FaceLost].
+     */
+    data class RemotePresence(val present: Boolean) : PerceptionEvent()
+
     /** Internal — perception subsystem state transitions. */
     data class Status(val source: String, val message: String) : PerceptionEvent()
 

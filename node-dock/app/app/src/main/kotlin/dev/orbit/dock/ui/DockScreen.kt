@@ -186,6 +186,27 @@ fun DockScreen() {
             },
             // route WebRTC signaling (producer-answer / producer-ice) to the streamer.
             onMediaFrame = { kind, payload -> mediaStreamerRef.value?.onMediaFrame(kind, payload) },
+            // station stream-processing results → PerceptionBus → agent re-grounds.
+            // payload is the PerceptionResult envelope { kind, payload: {...}, confidence }.
+            onPerceptionFrame = { kind, envelope ->
+                val inner = envelope["payload"] as? kotlinx.serialization.json.JsonObject
+                val conf = (envelope["confidence"] as? kotlinx.serialization.json.JsonPrimitive)
+                    ?.content?.toFloatOrNull() ?: 0f
+                val event = when (kind) {
+                    "identity" -> {
+                        val name = (inner?.get("name") as? kotlinx.serialization.json.JsonPrimitive)
+                            ?.takeIf { it.isString }?.content
+                        dev.orbit.dock.perception.PerceptionEvent.UserIdentified(name, conf)
+                    }
+                    "presence" -> {
+                        val present = (inner?.get("present") as? kotlinx.serialization.json.JsonPrimitive)
+                            ?.content?.toBooleanStrictOrNull() ?: false
+                        dev.orbit.dock.perception.PerceptionEvent.RemotePresence(present)
+                    }
+                    else -> null
+                }
+                event?.let { dev.orbit.dock.perception.PerceptionBus.emit(it) }
+            },
         ).also { it.start() }
     }
     // The live A/V streamer. Publishes producer-offer/ICE via the station link.
