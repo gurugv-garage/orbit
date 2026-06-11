@@ -40,7 +40,12 @@ interface Producer {
   pc: RTCPeerConnection;
   audio?: MediaStreamTrack;
   video?: MediaStreamTrack;
+  /** periodic RTCP PLI timer (keeps fresh keyframes coming). */
+  pli?: ReturnType<typeof setInterval>;
 }
+
+/** how often the SFU asks the dock for a fresh keyframe (RTCP PLI). */
+const KEYFRAME_REQUEST_MS = 2000;
 
 interface Viewer {
   browserId: string;
@@ -95,7 +100,15 @@ export class Sfu {
 
     pc.onTrack.subscribe((track) => {
       if (track.kind === 'audio') producer.audio = track;
-      else if (track.kind === 'video') producer.video = track;
+      else if (track.kind === 'video') {
+        producer.video = track;
+        // Request keyframes periodically (RTCP PLI). The dock only sends a
+        // keyframe at connect; without fresh keyframes the decoded P-frames smear
+        // into garbage under any packet loss (the "corrupted frame" recognition
+        // saw). A PLI forces a clean keyframe so the decoder re-syncs — keeping
+        // the processor's frames sharp. ~every 2s is plenty at our ~1-2fps.
+        this.#startKeyframeRequests(streamId, pc, track);
+      }
       // Hand the track to the processing tap (if any) — STT/vision/recording see
       // the same inbound RTP the SFU forwards to viewers. See tap.ts.
       this.#tap?.onTrack(streamId, track.kind as MediaKind, track);
@@ -238,9 +251,31 @@ export class Sfu {
     }
   }
 
+  /**
+   * Ask the dock for a fresh keyframe (RTCP PLI) every KEYFRAME_REQUEST_MS, so the
+   * decoder re-syncs and the processor's frames stay sharp (P-frames smear under
+   * loss without periodic keyframes). Finds the receiver carrying this track and
+   * PLIs its ssrc.
+   */
+  #startKeyframeRequests(streamId: string, pc: RTCPeerConnection, track: MediaStreamTrack): void {
+    const p = this.#producers.get(streamId);
+    if (!p) return;
+    if (p.pli) clearInterval(p.pli);
+    const pli = () => {
+      try {
+        const recv = pc.getReceivers().find((r) => r.tracks.includes(track));
+        const ssrc = (track as unknown as { ssrc?: number }).ssrc;
+        if (recv && ssrc != null) void recv.sendRtcpPLI(ssrc);
+      } catch { /* receiver/ssrc not ready yet — next tick */ }
+    };
+    pli(); // ask immediately so the first usable keyframe comes fast
+    p.pli = setInterval(pli, KEYFRAME_REQUEST_MS);
+  }
+
   #closeProducer(streamId: string): void {
     const p = this.#producers.get(streamId);
     if (!p) return;
+    if (p.pli) clearInterval(p.pli);
     this.#tap?.onProducerGone(streamId); // let the processor flush/close per-stream state
     void p.pc.close();
     this.#producers.delete(streamId);
