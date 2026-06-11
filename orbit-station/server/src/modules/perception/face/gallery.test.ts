@@ -8,7 +8,7 @@ import assert from 'node:assert/strict';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { rmSync, writeFileSync, readFileSync } from 'node:fs';
-import { Gallery, euclidean } from './gallery.js';
+import { Gallery, euclidean, classifyDistance, MATCH_THRESHOLD, TENTATIVE_THRESHOLD } from './gallery.js';
 
 const tmp = () => join(tmpdir(), `gallery-test-${Math.random().toString(36).slice(2)}.json`);
 /** a 128-d descriptor that's `v` in every dim (so distances are predictable). */
@@ -137,5 +137,49 @@ test('migrates legacy {descriptors,photo} on load', () => {
     // and the migration was persisted in the new shape
     const onDisk = JSON.parse(readFileSync(path, 'utf-8')) as { samples?: unknown }[];
     assert.ok(Array.isArray(onDisk[0]!.samples));
+  } finally { rmSync(path, { force: true }); }
+});
+
+// ── verdict classification + voice-enroll append semantics ──────────────────
+
+test('classifyDistance: one definition, correct boundaries', () => {
+  assert.equal(classifyDistance(0.3), 'confident');
+  assert.equal(classifyDistance(MATCH_THRESHOLD), 'confident');        // inclusive
+  assert.equal(classifyDistance(MATCH_THRESHOLD + 0.001), 'tentative');
+  assert.equal(classifyDistance(TENTATIVE_THRESHOLD), 'tentative');    // inclusive
+  assert.equal(classifyDistance(TENTATIVE_THRESHOLD + 0.001), 'none');
+  // the band is wide enough for the confirm/learn loop to actually fire
+  assert.ok(TENTATIVE_THRESHOLD - MATCH_THRESHOLD >= 0.1,
+    'tentative band must be wide enough to hedge-and-confirm');
+});
+
+test('has() is case/space-insensitive', () => {
+  const path = tmp();
+  try {
+    const g = new Gallery(path);
+    g.enroll('Guru', vec(0.1));
+    assert.ok(g.has('guru '));
+    assert.ok(!g.has('shweta'));
+  } finally { rmSync(path, { force: true }); }
+});
+
+test('voice re-enroll APPENDS for a known name instead of wiping samples', () => {
+  const path = tmp();
+  try {
+    const g = new Gallery(path);
+    // build up a person with 3 samples (initial + 2 confirms)
+    g.enroll('Guru', vec(0.1));
+    g.enroll('Guru', vec(0.2), undefined, true);
+    g.enroll('Guru', vec(0.3), undefined, true);
+    assert.equal(g.people()[0]!.samples.length, 3);
+    // the voice flow's call shape: append = gallery.has(name)
+    g.enroll('Guru', vec(0.4), undefined, g.has('Guru'));
+    assert.equal(g.people()[0]!.samples.length, 4, 're-enroll must not wipe prior samples');
+    // all four descriptors still match
+    assert.equal(g.match(vec(0.1))?.name, 'Guru');
+    assert.equal(g.match(vec(0.4))?.name, 'Guru');
+    // a brand-new name with the same call shape starts fresh
+    g.enroll('Shweta', vec(0.9), undefined, g.has('Shweta'));
+    assert.equal(g.has('Shweta'), true);
   } finally { rmSync(path, { force: true }); }
 });

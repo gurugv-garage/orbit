@@ -20,9 +20,15 @@ import kotlinx.coroutines.launch
  * v1 keeps this minimal — later milestones will add timed transitions,
  * gesture queues, and body/face sync.
  */
-class FaceController {
+class FaceController(
+    /** Dispatcher for the timed transitions (sleepy/wink). Main in the app;
+     *  tests inject Unconfined so nothing touches the Android main looper
+     *  (a turn unwinding after Dispatchers.resetMain() used to throw an
+     *  uncaught "Main dispatcher missing" into the NEXT test). */
+    dispatcher: kotlin.coroutines.CoroutineContext = Dispatchers.Main,
+) {
 
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
+    private val scope = CoroutineScope(SupervisorJob() + dispatcher)
 
     // Sleepy auto-trigger: if Idle this long, switch expression to Sleepy.
     private val sleepyAfterMs = 90_000L

@@ -37,12 +37,8 @@ async function describeAllBase64(b64: string): Promise<DetectedFace[]> {
 function sideOf(cx: number): 'left' | 'center' | 'right' {
   return cx < 0.4 ? 'left' : cx > 0.6 ? 'right' : 'center';
 }
-// MATCH: confident "this is X". TENTATIVE: the "might be X" hedge band.
-// 0.78 was far too loose — different people sit ~0.7-0.9 apart in this 320px
-// embedding space, so a genuinely NEW face kept getting scooped up as "might be
-// <some enrolled person>". Tightened so an unknown face reads as unknown.
-const MATCH = 0.6, TENTATIVE = 0.66;
 import { makeResult, type PerceptionResult } from './result.js';
+import { classifyDistance, TENTATIVE_THRESHOLD } from './face/gallery.js';
 
 // Gallery persists next to the server's data (alongside the db). One file.
 const GALLERY_PATH = fileURLToPath(new URL('../../../data/face-gallery.json', import.meta.url));
@@ -90,7 +86,12 @@ export function perceptionModule(getHub: () => ProcessingHub): StationModule {
           }
           void describeBase64(p.photo).then((d) => {
             const ok = !!d;
-            if (d) gallery.enroll(name, d, p.photo);
+            // APPEND for a known name (another angle → recognition improves).
+            // Replacing on every "my name is X" wiped a person's whole sample
+            // set down to one possibly-bad frame — recognition got WORSE each
+            // time someone re-introduced themselves. Full replacement is a
+            // deliberate console action (REST /gallery), not a voice flow.
+            if (d) gallery.enroll(name, d, p.photo, gallery.has(name));
             bus.publish({ topic: 'perception', kind: 'enroll-result', payload: { name, ok, reason: ok ? undefined : 'no face detected' }, source: 'station', to: msg.source });
           });
         } else if (msg.kind === 'recognize-request') {
@@ -98,12 +99,19 @@ export function perceptionModule(getHub: () => ProcessingHub): StationModule {
           void describeAllBase64(p?.photo ?? '').then((faces) => {
             // Classify EVERY face: confident name, tentative name, or unknown —
             // each tagged with its side (left/center/right) so the dock can say
-            // "Guru on the left, someone I don't know on the right".
+            // "Guru on the left, someone I don't know on the right". The
+            // confident/tentative split is [classifyDistance] — ONE definition;
+            // the raw confidence rides along for display only (the dock must
+            // act on the categorical fields, never re-threshold the float).
             const people = faces.map((f) => {
-              const m = gallery.match(f.descriptor, MATCH);
-              if (m) return { name: m.name, tentative: null, confidence: Math.max(0, 1 - m.distance), side: sideOf(f.cx) };
-              const t = gallery.match(f.descriptor, TENTATIVE);
-              return { name: null, tentative: t?.name ?? null, confidence: t ? Math.max(0, 1 - t.distance) : 0, side: sideOf(f.cx) };
+              const m = gallery.match(f.descriptor, TENTATIVE_THRESHOLD);
+              const verdict = m ? classifyDistance(m.distance) : 'none';
+              return {
+                name: verdict === 'confident' ? m!.name : null,
+                tentative: verdict === 'tentative' ? m!.name : null,
+                confidence: m ? Math.max(0, 1 - m.distance) : 0,
+                side: sideOf(f.cx),
+              };
             });
             // Back-compat single fields (the dock caches one identity): pick the
             // best confident match, else the best tentative.

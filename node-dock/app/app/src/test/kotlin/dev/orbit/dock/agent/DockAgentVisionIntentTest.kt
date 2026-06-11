@@ -19,7 +19,7 @@ class DockAgentVisionIntentTest {
     }
 
     private val agent = DockAgent(
-        tools = DockTools(FaceController(), FakeSpeaker(), onSubtitle = {}, body = null),
+        tools = DockTools(FaceController(kotlinx.coroutines.Dispatchers.Unconfined), FakeSpeaker(), onSubtitle = {}, body = null),
         baseUrl = "", model = "", // not configured → no network; we only test the pure gate
     )
 

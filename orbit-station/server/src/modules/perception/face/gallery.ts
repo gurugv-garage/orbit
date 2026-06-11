@@ -58,6 +58,30 @@ export interface MatchResult {
 export const MATCH_THRESHOLD = 0.62;
 
 /**
+ * TENTATIVE band: between MATCH and this, the dock hedges ("are you X?") and a
+ * yes triggers confirm_face → another enrolled sample → recognition improves.
+ * Deliberately WIDE (different people sit >0.8 apart): a narrow band (0.66) made
+ * the dock cold-shoulder people it half-knew instead of asking, so the
+ * confirm/learn loop never ran. This is THE single definition — every
+ * recognition path (photo + legacy stream) classifies with [classifyDistance].
+ */
+export const TENTATIVE_THRESHOLD = 0.75;
+
+export type MatchVerdict = 'confident' | 'tentative' | 'none';
+
+/**
+ * Classify a match distance into the dock's categorical verdict. The dock acts
+ * on THIS (it must never re-threshold a raw distance/confidence — doing that
+ * with `1 - distance` vs an unrelated 0.45 cutoff is what made every confident
+ * match read as "not sure" in the prompt).
+ */
+export function classifyDistance(distance: number): MatchVerdict {
+  if (distance <= MATCH_THRESHOLD) return 'confident';
+  if (distance <= TENTATIVE_THRESHOLD) return 'tentative';
+  return 'none';
+}
+
+/**
  * Bring an on-disk entry up to the current shape. New entries have `samples`;
  * legacy ones have `descriptors[]` + a single shared `photo` — we zip them into
  * samples (the one photo goes on the first descriptor; the rest are photo-less,
@@ -132,6 +156,9 @@ export class Gallery {
 
   /** Display names (original casing). */
   names(): string[] { return [...this.#people.values()].map((e) => e.name); }
+
+  /** Whether `name` is already enrolled (case/space-insensitive). */
+  has(name: string): boolean { return this.#people.has(key(name)); }
   /**
    * Per-person samples for the console: each person + their enrolled captures
    * (index + photo), so the UI can show what's stored and target one for deletion.

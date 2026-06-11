@@ -94,6 +94,8 @@ class DockTools(
     private val onConfirmRequest: ((String) -> Unit)? = null,
     /** `forget_face`: "that's not me" → tell the station to drop the wrong name. */
     private val onForgetRequest: ((String) -> Unit)? = null,
+    /** Wall clock, injectable for tests of the identity-recency logic. */
+    private val clock: () -> Long = { System.currentTimeMillis() },
 ) {
 
     private val spokeThisTurn = AtomicBoolean(false)
@@ -215,22 +217,60 @@ class DockTools(
 
     /**
      * `recollect_face` tool: who am I talking to? Does a fresh server recognition,
-     * updates the cache, and answers from BOTH "is a face visible now" and the
-     * remembered last person:
-     *   - recognized now            → "This is X."
-     *   - low-confidence/tentative  → "I think you might be X, but I'm not sure…"
+     * updates the cache, and answers with GROUNDING SPLIT BY OWNER:
+     *  - "is someone here" is owned by the LOCAL camera ([PerceptionSnapshot]
+     *    facePresent) — a station timeout or a station-side detect miss must
+     *    never make the dock deny a person it can plainly see;
+     *  - "who they are" is owned by the station's categorical verdict
+     *    (confident name / tentative guess / unknown).
+     *
+     *   - recognized now            → "This is X." (cache verified)
+     *   - tentative                 → "might be X — confirm/forget" (cache unverified)
      *   - face now, unknown         → "Someone I don't recognize — tell me who…"
+     *   - face now, station timeout → "Someone's here but I couldn't check just now…"
+     *   - face now, station noFace  → "I can see someone but couldn't make out the face…"
      *   - NO face now, but cached   → "I don't see anyone now, but last I was talking to X."
      *   - nothing                   → "No one's here and I haven't recognized anyone."
      */
     suspend fun recollectFace(): String {
-        val fresh = onRecognizeRequest?.invoke()
-        // Cache any confident result for the rest of the conversation.
-        if (fresh?.name != null) perception?.onIdentity(fresh.name, fresh.confidence)
+        // FAST PATH — "who am I" means WHO ASKED. The pre-turn grounding
+        // recognized the speaker the moment STT armed (they were facing the
+        // dock to talk); if that confident result is seconds old, answer from
+        // it directly. Re-photographing NOW is both slower (a full station
+        // round trip) and WRONG when the asker stepped away after speaking —
+        // the live failure: "who am I" → walks off → "I don't see anyone".
+        perception?.facts?.let { f ->
+            // …unless a fresh sighting saw SEVERAL people — then a single name
+            // would be ambiguous; take the round trip and answer the crowd.
+            val crowdFresh = f.people.size > 1 && clock() - f.peopleAt <= ASK_TIME_IDENTITY_FRESH_MS
+            if (!crowdFresh && f.identity != null && f.identityVerified &&
+                clock() - f.identityAt <= ASK_TIME_IDENTITY_FRESH_MS
+            ) {
+                // Phrase as an INSTRUCTION: a softer "they've stepped out of my
+                // view" got paraphrased by the model into "I don't see you" —
+                // exactly the answer this path exists to prevent.
+                return if (f.facePresent) "This is ${f.identity}."
+                else "The person you are talking to is ${f.identity} (recognized moments ago; " +
+                    "they've briefly moved out of view). Answer them as ${f.identity}."
+            }
+        }
 
+        val fresh = onRecognizeRequest?.invoke()
+        // Cache the verdict: confident → verified; tentative → unverified hint.
+        when {
+            fresh?.name != null -> perception?.onIdentity(fresh.name, verified = true)
+            fresh?.tentative != null -> perception?.onIdentity(fresh.tentative, verified = false)
+        }
+
+        // Local presence is authoritative when we have eyes; the station's view
+        // of the single uploaded frame is the fallback.
         val faceNow = perception?.facts?.facePresent ?: (fresh?.noFace == false)
-        // MULTIPLE people in frame → list each by position, naming who we know.
+
+        // MULTIPLE people in frame → remember + list each by position.
         if (fresh != null && fresh.people.size > 1) {
+            perception?.onPeople(fresh.people.map {
+                PerceptionSnapshot.SeenPerson(it.name, it.tentative, it.side)
+            })
             return describeCrowd(fresh.people)
         }
         if (fresh != null && !fresh.noFace) {
@@ -239,13 +279,35 @@ class DockTools(
                 fresh.tentative != null ->
                     "I think you might be ${fresh.tentative}, but I'm not certain. Is that you? " +
                         "(if they say yes, call confirm_face; if they say no, call forget_face)"
-                else -> "There's someone here I don't recognize yet. Tell me who you are and I'll remember (remember_face)."
+                else -> {
+                    // A stranger is in frame — void the cached identity's
+                    // recency so they can't inherit the previous person's name.
+                    perception?.onUnrecognized()
+                    "There's someone here I don't recognize yet. Tell me who you are and I'll remember (remember_face)."
+                }
             }
         }
-        // No face visible now (or no fresh result): fall back to the remembered person.
-        val last = perception?.facts?.identity
+
+        val facts = perception?.facts
+        val last = facts?.identity
+        // A RECENT verified sighting (the asker, moments ago) still answers
+        // even though they've since left the frame — moving away after asking
+        // must not read as "I don't know you".
+        val recentlyKnown = last != null && facts.identityVerified &&
+            clock() - facts.identityAt <= RECENT_SIGHTING_MS
         return when {
-            faceNow && last != null -> "I think it's $last."           // had a face but no fresh result
+            // Station didn't answer (timeout / no link) but our own camera sees
+            // a face: say so honestly — never "no one is here".
+            faceNow && fresh == null ->
+                "Someone's here, but I couldn't check who just now." +
+                    (last?.let { " Last I knew, I was talking to $it." } ?: "")
+            // Station answered "no face" in its frame, but locally a face IS
+            // visible (small/angled/blurred upload): presence stays true.
+            faceNow ->
+                "I can see someone, but I couldn't make out their face clearly. Ask them to face me and I'll try again (recollect_face)."
+            recentlyKnown ->
+                "The person you are talking to is $last (recognized moments ago; " +
+                    "they've briefly moved out of view). Answer them as $last."
             last != null -> "I don't see anyone in front of me right now, but the last person I was talking to was $last."
             else -> "There's no one in front of me right now, and I haven't recognized anyone yet."
         }
@@ -657,6 +719,22 @@ class DockTools(
         val waitMs: Long = 0L,
     )
 
+    private companion object {
+        /** A verified identity this fresh answers recollect_face WITHOUT a new
+         *  round trip — it's the pre-turn recognition of the person who just
+         *  spoke (covers ask-then-step-away). Must span one utterance PLUS the
+         *  model's think time before it calls the tool — observed live at 13s+,
+         *  so 30s. Safe to be generous: a recognition of a DIFFERENT/unknown
+         *  person in the meantime overwrites or invalidates the cache
+         *  ([PerceptionSnapshot.onUnrecognized]), so the window can't
+         *  mis-attribute across person swaps. */
+        const val ASK_TIME_IDENTITY_FRESH_MS = 30_000L
+
+        /** A verified sighting this recent still names the person after they
+         *  left the frame ("they've just stepped out of view") instead of
+         *  the colder "last person I was talking to was…". */
+        const val RECENT_SIGHTING_MS = 60_000L
+    }
 }
 
 /**

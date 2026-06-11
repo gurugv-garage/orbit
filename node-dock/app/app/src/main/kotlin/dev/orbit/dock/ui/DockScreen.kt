@@ -51,6 +51,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import kotlinx.coroutines.launch
 import timber.log.Timber
 
 @Composable
@@ -129,6 +130,20 @@ fun DockScreen() {
     // In-flight recollect_face requests: reqId → deferred result, resolved by the
     // inbound `recognize-result` frame.
     val pendingRecognize = remember { java.util.concurrent.ConcurrentHashMap<String, kotlinx.coroutines.CompletableDeferred<dev.orbit.dock.agent.RecognizeOutcome>>() }
+    // Pre-turn identity sync: recognition fires when STT arms (parallel with the
+    // user's speech); the turn start AWAITS it (bounded) so the prompt is
+    // grounded with who's actually talking, not a stale identity.
+    val preTurnGrounding = remember { dev.orbit.dock.agent.PreTurnGrounding() }
+    // Enroll failure policy: one silent retry with a fresh frame, then a spoken
+    // correction (a swallowed "no face detected" used to leave the user
+    // believing the dock saved their face when it hadn't).
+    val enrollRetry = remember { dev.orbit.dock.agent.EnrollRetry() }
+    // Recognition photos: a FRESH on-demand high-res still (640px), falling back
+    // to the latest 320px analysis frame when capture isn't available. The
+    // analysis stream stays small — stills cost only when identity is needed.
+    val recognitionPhoto: suspend () -> String? = remember {
+        { faceTracker.captureRecognitionJpegBase64() ?: faceTracker.latestJpegBase64() }
+    }
     val tools = remember(controller, tts, bodyComms, configCache) {
         DockTools(
             controller,
@@ -139,23 +154,29 @@ fun DockScreen() {
             perception = perception,
             onTurnSettled = { wiringRef.value?.clearTranscript() },
             config = configCache,
-            // remember_face → send the CLEAN on-device camera JPEG for the station
-            // to enroll. No dependency on the WebRTC stream (which is lossy + drops).
+            // remember_face → send a FRESH high-res still for the station to
+            // enroll (appends for a known name). Tracked by enrollRetry so a
+            // station-side failure retries once, then speaks a correction.
             onEnrollRequest = { name ->
-                val photo = faceTracker.latestJpegBase64()
-                stationLinkRef.value?.publish(
-                    "perception", "enroll-request",
-                    kotlinx.serialization.json.buildJsonObject {
-                        put("name", kotlinx.serialization.json.JsonPrimitive(name))
-                        if (photo != null) put("photo", kotlinx.serialization.json.JsonPrimitive(photo))
-                    },
-                )
+                enrollRetry.begin(name)
+                scope.launch {
+                    val photo = recognitionPhoto()
+                    stationLinkRef.value?.publish(
+                        "perception", "enroll-request",
+                        kotlinx.serialization.json.buildJsonObject {
+                            put("name", kotlinx.serialization.json.JsonPrimitive(name))
+                            if (photo != null) put("photo", kotlinx.serialization.json.JsonPrimitive(photo))
+                        },
+                    )
+                }
             },
-            // recollect_face → send the current on-device JPEG, await the result.
+            // recollect_face → fresh high-res still, await the result. Budget
+            // covers capture (~300ms) + station detect/embed; on timeout the
+            // tool falls back honestly ("couldn't check just now").
             onRecognizeRequest = {
                 val link = stationLinkRef.value
-                val photo = faceTracker.latestJpegBase64()
                 if (link == null) null else {
+                    val photo = recognitionPhoto()
                     val reqId = java.util.UUID.randomUUID().toString()
                     val deferred = kotlinx.coroutines.CompletableDeferred<dev.orbit.dock.agent.RecognizeOutcome>()
                     pendingRecognize[reqId] = deferred
@@ -164,20 +185,22 @@ fun DockScreen() {
                             put("reqId", kotlinx.serialization.json.JsonPrimitive(reqId))
                             if (photo != null) put("photo", kotlinx.serialization.json.JsonPrimitive(photo))
                         })
-                    val result = kotlinx.coroutines.withTimeoutOrNull(2000) { deferred.await() }
+                    val result = kotlinx.coroutines.withTimeoutOrNull(3_500) { deferred.await() }
                     pendingRecognize.remove(reqId)
                     result
                 }
             },
-            // confirm_face → append the current on-device JPEG as more training data.
+            // confirm_face → append a fresh high-res still as more training data.
             onConfirmRequest = { name ->
-                val photo = faceTracker.latestJpegBase64()
-                stationLinkRef.value?.publish(
-                    "perception", "confirm-request",
-                    kotlinx.serialization.json.buildJsonObject {
-                        put("name", kotlinx.serialization.json.JsonPrimitive(name))
-                        if (photo != null) put("photo", kotlinx.serialization.json.JsonPrimitive(photo))
-                    })
+                scope.launch {
+                    val photo = recognitionPhoto()
+                    stationLinkRef.value?.publish(
+                        "perception", "confirm-request",
+                        kotlinx.serialization.json.buildJsonObject {
+                            put("name", kotlinx.serialization.json.JsonPrimitive(name))
+                            if (photo != null) put("photo", kotlinx.serialization.json.JsonPrimitive(photo))
+                        })
+                }
             },
             // forget_face → tell the station to drop the wrong name.
             onForgetRequest = { name ->
@@ -270,37 +293,57 @@ fun DockScreen() {
                             dev.orbit.dock.perception.PerceptionEvent.UserIdentified(name, 0f)
                         else null
                     }
-                    // enroll-result: surface a short confirmation/spoken line.
+                    // enroll-result: confirm / retry-with-fresh-frame / spoken
+                    // correction — a swallowed failure used to leave the user
+                    // believing their face was saved when it wasn't.
                     "enroll-result" -> {
                         val ok = prim(envelope, "ok")?.content?.toBooleanStrictOrNull() ?: false
                         val nm = prim(envelope, "name")?.content
                         val reason = prim(envelope, "reason")?.content
                         Timber.i("enroll-result: ok=$ok name=$nm reason=$reason")
+                        when (val action = enrollRetry.onResult(nm, ok)) {
+                            is dev.orbit.dock.agent.EnrollRetry.Action.Retry -> {
+                                Timber.i("enroll retry ${action.attempt} for ${action.name} (fresh frame)")
+                                scope.launch {
+                                    kotlinx.coroutines.delay(400) // let the subject settle
+                                    val photo = recognitionPhoto()
+                                    stationLinkRef.value?.publish(
+                                        "perception", "enroll-request",
+                                        kotlinx.serialization.json.buildJsonObject {
+                                            put("name", kotlinx.serialization.json.JsonPrimitive(action.name))
+                                            if (photo != null) put("photo", kotlinx.serialization.json.JsonPrimitive(photo))
+                                        },
+                                    )
+                                }
+                            }
+                            is dev.orbit.dock.agent.EnrollRetry.Action.GiveUp ->
+                                tools.speakSystem(action.line)
+                            else -> {}
+                        }
                         null
                     }
-                    // recognize-result: fresh recollect_face answer → resolve the
-                    // pending request so the suspended tool returns.
+                    // recognize-result: parse (RecognizeResultParser), cache the
+                    // categorical verdict, resolve the awaiting tool / unblock a
+                    // pending pre-turn grounding.
                     "recognize-result" -> {
-                        val reqId = prim(envelope, "reqId")?.content
-                        val name = prim(envelope, "name")?.takeIf { it.isString }?.content
-                        val tentative = prim(envelope, "tentative")?.takeIf { it.isString }?.content
-                        val conf = prim(envelope, "confidence")?.content?.toFloatOrNull() ?: 0f
-                        val noFace = prim(envelope, "noFace")?.content?.toBooleanStrictOrNull() ?: false
-                        // people[] = every face in frame (multi-person); each {name?, tentative?, confidence, side}.
-                        val peopleArr = envelope["people"] as? kotlinx.serialization.json.JsonArray
-                        val people = peopleArr?.mapNotNull { el ->
-                            val o = el as? kotlinx.serialization.json.JsonObject ?: return@mapNotNull null
-                            dev.orbit.dock.agent.RecognizedFace(
-                                name = prim(o, "name")?.takeIf { it.isString }?.content,
-                                tentative = prim(o, "tentative")?.takeIf { it.isString }?.content,
-                                confidence = prim(o, "confidence")?.content?.toFloatOrNull() ?: 0f,
-                                side = prim(o, "side")?.content ?: "center",
-                            )
-                        } ?: emptyList()
-                        val outcome = dev.orbit.dock.agent.RecognizeOutcome(name, tentative, conf, noFace, people)
-                        // Cache a confident result (also feeds the background STT trigger).
-                        if (name != null) perception.onIdentity(name, conf)
+                        val (reqId, outcome) = dev.orbit.dock.agent.RecognizeResultParser.parse(envelope)
+                        when {
+                            outcome.name != null -> perception.onIdentity(outcome.name, verified = true)
+                            outcome.tentative != null -> perception.onIdentity(outcome.tentative, verified = false)
+                            // a face that matched NOBODY: a stranger is in frame
+                            // now — void the cached identity's recency so "who
+                            // am I" can't answer with the previous person.
+                            !outcome.noFace -> perception.onUnrecognized()
+                        }
+                        if (outcome.people.size > 1) {
+                            perception.onPeople(outcome.people.map {
+                                dev.orbit.dock.agent.PerceptionSnapshot.SeenPerson(it.name, it.tentative, it.side)
+                            })
+                        }
                         reqId?.let { pendingRecognize.remove(it) }?.complete(outcome)
+                        // a pre-turn (STT-arm) recognition came home → the next
+                        // turn no longer needs to wait.
+                        if (reqId?.startsWith("stt-") == true) preTurnGrounding.complete()
                         null
                     }
                     else -> null
@@ -377,7 +420,15 @@ fun DockScreen() {
     val wiring = remember(controller, agent) {
         PerceptionWiring(
             controller = controller,
-            onUserUtterance = { text -> agent.respond(text) },
+            // Gate the turn on the pre-turn recognition (bounded ~800ms; zero
+            // in the normal case — recognition ran while the user spoke). The
+            // prompt is then grounded with who's ACTUALLY talking.
+            onUserUtterance = { text ->
+                scope.launch {
+                    preTurnGrounding.awaitGrounded()
+                    agent.respond(text)
+                }
+            },
             onWake = { botSubtitle = "" },
             perception = perception,
         ).also { wiringRef.value = it }
@@ -396,23 +447,39 @@ fun DockScreen() {
 
     LaunchedEffect(Unit) { wiring.attach(scope) }
 
-    // Background, NON-BLOCKING recollect on STT start: when listening arms and a
-    // face is visible (on-device), fire one recognize-request so the cache is
-    // fresh by the time the user finishes speaking. Fire-and-forget — the turn
-    // never waits; the async recognize-result updates the snapshot cache.
+    // Pre-turn recollect: the moment STT arms (the user is about to speak,
+    // facing the dock), capture a fresh still and fire one recognize-request.
+    // Recognition runs IN PARALLEL with the user's speech; the turn start
+    // awaits it (bounded — see onUserUtterance) so the prompt is grounded with
+    // who is actually talking. Fire-and-forget was the old behavior, and it
+    // raced the transcript: when recognition lost, the LLM got stale identity.
     LaunchedEffect(Unit) {
         dev.orbit.dock.perception.PerceptionBus.events.collect { ev ->
-            if (ev is dev.orbit.dock.perception.PerceptionEvent.SttListening && ev.armed &&
-                perception.facts.facePresent
-            ) {
-                val photo = faceTracker.latestJpegBase64()
-                stationLinkRef.value?.publish(
-                    "perception", "recognize-request",
-                    kotlinx.serialization.json.buildJsonObject {
-                        put("reqId", kotlinx.serialization.json.JsonPrimitive("stt-${System.currentTimeMillis()}"))
-                        if (photo != null) put("photo", kotlinx.serialization.json.JsonPrimitive(photo))
-                    },
-                )
+            // NO facePresent gate: the on-device detector runs at 1Hz and was
+            // FALSE at arm-time on a real attempt (user walked up + tapped
+            // before its next tick) — which silently skipped the pre-turn
+            // recognition and left the turn ungrounded. Always capture; the
+            // station's detector is the authority on whether a face is there
+            // (a faceless photo just answers noFace).
+            if (ev is dev.orbit.dock.perception.PerceptionEvent.SttListening && ev.armed) {
+                val link = stationLinkRef.value
+                if (link == null) {
+                    preTurnGrounding.cancel()
+                } else {
+                    preTurnGrounding.begin()
+                    val photo = recognitionPhoto()
+                    if (photo == null) {
+                        preTurnGrounding.cancel() // nothing to recognize — don't gate the turn
+                    } else {
+                        link.publish(
+                            "perception", "recognize-request",
+                            kotlinx.serialization.json.buildJsonObject {
+                                put("reqId", kotlinx.serialization.json.JsonPrimitive("stt-${System.currentTimeMillis()}"))
+                                put("photo", kotlinx.serialization.json.JsonPrimitive(photo))
+                            },
+                        )
+                    }
+                }
             }
         }
     }

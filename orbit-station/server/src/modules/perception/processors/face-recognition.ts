@@ -18,11 +18,8 @@ import type { MediaKind } from '../../media/tap.js';
 import type { RtpPacket } from 'werift';
 import type { StreamContext, StreamProcessor } from '../processor.js';
 import { FrameGrabber } from '../face/frame-grabber.js';
-import { Gallery } from '../face/gallery.js';
+import { Gallery, TENTATIVE_THRESHOLD } from '../face/gallery.js';
 import { describeFace, loadFaceModels } from '../face/recognizer.js';
-
-/** wider band for a LOW-CONFIDENCE match — the agent hedges / offers to confirm. */
-const TENTATIVE_THRESHOLD = 0.78;
 
 interface Stream {
   ctx: StreamContext;

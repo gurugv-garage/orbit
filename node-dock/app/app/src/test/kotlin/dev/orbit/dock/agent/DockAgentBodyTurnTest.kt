@@ -128,7 +128,7 @@ class DockAgentBodyTurnTest {
         // the agent runs on Dispatchers.IO + the body on Default; we wait on
         // real wall-clock, like MakeBodyMovementsTest).
         val faux = kotlinx.coroutines.CoroutineScope(Dispatchers.Default)
-        val tools = DockTools(FaceController(), tts, onSubtitle = {}, body = body)
+        val tools = DockTools(FaceController(kotlinx.coroutines.Dispatchers.Unconfined), tts, onSubtitle = {}, body = body)
         val agent = DockAgent(
             tools = tools,
             baseUrl = "http://unused", model = "faux",

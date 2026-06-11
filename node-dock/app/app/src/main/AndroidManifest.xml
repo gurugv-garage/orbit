@@ -33,9 +33,14 @@
         android:usesCleartextTraffic="true"
         tools:targetApi="31">
 
+        <!-- singleTask: the dock face must never STACK — a second launch (adb,
+             notification tap, launcher) re-surfaces the existing instance.
+             Stacked copies ran two agents/wirings: every utterance produced
+             two competing turns + replies (seen live). -->
         <activity
             android:name=".MainActivity"
             android:exported="true"
+            android:launchMode="singleTask"
             android:screenOrientation="landscape"
             android:configChanges="orientation|screenSize|keyboardHidden|uiMode"
             android:theme="@style/Theme.NodeDock">

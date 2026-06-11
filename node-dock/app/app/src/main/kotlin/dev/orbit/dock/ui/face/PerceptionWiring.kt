@@ -209,8 +209,11 @@ class PerceptionWiring(
                     is PerceptionEvent.UserIdentified -> {
                         // Station recognized (or un-recognized) the user → fold the
                         // name into the snapshot so the next turn's prompt names them.
+                        // Identity results only carry a name on a CONFIDENT match,
+                        // so cache it verified (passing nothing here used to zero
+                        // the confidence and make the prompt perpetually unsure).
                         Timber.i("station identity: ${event.name ?: "unrecognized"} conf=${"%.2f".format(event.confidence)}")
-                        perception?.onIdentity(event.name)
+                        perception?.onIdentity(event.name, verified = true)
                     }
                     is PerceptionEvent.RemotePresence -> {
                         // Station-side coarse presence — informational only. It does

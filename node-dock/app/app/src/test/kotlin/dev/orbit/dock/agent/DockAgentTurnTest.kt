@@ -36,7 +36,7 @@ class DockAgentTurnTest {
     @Before
     fun setUp() {
         Dispatchers.setMain(UnconfinedTestDispatcher())
-        face = FaceController()
+        face = FaceController(kotlinx.coroutines.Dispatchers.Unconfined)
         tts = FakeSpeaker()
         tools = DockTools(face = face, tts = tts, onSubtitle = {}, body = null)
         // Point at a closed port on localhost → connection refused fast.

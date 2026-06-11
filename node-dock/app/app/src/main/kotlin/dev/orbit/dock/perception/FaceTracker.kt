@@ -7,6 +7,8 @@ import android.graphics.Matrix
 import android.util.Size
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageAnalysis
+import androidx.camera.core.ImageCapture
+import androidx.camera.core.ImageCaptureException
 import androidx.camera.core.ImageProxy
 import androidx.camera.core.Preview
 import androidx.camera.lifecycle.ProcessCameraProvider
@@ -22,6 +24,7 @@ import timber.log.Timber
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
+import kotlin.coroutines.resume
 
 /**
  * Front-camera face tracking. Emits [FaceSeen] / [FaceLost] events on
@@ -93,6 +96,7 @@ class FaceTracker(private val appContext: Context) : CameraFrameProvider {
     @Volatile private var lastProcessNs = 0L
     private var cameraProvider: ProcessCameraProvider? = null
     private var analysis: ImageAnalysis? = null
+    private var imageCapture: ImageCapture? = null
     private var owner: LifecycleOwner? = null
 
     // Optional on-screen preview. The UI's PreviewView hands us its
@@ -141,6 +145,7 @@ class FaceTracker(private val appContext: Context) : CameraFrameProvider {
         } catch (_: Throwable) {}
         cameraProvider = null
         analysis = null
+        imageCapture = null
         preview = null
         owner = null
         PerceptionBus.emit(FaceLost)
@@ -190,6 +195,19 @@ class FaceTracker(private val appContext: Context) : CameraFrameProvider {
         // CameraX picks a large (~1080p) preview surface: a wasteful second
         // camera stream that strains the 2018 ISP. A small surface keeps the
         // two-stream cost down. Preview quality is intentionally low.
+        // On-demand high-res still for face RECOGNITION photos (recollect /
+        // enroll / confirm). The continuous analysis stream stays small (gaze/
+        // emotion don't need pixels and run every second on phone CPU); a still
+        // is taken only a few times per conversation, so the station gets a
+        // face big enough to embed reliably at zero steady-state cost.
+        // preview + analysis + capture is a guaranteed CameraX combination.
+        val cap = ImageCapture.Builder()
+            .setCaptureMode(ImageCapture.CAPTURE_MODE_MINIMIZE_LATENCY)
+            .setTargetResolution(Size(640, 480))
+            .setTargetRotation(displayRotation)
+            .build()
+        imageCapture = cap
+
         val sp = surfaceProvider
         val useCases = if (sp != null) {
             val p = Preview.Builder()
@@ -198,12 +216,49 @@ class FaceTracker(private val appContext: Context) : CameraFrameProvider {
                 .build()
                 .also { it.setSurfaceProvider(sp) }
             preview = p
-            arrayOf(a, p)
+            arrayOf(a, cap, p)
         } else {
             preview = null
-            arrayOf(a)
+            arrayOf(a, cap)
         }
         provider.bindToLifecycle(owner, selector, *useCases)
+    }
+
+    /**
+     * One high-res still for a recognition request, as base64 JPEG (≤[maxEdge]
+     * on the long side) — FRESH (taken now, not the ~1s-old analysis frame) and
+     * with ~4× the face pixels of the 320×240 stream. Returns null when the
+     * camera isn't bound or capture fails; callers fall back to
+     * [latestJpegBase64].
+     */
+    suspend fun captureRecognitionJpegBase64(maxEdge: Int = 640, quality: Int = 80): String? {
+        val cap = imageCapture ?: return null
+        return try {
+            kotlinx.coroutines.suspendCancellableCoroutine { cont ->
+                cap.takePicture(executor, object : ImageCapture.OnImageCapturedCallback() {
+                    override fun onCaptureSuccess(proxy: ImageProxy) {
+                        val b64 = try {
+                            proxy.toBitmap().rotated(proxy.imageInfo.rotationDegrees)
+                                .let { encodeJpegBase64(it, maxEdge, quality) }
+                        } catch (t: Throwable) {
+                            Timber.w(t, "hi-res capture decode failed")
+                            null
+                        } finally {
+                            proxy.close()
+                        }
+                        if (cont.isActive) cont.resume(b64)
+                    }
+
+                    override fun onError(e: ImageCaptureException) {
+                        Timber.w(e, "hi-res capture failed")
+                        if (cont.isActive) cont.resume(null)
+                    }
+                })
+            }
+        } catch (t: Throwable) {
+            Timber.w(t, "hi-res capture path failed")
+            null
+        }
     }
 
     @androidx.camera.core.ExperimentalGetImage

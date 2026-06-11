@@ -70,10 +70,10 @@ class PerceptionSnapshotTest {
     }
 
     @Test
-    fun confidentIdentityNamesThePerson() {
+    fun verifiedIdentityNamesThePerson() {
         val s = PerceptionSnapshot()
         s.onFaceSeen(0f, 0f)
-        s.onIdentity("guru", 0.9f)
+        s.onIdentity("guru", verified = true)
         s.onEmotion("Happy")
         assertThat(s.facts.identity).isEqualTo("guru")
         assertThat(s.describe())
@@ -81,12 +81,50 @@ class PerceptionSnapshotTest {
     }
 
     @Test
-    fun lowConfidenceIdentityIsHedged() {
+    fun tentativeIdentityIsHedged() {
         val s = PerceptionSnapshot()
         s.onFaceSeen(0f, 0f)
-        s.onIdentity("guru", 0.3f) // below LOW_CONF
+        s.onIdentity("guru", verified = false) // station's tentative verdict
         assertThat(s.describe())
-            .isEqualTo("You can see someone (toward your center) (you think it might be guru, but you're not sure — recollect_face to check).")
+            .isEqualTo("You can see someone (toward your center) — possibly guru, but people come and go; recollect_face to check who it is.")
+    }
+
+    @Test
+    fun identityDemotedWhenFaceLeavesAndAnotherAppears() {
+        // MULTI-PERSON: Guru leaves, someone else sits down. The cached name
+        // must NOT be presented as verified — the new face may be anyone.
+        val s = PerceptionSnapshot()
+        s.onFaceSeen(0f, 0f); s.onIdentity("guru", verified = true)
+        assertThat(s.describe()).isEqualTo("You can see guru (toward your center).")
+        s.onFaceLost()
+        s.onFaceSeen(0f, 0f) // a face again — possibly a different person
+        // the VERDICT survives (Guru WAS confidently matched — that fact still
+        // answers "who just asked"); only the sighting continuity breaks, which
+        // is what the prompt hedges on.
+        assertThat(s.facts.identityVerified).isTrue()
+        assertThat(s.facts.sightingContinuous).isFalse()
+        assertThat(s.describe())
+            .isEqualTo("You can see someone (toward your center) — possibly guru, but people come and go; recollect_face to check who it is.")
+        // a fresh confident recollect re-verifies
+        s.onIdentity("shweta", verified = true)
+        assertThat(s.describe()).isEqualTo("You can see shweta (toward your center).")
+    }
+
+    @Test
+    fun crowdIsRememberedAndGroundsThePrompt() {
+        val s = PerceptionSnapshot()
+        s.onFaceSeen(0f, 0f)
+        s.onPeople(listOf(
+            PerceptionSnapshot.SeenPerson("guru", null, "left"),
+            PerceptionSnapshot.SeenPerson(null, "shweta", "center"),
+            PerceptionSnapshot.SeenPerson(null, null, "right"),
+        ))
+        assertThat(s.describe()).isEqualTo(
+            "You can see 3 people: guru on the left, possibly shweta on the center, someone unknown on the right. (recollect_face to re-check.)",
+        )
+        // stale crowd (older than the freshness window) falls back to single-person grounding
+        val later = System.currentTimeMillis() + 10 * 60 * 1000
+        assertThat(s.describe(now = later)).doesNotContain("3 people")
     }
 
     @Test
@@ -94,7 +132,7 @@ class PerceptionSnapshotTest {
         // pull-only cache: a confident identity persists; when the face leaves, we
         // report "no one now, but last was X" instead of forgetting.
         val s = PerceptionSnapshot()
-        s.onFaceSeen(0f, 0f); s.onIdentity("guru", 0.9f)
+        s.onFaceSeen(0f, 0f); s.onIdentity("guru", verified = true)
         s.onFaceLost()
         assertThat(s.facts.identity).isEqualTo("guru") // remembered
         assertThat(s.describe())
@@ -105,7 +143,7 @@ class PerceptionSnapshotTest {
     fun nullIdentityDoesNotWipeTheCache() {
         // a "no one / unrecognized" recollect result must NOT erase a known person.
         val s = PerceptionSnapshot()
-        s.onFaceSeen(0f, 0f); s.onIdentity("guru", 0.9f)
+        s.onFaceSeen(0f, 0f); s.onIdentity("guru", verified = true)
         s.onIdentity(null) // no-op
         assertThat(s.facts.identity).isEqualTo("guru")
     }
@@ -114,7 +152,7 @@ class PerceptionSnapshotTest {
     fun clearIdentityWipesTheCache() {
         // forget_face / re-enroll explicitly clears.
         val s = PerceptionSnapshot()
-        s.onFaceSeen(0f, 0f); s.onIdentity("guru", 0.9f)
+        s.onFaceSeen(0f, 0f); s.onIdentity("guru", verified = true)
         s.clearIdentity()
         assertThat(s.facts.identity).isNull()
     }

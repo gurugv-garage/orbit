@@ -50,7 +50,7 @@ class DockAgentInterruptionTest {
     }
 
     private val scope = CoroutineScope(Dispatchers.IO)
-    private val face = FaceController()
+    private val face = FaceController(kotlinx.coroutines.Dispatchers.Unconfined)
     private val tts = FakeSpeaker()
     /** Every Context the scripted model was called with (per LLM step). */
     private val seenContexts = CopyOnWriteArrayList<Context>()
