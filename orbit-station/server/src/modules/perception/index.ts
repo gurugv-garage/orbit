@@ -101,9 +101,10 @@ export function perceptionModule(getHub: () => ProcessingHub): StationModule {
             bus.publish({ topic: 'perception', kind: 'recognize-result', payload: { reqId, ...out }, source: 'station', to: msg.source });
           });
         } else if (msg.kind === 'confirm-request') {
-          // confirm_face: user said "yes I'm X" → append this photo as more data.
+          // confirm_face: user said "yes I'm X" → append this capture (descriptor
+          // + its photo) as another angle, so it's visible/deletable in the console.
           const name = p?.name?.trim();
-          if (name && p?.photo) void describeBase64(p.photo).then((d) => { if (d) gallery.enroll(name, d, undefined, true); });
+          if (name && p?.photo) void describeBase64(p.photo).then((d) => { if (d) gallery.enroll(name, d, p.photo, true); });
         } else if (msg.kind === 'forget-request') {
           // forget_face: "that's not me" → drop the wrong association.
           const name = (msg.payload as { name?: string } | null)?.name?.trim();
@@ -141,8 +142,18 @@ export function perceptionModule(getHub: () => ProcessingHub): StationModule {
       }
       // Gallery: list enrolled people / remove one.
       if (req.method === 'GET' && subPath === '/gallery') {
-        // names (back-compat) + people [{name, photo}] for the console thumbnails.
+        // names (back-compat) + people [{name, samples:[{index, photo}]}] so the
+        // console can show every enrolled capture and delete one by index.
         json(res, 200, { names: gallery.names(), people: gallery.people() });
+        return true;
+      }
+      // Delete one enrolled capture (fingerprint+photo): { name, index }.
+      // Removing the last one removes the person.
+      if (req.method === 'POST' && subPath === '/gallery/sample/remove') {
+        const body = JSON.parse(await readBody(req)) as { name?: string; index?: number };
+        const removed = body.name != null && typeof body.index === 'number'
+          ? gallery.removeSample(body.name, body.index) : false;
+        json(res, 200, { removed });
         return true;
       }
       // Enroll the face currently on screen for a dock: { streamId, name }.

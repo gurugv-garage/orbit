@@ -10,14 +10,33 @@
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 
+/**
+ * One enrolled face capture: the 128-d descriptor used for matching, paired with
+ * the photo it came from so the console can SHOW what the recognizer remembers
+ * (and let you delete a bad one). Fingerprint and photo are 1:1.
+ */
+export interface FaceSample {
+  /** the 128-d face-api descriptor — what matching actually compares. */
+  descriptor: number[];
+  /** the JPEG (base64) this descriptor was computed from, for the console. */
+  photo?: string;
+  addedAt: number;
+}
+
 export interface GalleryEntry {
   /** display name as the user typed it ("Guru"); matched case-insensitively. */
   name: string;
-  /** one or more enrolled descriptors for this person (averaged for matching). */
-  descriptors: number[][];
-  /** small JPEG of the enrolled face, base64 (for the console). Optional. */
-  photo?: string;
+  /** the person's enrolled captures (each = one descriptor + its own photo). */
+  samples: FaceSample[];
   enrolledAt: number;
+}
+
+/** Legacy on-disk shape (descriptors[] + a single shared photo) we migrate from. */
+interface LegacyEntry {
+  name: string;
+  descriptors?: number[][];
+  photo?: string;
+  enrolledAt?: number;
 }
 
 /** Names are matched case/space-insensitively ("Guru" == "guru " == "GURU"). */
@@ -38,6 +57,24 @@ export interface MatchResult {
  */
 export const MATCH_THRESHOLD = 0.62;
 
+/**
+ * Bring an on-disk entry up to the current shape. New entries have `samples`;
+ * legacy ones have `descriptors[]` + a single shared `photo` — we zip them into
+ * samples (the one photo goes on the first descriptor; the rest are photo-less,
+ * which the console renders as a "no photo" placeholder).
+ */
+function migrate(e: GalleryEntry | LegacyEntry): GalleryEntry {
+  if (Array.isArray((e as GalleryEntry).samples)) return e as GalleryEntry;
+  const legacy = e as LegacyEntry;
+  const descriptors = legacy.descriptors ?? [];
+  const samples: FaceSample[] = descriptors.map((descriptor, i) => ({
+    descriptor,
+    photo: i === 0 ? legacy.photo : undefined,
+    addedAt: legacy.enrolledAt ?? Date.now(),
+  }));
+  return { name: legacy.name, samples, enrolledAt: legacy.enrolledAt ?? Date.now() };
+}
+
 export function euclidean(a: number[], b: number[]): number {
   let s = 0;
   for (let i = 0; i < a.length; i++) { const d = a[i]! - b[i]!; s += d * d; }
@@ -55,19 +92,20 @@ export class Gallery {
 
   /**
    * Enroll a face under `name` (case-insensitive — "Guru" and "guru" are the same
-   * person). OVERWRITES any prior descriptors for that name by default ("remember
-   * this is X" replaces). `photo` is an optional base64 JPEG thumbnail.
+   * person). Stores ONE sample: the descriptor paired with the photo it came from.
+   *   - append=false ("remember this is X"): replace all of X's prior samples.
+   *   - append=true  ("yes that's me"): add another angle (capped at 5, oldest
+   *     dropped) so recognition gets more robust.
    */
   enroll(name: string, descriptor: number[], photo?: string, append = false): void {
     const k = key(name);
     const prev = this.#people.get(k);
     const e: GalleryEntry = append && prev
       ? prev
-      : { name: name.trim(), descriptors: [], enrolledAt: Date.now() };
+      : { name: name.trim(), samples: [], enrolledAt: Date.now() };
     e.name = name.trim(); // refresh display name to the latest casing
-    e.descriptors.push(descriptor);
-    if (e.descriptors.length > 5) e.descriptors.shift();
-    if (photo) e.photo = photo;
+    e.samples.push({ descriptor, photo, addedAt: Date.now() });
+    if (e.samples.length > 5) e.samples.shift();
     this.#people.set(k, e);
     this.#save();
   }
@@ -78,11 +116,31 @@ export class Gallery {
     return had;
   }
 
+  /**
+   * Delete one enrolled sample (fingerprint+photo) by its index. If it was the
+   * last sample for that person, the person is removed entirely.
+   * Returns true if something was removed.
+   */
+  removeSample(name: string, index: number): boolean {
+    const e = this.#people.get(key(name));
+    if (!e || index < 0 || index >= e.samples.length) return false;
+    e.samples.splice(index, 1);
+    if (e.samples.length === 0) this.#people.delete(key(name));
+    this.#save();
+    return true;
+  }
+
   /** Display names (original casing). */
   names(): string[] { return [...this.#people.values()].map((e) => e.name); }
-  /** Names + photo thumbnails for the console. */
-  people(): { name: string; photo?: string }[] {
-    return [...this.#people.values()].map((e) => ({ name: e.name, photo: e.photo }));
+  /**
+   * Per-person samples for the console: each person + their enrolled captures
+   * (index + photo), so the UI can show what's stored and target one for deletion.
+   */
+  people(): { name: string; samples: { index: number; photo?: string }[] }[] {
+    return [...this.#people.values()].map((e) => ({
+      name: e.name,
+      samples: e.samples.map((s, index) => ({ index, photo: s.photo })),
+    }));
   }
   size(): number { return this.#people.size; }
 
@@ -93,8 +151,8 @@ export class Gallery {
   match(descriptor: number[], threshold = MATCH_THRESHOLD): MatchResult | null {
     let best: MatchResult | null = null;
     for (const e of this.#people.values()) {
-      for (const d of e.descriptors) {
-        const dist = euclidean(descriptor, d);
+      for (const s of e.samples) {
+        const dist = euclidean(descriptor, s.descriptor);
         if (!best || dist < best.distance) best = { name: e.name, distance: dist };
       }
     }
@@ -104,21 +162,22 @@ export class Gallery {
   #load(): void {
     if (!existsSync(this.#path)) return;
     try {
-      const raw = JSON.parse(readFileSync(this.#path, 'utf-8')) as GalleryEntry[];
-      let merged = false;
-      for (const e of raw) {
+      const raw = JSON.parse(readFileSync(this.#path, 'utf-8')) as (GalleryEntry | LegacyEntry)[];
+      let changed = false;
+      for (const rawEntry of raw) {
+        const e = migrate(rawEntry);
+        if (e !== rawEntry) changed = true; // migrated from the legacy shape
         const k = key(e.name);
         const prev = this.#people.get(k);
         if (prev) {
-          // merge case-dupes ("Guru" + "guru"): combine descriptors, keep a photo.
-          prev.descriptors = [...prev.descriptors, ...e.descriptors].slice(-5);
-          prev.photo ??= e.photo;
-          merged = true;
+          // merge case-dupes ("Guru" + "guru"): combine samples, keep newest 5.
+          prev.samples = [...prev.samples, ...e.samples].slice(-5);
+          changed = true;
         } else {
           this.#people.set(k, e);
         }
       }
-      if (merged) this.#save(); // persist the de-duplicated gallery
+      if (changed) this.#save(); // persist migration + de-dup
     } catch { /* corrupt gallery → start empty */ }
   }
 

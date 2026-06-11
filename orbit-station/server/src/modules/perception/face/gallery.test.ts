@@ -7,7 +7,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { rmSync } from 'node:fs';
+import { rmSync, writeFileSync, readFileSync } from 'node:fs';
 import { Gallery, euclidean } from './gallery.js';
 
 const tmp = () => join(tmpdir(), `gallery-test-${Math.random().toString(36).slice(2)}.json`);
@@ -83,5 +83,59 @@ test('remove drops a person', () => {
     assert.equal(g.remove('alice'), true);
     assert.equal(g.match(vec(0.1)), null);
     assert.equal(g.remove('nobody'), false);
+  } finally { rmSync(path, { force: true }); }
+});
+
+test('each enroll keeps its own photo; people() exposes per-sample photos', () => {
+  const path = tmp();
+  try {
+    const g = new Gallery(path);
+    g.enroll('alice', vec(0.0), 'PHOTO_A');
+    g.enroll('alice', vec(0.9), 'PHOTO_B', true); // 2nd angle, its own photo
+    const people = g.people();
+    assert.equal(people.length, 1);
+    assert.equal(people[0]!.name, 'alice');
+    assert.deepEqual(people[0]!.samples, [
+      { index: 0, photo: 'PHOTO_A' },
+      { index: 1, photo: 'PHOTO_B' },
+    ]);
+  } finally { rmSync(path, { force: true }); }
+});
+
+test('removeSample drops one fingerprint; last one removes the person', () => {
+  const path = tmp();
+  try {
+    const g = new Gallery(path);
+    g.enroll('alice', vec(0.0), 'A');
+    g.enroll('alice', vec(0.9), 'B', true);
+    // drop the first sample → alice still matches near the second
+    assert.equal(g.removeSample('alice', 0), true);
+    assert.equal(g.people()[0]!.samples.length, 1);
+    assert.equal(g.match(vec(0.9))?.name, 'alice');
+    // out-of-range is a no-op
+    assert.equal(g.removeSample('alice', 5), false);
+    // dropping the last sample removes the person entirely
+    assert.equal(g.removeSample('alice', 0), true);
+    assert.deepEqual(g.names(), []);
+  } finally { rmSync(path, { force: true }); }
+});
+
+test('migrates legacy {descriptors,photo} on load', () => {
+  const path = tmp();
+  try {
+    // hand-write the OLD on-disk shape: descriptors[] + a single shared photo.
+    writeFileSync(path, JSON.stringify([
+      { name: 'Guru', descriptors: [vec(0.1), vec(0.2)], photo: 'OLD_PHOTO', enrolledAt: 123 },
+    ]));
+    const g = new Gallery(path);
+    // still matches both descriptors
+    assert.equal(g.match(vec(0.1))?.name, 'Guru');
+    assert.equal(g.match(vec(0.2))?.name, 'Guru');
+    // migrated to samples: photo on the first, none on the rest
+    const samples = g.people()[0]!.samples;
+    assert.deepEqual(samples, [{ index: 0, photo: 'OLD_PHOTO' }, { index: 1, photo: undefined }]);
+    // and the migration was persisted in the new shape
+    const onDisk = JSON.parse(readFileSync(path, 'utf-8')) as { samples?: unknown }[];
+    assert.ok(Array.isArray(onDisk[0]!.samples));
   } finally { rmSync(path, { force: true }); }
 });
