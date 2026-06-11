@@ -22,13 +22,21 @@ import { Gallery } from '../face/gallery.js';
 import { describeFace, loadFaceModels } from '../face/recognizer.js';
 
 const RECOGNIZE_EVERY_MS = 1000;
+/** consecutive identical reads before a name is treated as stable (debounce). */
+const STABLE_FRAMES = 2;
+/** re-push the current identity this often so the app's state stays fresh. */
+const KEEPALIVE_MS = 5000;
 
 interface Stream {
   ctx: StreamContext;
   grabber: FrameGrabber;
   lastRunMs: number;
   busy: boolean;
-  current: string | null; // last emitted identity name (null = unrecognized/absent)
+  current: string | null;  // last EMITTED (stable) identity name
+  pending: string | null;  // name seen in the most recent run(s)
+  pendingCount: number;    // how many consecutive runs saw `pending`
+  lastConfidence: number;  // confidence of the current identity
+  keepalive?: ReturnType<typeof setInterval>;
 }
 
 export function faceRecognitionProcessor(gallery: Gallery): StreamProcessor & {
@@ -49,14 +57,31 @@ export function faceRecognitionProcessor(gallery: Gallery): StreamProcessor & {
         const m = gallery.match(descriptor);
         if (m) { name = m.name; confidence = Math.max(0, 1 - m.distance); }
       }
-      // emit only on change (present→name, name→other, →lost)
-      if (name !== s.current) {
+      // Debounce HERE (the processor sees every frame): require N consecutive
+      // identical reads before treating it as stable, so a single mis-frame
+      // doesn't flip the name. Then emit only when the STABLE identity changes —
+      // the state module trusts this directly (no second debounce).
+      if (name === s.pending) {
+        s.pendingCount++;
+      } else {
+        s.pending = name;
+        s.pendingCount = 1;
+      }
+      if (s.pendingCount >= STABLE_FRAMES && name !== s.current) {
         s.current = name;
-        s.ctx.emit({ kind: 'identity', payload: { name }, source: 'face-recognition', confidence });
+        s.lastConfidence = confidence;
+        emitIdentity(s, name, confidence);
+      } else if (name === s.current) {
+        s.lastConfidence = confidence; // refresh confidence on continued match
       }
     } catch { /* a bad frame — try again next tick */ } finally {
       s.busy = false;
     }
+  }
+
+  /** Emit the current identity (used by recognize on-change + the keepalive). */
+  function emitIdentity(s: Stream, name: string | null, confidence: number): void {
+    s.ctx.emit({ kind: 'identity', payload: { name }, source: 'face-recognition', confidence });
   }
 
   return {
@@ -68,7 +93,11 @@ export function faceRecognitionProcessor(gallery: Gallery): StreamProcessor & {
     onStreamStart(ctx: StreamContext) {
       const grabber = new FrameGrabber();
       grabber.start();
-      streams.set(ctx.streamId, { ctx, grabber, lastRunMs: 0, busy: false, current: null });
+      const s: Stream = { ctx, grabber, lastRunMs: 0, busy: false, current: null, pending: null, pendingCount: 0, lastConfidence: 0 };
+      // Keepalive: re-push the current identity every ~5 s so the app's "who's in
+      // frame now" stays fresh even with no change (and self-heals a missed frame).
+      s.keepalive = setInterval(() => emitIdentity(s, s.current, s.lastConfidence), KEEPALIVE_MS);
+      streams.set(ctx.streamId, s);
     },
 
     onRtp(streamId: string, _kind: MediaKind, rtp: RtpPacket) {
@@ -85,13 +114,14 @@ export function faceRecognitionProcessor(gallery: Gallery): StreamProcessor & {
     onStreamEnd(streamId: string) {
       const s = streams.get(streamId);
       if (!s) return;
+      if (s.keepalive) clearInterval(s.keepalive);
       // mark identity lost so the dock drops a stale name.
       if (s.current !== null) s.ctx.emit({ kind: 'identity', payload: { name: null }, source: 'face-recognition' });
       s.grabber.stop();
       streams.delete(streamId);
     },
 
-    /** Enroll the face currently on screen for a dock under `name`. */
+    /** Enroll the face currently on screen for a dock under `name` (overwrites). */
     async enrollCurrent(streamId, name) {
       const s = streams.get(streamId);
       if (!s) return { ok: false, reason: 'dock not streaming' };
@@ -99,9 +129,9 @@ export function faceRecognitionProcessor(gallery: Gallery): StreamProcessor & {
       if (!jpeg) return { ok: false, reason: 'no frame yet' };
       const descriptor = await describeFace(jpeg);
       if (!descriptor) return { ok: false, reason: 'no face detected in frame' };
-      gallery.enroll(name, descriptor);
-      // re-run so the new identity reflects immediately.
-      s.current = null;
+      gallery.enroll(name, descriptor); // overwrite (default) — "remember as X" replaces
+      // reset so the new identity reflects immediately on the next recognize.
+      s.current = null; s.pending = null; s.pendingCount = 0;
       return { ok: true };
     },
   };

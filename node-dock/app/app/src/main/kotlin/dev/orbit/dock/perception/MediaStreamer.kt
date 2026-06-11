@@ -51,11 +51,6 @@ class MediaStreamer(
     private var capturer: FaceFrameCapturer? = null
     @Volatile private var started = false
 
-    private companion object {
-        /** Sender-side gain on the streamed mic so quiet ambient is audible far-end. */
-        const val AUDIO_GAIN = 6.0
-    }
-
     /** True once the PeerConnection + tracks are up. */
     fun isStreaming(): Boolean = started
 
@@ -102,20 +97,15 @@ class MediaStreamer(
         // For a *monitoring* stream we want ambient/room audio to be audible, but
         // the ADM's VOICE_COMMUNICATION + hardware NS gates steady noise to near
         // silence (that's its job for calls). Counter it on the STREAM's source
-        // only (the perception/AEC path is untouched): turn OFF WebRTC's software
-        // noise-suppression/highpass on this source and turn ON auto-gain so quiet
-        // ambient is lifted; then boost the sender track volume.
-        val audioConstraints = MediaConstraints().apply {
-            mandatory.add(MediaConstraints.KeyValuePair("googNoiseSuppression", "false"))
-            mandatory.add(MediaConstraints.KeyValuePair("googHighpassFilter", "false"))
-            mandatory.add(MediaConstraints.KeyValuePair("googAutoGainControl", "true"))
-            // keep echo cancellation so the dock's own TTS isn't streamed back loud
-            mandatory.add(MediaConstraints.KeyValuePair("googEchoCancellation", "true"))
-        }
-        val audioSource = factory.createAudioSource(audioConstraints)
-        val audioTrack = factory.createAudioTrack("dock-audio", audioSource)
-        audioTrack.setVolume(AUDIO_GAIN) // lift the level so it's audible on the far end
-        connection.addTrack(audioTrack)
+        // VIDEO-ONLY stream. We deliberately do NOT add a mic audio track: a WebRTC
+        // audio source opens a SECOND VOICE_COMMUNICATION capture session on the
+        // shared ADM, which conflicts with the voice pipeline's exclusive mic
+        // handoff to Android SpeechRecognizer (STT) — two sessions starve SR and it
+        // returns "no match" on every utterance, and VAD/wake degrade. The mic
+        // stays exclusively owned by the perception pipeline. (Streaming mic audio
+        // to the console can return later via the proper shared-PCM path — feed
+        // both STT and the stream from the one ADM, no second capture; see the
+        // perception plan's "Option B′".)
 
         // Video: FaceTracker frames pushed into a VideoSource (~1 Hz slideshow).
         val vSource = factory.createVideoSource(false)

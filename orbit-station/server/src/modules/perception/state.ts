@@ -23,15 +23,13 @@ export interface DockWorldState {
   lastUpdated: number;
 }
 
-/** How many consistent identity matches before we flip the current identity. */
-const IDENTITY_DEBOUNCE = 2;
+/** Recent transcript ring-buffer size. */
 const TRANSCRIPT_KEEP = 10;
 
 export class PerceptionState {
   #bus: Bus;
   #docks = new Map<string, DockWorldState>();
   /** per-dock pending identity vote: { name, count }. */
-  #idVote = new Map<string, { name: string; count: number }>();
 
   constructor(bus: Bus) {
     this.#bus = bus;
@@ -55,7 +53,7 @@ export class PerceptionState {
     switch (r.kind) {
       case 'presence':
         s.present = !!p?.present;
-        if (!s.present) { s.identity = undefined; this.#idVote.delete(r.dockId); }
+        if (!s.present) s.identity = undefined;
         break;
       case 'identity':
         this.#applyIdentity(s, p?.name ?? null, r.confidence ?? 0);
@@ -80,16 +78,12 @@ export class PerceptionState {
   // ── identity fusion (debounced) ────────────────────────────────────────────
 
   #applyIdentity(s: DockWorldState, name: string | null, confidence: number): void {
-    if (!name) { this.#idVote.delete(s.dockId); return; } // unrecognized — keep current
-    const vote = this.#idVote.get(s.dockId);
-    if (vote && vote.name === name) vote.count++;
-    else this.#idVote.set(s.dockId, { name, count: 1 });
-    const v = this.#idVote.get(s.dockId)!;
-    if (v.count >= IDENTITY_DEBOUNCE && s.identity?.name !== name) {
-      s.identity = { name, confidence, since: Date.now() };
-    } else if (s.identity?.name === name) {
-      s.identity.confidence = confidence; // refresh confidence on continued match
-    }
+    // The face processor already debounces (emits a STABLE identity on change),
+    // so we trust it directly. null = unrecognized → keep the current identity
+    // (a brief non-match shouldn't wipe the name) until presence drops.
+    if (!name) return;
+    if (s.identity?.name === name) s.identity.confidence = confidence;
+    else s.identity = { name, confidence, since: Date.now() };
   }
 
   #fresh(dockId: string): DockWorldState {

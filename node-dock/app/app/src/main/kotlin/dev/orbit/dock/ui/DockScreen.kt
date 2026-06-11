@@ -51,6 +51,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import timber.log.Timber
 
 @Composable
 fun DockScreen() {
@@ -122,6 +123,9 @@ fun DockScreen() {
     if (BuildConfig.DEBUG) {
         dev.orbit.dock.perception.CameraFrameProvider.debugInstance = faceTracker
     }
+    // Forward ref so DockTools' remember_face can publish via the station link
+    // (the link is built below, after the tools).
+    val stationLinkRef = remember { mutableStateOf<dev.orbit.dock.station.StationLink?>(null) }
     val tools = remember(controller, tts, bodyComms, configCache) {
         DockTools(
             controller,
@@ -132,6 +136,15 @@ fun DockScreen() {
             perception = perception,
             onTurnSettled = { wiringRef.value?.clearTranscript() },
             config = configCache,
+            // remember_face → ask the station to enroll the on-camera face.
+            onEnrollRequest = { name ->
+                stationLinkRef.value?.publish(
+                    "perception", "enroll-request",
+                    kotlinx.serialization.json.buildJsonObject {
+                        put("name", kotlinx.serialization.json.JsonPrimitive(name))
+                    },
+                )
+            },
         ).also { dev.orbit.dock.agent.ToolsTestController.tools = it }
     }
     // Runtime model selection (persisted). Changing it rebuilds the agent so the
@@ -192,22 +205,42 @@ fun DockScreen() {
                 val inner = envelope["payload"] as? kotlinx.serialization.json.JsonObject
                 val conf = (envelope["confidence"] as? kotlinx.serialization.json.JsonPrimitive)
                     ?.content?.toFloatOrNull() ?: 0f
+                fun prim(o: kotlinx.serialization.json.JsonObject?, k: String) =
+                    o?.get(k) as? kotlinx.serialization.json.JsonPrimitive
                 val event = when (kind) {
                     "identity" -> {
-                        val name = (inner?.get("name") as? kotlinx.serialization.json.JsonPrimitive)
-                            ?.takeIf { it.isString }?.content
+                        val name = prim(inner, "name")?.takeIf { it.isString }?.content
                         dev.orbit.dock.perception.PerceptionEvent.UserIdentified(name, conf)
                     }
                     "presence" -> {
-                        val present = (inner?.get("present") as? kotlinx.serialization.json.JsonPrimitive)
-                            ?.content?.toBooleanStrictOrNull() ?: false
+                        val present = prim(inner, "present")?.content?.toBooleanStrictOrNull() ?: false
                         dev.orbit.dock.perception.PerceptionEvent.RemotePresence(present)
+                    }
+                    // Reconnect snapshot: the whole DockWorldState is the payload
+                    // (no inner wrapper). Re-ground identity + presence from it.
+                    "snapshot" -> {
+                        val present = prim(envelope, "present")?.content?.toBooleanStrictOrNull() ?: false
+                        val idObj = envelope["identity"] as? kotlinx.serialization.json.JsonObject
+                        val name = prim(idObj, "name")?.takeIf { it.isString }?.content
+                        dev.orbit.dock.perception.PerceptionBus.emit(
+                            dev.orbit.dock.perception.PerceptionEvent.RemotePresence(present))
+                        if (name != null)
+                            dev.orbit.dock.perception.PerceptionEvent.UserIdentified(name, 0f)
+                        else null
+                    }
+                    // enroll-result: surface a short confirmation/spoken line.
+                    "enroll-result" -> {
+                        val ok = prim(envelope, "ok")?.content?.toBooleanStrictOrNull() ?: false
+                        val nm = prim(envelope, "name")?.content
+                        val reason = prim(envelope, "reason")?.content
+                        Timber.i("enroll-result: ok=$ok name=$nm reason=$reason")
+                        null
                     }
                     else -> null
                 }
                 event?.let { dev.orbit.dock.perception.PerceptionBus.emit(it) }
             },
-        ).also { it.start() }
+        ).also { it.start(); stationLinkRef.value = it }
     }
     // The live A/V streamer. Publishes producer-offer/ICE via the station link.
     val mediaStreamer = remember {

@@ -41,11 +41,17 @@ export class Gallery {
     this.#load();
   }
 
-  /** Add (or extend) a person with a new descriptor; persists immediately. */
-  enroll(name: string, descriptor: number[]): void {
-    const e = this.#people.get(name) ?? { name, descriptors: [], enrolledAt: Date.now() };
+  /**
+   * Enroll a face under `name`. By default this OVERWRITES any prior descriptors
+   * for that name (the agent-driven "remember this is X" replaces, doesn't pile
+   * on — and avoids same-face-two-names flip-flop). Pass `append` to keep prior
+   * angles. Persists immediately.
+   */
+  enroll(name: string, descriptor: number[], append = false): void {
+    const e = append
+      ? (this.#people.get(name) ?? { name, descriptors: [], enrolledAt: Date.now() })
+      : { name, descriptors: [], enrolledAt: Date.now() };
     e.descriptors.push(descriptor);
-    // keep the most recent few so the gallery doesn't grow unbounded.
     if (e.descriptors.length > 5) e.descriptors.shift();
     this.#people.set(name, e);
     this.#save();

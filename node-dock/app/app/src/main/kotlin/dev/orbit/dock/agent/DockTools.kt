@@ -54,6 +54,13 @@ class DockTools(
      * [defaultGesture] tables are used. Either way the dock still acts out moods.
      */
     private val config: dev.orbit.dock.config.ConfigCache? = null,
+    /**
+     * Publishes a face-enrollment request to the station (the `remember_face`
+     * tool). The station captures the face the dock is currently streaming and
+     * stores it under the given name (overwriting). Null → no station link, so
+     * remembering faces is unavailable (the tool says so).
+     */
+    private val onEnrollRequest: ((String) -> Unit)? = null,
 ) {
 
     private val spokeThisTurn = AtomicBoolean(false)
@@ -146,6 +153,35 @@ class DockTools(
         // read emotion, gaze). Omitted entirely when nothing is in view.
         perception?.describe()?.let { sb.append(' ').append(it) }
         return sb.toString()
+    }
+
+    /**
+     * `remember_face` tool: ask the station to remember the person currently in
+     * front of the camera under [name] (overwrites a prior face for that name).
+     * Local guard: only attempt if a face is actually visible. The actual capture
+     * happens server-side on the live stream; we optimistically confirm.
+     */
+    fun rememberFace(name: String): String {
+        val clean = name.trim()
+        if (clean.isBlank()) return "I need a name to remember them by."
+        val present = perception?.facts?.facePresent ?: false
+        if (!present) return "I can't see anyone right now, so there's no face to remember."
+        val enroll = onEnrollRequest
+            ?: return "I can't save faces right now (no link to my memory)."
+        enroll(clean)
+        return "Okay, I'll remember this person as $clean."
+    }
+
+    /**
+     * `recollect_face` tool: who is in front of the camera right now, per the
+     * station's last-pushed identity held in the snapshot. No round-trip — reads
+     * local state. Distinguishes "don't recognize" from "no one here".
+     */
+    fun recollectFace(): String {
+        val f = perception?.facts
+        if (f == null || !f.facePresent) return "There's no one in front of me right now."
+        return f.identity?.let { "This is $it." }
+            ?: "There's someone here, but I don't recognize them yet."
     }
 
     /**

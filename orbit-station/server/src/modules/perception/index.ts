@@ -52,6 +52,34 @@ export function perceptionModule(getHub: () => ProcessingHub): StationModule {
       // Always-on processors. More land here as phases progress (audio, …).
       hub.register(presenceProcessor());
       hub.register(face);
+
+      // Agent-driven enrollment over the WS: the dock's `remember_face` tool
+      // publishes `perception`/`enroll-request {name}`; we enroll the face it's
+      // currently streaming (streamId = the app's peer id = msg.source) and reply
+      // `enroll-result` directed back to that dock.
+      bus.on('perception', (msg) => {
+        if (msg.source === 'station') return;
+        if (msg.kind === 'enroll-request') {
+          const name = (msg.payload as { name?: string } | null)?.name?.trim();
+          if (!name) {
+            bus.publish({ topic: 'perception', kind: 'enroll-result', payload: { ok: false, reason: 'no name' }, source: 'station', to: msg.source });
+            return;
+          }
+          void face.enrollCurrent(msg.source, name).then((r) => {
+            bus.publish({ topic: 'perception', kind: 'enroll-result', payload: { name, ...r }, source: 'station', to: msg.source });
+          });
+        }
+      });
+
+      // Generic reconnect snapshot: when a dock (re)joins, push it its current
+      // world-state so the agent re-grounds immediately (identity is one field).
+      bus.on('station', (msg) => {
+        if (msg.kind !== 'peer-joined') return;
+        const p = msg.payload as { role?: string; id?: string; dock?: string } | null;
+        if (p?.role !== 'app' || !p.dock) return;
+        const ws = state.get(p.dock);
+        if (ws) bus.publish({ topic: 'perception', kind: 'snapshot', payload: ws, source: 'station', to: p.id });
+      });
     },
 
     async route(ctx: RouteContext) {

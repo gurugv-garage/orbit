@@ -31,7 +31,7 @@ object DockToolsAdapter {
     private val FACES = DockToolSchemas.FACES
 
     fun tools(dock: DockTools): List<AgentTool> =
-        listOf(SetFaceTool(dock), MoveTool(dock), ComputeTool())
+        listOf(SetFaceTool(dock), MoveTool(dock), ComputeTool(), RememberFaceTool(dock), RecollectFaceTool(dock))
 
     /** Human phrase for the live status line, e.g. "looking left", "smiling". */
     fun statusPhrase(toolName: String, args: JsonObject): String {
@@ -120,6 +120,31 @@ object DockToolsAdapter {
             val expr = params["expression"]?.jsonPrimitive?.content.orEmpty()
             val result = engine.eval(expr)
             return AgentToolResult(listOf(TextContent(result)), details = mapOf("expression" to expr, "result" to result))
+        }
+    }
+
+    /** Remember the on-camera person by name (server-side enrollment). */
+    private class RememberFaceTool(private val dock: DockTools) : AgentTool(
+        name = "remember_face",
+        description = DockToolSchemas.REMEMBER_FACE_DESC,
+        parameters = DockToolSchemas.rememberFace,
+    ) {
+        override suspend fun execute(id: String, params: JsonObject, onUpdate: AgentToolUpdateCallback?): AgentToolResult<Any?> {
+            val name = params["name"]?.jsonPrimitive?.content.orEmpty()
+            val r = dock.rememberFace(name)
+            return AgentToolResult(listOf(TextContent(r)), details = mapOf("name" to name))
+        }
+    }
+
+    /** Who is in front of the dock right now (reads the last station identity). */
+    private class RecollectFaceTool(private val dock: DockTools) : AgentTool(
+        name = "recollect_face",
+        description = DockToolSchemas.RECOLLECT_FACE_DESC,
+        parameters = DockToolSchemas.recollectFace,
+    ) {
+        override suspend fun execute(id: String, params: JsonObject, onUpdate: AgentToolUpdateCallback?): AgentToolResult<Any?> {
+            val r = dock.recollectFace()
+            return AgentToolResult(listOf(TextContent(r)), details = emptyMap<String, Any?>())
         }
     }
 }

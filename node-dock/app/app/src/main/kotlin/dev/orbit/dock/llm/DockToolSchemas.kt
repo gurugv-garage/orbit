@@ -194,7 +194,30 @@ object DockToolSchemas {
         putJsonArray("required") { add("expression") }
     }
 
+    /** `remember_face` — store the person currently on camera under a name. */
+    val rememberFace: JsonObject = buildJsonObject {
+        put("type", "object")
+        putJsonObject("properties") {
+            putJsonObject("name") {
+                put("type", "string")
+                put("description", "the person's name, e.g. \"guru\"")
+            }
+        }
+        putJsonArray("required") { add("name") }
+    }
+
+    /** `recollect_face` — no parameters; returns who is on camera now. */
+    val recollectFace: JsonObject = buildJsonObject {
+        put("type", "object")
+        putJsonObject("properties") {}
+    }
+
     // Descriptions live next to the schemas so the model-facing surface is one place.
+    const val REMEMBER_FACE_DESC = "Remember the person you can currently see in your camera, by name. " +
+        "Call this when someone tells you who they are (\"I'm guru\", \"remember me as Alice\", \"this is my friend Bob\"). " +
+        "You'll recognize them by face from now on, even after a restart. Overwrites if the name already exists."
+    const val RECOLLECT_FACE_DESC = "Find out who is in front of you right now — returns their name if you've met them, " +
+        "or that you don't recognize them, or that no one is there. Use it when asked \"do you know me?\" / \"who am I?\"."
     const val COMPUTE_DESC = "Evaluate a SAFE arithmetic or random-number expression and get the result back " +
         "(e.g. math, or \"random(1,10)\", or \"random(1,10) > 5\"). Use this whenever you'd otherwise want to " +
         "\"run code\" for a number or a calculation — you have NO general code execution, only this."
