@@ -5,7 +5,6 @@ idf_component_register(
         "wifi_sta.c"
         "bodylink_proto.c"
         "bodylink_motion.c"
-        "bodylink_ws.c"
         "station_link.c"
         "station_ota.c"
     INCLUDE_DIRS "." "../include"
@@ -14,7 +13,6 @@ idf_component_register(
         nvs_flash
         esp_event
         esp_netif
-        esp_http_server
         esp_driver_mcpwm
         esp_timer
         json

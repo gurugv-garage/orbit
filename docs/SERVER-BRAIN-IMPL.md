@@ -2,7 +2,7 @@
 
 ## 0. Implementation status (living — update as stages land)
 
-**Branch `server-brain` (stage 1 committed: e142852 + 9aaf71c; stage 2 in tree). Last updated 2026-06-12.**
+**Branch `server-brain` (stages 1+2 committed; stage 3 in tree). Last updated 2026-06-12.**
 
 **Stage 1 — station: DONE** (71 tests green; E2E verified via `npm run
 smoke:brain` AND a Playwright browser run of the test console; real Gemini
@@ -101,11 +101,30 @@ wifi-drop → reconnect → next turn clean; driven via the debug
 wake-word quality, audible TTS verification, real-face recognition flows,
 MIUI/doze behavior over hours, release-build OTA path.
 
-**TODO — Stage 3 (firmware), next:**
-- [ ] remove BodyLink WS server + `bodyAddr`; hello v2 (`component:"body"`,
-      caps `["servo"]`); consume `presence`; staleness tripwire (30 s);
-      `BL_FW_BUILD` bump; `test_body.sh` → station REST
-- [ ] hardware checklist + chaos suite (§11); re-measure the §7 perf table
+**Stage 3 — firmware: DONE** (flashed over USB to the live XIAO, build 4 /
+fw 0.2.0; verified on hardware: hello v2 registration → profile → REST
+command → servo moved + `state` converged; a brain turn from the pad
+("make a sad face") drove the faceGestures choreography through the motion
+executor to the real servos with `applied` acks + 5 distinct poses traced).
+
+- ✅ BodyLink WS server (`bodylink_ws.{c,h}`, :17317) + `bodyAddr` deleted;
+  the station socket is the body's ONLY socket. The 100 Hz motion tick moved
+  to `main.c` (runs fully offline). `esp_http_server` dropped from the build.
+  The protocol SHAPES live on in `bodylink_proto.{h,c}` (socket deleted, not
+  the shape — the parked BodyLink-SDK idea keeps its vocabulary).
+- ✅ hello v2: `role:"device", component:"body", kind:"dock-body-fw",
+  caps:["servo"]`; subscribes `station` and logs sibling `presence`.
+- ✅ contract parity on the station socket: per-message `applied` ack only
+  when state changed; clamp/unknown emits published as bodylink `event`s.
+- ✅ staleness tripwire: 30 s of command silence while connected (armed after
+  the first command) → one latched `event:"stale"` + hold pose; disarmed on
+  disconnect; never auto-homes (DESIGN.md §5.2 carried over).
+- ✅ `BL_FW_BUILD` 4, `BL_FW_VERSION` 0.2.0; `scripts/test_body.sh` rewritten
+  against the station REST (`/api/bodylink/command|state|profile`).
+
+**Remaining (hardware/operations):** chaos suite (§11: pull station
+mid-gesture, Wi-Fi drop mid-move), re-measure the §7 perf table in station
+mode, record a build-4 OTA artifact so future updates ride OTA again.
 
 **TODO — later (post-cutover):** brain-module integration test (two-dock
 tenancy isolation, cross-dock grants), idle-time pi compaction (summary is

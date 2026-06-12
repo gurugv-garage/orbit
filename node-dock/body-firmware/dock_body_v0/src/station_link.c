@@ -2,14 +2,16 @@
 //
 // Frame vocabulary is the STATION protocol (orbit-station/server/src/core/
 // protocol.ts), NOT the BodyLink envelope:
-//   → hello     { t:"hello", role:"firmware", id, dock, bodyAddr, label }
-//   → subscribe { t:"subscribe", topics:["bodylink","config"] }
-//   → publish   { t:"publish", topic:"bodylink", kind:"profile"|"state"|"heartbeat", payload }
+//   → hello     { t:"hello", role:"device", id, dock, component:"body",
+//                 kind:"dock-body-fw", caps:["servo"], label, build }
+//   → subscribe { t:"subscribe", topics:["bodylink","config","ota","station"] }
+//   → publish   { t:"publish", topic:"bodylink",
+//                 kind:"profile"|"state"|"applied"|"event"|"heartbeat", payload }
 //   ← event     { t:"event", topic:"bodylink", kind:"command", payload:{parts} }
 //
 // The station's `command` payload is exactly a BodyLink set_target *body*
-// ({parts:{...}}), so we hand it straight to bl_motion_set_target — same motion
-// path as a phone command.
+// ({parts:{...}}) — the motion executor (modules/bodylink/motion.ts) is the
+// single master; we hand it straight to bl_motion_set_target.
 
 #include "station_link.h"
 
@@ -23,9 +25,7 @@
 
 #include "secrets.h"
 #include "bodylink_motion.h"
-#include "bodylink_ws.h"   // bl_ws_has_client()
-#include "bodylink_proto.h"   // bl_build_part / bl_build_param_spec / BL_DEVICE_* / BL_WS_PORT
-#include "station_link.h"
+#include "bodylink_proto.h"   // bl_build_part / bl_build_param_spec / BL_DEVICE_*
 #include "station_ota.h"   // station_ota_begin / station_ota_on_link_ready
 #include "version.h"       // BL_FW_VERSION / BL_FW_BUILD
 
@@ -41,14 +41,24 @@ static const char *TAG = "station";
 #define HEARTBEAT_MS   10000   // 10 s, per the console's last-seen display
 #define STATE_MS        2000   // report body state every 2 s
 
+// Staleness tripwire (DESIGN.md §5.1, applied to the station socket): the
+// motion executor heartbeats targets at >= 1 Hz once it's driving us, so 30 s
+// of command silence WHILE CONNECTED means the executor is broken — not a
+// control path, a tripwire. We emit one `event:"stale"` and HOLD pose (never
+// auto-home; the brain commands home explicitly when it wants it).
+#define STALE_MS       30000
+
 static esp_websocket_client_handle_t s_client = NULL;
-static char  s_body_addr[32] = "";   // "<ip>:17317"
-static bool  s_profile_sent = false;
+static bool    s_profile_sent = false;
+static int64_t s_last_cmd_ms  = 0;     // 0 = no command yet (tripwire unarmed)
+static bool    s_stale_latched = false;
+
+static int64_t now_ms(void) { return esp_timer_get_time() / 1000; }
 
 // ── frame builders ───────────────────────────────────────────────────────
 
-// Build the same capability `parts` object the phone-facing server advertises,
-// from the shared g_bl_parts table (decoupled copy — no dependency on ws.c).
+// Build the same capability `parts` object BodyLink's profile advertises,
+// from the shared g_bl_parts table.
 static cJSON *build_profile_parts(void) {
     cJSON *parts = cJSON_CreateObject();
     for (int i = 0; i < g_bl_n_parts; ++i) {
@@ -96,12 +106,19 @@ bool station_link_ready(void) {
 }
 
 static void send_hello(void) {
+    // hello v2 (protocol.ts): this peer = the `body` slot of its dock, running
+    // software kind `dock-body-fw` (the OTA target), serving capability
+    // `servo` (the motion executor routes by cap, never by component name).
     cJSON *f = cJSON_CreateObject();
     cJSON_AddStringToObject(f, "t", "hello");
-    cJSON_AddStringToObject(f, "role", "firmware");
+    cJSON_AddStringToObject(f, "role", "device");
     cJSON_AddStringToObject(f, "id", BL_DEVICE_ID);
     cJSON_AddStringToObject(f, "dock", DOCK_NAME);
-    cJSON_AddStringToObject(f, "bodyAddr", s_body_addr);
+    cJSON_AddStringToObject(f, "component", "body");
+    cJSON_AddStringToObject(f, "kind", "dock-body-fw");
+    cJSON *caps = cJSON_CreateArray();
+    cJSON_AddItemToArray(caps, cJSON_CreateString("servo"));
+    cJSON_AddItemToObject(f, "caps", caps);
     cJSON_AddStringToObject(f, "label", BL_DEVICE_NAME);
     // OTA gate (docs/OTA.md §3): `build` is the monotonic version. It's the
     // ONLY version on the wire — the station maps build→label as metadata.
@@ -110,8 +127,8 @@ static void send_hello(void) {
     cJSON_Delete(f);
     if (s) { esp_websocket_client_send_text(s_client, s, strlen(s), portMAX_DELAY); free(s); }
 
-    // subscribe to console commands + config pushes + OTA offers
-    const char *sub = "{\"t\":\"subscribe\",\"topics\":[\"bodylink\",\"config\",\"ota\"]}";
+    // commands + config pushes + OTA offers + sibling presence
+    const char *sub = "{\"t\":\"subscribe\",\"topics\":[\"bodylink\",\"config\",\"ota\",\"station\"]}";
     esp_websocket_client_send_text(s_client, sub, strlen(sub), portMAX_DELAY);
 }
 
@@ -140,7 +157,28 @@ static cJSON *build_state_payload(void) {
     return st;
 }
 
-// ── inbound: station console `command` (a set_target body) ─────────────────
+// Publish one motion emit (clamp/unknown) as a bodylink `event` so the
+// console can see what the body rejected/clipped. (The executor pre-clamps,
+// so these only fire on executor/profile drift — diagnostics, not flow.)
+static void publish_emit_events(const bl_emit_t *emits, int n) {
+    for (int i = 0; i < n; ++i) {
+        const bl_emit_t *e = &emits[i];
+        if (e->kind == BL_EMIT_NONE) continue;
+        cJSON *p = cJSON_CreateObject();
+        cJSON_AddStringToObject(p, "event",
+            e->kind == BL_EMIT_OUT_OF_RANGE ? "clipped" :
+            e->kind == BL_EMIT_UNKNOWN_PART ? "unknown_part" : "unknown_param");
+        if (e->part[0])  cJSON_AddStringToObject(p, "part", e->part);
+        if (e->param[0]) cJSON_AddStringToObject(p, "param", e->param);
+        if (e->kind == BL_EMIT_OUT_OF_RANGE) {
+            cJSON_AddNumberToObject(p, "requested", e->requested);
+            cJSON_AddNumberToObject(p, "applied", e->applied);
+        }
+        publish("bodylink", "event", p);
+    }
+}
+
+// ── inbound: station frames ─────────────────────────────────────────────
 
 static void handle_event(cJSON *f) {
     const cJSON *topic = cJSON_GetObjectItemCaseSensitive(f, "topic");
@@ -159,18 +197,44 @@ static void handle_event(cJSON *f) {
         return;
     }
 
+    // ── station/presence: sibling components of our dock (consume = log) ──
+    if (strcmp(topic->valuestring, "station") == 0 &&
+        strcmp(kind->valuestring, "presence") == 0) {
+        char *s = payload ? cJSON_PrintUnformatted(payload) : NULL;
+        ESP_LOGI(TAG, "dock presence: %s", s ? s : "{}");
+        free(s);
+        return;
+    }
+
     if (strcmp(topic->valuestring, "bodylink") != 0) return;
     if (strcmp(kind->valuestring, "command") != 0) return;
 
     if (!payload) return;
-    // payload == set_target body ({parts:{...}}) → same motion path as the phone.
+    // payload == set_target body ({parts:{...}}) → the one motion path.
     bl_emit_t emits[8];
     int changed = 0;
     int n = bl_motion_set_target(payload, emits, 8, &changed);
-    (void)n;
-    ESP_LOGI(TAG, "console command applied (changed=%d)", changed);
-    // reflect the new commanded state back promptly
-    publish("bodylink", "state", build_state_payload());
+    publish_emit_events(emits, n);
+
+    // command stream is alive → reset the staleness tripwire
+    s_last_cmd_ms = now_ms();
+    if (s_stale_latched) {
+        s_stale_latched = false;
+        ESP_LOGI(TAG, "command stream resumed (stale latch cleared)");
+    }
+
+    // Per-message `applied` ack only when state actually changed (DESIGN.md
+    // §3.2): heartbeat resends that no-op stay quiet on the wire.
+    if (changed) {
+        cJSON *ack = cJSON_CreateObject();
+        cJSON *parts = cJSON_GetObjectItemCaseSensitive(payload, "parts");
+        cJSON_AddItemToObject(ack, "parts",
+            parts ? cJSON_Duplicate(parts, true) : cJSON_CreateObject());
+        publish("bodylink", "applied", ack);
+        ESP_LOGI(TAG, "command applied");
+        // reflect the new commanded state back promptly
+        publish("bodylink", "state", build_state_payload());
+    }
 }
 
 static void on_ws_event(void *arg, esp_event_base_t base, int32_t id, void *data) {
@@ -183,8 +247,12 @@ static void on_ws_event(void *arg, esp_event_base_t base, int32_t id, void *data
             send_hello();
             break;
         case WEBSOCKET_EVENT_DISCONNECTED:
-            ESP_LOGW(TAG, "station disconnected — will retry (body unaffected)");
+            // Hold last commanded pose — do NOT auto-home (DESIGN.md §5.2:
+            // homing surprises users; the brain homes explicitly).
+            ESP_LOGW(TAG, "station disconnected — holding pose, will retry");
             s_profile_sent = false;
+            s_last_cmd_ms = 0;          // disarm the tripwire while offline
+            s_stale_latched = false;
             break;
         case WEBSOCKET_EVENT_DATA: {
             if (ev->op_code != 0x1 /* text */ || ev->data_len <= 0) break;
@@ -210,7 +278,7 @@ static void on_ws_event(void *arg, esp_event_base_t base, int32_t id, void *data
     }
 }
 
-// ── periodic state + heartbeat task ────────────────────────────────────────
+// ── periodic state + heartbeat + staleness task ────────────────────────────
 
 static void station_task(void *arg) {
     (void)arg;
@@ -218,7 +286,7 @@ static void station_task(void *arg) {
     for (;;) {
         if (s_client && esp_websocket_client_is_connected(s_client) && s_profile_sent) {
             publish("bodylink", "state", build_state_payload());
-            int64_t now = esp_timer_get_time() / 1000;
+            int64_t now = now_ms();
             if (now - last_hb >= HEARTBEAT_MS) {
                 last_hb = now;
                 cJSON *hb = cJSON_CreateObject();
@@ -227,12 +295,19 @@ static void station_task(void *arg) {
                 // station's version view fresh + self-healing without waiting
                 // for a full reconnect. Just the gate int; small payload.
                 cJSON_AddNumberToObject(hb, "build", BL_FW_BUILD);
-                // report our own links so the station knows the mesh: is a
-                // phone/brain currently driving us over the :17317 BodyLink server?
-                cJSON *links = cJSON_CreateObject();
-                cJSON_AddBoolToObject(links, "phoneClient", bl_ws_has_client());
-                cJSON_AddItemToObject(hb, "links", links);
                 publish("bodylink", "heartbeat", hb);
+            }
+            // Staleness tripwire: armed once the executor has driven us at
+            // least once this connection; latched so it fires ONCE per stall.
+            if (s_last_cmd_ms > 0 && !s_stale_latched &&
+                now - s_last_cmd_ms > STALE_MS) {
+                s_stale_latched = true;
+                ESP_LOGW(TAG, "no command for %llds — executor stale? holding pose",
+                         (long long)((now - s_last_cmd_ms) / 1000));
+                cJSON *p = cJSON_CreateObject();
+                cJSON_AddStringToObject(p, "event", "stale");
+                cJSON_AddNumberToObject(p, "silent_ms", (double)(now - s_last_cmd_ms));
+                publish("bodylink", "event", p);
             }
         }
         vTaskDelay(pdMS_TO_TICKS(STATE_MS));
@@ -241,12 +316,11 @@ static void station_task(void *arg) {
 
 // ── public ──────────────────────────────────────────────────────────────
 
-esp_err_t station_link_start(esp_ip4_addr_t our_ip) {
+esp_err_t station_link_start(void) {
     if (STATION_URL[0] == '\0') {
-        ESP_LOGI(TAG, "STATION_URL empty — station client disabled (body standalone)");
+        ESP_LOGI(TAG, "STATION_URL empty — station client disabled (servos hold center)");
         return ESP_OK;
     }
-    snprintf(s_body_addr, sizeof(s_body_addr), IPSTR ":%d", IP2STR(&our_ip), BL_WS_PORT);
 
     esp_websocket_client_config_t cfg = {
         .uri = STATION_URL,
@@ -270,14 +344,14 @@ esp_err_t station_link_start(esp_ip4_addr_t our_ip) {
     };
     s_client = esp_websocket_client_init(&cfg);
     if (!s_client) {
-        ESP_LOGE(TAG, "ws client init failed — body continues standalone");
+        ESP_LOGE(TAG, "ws client init failed — body holds pose, no station");
         return ESP_FAIL;
     }
     esp_websocket_register_events(s_client, WEBSOCKET_EVENT_ANY, on_ws_event, NULL);
     esp_websocket_client_start(s_client);   // async; retries on its own
 
     xTaskCreate(station_task, "station_task", 4096, NULL, 4, NULL);
-    ESP_LOGI(TAG, "station client started → %s (dock=%s, body=%s)",
-             STATION_URL, DOCK_NAME, s_body_addr);
+    ESP_LOGI(TAG, "station client started → %s (dock=%s, component=body)",
+             STATION_URL, DOCK_NAME);
     return ESP_OK;
 }

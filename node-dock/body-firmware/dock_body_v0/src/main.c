@@ -1,21 +1,26 @@
-// dock_body_v0 — ESP-IDF firmware for the BodyLink dock body.
+// dock_body_v0 — ESP-IDF firmware for the dock body (orbit-station client).
 //
 // Boot order:
 //   1. NVS init (esp_wifi requires it, even when we use WIFI_STORAGE_RAM).
 //   2. Servos: hold all 4 at center so the PWM lines are settled before
 //      Wi-Fi negotiation.
-//   3. Wi-Fi STA. On IP acquired, the on_got_ip callback starts the
-//      BodyLink WS server (and the motion-tick task).
-//   4. app_main idles forever; everything else runs on FreeRTOS tasks.
+//   3. Motion tick task (100 Hz) — runs regardless of connectivity, so the
+//      body settles transitions and holds pose even fully offline.
+//   4. Wi-Fi STA. On IP acquired, the on_got_ip callback dials orbit-station
+//      (the body's ONLY socket — the phone-facing BodyLink server is gone;
+//      docs/SERVER-BRAIN-IMPL.md §5).
+//   5. app_main idles forever; everything else runs on FreeRTOS tasks.
 //
 // Layer map:
 //   servo.{h,c}            — mcpwm PWM, 4 servos on GPIO 3/4/5/6
 //   wifi_sta.{h,c}         — STA join, retry, GOT_IP callback
-//   bodylink_proto.{h,c}   — JSON envelope encode/decode (cJSON)
-//   bodylink_motion.{h,c}  — capability profile, set_param/set_target, motion tick
-//   bodylink_ws.{h,c}      — esp_http_server WS dispatcher + tick task
+//   bodylink_proto.{h,c}   — BodyLink JSON shapes (cJSON) — the protocol
+//                            lives on; only its server socket was deleted
+//   bodylink_motion.{h,c}  — capability profile, set_target, motion tick
+//   station_link.{h,c}     — orbit-station WS client (commands in, state out)
+//   station_ota.{h,c}      — OTA self-update over the station link
 //
-// Spec: ../../bodylink/DESIGN.md
+// Spec: ../../bodylink/DESIGN.md (shapes) + docs/SERVER-BRAIN-IMPL.md §5 (link)
 
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
@@ -25,18 +30,28 @@
 #include "servo.h"
 #include "wifi_sta.h"
 #include "bodylink_motion.h"
-#include "bodylink_ws.h"
 #include "station_link.h"
 
 static const char *TAG = "main";
 
+// 100 Hz motion tick — owned here since the WS-server layer that used to
+// spawn it is gone. Pure local concern: advances transitions, writes servos.
+static void motion_task(void *arg) {
+    (void)arg;
+    TickType_t next = xTaskGetTickCount();
+    for (;;) {
+        vTaskDelayUntil(&next, pdMS_TO_TICKS(10));
+        bl_motion_tick();
+    }
+}
+
 static void on_got_ip(esp_ip4_addr_t ip) {
-    bl_ws_start();                  // phone-facing BodyLink server (:17317)
-    station_link_start(ip);         // optional client registration with orbit-station
+    (void)ip;
+    station_link_start();   // the body's one socket: client → orbit-station
 }
 
 void app_main(void) {
-    ESP_LOGI(TAG, "── dock_body_v0 (ESP-IDF BodyLink) ──");
+    ESP_LOGI(TAG, "── dock_body_v0 (orbit-station body) ──");
 
     // NVS — required by esp_wifi's internal bookkeeping.
     esp_err_t r = nvs_flash_init();
@@ -53,11 +68,12 @@ void app_main(void) {
     // center, but the indirection matters once homes diverge).
     ESP_ERROR_CHECK(servo_init_all());
     ESP_ERROR_CHECK(bl_motion_init());
+    xTaskCreate(&motion_task, "bl_motion", 4096, NULL, 5, NULL);
 
 #ifndef BL_DISABLE_WIFI
     ESP_ERROR_CHECK(wifi_sta_start(on_got_ip));
     if (wifi_sta_wait_connected(portMAX_DELAY)) {
-        ESP_LOGI(TAG, "✅ Wi-Fi up; BodyLink WS ready on :17317");
+        ESP_LOGI(TAG, "✅ Wi-Fi up; dialing orbit-station");
     } else {
         ESP_LOGE(TAG, "❌ Wi-Fi failed; body running offline (servos still active)");
     }
