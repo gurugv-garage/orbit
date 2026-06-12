@@ -1,5 +1,15 @@
 # BodyLink — protocol & spec
 
+> **2026-06-12 — topology change planned ([docs/SERVER-BRAIN-IMPL.md](../../docs/SERVER-BRAIN-IMPL.md)).**
+> The Brain role moves from the phone to **orbit-station**, and the transport
+> moves to the body's existing station WS connection — the body's own WS
+> *server* (§1.2) is removed; the firmware becomes client-only, and the phone
+> never talks to the body. The **contract semantics in this doc survive
+> unchanged** (profile advertisement §2, per-part idempotent `set_target` §3,
+> errors/events §4, hold-pose-on-disconnect + heartbeat cadence §5) — they are
+> re-hosted on the station socket, with the station's motion executor as the
+> single Brain. Until that cutover lands, this doc describes the live system.
+
 **What it is.** A small WebSocket protocol that lets a phone (Brain) drive
 servos on a separate microcontroller (Body) over Wi-Fi. The Body advertises
 its capabilities (parts + parameter ranges + home pose) at handshake; the
@@ -10,6 +20,21 @@ per-part idempotent — usable for both immediate intent and periodic heartbeat.
 implementation. The protocol is deliberately small so a future second body
 (a different MCU, a different mechanical layout) can speak it without
 rewriting the Brain side.
+
+> **Parked idea — BodyLink as a standalone SDK (noted 2026-06-12).** Part of
+> the original motivation for body-as-WS-server was an SDK framing that never
+> got written down: *"what's the easiest way to control an ESP32's servos
+> over Wi-Fi, out of the box?"* — flash this firmware on the ESP32, point any
+> client (a phone, a laptop, a script) at `ws://<body>:17317/`, and you have
+> a self-describing servo controller: it advertises its parts/ranges/home and
+> obeys `set_target`. In that framing the body *should* be the server —
+> pluggable clients connect to it, no broker required. That product idea was
+> under-explored and is **parked, not dead**: orbit's own topology moves to
+> station-as-single-master (see the banner above), but if BodyLink is ever
+> extracted as an independent "servos over Wi-Fi" SDK, the standalone-server
+> mode is the heart of it and this spec is already written to support it
+> (transport-agnostic contract, capability advertisement, single-master
+> `BUSY` rule). Revisit if/when the protocol gets a second user outside orbit.
 
 > **Source-of-truth files** (when this doc and code disagree, code wins):
 > - **Body firmware** (canonical implementation): [../body-firmware/dock_body_v0/](../body-firmware/dock_body_v0/) (ESP-IDF, native esp_wifi + esp_http_server + cJSON). Verified end-to-end on hardware.

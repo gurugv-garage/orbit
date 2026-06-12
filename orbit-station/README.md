@@ -37,6 +37,11 @@ orbit-station/
 | **bench** | — | Serves the dock-LLM benchmark snapshots; the viewer is embedded in the UI. |
 | **station** | `station` | Meta: health, module registry, live peer roster. |
 
+Planned: a **brain** module (`agent` topic) hosting the dock's LLM loop
+server-side (full cutover — the phone keeps no local loop). Design/risks:
+[`../docs/SERVER-BRAIN.md`](../docs/SERVER-BRAIN.md); implementation plan:
+[`../docs/SERVER-BRAIN-IMPL.md`](../docs/SERVER-BRAIN-IMPL.md).
+
 ## Connecting peers (the one WebSocket)
 
 Everything connects to `/ws` and speaks the JSON frame protocol in
