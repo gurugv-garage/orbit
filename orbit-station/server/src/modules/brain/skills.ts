@@ -50,14 +50,18 @@ export async function loadDockSkills(root: string, dock: string): Promise<DockSk
   const dir = dockSkillsDir(root, dock);
   const { skills } = await loadSkills(env, dir);
   const listed = skills.filter((s) => !s.disableModelInvocation);
-  if (skills.length === 0) return { skills, promptBlock: '' };
 
-  const lines = listed.map((s) => `- ${s.name}: ${s.description}`).join('\n');
-  const promptBlock = listed.length > 0
-    ? `You have SKILLS — extra step-by-step capabilities you can pull up when a task matches one. `
-      + `Available skills:\n${lines}\n`
-      + `When a request matches a skill, call invoke_skill with its name to load the full instructions, then follow them.`
-    : '';
+  // Always describe the skill situation so the model can ANSWER "what skills do
+  // you have?" truthfully — including when it has none (otherwise it
+  // hallucinates or denies having any concept of skills).
+  const promptBlock = listed.length === 0
+    ? `You currently have NO skills installed. Skills are extra step-by-step capabilities someone can add to you. If asked what skills you have, say you don't have any installed yet.`
+    : `You have SKILLS — extra step-by-step capabilities you can pull up when a task matches one. `
+      + `Your installed skills:\n${listed.map((s) => `- ${s.name}: ${s.description}`).join('\n')}\n`
+      + `If asked what skills or abilities you have, you may describe these by name. When a request matches a skill, call invoke_skill with its name to load the full instructions, then follow them.`;
+
+  // the invoke_skill tool only makes sense when there's something to invoke
+  if (listed.length === 0) return { skills, promptBlock };
 
   const byName = new Map(skills.map((s) => [s.name, s]));
   const tool: AgentTool<any> = {

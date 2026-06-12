@@ -66,9 +66,17 @@ embedded agent:
 
 - **Skills** — on-demand capability packs. **✅ DONE (2026-06-12)** — per-dock,
   hosted on raw `Agent`, installable from the console (§4 TODO, `skills.ts`).
-- **Extensions** — `registerTool` + `on(event)` (the brain already does the
-  equivalent in-process; pi's extension API is the documented shape for more).
-  *Not yet exposed for dock-/third-party-authored modules.*
+- **Extensions / coding tools** — `registerTool` + `on(event)` (the brain
+  already does the equivalent in-process). **✅ DONE (2026-06-12): full pi coding
+  tools** — `read_file`/`write_file`/`edit_file`/`run_command` over the whole
+  station host **including its own source** (`filetools.ts`). Gated OFF by
+  default (`brainFileAccess`); `read_file` is direct (ask it about its code),
+  every mutation requires **user confirmation on the dock UI** (the `confirm`
+  RPC → fail-safe deny). The model is told it has these powers (`FILE_TOOLS_PROMPT`).
+  Verified end-to-end with a real LLM: dock read its own `prompt.ts` and quoted
+  its first system-prompt line; approve→write happened, deny→blocked.
+  *Loading dock-/third-party-authored extension MODULES (vs these built-in tools)
+  is still future.*
 - **Custom Models / Custom Providers** — model + provider self-config.
   *Not yet exposed (the human sets `brainModel`).*
 
@@ -211,10 +219,31 @@ shape and place as `brainGrants` in
 - [x] tests: install/list/remove round-trip, lane guard, bad-frontmatter
       rejection, **skill rides the turn system prompt + tool offered**
       (`skills.test.ts`); verified live via REST against a running station
-- [ ] re-test the terse small-model prompt on the live cheap model (needs a key)
+- [x] re-tested on the live cheap model (Gemini 2.5 Flash): "what skills do you
+      have" answered truthfully ("none installed yet") — gap-1 introspection fixed
 - [ ] optional: shared station pack dir (currently per-dock only)
 
-**Tools / Extensions (pi Extensions):**
+**Coding tools (pi Extensions — DONE, landed 2026-06-12):**
+- [x] `read_file`/`write_file`/`edit_file`/`run_command` over the station host
+      incl. its own source (`filetools.ts`), built on `NodeExecutionEnv`
+- [x] `brainFileAccess` config gate (default OFF); `FILE_TOOLS_PROMPT` makes the
+      model aware it can read + modify its own code
+- [x] mutation confirmation: write/edit/run RPC a `confirm` tool-call to the
+      dock; anything but an explicit approve = DENY (offline/timeout/decline all
+      fail-safe). `read_file` is direct.
+- [x] tests (`filetools.test.ts`): read-no-confirm, write/edit/run gated,
+      ambiguous-edit guard, capability advertised
+- [x] E2E with a real LLM via `fake-phone.ts` (CONFIRM_APPROVE): dock read its
+      own `prompt.ts` + quoted line 1; approve→file written, deny→blocked
+- [ ] **phone-side `confirm` UI** — the real `RemoteBrain.onToolCall` only knows
+      `set_face`; a `confirm` currently hits "unknown tool" → DENY, so on REAL
+      hardware mutations are fail-safe-blocked until a Compose approve/deny
+      dialog acks `approved`. (Proven with the fake phone; the device UI is the
+      remaining piece for on-hardware writes.)
+- [ ] consider: audit log / obs event per mutation; optional path allowlist
+
+**Other extension tiers (not yet):**
+- [ ] dock-/third-party-authored extension MODULES (vs the built-in coding tools)
 - [ ] gate `brainExtensions.tools`; keep first-party in-process tools as-is
       (`buildDockTools` → `state.tools` / `setTools`, **not** `registerTool`)
 - [ ] isolation harness for any dock-/third-party extension (pi's

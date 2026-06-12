@@ -52,6 +52,7 @@ import { RpcBroker } from './rpc.js';
 import { SentenceStreamer } from './sentence.js';
 import { SessionStore, type SessionMeta } from './store.js';
 import { loadDockSkills, type DockSkills } from './skills.js';
+import { buildFileTools, FILE_TOOLS_PROMPT } from './filetools.js';
 import { buildDockTools, buildGrantTools, type ToolTurnContext } from './tools.js';
 import type { MoveStep } from './schemas.js';
 
@@ -375,10 +376,16 @@ export class DockBrainSession {
     // the path); a freshly-installed SKILL.md thus applies next-turn. Failure is
     // non-fatal — a dock with no/broken skills behaves exactly as before.
     this.#skills = await this.#loadSkills();
+    // full pi coding skills (read/write/edit/run over the station's own code),
+    // gated OFF by default. When on, the model is told it has them (so it can
+    // answer questions about its code AND modify itself) and mutations require
+    // dock UI confirmation.
+    const fileAccess = this.#d.config('brainFileAccess') === true;
     agent.state.systemPrompt = buildSystemPrompt({
       persona: str(this.#d.config('brainPersona')),
       memory,
-      skills: this.#skills.promptBlock,
+      skills: [this.#skills.promptBlock, fileAccess ? FILE_TOOLS_PROMPT : '']
+        .filter(Boolean).join('\n\n'),
       context: [bodyLine, req.context?.state].filter(Boolean).join(' '),
     });
     agent.state.model = this.#resolveModel();
@@ -391,6 +398,7 @@ export class DockBrainSession {
       ...this.#baseTools,
       ...buildGrantTools(this.dock, this.#grants(), this.#d.motion),
       ...(this.#skills.tool ? [this.#skills.tool] : []),
+      ...(fileAccess ? buildFileTools({ confirm: (s, d) => this.#confirmOnDock(s, d) }) : []),
     ];
     this.#debug('turn-start', {
       text: req.trigger.text,
@@ -646,6 +654,20 @@ export class DockBrainSession {
       default:
         break;
     }
+  }
+
+  /** Ask the dock to CONFIRM a mutating code/file action before it runs. RPCs
+   *  a `confirm` tool-call to the dock's face surface; the UI shows it and acks
+   *  approve/deny. Anything but an explicit, non-error "approved" = DENY
+   *  (offline, timeout, decline all fail safe). */
+  async #confirmOnDock(summary: string, detail: string): Promise<boolean> {
+    const ack = await this.#d.rpc.call({
+      dock: this.dock, cap: 'face', turnId: this.#activeTurnId ?? '',
+      toolCallId: `confirm-${randomUUID().slice(0, 8)}`,
+      name: 'confirm', args: { summary, detail },
+      timeoutMs: 120_000, // a human is reading + deciding
+    });
+    return !ack.isError && /^(approved|yes|true|ok)$/i.test(ack.content.trim());
   }
 
   /** One spoken sentence → directed speak frame to the voice component. */

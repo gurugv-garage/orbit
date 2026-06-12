@@ -88,10 +88,15 @@ async function main() {
       }
       if (kind === 'tool-call') {
         console.log(`${at()}  [phone] tool-call    ${payload.name} ${JSON.stringify(payload.args)}`);
-        // fire-and-forget contract: ack instantly with a dispatch status
+        // confirm (code/file mutation gate): a real dock shows UI + acks the
+        // user's choice. The fake auto-APPROVES when CONFIRM_APPROVE=1 so the
+        // self-mod write path is testable end-to-end (default = no, fail-safe).
+        const content = payload.name === 'confirm'
+          ? (process.env.CONFIRM_APPROVE === '1' ? 'approved' : 'denied')
+          : `${payload.name} dispatched`;
         pub(ws, 'agent', 'tool-result', {
           reqId: payload.reqId, toolCallId: payload.toolCallId, turnId: payload.turnId,
-          content: `${payload.name} dispatched`, isError: false,
+          content, isError: false,
         });
         return;
       }

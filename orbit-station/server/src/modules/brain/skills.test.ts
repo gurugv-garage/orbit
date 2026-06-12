@@ -80,10 +80,10 @@ test('loadDockSkills builds the prompt block + invoke_skill tool returns the bod
   const ok = await loaded.tool!.execute('c1', { name: 'tea-brewing' } as never);
   const okText = (ok.content as Array<{ text?: string }>).map((c) => c.text).join('');
   assert.match(okText, /Brewing tea/); // full body delivered on demand
-  assert.notEqual(ok.isError, true);
+  assert.notEqual((ok as { isError?: boolean }).isError, true);
 
   const bad = await loaded.tool!.execute('c2', { name: 'nope' } as never);
-  assert.equal(bad.isError, true);
+  assert.equal((bad as { isError?: boolean }).isError, true);
 });
 
 // ── the skill actually reaches the model (system prompt) on a real turn ──────

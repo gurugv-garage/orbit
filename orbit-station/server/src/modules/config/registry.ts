@@ -186,6 +186,11 @@ export const REGISTRY: ConfigEntry[] = [
     description: 'Load per-dock pi Skills from .data/brain/<dock>/skills/ (progressive disclosure: names+descriptions in the prompt, full body via the invoke_skill tool). Off = no skills loaded for any dock.',
   }),
   entry({
+    key: 'brainFileAccess', type: 'boolean', schema: z.boolean(), default: false, tags: ['station'],
+    label: 'Code access (DANGER)',
+    description: 'Give the brain FULL pi coding tools — read/write/edit any file + run shell commands on the station host, INCLUDING its own source. read_file is direct (ask it about its code); every write/edit/run requires user confirmation on the dock UI. Off by default; turning this on lets an LLM modify the running robot.',
+  }),
+  entry({
     key: 'brainSessionIdleMin', type: 'number', schema: z.number().int().min(1).max(24 * 60), default: 30, tags: ['station'],
     label: 'Session idle close (min)',
     description: 'A brain session closes after this many minutes without a turn (then compacts to a summary). The next turn opens a fresh session.',
