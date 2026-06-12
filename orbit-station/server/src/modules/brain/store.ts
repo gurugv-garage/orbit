@@ -97,6 +97,16 @@ export class SessionStore {
     return [...this.#index(dock)].sort((a, b) => b.openedAt - a.openedAt);
   }
 
+  /** Upgrade a session's summary after the fact (the async LLM compaction
+   *  lands after close() already wrote the cheap tail digest). */
+  setSummary(dock: string, sessionId: string, summary: string): void {
+    const idx = this.#index(dock);
+    const meta = idx.find((s) => s.sessionId === sessionId);
+    if (!meta) return;
+    meta.summary = summary;
+    this.#writeIndex(dock, idx);
+  }
+
   /** Re-open a closed session (console "continue"). The caller must have
    *  closed any currently-open session first — one open session per dock.
    *  The transcript is still on disk; the next turn resumes mid-conversation.

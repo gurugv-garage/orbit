@@ -228,11 +228,49 @@ export class DockBrainSession {
   endSession(reason: string): void {
     if (!this.#meta) return;
     if (this.#turnActive) this.cancel();
-    const summary = summarize(this.#agent?.state.messages ?? []);
-    this.#d.store.close(this.dock, this.#meta.sessionId, summary);
-    this.#d.log?.(`[brain] ${this.dock}: session ${this.#meta.sessionId} closed (${reason})`);
+    const { sessionId } = this.#meta;
+    const messages = this.#agent?.state.messages ?? this.#d.store.messages(this.dock, sessionId);
+    // close NOW with the cheap tail digest; the LLM compaction below upgrades
+    // it asynchronously (close must never wait on a model).
+    this.#d.store.close(this.dock, sessionId, summarize(messages));
+    this.#d.log?.(`[brain] ${this.dock}: session ${sessionId} closed (${reason})`);
     this.#meta = undefined;
     this.#agent = undefined;
+    void this.#compactSummary(sessionId, messages);
+  }
+
+  /** Compact a closed session's transcript into a short memory note via one
+   *  background LLM call — the seed the NEXT session's prompt carries (the
+   *  dock remembers across engagements). Best-effort: any failure leaves the
+   *  tail digest in place. */
+  async #compactSummary(sessionId: string, messages: AgentMessage[]): Promise<void> {
+    const transcript = transcriptLines(messages).join('\n');
+    if (transcript.length < 120) return; // not worth a model call
+    try {
+      const agent = new Agent({
+        initialState: {
+          systemPrompt: SUMMARIZER_PROMPT,
+          model: this.#resolveModel(),
+          thinkingLevel: 'off',
+          tools: [],
+          messages: [],
+        },
+        getApiKey: (provider: string) => apiKeyFor(provider),
+        ...(this.#d.streamFn ? { streamFn: this.#d.streamFn } : {}),
+      } as never);
+      await agent.prompt([{
+        role: 'user',
+        content: [{ type: 'text', text: transcript.slice(-6_000) }],
+        timestamp: Date.now(),
+      } as AgentMessage]);
+      const note = assistantText(agent.state.messages.at(-1)).trim();
+      if (note && !agent.state.errorMessage) {
+        this.#d.store.setSummary(this.dock, sessionId, note.slice(0, 800));
+        this.#d.log?.(`[brain] ${this.dock}: session ${sessionId} compacted (${note.length} chars)`);
+      }
+    } catch (err) {
+      this.#d.log?.(`[brain] ${this.dock}: summary compaction failed (digest kept): ${String(err)}`);
+    }
   }
 
   // ── internals ──────────────────────────────────────────────────────────────
@@ -301,8 +339,13 @@ export class DockBrainSession {
     const bodyLine = this.#d.directory.resolveCap(this.dock, 'servo') != null
       ? 'Body: CONNECTED. Parts you can move — neck (head tilt), foot (base swivel); use the move tool.'
       : 'Body: NOT connected (movement requests will be ignored).';
+    // session seeding: the most recent CLOSED session's memory note rides the
+    // system prompt, so a fresh engagement still knows this morning's context.
+    const memory = this.#d.store.sessions(this.dock)
+      .find((m) => m.closedAt != null && m.summary && m.sessionId !== this.#meta?.sessionId)?.summary;
     agent.state.systemPrompt = buildSystemPrompt({
       persona: str(this.#d.config('brainPersona')),
+      memory,
       context: [bodyLine, req.context?.state].filter(Boolean).join(' '),
     });
     agent.state.model = this.#resolveModel();
@@ -671,10 +714,8 @@ function assistantText(m: unknown): string {
 }
 
 
-/** Session summary at close — the seed for phase-2 memory. (pi harness
- *  compaction is the upgrade path; a tail-of-conversation digest is enough
- *  to start.) */
-function summarize(messages: AgentMessage[]): string {
+/** Plain user/orbit lines of a transcript (tool noise dropped). */
+function transcriptLines(messages: AgentMessage[]): string[] {
   const lines: string[] = [];
   for (const m of messages) {
     const role = (m as { role?: string }).role;
@@ -689,8 +730,18 @@ function summarize(messages: AgentMessage[]): string {
       if (t) lines.push(`orbit: ${t}`);
     }
   }
-  return lines.slice(-8).join('\n').slice(0, 1_000);
+  return lines;
 }
+
+/** Instant close-time summary: a tail digest. The async LLM compaction
+ *  (#compactSummary) upgrades it to a real memory note when it lands. */
+function summarize(messages: AgentMessage[]): string {
+  return transcriptLines(messages).slice(-8).join('\n').slice(0, 1_000);
+}
+
+/** One-shot compaction prompt — output is carried verbatim in the next
+ *  session's system prompt, so it must be short and third-person. */
+const SUMMARIZER_PROMPT = `You compress a conversation between a user and "orbit" (a small desk robot) into ONE short memory note (max 80 words). Keep: people's names and anything learned about them, stated preferences, facts to remember, unfinished topics or promises. Drop: small talk, gestures, one-off commands. Write the note only — no preamble, no headings.`;
 
 function num(v: unknown, fallback: number): number {
   return typeof v === 'number' && Number.isFinite(v) ? v : fallback;

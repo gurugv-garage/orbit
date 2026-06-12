@@ -271,6 +271,39 @@ test('session lifecycle: persists across instances, idle close opens fresh with 
   assert.notEqual(session.sessionId, sid1);
 });
 
+test('compaction: close upgrades the digest via one LLM call; the next session is seeded', async () => {
+  const reply = (text: string): Script => (s) => {
+    const done = assistant(text);
+    s.push({ type: 'start', partial: assistant('') });
+    s.push({ type: 'text_delta', contentIndex: 0, delta: text, partial: done });
+    s.push({ type: 'done', reason: 'stop', message: done });
+    s.end(done);
+  };
+  const { session, store, ctxs } = makeSession([
+    reply('Nice to meet you, Guru! I will remember the cake is for Sia. '),
+    // the compaction call (fires async on endSession)
+    reply("Guru introduced himself; a cake is planned for Sia's birthday."),
+    reply('Of course — the cake for Sia! '),
+  ], { config: { brainSessionIdleMin: 1 } });
+
+  await session.handleTurnRequest({
+    turnId: 't1',
+    trigger: { kind: 'user', text: "I'm Guru and the cake in the fridge is for Sia's birthday, keep it secret" },
+  });
+  const sid1 = session.sessionId!;
+  session.endSession('test');
+  // close is instant (tail digest); the LLM note lands asynchronously
+  await new Promise((r) => setTimeout(r, 50));
+  const closed = store.sessions(DOCK).find((m) => m.sessionId === sid1)!;
+  assert.equal(closed.summary, "Guru introduced himself; a cake is planned for Sia's birthday.");
+
+  // a FRESH session's system prompt carries the note as memory
+  await session.handleTurnRequest({ turnId: 't2', trigger: { kind: 'user', text: 'what was the plan again?' } });
+  assert.notEqual(session.sessionId, sid1);
+  const sys = (ctxs.at(-1) as { systemPrompt?: string }).systemPrompt ?? '';
+  assert.ok(sys.includes("a cake is planned for Sia's birthday"), `memory missing from prompt: ${sys.slice(-300)}`);
+});
+
 test('obs events carry dock as source and the Turn/Step vocabulary', async () => {
   const script: Script = (s) => {
     const done = assistant('Hi. ');
