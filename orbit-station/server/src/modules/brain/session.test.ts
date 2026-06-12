@@ -43,9 +43,9 @@ function assistant(text: string, stopReason: AssistantMessage['stopReason'] = 's
 /** A scripted transport: each call shifts the next script entry. */
 type Script = (stream: AssistantMessageEventStream, signal?: AbortSignal) => void;
 
-function makeSession(scripts: Script[], opts: { config?: Record<string, unknown>; faces?: unknown } = {}) {
+function makeSession(scripts: Script[], opts: { config?: Record<string, unknown>; faces?: unknown; peers?: RosterEntry[] } = {}) {
   const bus = new Bus();
-  const roster = [phonePeer()];
+  const roster = [phonePeer(), ...(opts.peers ?? [])];
   const directory = new Directory(() => roster, join(tmpdir(), `dir-${Math.random()}.json`));
   const motion = new MotionExecutor(bus, directory);
   const rpc = new RpcBroker(bus, directory);
@@ -302,6 +302,52 @@ test('compaction: close upgrades the digest via one LLM call; the next session i
   assert.notEqual(session.sessionId, sid1);
   const sys = (ctxs.at(-1) as { systemPrompt?: string }).systemPrompt ?? '';
   assert.ok(sys.includes("a cake is planned for Sia's birthday"), `memory missing from prompt: ${sys.slice(-300)}`);
+});
+
+test('brainGrants: a granted dock gets a move_<target> tool that drives the OTHER dock; ungranted has none', async () => {
+  const roverBody: RosterEntry = {
+    role: 'device', id: 'rover-hw-1', dock: 'rover', component: 'body',
+    kind: 'rover-fw', caps: ['servo'],
+    lastSeen: Date.now(), connectedAt: Date.now(), topics: ['bodylink'],
+  };
+  const callMoveRover: Script = (s) => {
+    const m = assistant('');
+    m.content.push({ type: 'toolCall', id: 'call-1', name: 'move_rover',
+      arguments: { steps: [{ part: 'neck', degrees: 10, duration_ms: 200 }] } } as never);
+    m.stopReason = 'toolUse';
+    s.push({ type: 'toolcall_end', contentIndex: 0, toolCall: m.content[0] as never, partial: m });
+    s.push({ type: 'done', reason: 'toolUse', message: m });
+    s.end(m);
+  };
+  const wrapUp: Script = (s) => {
+    const done = assistant('Rolling! ');
+    s.push({ type: 'start', partial: assistant('') });
+    s.push({ type: 'text_delta', contentIndex: 0, delta: 'Rolling! ', partial: done });
+    s.push({ type: 'done', reason: 'stop', message: done });
+    s.end(done);
+  };
+
+  const { session, frames, bus, ctxs } = makeSession([callMoveRover, wrapUp], {
+    peers: [roverBody],
+    config: { brainGrants: { [DOCK]: { rover: ['servo'] } } },
+  });
+  const bodyCmds: BusMessage[] = [];
+  bus.on('bodylink', (m) => { if (m.kind === 'command') bodyCmds.push(m); });
+
+  await session.handleTurnRequest({ turnId: 't1', trigger: { kind: 'user', text: 'send the rover forward' } });
+  assert.equal(statusOf(frames).at(-1), 'done');
+  // the command went to the ROVER's body, not ours
+  assert.ok(bodyCmds.length >= 1, 'no body command published');
+  assert.deepEqual(bodyCmds[0]!.toAddr, { dock: 'rover', component: 'body' });
+  // and the granted tool was actually offered to the model
+  const tools = (ctxs.at(-1) as { tools?: Array<{ name: string }> }).tools ?? [];
+  assert.ok(tools.some((t) => t.name === 'move_rover'), 'move_rover not offered');
+
+  // ungranted dock: no cross-dock tool exposed
+  const plain = makeSession([wrapUp], { peers: [roverBody] });
+  await plain.session.handleTurnRequest({ turnId: 't1', trigger: { kind: 'user', text: 'hi' } });
+  const plainTools = (plain.ctxs.at(-1) as { tools?: Array<{ name: string }> }).tools ?? [];
+  assert.ok(!plainTools.some((t) => t.name === 'move_rover'), 'tool leaked without a grant');
 });
 
 test('obs events carry dock as source and the Turn/Step vocabulary', async () => {

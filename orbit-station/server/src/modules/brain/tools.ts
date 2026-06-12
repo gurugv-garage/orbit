@@ -56,6 +56,33 @@ function tool(
   return { name, label: name, description, parameters: parameters as never, execute };
 }
 
+/**
+ * Cross-dock tools, by GRANT (docs/SERVER-BRAIN-IMPL.md §2 "cross-dock
+ * interactions"): tool exposure is policy, not possibility. `brainGrants`
+ * (config, json) maps  { <thisDock>: { <targetDock>: [caps…] } } — a dock's
+ * brain gets a `move_<target>` tool ONLY for targets granted 'servo'. The
+ * motion executor is the same single master; only the tenant differs.
+ */
+export function buildGrantTools(
+  dock: string,
+  grants: Record<string, string[]>,
+  motion: ToolDeps['motion'],
+): AgentTool<any>[] {
+  const out: AgentTool<any>[] = [];
+  for (const [target, caps] of Object.entries(grants)) {
+    if (target === dock || !Array.isArray(caps) || !caps.includes('servo')) continue;
+    const name = `move_${target.replace(/[^a-zA-Z0-9_-]/g, '_')}`;
+    out.push(tool(
+      name,
+      `Move the body of "${target}" — another robot you are allowed to control. ${S.MOVE_DESC}`,
+      S.moveSchema,
+      async (_toolCallId, args: { steps: MoveStep[] }) =>
+        textResult(motion.runSteps(target, (args as { steps: MoveStep[] }).steps ?? [])),
+    ));
+  }
+  return out;
+}
+
 export function buildDockTools(deps: ToolDeps): AgentTool<any>[] {
   const faces = (): FaceToolsApi => {
     const f = deps.getFaces();

@@ -50,7 +50,7 @@ import { buildSystemPrompt, isVisionIntent } from './prompt.js';
 import { RpcBroker } from './rpc.js';
 import { SentenceStreamer } from './sentence.js';
 import { SessionStore, type SessionMeta } from './store.js';
-import { buildDockTools, type ToolTurnContext } from './tools.js';
+import { buildDockTools, buildGrantTools, type ToolTurnContext } from './tools.js';
 import type { MoveStep } from './schemas.js';
 
 export interface TurnRequest {
@@ -117,6 +117,24 @@ export class DockBrainSession {
   constructor(dock: string, deps: SessionDeps) {
     this.dock = dock;
     this.#d = deps;
+    this.#baseTools = buildDockTools({
+      dock,
+      rpc: deps.rpc,
+      motion: deps.motion,
+      getFaces: deps.getFaces,
+      getGestures: () => gesturesFromConfig(deps.config('faceGestures')) as Record<string, MoveStep[]>,
+      getTurnContext: () => this.#turnCtx,
+    });
+  }
+
+  readonly #baseTools: ReturnType<typeof buildDockTools>;
+
+  /** This dock's cross-dock grants from the `brainGrants` config json:
+   *  { <thisDock>: { <targetDock>: [caps…] } } → the inner map. */
+  #grants(): Record<string, string[]> {
+    const all = this.#d.config('brainGrants') as Record<string, Record<string, string[]>> | undefined;
+    const mine = all?.[this.dock];
+    return mine && typeof mine === 'object' ? mine : {};
   }
 
   get sessionId(): string | undefined {
@@ -289,14 +307,7 @@ export class DockBrainSession {
         systemPrompt: buildSystemPrompt({}),
         model: this.#resolveModel(),
         thinkingLevel: 'off', // latency: no extended reasoning on dock turns
-        tools: buildDockTools({
-          dock: this.dock,
-          rpc: this.#d.rpc,
-          motion: this.#d.motion,
-          getFaces: this.#d.getFaces,
-          getGestures: () => gesturesFromConfig(this.#d.config('faceGestures')) as Record<string, MoveStep[]>,
-          getTurnContext: () => this.#turnCtx,
-        }),
+        tools: this.#baseTools,
         messages,
       },
       getApiKey: (provider) => apiKeyFor(provider),
@@ -350,6 +361,10 @@ export class DockBrainSession {
     });
     agent.state.model = this.#resolveModel();
     agent.state.thinkingLevel = (str(this.#d.config('brainThinkingLevel')) ?? 'off') as never;
+    // cross-dock grants (config json { <dock>: { <target>: [caps] } }) become
+    // extra tools — re-derived each turn so a granted/revoked dock applies
+    // next-turn, no session restart.
+    agent.state.tools = [...this.#baseTools, ...buildGrantTools(this.dock, this.#grants(), this.#d.motion)];
     this.#debug('turn-start', {
       text: req.trigger.text,
       model: `${agent.state.model.provider}/${agent.state.model.id}`,

@@ -140,10 +140,23 @@ executor to the real servos with `applied` acks + 5 distinct poses traced).
   (`cancelled`), zero leaked speaks. Still manual: physical power pulls,
   servo-stall, multi-hour doze soak.
 
-**TODO — later (post-cutover):** brain-module integration test (two-dock
-tenancy isolation, cross-dock grants), idle-time pi compaction (summary is
-currently a tail digest), SFU frame-grab vision, session-summary seeding,
-docs cleanup (CLAUDE.md, bench migration decision).
+**Post-cutover capabilities (2026-06-12, all landed + live-verified):**
+- ✅ **SFU frame-grab vision**: vision turns use a frame from the dock's live
+  stream (`FaceToolsApi.frame`); the phone uploads a JPEG only as a
+  no-stream fallback. Fixed a pre-existing FrameGrabber starvation on the
+  way (`-r 1` vs the IVF clock emitted ~1 JPEG/20 s; now passthrough ≈1/s).
+- ✅ **session compaction + seeding**: close writes the tail digest instantly,
+  one background LLM call upgrades it to a memory note, and a fresh session's
+  prompt carries the latest note (verified live: new session answered
+  "favorite tea?" from the previous session's note).
+- ✅ **brainGrants enforced**: `{ <dock>: { <target>: [caps] } }` config json →
+  a granted brain gets a `move_<target>` tool (exposure is policy, not
+  possibility), re-derived per turn. Verified live: web-test's brain moved
+  anne-bot's REAL servos via its grant; ungranted docks get no tool.
+
+**TODO — later:** two-dock tenancy integration test at the module level,
+docs cleanup (bench migration decision), grants beyond `servo` (nav/display
+when the rover lands).
 
 ---
 
