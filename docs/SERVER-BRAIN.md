@@ -289,6 +289,43 @@ in-process today and becomes a radio hop. Speech-start lag (141ms p50) is the
 phone TTS engine and is unchanged either way. The verification phase must
 re-measure this exact table in station mode on the same utterance set.
 
+### 7.1 Station-mode re-measurement (2026-06-12, post-cutover)
+
+42 scripted turns on the live dock (pad + real body), same utterance mix
+(look/face/gesture/chat/compute), same model+provider as the baseline
+(gemini-2.5-flash via OpenRouter), thinking off. Driver paced on `TurnSettled`.
+
+| Station mode (ms) | p50 | p90 | p99 | baseline p50 |
+|---|---|---|---|---|
+| LLM TTFT (step start → first token) | 2974 | 8219 | 17384 | 1334 |
+| LLM stream after first token | 80 | 714 | 2617 | 17 |
+| Tool exec: `set_face` (now an RPC to the phone) | 18 | 65 | 70 | 8 |
+| Tool exec: `move` (now in-process) | 2 | 2 | 2 | 12 |
+| Gap: step end → next step start | 1 | 2 | 3 | 2 |
+| Turn duration (n=42; 34 are 2-step) | 6778 | 15032 | 23282 | 2455 |
+| Speech-start lag after turn end | 56 | 100 | 146 | 141 |
+
+**What the architecture changed — exactly as predicted, all small:**
+- `set_face` 8→18ms (the one phone-RPC: +1 LAN RTT, ack-on-dispatch held).
+- `move` 12→2ms (in-process now; fire-and-forget into the executor).
+- Step gap unchanged (1–2ms); the loop itself adds nothing.
+- Speech-start lag 141→56ms p50 (and the p90 tail collapsed 1469→100ms):
+  sentences are pre-split server-side and pre-queued into TTS before the
+  turn closes — the streamed `speak` path beats the old in-process one.
+
+**What it didn't change — and what dominates:** TTFT p50 ran 2974 vs the
+baseline's 1334. The added hops cannot account for +1.6s (they total
+≤100ms); this is provider-side latency. The baseline's 320 turns accrued
+over many days/sessions; this is one evening burst against OpenRouter, and
+both TTFT and stream pace (17→80ms) moved together — the signature of
+provider/time-of-day variance, not of the architecture (turn duration ≈
+2×TTFT in both datasets). A paired A/B at the same hour would be needed to
+claim more; the architecture-attributable rows above are the ones this
+cutover owns, and they land inside the §7 estimate.
+
+Both new exposures held up: no speak-frame jitter observed (p90 lag 100ms),
+and 42/42 turns completed with zero failures.
+
 ## 8. Risks & cons (honest list)
 
 1. **Wi-Fi jitter on every hop.** LAN RTT is ~1–5ms, but phone power-save

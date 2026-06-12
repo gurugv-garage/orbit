@@ -122,9 +122,23 @@ executor to the real servos with `applied` acks + 5 distinct poses traced).
 - ✅ `BL_FW_BUILD` 4, `BL_FW_VERSION` 0.2.0; `scripts/test_body.sh` rewritten
   against the station REST (`/api/bodylink/command|state|profile`).
 
-**Remaining (hardware/operations):** chaos suite (§11: pull station
-mid-gesture, Wi-Fi drop mid-move), re-measure the §7 perf table in station
-mode, record a build-4 OTA artifact so future updates ride OTA again.
+**Post-cutover hardening (2026-06-12, after the cutover commits):**
+- ✅ **perf re-measured** (SERVER-BRAIN.md §7.1): 42 scripted turns on the
+  live dock, 0 failures. Architecture-attributable deltas all small and as
+  predicted (set_face +10ms RPC, move 12→2ms in-process, speech-start lag
+  141→56ms p50 with the p90 tail collapsed 1469→100ms); TTFT deltas are
+  provider-side variance, not ours.
+- ✅ **OTA artifacts recorded** (body build 5, app build 2 release) — the
+  next updates ride OTA. NOTE: the pad currently runs the DEBUG build (for
+  the adb test harness); one cable install of the release APK moves it onto
+  the OTA train (signature must match).
+- ✅ **chaos checklist (automated trio, all pass on the live dock):**
+  station killed mid-turn → local fail line in <1 s, reconnect + handshake
+  in ~1.2 s, body holds pose; pad Wi-Fi cut mid-turn → same, backoff
+  reconnect ~6 s after restore; barge-in mid-generation (new debug BARGE
+  broadcast) → silence-local-first, turn-cancel up, station aborts
+  (`cancelled`), zero leaked speaks. Still manual: physical power pulls,
+  servo-stall, multi-hour doze soak.
 
 **TODO — later (post-cutover):** brain-module integration test (two-dock
 tenancy isolation, cross-dock grants), idle-time pi compaction (summary is

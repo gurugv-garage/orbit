@@ -47,6 +47,13 @@ object DebugTestReceiver {
                         // Mimic STT producing a final transcript.
                         PerceptionBus.emit(PerceptionEvent.Transcript(text, isFinal = true))
                     }
+                    "${PREFIX}BARGE" -> {
+                        // Voice barge-in mid-speech (the chaos checklist's
+                        // tap-to-stop-mid-sentence): same event the VAD emits
+                        // when the user talks over TTS.
+                        Timber.i("DEBUG barge-in")
+                        PerceptionBus.emit(PerceptionEvent.BargeIn)
+                    }
                     "${PREFIX}SPEAKING" -> {
                         val active = intent.getStringExtra("active")?.toBoolean() ?: false
                         PerceptionBus.emit(PerceptionEvent.Speaking(active = active))
@@ -121,6 +128,7 @@ object DebugTestReceiver {
             addAction("${PREFIX}STOP")
             addAction("${PREFIX}SAY")
             addAction("${PREFIX}SPEAKING")
+            addAction("${PREFIX}BARGE")
             addAction("${PREFIX}SETFACE")
             addAction("${PREFIX}EXIT")
             addAction("${PREFIX}FACE")
