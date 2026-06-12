@@ -96,7 +96,6 @@ fun DevPanel(controller: FaceController, modifier: Modifier = Modifier) {
                         DevTab.EMOTION -> EmotionTab(controller)
                         DevTab.STATE -> StateTab(controller)
                         DevTab.LLM -> LlmTab()
-                        DevTab.BODY -> BodyTab()
                         DevTab.DEBUG -> DebugTab()
                     }
                 }
@@ -110,7 +109,6 @@ private enum class DevTab(val label: String) {
     EMOTION("emotion"),
     STATE("state"),
     LLM("llm"),
-    BODY("body"),
     DEBUG("debug");
 
     fun next(): DevTab = entries[(ordinal + 1) % entries.size]
@@ -354,177 +352,6 @@ private fun QuoteBox(label: String, text: String) {
             color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.85f),
             modifier = Modifier
                 .padding(start = 2.dp, end = 4.dp),
-        )
-    }
-}
-
-// ── BODY ──────────────────────────────────────────────────────────────
-// Hardware test controls. Drives BodyLinkComms directly (bypasses the LLM
-// agent) so we can prove the wire protocol + heartbeat against the live
-// XIAO or sim without saying "hey jarvis, look up" first.
-//
-// Bigger chips + always-visible status line. Renders the BODY tab as a
-// proper two-row UI: a row of big tappable chips, then a status line
-// showing the last command's phase (waiting / moving / settled / no_ack)
-// per part.
-
-@Composable
-private fun BodyTab() {
-    val scope = rememberCoroutineScope()
-    val comms = dev.orbit.dock.body.ui.BodyTestController.comms
-    val connected by (comms?.connected
-        ?: kotlinx.coroutines.flow.MutableStateFlow(false)).collectAsState()
-    val intent by (comms?.intent
-        ?: kotlinx.coroutines.flow.MutableStateFlow(dev.orbit.dock.body.BodyIntent.EMPTY)
-        ).collectAsState()
-    val scroll = rememberScrollState()
-
-    if (comms == null) {
-        Text(
-            "(no BodyLink — set BODY_HOST in local.properties)",
-            fontSize = 12.sp,
-            color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.5f),
-        )
-        return
-    }
-
-    fun send(part: String, state: String) {
-        scope.launch { comms.setState(part, state) }
-    }
-    fun raw(part: String, us: Long, ms: Int) {
-        scope.launch {
-            comms.setTarget(mapOf(part to mapOf("pulse_width_us" to us.toDouble())), durationMs = ms)
-        }
-    }
-
-    Column(modifier = Modifier.fillMaxWidth()) {
-        // Row 1: status line, prominent — shows live intent per part.
-        Row(
-            modifier = Modifier.fillMaxWidth().padding(bottom = 4.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            BigStatusPill(if (connected) "●" else "○",
-                          if (connected) "connected" else "disconnected",
-                          accent = connected)
-            if (intent.parts.isEmpty()) {
-                Text(
-                    "(tap a chip below to drive the body)",
-                    fontSize = 12.sp,
-                    color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.55f),
-                    fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
-                )
-            } else {
-                for ((p, pi) in intent.parts) {
-                    PhasePill(part = p, intent = pi)
-                }
-            }
-        }
-        // Row 2: BIG chips.
-        Row(
-            modifier = Modifier.fillMaxWidth().horizontalScroll(scroll),
-            horizontalArrangement = Arrangement.spacedBy(6.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            BigChip("neck ↑") { send("neck", "lookUp") }
-            BigChip("neck ↓") { send("neck", "lookDown") }
-            BigChip("neck ◦") { send("neck", "center") }
-            BigChip("foot ←") { send("foot", "left") }
-            BigChip("foot ◦") { send("foot", "forward") }
-            BigChip("foot →") { send("foot", "right") }
-            BigChip("HOME", accent = true) {
-                send("neck", "center"); send("foot", "forward")
-            }
-            BigChip("OOR!", accent = true) { raw("neck", 9999, 200) }
-        }
-    }
-}
-
-@Composable
-private fun BigChip(label: String, accent: Boolean = false, onClick: () -> Unit) {
-    val bg = if (accent) Color(0xFFFFBE5C).copy(alpha = 0.22f)
-             else Color(0xFF9DDDFF).copy(alpha = 0.16f)
-    val fg = if (accent) Color(0xFFFFBE5C) else Color(0xFF9DDDFF)
-    Box(
-        modifier = Modifier
-            .clip(RoundedCornerShape(10.dp))
-            .background(bg)
-            .clickable { onClick() }
-            .padding(horizontal = 14.dp, vertical = 10.dp),
-    ) {
-        Text(
-            label,
-            fontSize = 14.sp,
-            fontWeight = FontWeight.SemiBold,
-            color = fg,
-            fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
-        )
-    }
-}
-
-@Composable
-private fun BigStatusPill(icon: String, label: String, accent: Boolean = false) {
-    Box(
-        modifier = Modifier
-            .clip(RoundedCornerShape(8.dp))
-            .background(
-                if (accent) Color(0xFF1E5128).copy(alpha = 0.6f)
-                else Color(0xFF512828).copy(alpha = 0.6f)
-            )
-            .padding(horizontal = 10.dp, vertical = 6.dp),
-    ) {
-        Text(
-            "$icon $label",
-            fontSize = 12.sp,
-            color = Color.White,
-            fontWeight = FontWeight.SemiBold,
-            fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
-        )
-    }
-}
-
-@Composable
-private fun PhasePill(part: String, intent: dev.orbit.dock.body.PartIntent) {
-    // Tick the clock while moving so the % updates live.
-    var nowMs by remember { mutableStateOf(System.currentTimeMillis()) }
-    LaunchedEffect(intent) {
-        while (intent.phase == dev.orbit.dock.body.PartIntent.Phase.Moving && !intent.settled) {
-            nowMs = System.currentTimeMillis()
-            delay(80L)
-        }
-        nowMs = System.currentTimeMillis()
-    }
-    val (label, bg, fg) = when (intent.phase) {
-        dev.orbit.dock.body.PartIntent.Phase.Waiting ->
-            Triple("$part: ${intent.stateName ?: "?"} (waiting…)",
-                   Color(0xFFFFBE5C).copy(alpha = 0.18f), Color(0xFFFFBE5C))
-        dev.orbit.dock.body.PartIntent.Phase.Moving -> {
-            val pct = (intent.progressAt(nowMs) * 100).toInt()
-            Triple("$part: ${intent.stateName ?: "?"} ($pct%)",
-                   Color(0xFF9DDDFF).copy(alpha = 0.18f), Color(0xFF9DDDFF))
-        }
-        dev.orbit.dock.body.PartIntent.Phase.Settled ->
-            Triple("$part: ${intent.stateName ?: "?"} ✓",
-                   Color(0xFF7BC97B).copy(alpha = 0.18f), Color(0xFF7BC97B))
-        dev.orbit.dock.body.PartIntent.Phase.NoAck ->
-            Triple("$part: NO_ACK!",
-                   Color(0xFFFF7B7B).copy(alpha = 0.22f), Color(0xFFFF7B7B))
-        dev.orbit.dock.body.PartIntent.Phase.Rejected ->
-            Triple("$part: REJECTED",
-                   Color(0xFFFF7B7B).copy(alpha = 0.22f), Color(0xFFFF7B7B))
-    }
-    Box(
-        modifier = Modifier
-            .clip(RoundedCornerShape(8.dp))
-            .background(bg)
-            .padding(horizontal = 10.dp, vertical = 6.dp),
-    ) {
-        Text(
-            label,
-            fontSize = 12.sp,
-            color = fg,
-            fontWeight = FontWeight.SemiBold,
-            fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
         )
     }
 }

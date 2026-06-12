@@ -1,3 +1,9 @@
+> **SUPERSEDED (2026-06): the loop described here moved to the station.**
+> `DockAgent` and the on-phone loop were deleted in the server-brain
+> cutover — the semantics below now live in
+> `orbit-station/server/src/modules/brain/` (see docs/SERVER-BRAIN-IMPL.md).
+> Kept as the design record of those semantics.
+
 # The dock agent loop — lifecycle, state machines, mechanics
 
 How one back-and-forth flows through the dock: from a tap or spoken utterance,

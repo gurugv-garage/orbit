@@ -10,45 +10,46 @@ root; all paths in these docs are relative to it.
 | Folder | What | State |
 |---|---|---|
 | `docs/` | plan.md (architecture + decision log), TODO.md (progress) — **read these first** | living |
-| `node-dock/` | Stationary desk companion: an Android phone (the brain — LLM + camera + voice) optionally driving an ESP32 servo body over a Wi-Fi WebSocket (**BodyLink**) | **active** |
+| `node-dock/` | Stationary desk companion: an Android phone (face UI + camera/mic perception + TTS) and an ESP32 servo body. **The LLM brain and body control live in orbit-station** (server brain — [docs/SERVER-BRAIN-IMPL.md](docs/SERVER-BRAIN-IMPL.md)); the phone and ESP32 are both station WS clients and never talk to each other | **active** |
 | `node-rover/` | Mobile floor robot, linorobot2-based, ROS2. Sim works through nav; hardware/manipulation next | sim done |
-| `orbit-station/` | Central **control & observability plane**: Node/TS, one WebSocket for all firmware/apps, browser UI. Modules: docks (dock registry — brokers body addr to the matching app), observability (agent-core traces), config push, bodylink console, mind (stub), bench viewer, ota (self-update for body + app — [docs/OTA.md](docs/OTA.md)). (Renamed from `plat`; the WebRTC/STT/TTS **media brain** from plan.md §5 is a separate later sidecar, not this.) | **active** |
+| `orbit-station/` | Central **brain + control plane**: Node/TS, one WebSocket for all firmware/apps, browser UI. Modules: **brain** (per-dock pi agent sessions — the dock's LLM loop), docks (registry + capability routing), observability (Session/Turn/Step traces), config push, bodylink (motion executor + console), mind (stub), bench viewer, ota (self-update for body + app — [docs/OTA.md](docs/OTA.md)). (Renamed from `plat`; the WebRTC/STT/TTS **media brain** from plan.md §5 is a separate later sidecar, not this.) | **active** |
 
 ## node-dock (the part under active development)
 
-A phone runs a sideloaded Android/Kotlin/Compose app that is the dock's brain;
-it owns intent and talks to a separate ESP32 (servos) that executes motion. The
-app is an agentic loop (LLM with tool-calling) wired to a face UI, camera
-perception, mic/STT, and TTS.
+A phone runs a sideloaded Android/Kotlin/Compose app that is the dock's FACE:
+camera/mic perception, STT, TTS, and the face UI. The agentic loop (LLM with
+tool-calling) runs in **orbit-station** (`modules/brain/`, embedding upstream
+TS pi); the app's `RemoteBrain` ships turn-requests up the station WS and
+renders the brain's `speak`/`tool-call`/`turn-status` frames as dock UX. Body
+motion is driven by the station too — the phone only displays a ~1 Hz body
+digest. Wire protocol + design: [docs/SERVER-BRAIN-IMPL.md](docs/SERVER-BRAIN-IMPL.md).
 
-Subfolders: **`app/`** (the Android brain — Gradle root, see below),
+Subfolders: **`app/`** (the Android app — Gradle root, see below),
 **`body-firmware/`** (the ESP32 servo controller, `dock_body_v0`; see Firmware
-below), **`bodylink/`** (the phone↔ESP32 WebSocket protocol — `DESIGN.md` +
-a `sim/` body simulator), **`hardware/`** (physical build — `3dprinting/`).
+below), **`bodylink/`** (the original phone↔ESP32 WebSocket protocol —
+`DESIGN.md` + a `sim/` body simulator; §3 message shapes still define the
+station↔ESP32 `bodylink` topic), **`hardware/`** (physical build —
+`3dprinting/`).
 
 ### Build & run (node-dock/app — Gradle root is `node-dock/app/`)
 
 ```bash
 cd node-dock/app
-cp local.properties.template local.properties   # then fill in SDK path + keys
+cp local.properties.template local.properties   # then fill in SDK path + STATION_URL/DOCK_NAME
 ./gradlew :app:installDebug                       # build + sideload to a connected phone
-./gradlew test                                    # all module unit tests (pure-JVM, no device)
+./gradlew test                                    # unit tests (pure-JVM, no device)
 ```
 
-Gradle modules (all under `node-dock/app/`, self-contained — no path reaches
-outside this tree):
-- **`:app`** — the Android app (Compose UI, perception, audio, body comms).
-  Also home to the **dock LLM transport** — `DockStreamFn` (Ollama NDJSON +
-  OpenAI SSE), tool schemas (`DockToolSchemas`), system prompt (`DockPrompt`),
-  `SafeCompute` — under `app/src/main/kotlin/dev/orbit/dock/llm/`.
-- **`:agent-core`** — pure-JVM agentic runtime (vendored pi-kt: loop + tools +
-  sessions). No Android/Ktor. Reusable.
-- **`:bench`** — runnable LLM benchmark harness (see `node-dock/app/bench/`).
-  Can't depend on the Android `:app`, so it **compiles the transport's source
-  dir directly** (`kotlin.srcDir(app/src/main/.../llm)` in its build file) —
-  one copy of the model-facing surface, shared by app + bench, no drift. The
-  transport's unit tests live in `bench/src/test/.../llm/` (bench runs JUnit5;
-  `:app` is JUnit4).
+One Gradle module, **`:app`** — Compose UI, perception, audio, the station
+link (`StationLink`) and the brain facade (`RemoteBrain`). No LLM transport,
+no API keys: model + persona + provider keys are station config
+(`orbit-station/.env` + the config console). The server-brain cutover deleted
+the old `:agent-core` (vendored pi-kt; its Session/Turn/Step vocabulary doc
+moved to [docs/AGENT-MODEL.md](docs/AGENT-MODEL.md)) and the `:bench` harness
+code (`bench/cases` + committed `bench/results/` snapshots remain as the
+benchmark record; a TS re-run harness against `modules/brain/` is future
+work). Debug builds register `DebugTestReceiver` — drive turns over adb:
+`adb shell am broadcast -a dev.orbit.dock.debug.SAY -e text '…'`.
 
 ### Firmware (node-dock/body-firmware/dock_body_v0)
 
@@ -74,13 +75,18 @@ npm run build && npm run start   # single process, served from :8099
 npm run smoke    # manual end-to-end: fake dock + body peers (server must be up)
 ```
 
-Modules each own a bus topic + REST mount (`/api/<module>`): docks (the
-station's dock registry — groups peers by dock name and brokers the ESP32's
-`bodyAddr` to the matching app; `GET /api/docks`), observability (agent-core
-Session/Turn/Step trace ingest — mirrors `agent-core/AGENT-MODEL.md`), config
-(defaults + push-on-change to firmware/app), bodylink (direct body console),
-mind (stub), bench (the moved dock-LLM viewer), ota (over-the-air self-update
-for the ESP32 body + Android app — [docs/OTA.md](docs/OTA.md)), media (in-process
+Modules each own a bus topic + REST mount (`/api/<module>`): **brain** (the
+dock's LLM loop — per-dock pi agent sessions, remote tool RPC to the phone,
+persisted bounded sessions; `GET /api/brain/:dock/sessions`; test console =
+the web UI's Brain view), docks (registry — groups peers by dock name,
+capability routing via `resolveCap`; `GET /api/docks`), observability
+(Session/Turn/Step trace ingest — vocabulary in
+[docs/AGENT-MODEL.md](docs/AGENT-MODEL.md)), config (defaults +
+push-on-change to firmware/app; `brain*` keys = the dock's brain profile),
+bodylink (the motion executor — the ONLY body command path — + console),
+mind (stub), bench (the dock-LLM results viewer), ota (over-the-air
+self-update for the ESP32 body + Android app — [docs/OTA.md](docs/OTA.md);
+targets hello-v2 `kind`), media (in-process
 WebRTC **SFU** — the dock streams live A/V here and the console's "Live Wall"
 fans it out to viewers; a **processing tap** lets STT/vision/recording observe
 each stream in-process or via a sidecar — [docs/MEDIA-PROCESSING.md](docs/MEDIA-PROCESSING.md)).
@@ -93,9 +99,12 @@ the media tap; the SFU + Live Wall are the first piece of it.
 
 - **Don't `git commit` or `git push` without explicit permission.** Before a
   commit, show what's staged and confirm. Push is separate from commit.
-- **Never commit `local.properties`** — it holds API keys + the SDK path
-  (gitignored). Use `local.properties.template` as the reference.
+- **Never commit `local.properties`** (SDK path, station URL, signing
+  passwords — gitignored) or **`orbit-station/.env`** (LLM provider keys).
+  Templates: `local.properties.template`; `.env` keys are read by
+  `server/src/main.ts` (GEMINI_API_KEY, OPENROUTER_API_KEY, …).
 - Benchmark snapshots (`bench/results/<name>.json`) ARE committed as durable
-  history; the transient `latest.json` mirror + `*.log` are not.
+  history; the transient `latest.json` mirror + `*.log` are not. (The bench
+  harness code was deleted in the server-brain cutover; results + cases stay.)
 - node-rover's `ext/` (linorobot2 etc.) are vendored third-party clones,
   gitignored — re-clone rather than track.

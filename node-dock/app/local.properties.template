@@ -4,32 +4,17 @@
 # Android SDK location on this machine.
 sdk.dir=/Users/<you>/Library/Android/sdk
 
-# --- LLM backend (the dock's brain) ---
-# Default: gemini-2.5-flash via OpenRouter (the benchmark winner). The in-app
-# model picker can switch at runtime (see ModelCatalog).
-OLLAMA_BASE_URL=https://openrouter.ai/api
-OLLAMA_MODEL=google/gemini-2.5-flash
-LLM_API=openai
-LLM_VISION=true
-
-# Cloud keys (only the one your selected model needs):
-OPENROUTER_API_KEY=        # openrouter.ai — for the gemini/gpt-4o-mini picker entries
-GEMINI_API_KEY=            # aistudio.google.com — for the "gemini-direct (Google)" entry
+# --- orbit-station (the dock's BRAIN) ---
+# The LLM loop, body motion, and face memory run in orbit-station; the phone
+# is perception + actuation. LLM model/persona + API keys are configured at
+# the STATION (config console / orbit-station/.env), not here.
+# AVD → host: ws://10.0.2.2:8099/ws.  Physical device: ws://<laptop-lan-ip>:8099/ws.
+# Empty → no brain; the face/perception UX still runs.
+STATION_URL=
+DOCK_NAME=anne-bot
 
 # Wake-word (optional): picovoice.ai console key.
 PORCUPINE_ACCESS_KEY=
-
-# --- ESP32 body (BodyLink WebSocket) ---
-# IP from the firmware boot log ("Got IP"); update on DHCP lease change.
-BODY_HOST=192.168.1.14:17317
-
-# --- orbit-station (optional) ---
-# If set, the app dials orbit-station and ships its agent-core event stream
-# (observability) + a heartbeat, under the dock name below. Empty → no station;
-# the dock runs exactly as before. AVD → host: ws://10.0.2.2:8099/ws.
-# Physical device: ws://<laptop-lan-ip>:8099/ws.
-STATION_URL=
-DOCK_NAME=anne-bot
 
 # --- OTA release signing (docs/OTA.md §5.1) ---
 # Required to produce a SIGNED release APK that can self-update over the air.
@@ -41,15 +26,3 @@ RELEASE_STORE_FILE=
 RELEASE_STORE_PASSWORD=
 RELEASE_KEY_ALIAS=dock
 RELEASE_KEY_PASSWORD=
-
-# --- Local model alternatives (laptop on the LAN), if not using cloud ---
-#   gemma4:e2b via Ollama (local, has vision):
-#     OLLAMA_BASE_URL=http://<laptop-lan-ip>:11434
-#     OLLAMA_MODEL=gemma4:e2b
-#     LLM_API=ollama
-#     LLM_VISION=true
-#   Qwen3.6-35B via llama.cpp (local, text-only):
-#     OLLAMA_BASE_URL=http://<laptop-lan-ip>:8081
-#     OLLAMA_MODEL=Qwen3.6-35B-A3B-UD-Q4_K_M.gguf
-#     LLM_API=openai
-#     LLM_VISION=false

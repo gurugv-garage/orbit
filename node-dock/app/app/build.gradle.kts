@@ -40,54 +40,9 @@ android {
             "PORCUPINE_ACCESS_KEY",
             "\"${localProps.getProperty("PORCUPINE_ACCESS_KEY", "")}\"",
         )
-        buildConfigField(
-            "String",
-            "OPENROUTER_API_KEY",
-            "\"${localProps.getProperty("OPENROUTER_API_KEY", "")}\"",
-        )
-        // Google AI Studio key — for talking to Gemini DIRECTLY via Google's
-        // OpenAI-compatible endpoint (generativelanguage.../v1beta/openai),
-        // bypassing OpenRouter. Get one at aistudio.google.com. Empty = unset.
-        buildConfigField(
-            "String",
-            "GEMINI_API_KEY",
-            "\"${localProps.getProperty("GEMINI_API_KEY", "")}\"",
-        )
-        // Optional local Ollama endpoint (e.g. http://192.168.1.15:11434).
-        // When set, DockAgent tries this first before falling back to
-        // OpenRouter free models. Empty string disables.
-        buildConfigField(
-            "String",
-            "OLLAMA_BASE_URL",
-            "\"${localProps.getProperty("OLLAMA_BASE_URL", "")}\"",
-        )
-        buildConfigField(
-            "String",
-            "OLLAMA_MODEL",
-            "\"${localProps.getProperty("OLLAMA_MODEL", "")}\"",
-        )
-        // LLM API style: "ollama" (native /api/chat NDJSON) or "openai"
-        // (/v1/chat/completions SSE — llama.cpp, OpenRouter). Default ollama.
-        buildConfigField(
-            "String",
-            "LLM_API",
-            "\"${localProps.getProperty("LLM_API", "ollama")}\"",
-        )
-        // Attach the camera frame to turns? Off for text-only models (e.g.
-        // Qwen3.6 has no vision). Default true (gemma can see).
-        buildConfigField(
-            "boolean",
-            "LLM_VISION",
-            localProps.getProperty("LLM_VISION", "true"),
-        )
-        // BodyLink sim/firmware host. Empty → BodyLink is disabled.
-        // Example: ws://192.168.1.42:17317   or   ws://10.0.2.2:17317 (AVD → host).
-        buildConfigField(
-            "String",
-            "BODY_HOST",
-            "\"${localProps.getProperty("BODY_HOST", "")}\"",
-        )
-        // orbit-station (optional). Empty → no station; the dock runs standalone.
+        // orbit-station — the dock's BRAIN since the server cutover (the LLM
+        // loop, body motion, and face memory all run there). Empty → no brain;
+        // the face/perception UX still runs.
         // Example: ws://10.0.2.2:8099/ws (AVD → host) or ws://<laptop-lan>:8099/ws.
         buildConfigField(
             "String",
@@ -236,10 +191,6 @@ val bakeConfig by tasks.registering {
 tasks.matching { it.name == "preBuild" }.configureEach { dependsOn(bakeConfig) }
 
 dependencies {
-    implementation(project(":agent-core"))  // pure-JVM agentic runtime (vendored pi-kt)
-    // dock LLM transport (DockStreamFn/DockPrompt/DockToolSchemas/SafeCompute)
-    // lives in src/main/kotlin/dev/orbit/dock/llm; :bench compiles that same
-    // source dir directly (it can't depend on this Android module).
     implementation(libs.core.ktx)
     implementation(libs.lifecycle.runtime.ktx)
     implementation(libs.lifecycle.runtime.compose)
@@ -258,7 +209,7 @@ dependencies {
     implementation(libs.onnxruntime.android)
     implementation(libs.porcupine.android)
 
-    // Agent
+    // Station link + brain frames
     implementation(libs.kotlinx.serialization.json)
     implementation(libs.ktor.client.core)
     implementation(libs.ktor.client.okhttp)

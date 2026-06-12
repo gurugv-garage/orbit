@@ -172,6 +172,51 @@ test('cancel mid-turn: cancelled status, history sanitized for next turn', async
   assert.equal(statusOf(frames).at(-1), 'done');
 });
 
+test('supersede: the new turn keeps its turnId — the old turn\'s unwind must not clobber it', async () => {
+  // Regression (caught live on the emulator): handleTurnRequest used to await
+  // only agent.waitForIdle(), so the SUPERSEDED turn's `finally` ran after the
+  // new turn had started and wiped #activeTurnId — every speak frame of the
+  // new turn then shipped with a dead turnId and the phone dropped the reply.
+  let abortArmed: (() => void) | undefined;
+  const { session, frames } = makeSession([
+    // turn 1: stalls until aborted by the supersede
+    (s, signal) => {
+      s.push({ type: 'text_delta', contentIndex: 0, delta: 'Once upon a ', partial: assistant('Once upon a ') });
+      signal?.addEventListener('abort', () => {
+        const err = assistant('Once upon a ', 'aborted');
+        s.push({ type: 'error', reason: 'aborted', error: err });
+        s.end(err);
+      });
+      abortArmed?.();
+    },
+    // turn 2: a clean short reply
+    (s) => {
+      const done = assistant('Goodbye! ');
+      s.push({ type: 'start', partial: assistant('') });
+      s.push({ type: 'text_delta', contentIndex: 0, delta: 'Goodbye! ', partial: done });
+      s.push({ type: 'done', reason: 'stop', message: done });
+      s.end(done);
+    },
+  ]);
+
+  const turn1 = session.handleTurnRequest({ turnId: 't1', trigger: { kind: 'user', text: 'long story' } });
+  await new Promise<void>((resolve) => { abortArmed = resolve; });
+  const turn2 = session.handleTurnRequest({ turnId: 't2', trigger: { kind: 'user', text: 'never mind, bye' } });
+  await Promise.all([turn1, turn2]);
+
+  // the new turn's reply made it out, addressed to the NEW turnId
+  const speaks = frames.filter((f) => f.kind === 'speak')
+    .map((f) => f.payload as { turnId: string; text: string });
+  assert.deepEqual(speaks.map((s) => s.text), ['Goodbye!']);
+  assert.ok(speaks.every((s) => s.turnId === 't2'), `speak turnIds: ${speaks.map((s) => s.turnId)}`);
+  // terminal statuses: t1 cancelled (or silently dropped), t2 done — and the
+  // LAST word on t2 is 'done', never clobbered by t1's unwind
+  const t2Statuses = frames.filter((f) => f.kind === 'turn-status')
+    .map((f) => f.payload as { turnId: string; state: string })
+    .filter((p) => p.turnId === 't2');
+  assert.equal(t2Statuses.at(-1)?.state, 'done');
+});
+
 test('session lifecycle: persists across instances, idle close opens fresh with summary', async () => {
   const script: Script = (s) => {
     const done = assistant('Noted. ');

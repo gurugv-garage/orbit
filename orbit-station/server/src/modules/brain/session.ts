@@ -84,6 +84,11 @@ export class DockBrainSession {
   #agent?: Agent;
   #meta?: SessionMeta;
 
+  // the in-flight turn's FULL lifecycle promise (#runTurn incl. finally) and
+  // the newest request — supersede ordering (see handleTurnRequest).
+  #running?: Promise<void>;
+  #latestReq?: TurnRequest;
+
   // ── per-turn state (reset in #runTurn) ────────────────────────────────────
   #activeTurnId?: string;
   #cancelled = false;
@@ -135,13 +140,33 @@ export class DockBrainSession {
 
   /** Handle a turn-request (supersede semantics included). */
   async handleTurnRequest(req: TurnRequest): Promise<void> {
-    // SUPERSEDE: abort the active run and await its unwind before prompting.
-    if (this.#turnActive && this.#agent) {
+    // SUPERSEDE: abort the active run, then wait for the WHOLE previous
+    // #runTurn — including its `finally` — to unwind before prompting.
+    // Waiting only for the agent to go idle (the old code) raced our own
+    // cleanup: the superseded turn's finally ran AFTER the new turn had
+    // started and clobbered #activeTurnId, so every speak frame of the new
+    // turn shipped with a dead turnId and the phone dropped the entire
+    // reply (caught live on the emulator: two rapid utterances → second
+    // turn "done" but silent).
+    this.#latestReq = req;
+    const prev = this.#running;
+    if (prev) {
       this.#cancelled = true;
-      this.#agent.abort();
-      try { await this.#agent.waitForIdle(); } catch { /* unwound */ }
+      this.#agent?.abort();
     }
-    await this.#runTurn(req);
+    const run = (async () => {
+      if (prev) {
+        try { await prev; } catch { /* unwound */ }
+      }
+      if (this.#latestReq !== req) return; // superseded while still queued
+      await this.#runTurn(req);
+    })();
+    this.#running = run;
+    try {
+      await run;
+    } finally {
+      if (this.#running === run) this.#running = undefined;
+    }
   }
 
   /** Tap-to-stop. The phone has already silenced TTS locally; this stops
@@ -269,9 +294,14 @@ export class DockBrainSession {
 
     // live grounding + profile, re-read each turn (config applies next-turn)
     this.#sanitizeHistory(agent);
+    // The body half of the grounding is the STATION's to report (it owns the
+    // body link since the cutover); the phone's context covers face + senses.
+    const bodyLine = this.#d.directory.resolveCap(this.dock, 'servo') != null
+      ? 'Body: CONNECTED. Parts you can move — neck (head tilt), foot (base swivel); use the move tool.'
+      : 'Body: NOT connected (movement requests will be ignored).';
     agent.state.systemPrompt = buildSystemPrompt({
       persona: str(this.#d.config('brainPersona')),
-      context: req.context?.state,
+      context: [bodyLine, req.context?.state].filter(Boolean).join(' '),
     });
     agent.state.model = this.#resolveModel();
     agent.state.thinkingLevel = (str(this.#d.config('brainThinkingLevel')) ?? 'off') as never;

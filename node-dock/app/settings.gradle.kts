@@ -21,5 +21,3 @@ dependencyResolutionManagement {
 
 rootProject.name = "node-dock"
 include(":app")
-include(":agent-core")
-include(":bench")

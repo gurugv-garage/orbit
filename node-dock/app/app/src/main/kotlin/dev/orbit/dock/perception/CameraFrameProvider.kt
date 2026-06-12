@@ -17,7 +17,7 @@ interface CameraFrameProvider {
     /**
      * Debug-only handle to the live frame source, so the adb test harness can
      * dump the exact frame the dock would send. Set by the UI in debug builds;
-     * null in release. (Mirrors BodyTestController.)
+     * null in release. (Mirrors ToolsTestController.)
      */
     companion object {
         @Volatile var debugInstance: CameraFrameProvider? = null

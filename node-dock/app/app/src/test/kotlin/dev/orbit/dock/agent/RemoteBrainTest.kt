@@ -1,0 +1,260 @@
+package dev.orbit.dock.agent
+
+import com.google.common.truth.Truth.assertThat
+import dev.orbit.dock.station.BrainLink
+import dev.orbit.dock.tts.Speaker
+import dev.orbit.dock.ui.face.FaceController
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.put
+import org.junit.Test
+import java.util.concurrent.CopyOnWriteArrayList
+
+/**
+ * RemoteBrain — the phone half of the server brain. Covers the protocol
+ * corner cases the impl doc calls out: epoch gating of stale frames, reqId
+ * dedupe, canned failure lines per code/detail, local-first stop, send-or-fail
+ * turn starts, and transcript throttling.
+ */
+class RemoteBrainTest {
+
+    private class FakeLink : BrainLink {
+        override val connected: MutableStateFlow<Boolean> = MutableStateFlow(true)
+        override var enabled: Boolean = true
+        var criticalOk = true
+        val frames = CopyOnWriteArrayList<Triple<String, String, JsonObject>>()
+
+        override fun publish(topic: String, kind: String, payload: JsonObject) {
+            frames.add(Triple(topic, kind, payload))
+        }
+        override suspend fun publishCritical(topic: String, kind: String, payload: JsonObject): Boolean {
+            if (!criticalOk) return false
+            frames.add(Triple(topic, kind, payload))
+            return true
+        }
+        fun sent(kind: String) = frames.filter { it.second == kind }
+    }
+
+    private class FakeSpeaker : Speaker {
+        val spoken = CopyOnWriteArrayList<String>()
+        var stopped = 0
+        override fun enqueueSentence(text: String) { spoken.add(text) }
+        override fun stop() { stopped++ }
+    }
+
+    private class Rig {
+        val link = FakeLink()
+        val speaker = FakeSpeaker()
+        var subtitle = ""
+        val tools = DockTools(
+            FaceController(dispatcher = Dispatchers.Unconfined),
+            speaker,
+            onSubtitle = { subtitle = it },
+        )
+        val brain = RemoteBrain(
+            tools, link,
+            scope = CoroutineScope(Dispatchers.Unconfined),
+        )
+
+        /** The turnId the brain minted for the (single) in-flight turn. */
+        fun turnId(): String =
+            (link.sent("turn-request").last().third["turnId"] as JsonPrimitive).content
+
+        fun frame(kind: String, vararg pairs: Pair<String, Any>) {
+            brain.onAgentFrame(kind, buildJsonObject {
+                for ((k, v) in pairs) when (v) {
+                    is String -> put(k, v)
+                    is Boolean -> put(k, v)
+                    is JsonObject -> put(k, v)
+                    else -> error("unsupported $v")
+                }
+            })
+        }
+    }
+
+    private fun await(timeoutMs: Long = 2_000, cond: () -> Boolean) = runBlocking {
+        withTimeout(timeoutMs) { while (!cond()) delay(10) }
+    }
+
+    // ── turn start ─────────────────────────────────────────────────────────
+
+    @Test
+    fun `respond ships a turn-request with trigger and context`() {
+        val r = Rig()
+        r.brain.respond("look up and say hi")
+        await { r.link.sent("turn-request").size == 1 }
+        val p = r.link.sent("turn-request").single().third
+        assertThat((p["trigger"] as JsonObject)["text"]!!.jsonPrimitive.content)
+            .isEqualTo("look up and say hi")
+        assertThat((p["context"] as JsonObject)["state"]!!.jsonPrimitive.content)
+            .contains("Current face:")
+        assertThat(r.brain.state.value).isInstanceOf(AgentState.Waiting::class.java)
+    }
+
+    @Test
+    fun `failed critical send fails the turn locally with a spoken line`() {
+        val r = Rig()
+        r.link.criticalOk = false
+        r.brain.respond("hello")
+        await { r.speaker.spoken.isNotEmpty() }
+        assertThat(r.brain.state.value).isInstanceOf(AgentState.Failed::class.java)
+        assertThat(r.speaker.spoken.single()).contains("can't reach my brain")
+    }
+
+    // ── speak frames ───────────────────────────────────────────────────────
+
+    @Test
+    fun `speak frames reach TTS in order and flip state to Speaking`() {
+        val r = Rig()
+        r.brain.respond("hi")
+        await { r.link.sent("turn-request").size == 1 }
+        val id = r.turnId()
+        r.frame("speak", "turnId" to id, "seq" to "0", "text" to "Hello!")
+        r.frame("speak", "turnId" to id, "seq" to "1", "text" to "Nice to see you.")
+        assertThat(r.speaker.spoken).containsExactly("Hello!", "Nice to see you.").inOrder()
+        assertThat(r.brain.state.value).isEqualTo(AgentState.Speaking)
+        // live subtitle accumulates the reply
+        assertThat(r.subtitle).isEqualTo("Hello! Nice to see you.")
+    }
+
+    @Test
+    fun `stale speak frames from a superseded turn are dropped`() {
+        val r = Rig()
+        r.brain.respond("hi")
+        await { r.link.sent("turn-request").size == 1 }
+        r.frame("speak", "turnId" to "some-old-turn", "seq" to "0", "text" to "ghost")
+        assertThat(r.speaker.spoken).isEmpty()
+    }
+
+    // ── tool calls ─────────────────────────────────────────────────────────
+
+    @Test
+    fun `set_face tool-call dispatches and acks once even for duplicate reqIds`() {
+        val r = Rig()
+        r.brain.respond("smile")
+        await { r.link.sent("turn-request").size == 1 }
+        val id = r.turnId()
+        val call = arrayOf(
+            "reqId" to "rq-1", "toolCallId" to "tc-1", "turnId" to id,
+            "name" to "set_face",
+            "args" to buildJsonObject { put("expression", "happy") } as Any,
+        )
+        r.frame("tool-call", *call.map { it.first to it.second }.toTypedArray())
+        r.frame("tool-call", *call.map { it.first to it.second }.toTypedArray()) // duplicate
+        await { r.link.sent("tool-result").isNotEmpty() }
+        val acks = r.link.sent("tool-result")
+        assertThat(acks).hasSize(1)
+        assertThat(acks.single().third["content"]!!.jsonPrimitive.content).isEqualTo("ok")
+        assertThat(acks.single().third["isError"]!!.jsonPrimitive.content).isEqualTo("false")
+    }
+
+    @Test
+    fun `unknown tool acks with isError so the turn never hangs`() {
+        val r = Rig()
+        r.brain.respond("do the thing")
+        await { r.link.sent("turn-request").size == 1 }
+        r.frame(
+            "tool-call", "reqId" to "rq-2", "toolCallId" to "tc-2", "turnId" to r.turnId(),
+            "name" to "launch_rocket", "args" to buildJsonObject {} as Any,
+        )
+        await { r.link.sent("tool-result").isNotEmpty() }
+        assertThat(r.link.sent("tool-result").single().third["isError"]!!.jsonPrimitive.content)
+            .isEqualTo("true")
+    }
+
+    // ── terminal turn-status ───────────────────────────────────────────────
+
+    @Test
+    fun `done with no speech settles to Idle`() {
+        val r = Rig()
+        r.brain.respond("nod")
+        await { r.link.sent("turn-request").size == 1 }
+        r.frame("turn-status", "turnId" to r.turnId(), "state" to "done")
+        assertThat(r.brain.state.value).isEqualTo(AgentState.Idle)
+    }
+
+    @Test
+    fun `failed timeout speaks the canned timeout line`() {
+        val r = Rig()
+        r.brain.respond("hmm")
+        await { r.link.sent("turn-request").size == 1 }
+        r.frame("turn-status", "turnId" to r.turnId(), "state" to "failed", "code" to "timeout")
+        assertThat(r.brain.state.value).isInstanceOf(AgentState.Failed::class.java)
+        assertThat(r.speaker.spoken.single()).contains("took too long")
+    }
+
+    @Test
+    fun `failed lost-train-of-thought softens the line`() {
+        val r = Rig()
+        r.brain.respond("hmm")
+        await { r.link.sent("turn-request").size == 1 }
+        r.frame(
+            "turn-status", "turnId" to r.turnId(), "state" to "failed",
+            "code" to "llm_error", "detail" to "lost-train-of-thought",
+        )
+        assertThat(r.speaker.spoken.single()).contains("lost my train of thought")
+    }
+
+    // ── stop / cancel ──────────────────────────────────────────────────────
+
+    @Test
+    fun `stop silences locally first and publishes turn-cancel`() {
+        val r = Rig()
+        r.brain.respond("long story please")
+        await { r.link.sent("turn-request").size == 1 }
+        val id = r.turnId()
+        r.brain.stop()
+        assertThat(r.speaker.stopped).isAtLeast(1)
+        assertThat(r.brain.state.value).isEqualTo(AgentState.Idle)
+        await { r.link.sent("turn-cancel").size == 1 }
+        assertThat(r.link.sent("turn-cancel").single().third["turnId"]!!.jsonPrimitive.content)
+            .isEqualTo(id)
+        // post-stop stragglers are dropped (epoch cleared)
+        r.frame("speak", "turnId" to id, "seq" to "5", "text" to "too late")
+        assertThat(r.speaker.spoken).isEmpty()
+    }
+
+    @Test
+    fun `link drop mid-turn fails the turn audibly`() {
+        val r = Rig()
+        r.brain.respond("hi")
+        await { r.link.sent("turn-request").size == 1 }
+        r.link.connected.value = false
+        await { r.speaker.spoken.isNotEmpty() }
+        assertThat(r.brain.state.value).isInstanceOf(AgentState.Failed::class.java)
+        assertThat(r.speaker.spoken.single()).contains("lost the link")
+    }
+
+    // ── transcripts ────────────────────────────────────────────────────────
+
+    @Test
+    fun `transcript partials are throttled but finals always ship`() {
+        val r = Rig()
+        r.brain.noteTranscript("loo", isFinal = false)
+        r.brain.noteTranscript("look u", isFinal = false) // < 100ms later → dropped
+        r.brain.noteTranscript("look up", isFinal = true)
+        val sent = r.link.sent("transcript")
+        assertThat(sent).hasSize(2)
+        assertThat(sent.last().third["isFinal"]!!.jsonPrimitive.content).isEqualTo("true")
+        // same utterance id across the partial + final
+        assertThat(sent.map { it.third["utteranceId"]!!.jsonPrimitive.content }.toSet()).hasSize(1)
+    }
+
+    @Test
+    fun `unconfigured brain speaks the setup hint instead of ghosting`() {
+        val r = Rig()
+        r.link.enabled = false
+        r.brain.respond("hello?")
+        assertThat(r.speaker.spoken.single()).contains("STATION_URL")
+        assertThat(r.link.sent("turn-request")).isEmpty()
+    }
+}

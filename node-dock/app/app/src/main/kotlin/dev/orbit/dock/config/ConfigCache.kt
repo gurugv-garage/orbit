@@ -101,12 +101,13 @@ class ConfigCache(context: Context) {
 
     companion object {
         const val BAKED_ASSET = "config-defaults.json"
-        /** The flat keys the dock app (brain) is interested in — announced to the
-         *  station on connect; the station pushes only these. */
+        /** The flat keys the dock app is interested in — announced to the
+         *  station on connect; the station pushes only these. Since the
+         *  server-brain cutover these are phone-local UX keys only — the brain
+         *  profile (model/persona/thinking), faceGestures choreography, and the
+         *  servo limits are consumed at the STATION now. */
         val INTEREST = listOf(
-            "faceGestures", "bodyAddr", "idleAnimations", "gazeTracking",
-            "ttsRate", "cameraDefaultOn", "thinkingLevel",
-            "neckPitchMinDeg", "neckPitchMaxDeg", "footYawLimitDeg", "maxSpeedDegPerSec",
+            "idleAnimations", "gazeTracking", "ttsRate", "cameraDefaultOn",
         )
     }
 }

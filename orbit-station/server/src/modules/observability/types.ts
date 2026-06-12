@@ -2,7 +2,7 @@
  * Observability types — a faithful TS mirror of agent-core's vocabulary so any
  * agent-core host (the dock app today) can ship its loop events here verbatim.
  *
- * Source of truth: node-dock/app/agent-core/AGENT-MODEL.md
+ * Source of truth: docs/AGENT-MODEL.md (at the repo root)
  *   Session ⊃ Turns ⊃ Steps ⊃ (one LLM call each)
  *   AgentEvent: node-dock/app/agent-core/.../agent/Types.kt
  *

@@ -1,6 +1,5 @@
 package dev.orbit.dock.ui.face
 
-import dev.orbit.dock.agent.DockAgent
 import dev.orbit.dock.perception.PerceptionBus
 import dev.orbit.dock.perception.PerceptionEvent
 import kotlinx.coroutines.CoroutineScope

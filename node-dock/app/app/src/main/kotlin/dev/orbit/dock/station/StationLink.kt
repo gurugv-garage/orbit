@@ -26,14 +26,36 @@ import kotlinx.serialization.json.put
 import timber.log.Timber
 
 /**
- * Optional link to orbit-station. The dock works fully without it; if a station
- * URL is reachable, the app dials in (role `app`, declaring its dock name) and
- * publishes its agent-core event stream on the `obs` topic so the station's
- * observability view can render live turns. Also sends a 10 s heartbeat so the
- * station's roster shows the app online with a fresh "last seen".
+ * The slice of the station link the brain facade needs — a seam so
+ * [dev.orbit.dock.agent.RemoteBrain] is unit-testable with a scripted fake.
+ */
+interface BrainLink {
+    val connected: StateFlow<Boolean>
+    /** False when no station URL is configured — the link (and the brain) is off. */
+    val enabled: Boolean
+    fun publish(topic: String, kind: String, payload: JsonObject)
+    suspend fun publishCritical(topic: String, kind: String, payload: JsonObject): Boolean
+}
+
+/**
+ * The phone's link to orbit-station — since the server-brain cutover this is
+ * the dock's REQUIRED nervous system, not an optional telemetry sink: the LLM
+ * loop runs in the station ([dev.orbit.dock.agent.RemoteBrain] over the `agent`
+ * topic), and body state arrives as a station-fanned `bodylink`/`digest`.
+ * The face/TTS/perception UX still degrades gracefully when the link is down
+ * (the brain just answers with a canned "can't reach my brain" line).
  *
- * Mirrors [dev.orbit.dock.body.BodyLinkComms]'s ktor-WS + reconnect style.
+ * Identity (hello v2, protocol.ts): this peer is the `phone` component of its
+ * dock, software kind `dock-android-app`, capabilities voice/face/camera.
  * Station protocol: orbit-station/server/src/core/protocol.ts.
+ *
+ * Two send paths, deliberately different:
+ *  - [publish] — telemetry: ordered, bounded outbox, DROP_OLDEST when the
+ *    station is slow; shed rather than queue.
+ *  - [publishCritical] — turn-correctness frames (turn-request, tool-result,
+ *    turn-cancel, speech-status): direct send-or-fail. A stale turn-request
+ *    delivered 30 s late would make the robot answer a question nobody
+ *    remembers asking — critical frames are fail-fast, never store-and-forward.
  *
  * @param url   station WS, e.g. "ws://10.0.2.2:8099/ws" (emulator) — empty disables.
  * @param dock  the dock name, e.g. "anne-bot".
@@ -43,14 +65,6 @@ class StationLink(
     private val dock: String,
     private val appId: String,
     private val scope: CoroutineScope,
-    /**
-     * Reports the app's own outgoing links for the station's mesh view: whether
-     * the app's BodyLink is connected to the ESP32, and whether its LLM is
-     * reachable. Heartbeated to the station so it knows who's connected to what
-     * (incl. the app↔body link the station can't observe directly). Defaults to
-     * unknown when not supplied.
-     */
-    private val linkStatus: () -> AppLinks = { AppLinks() },
     /**
      * Called for each inbound config push/snapshot frame on the `config` topic,
      * with the frame's payload (carrying scope/key/value/lastUpdated). Wired to
@@ -91,9 +105,23 @@ class StationLink(
      * no-op so the link is usable without perception.
      */
     private val onPerceptionFrame: (String, JsonObject) -> Unit = { _, _ -> },
-) {
+    /**
+     * Called for each inbound `agent` frame (the server brain talking to this
+     * dock) with (kind, payload) — `tool-call`, `speak`, `turn-status`,
+     * `brain-status`. Wired to [dev.orbit.dock.agent.RemoteBrain.onAgentFrame].
+     */
+    private val onAgentFrame: (String, JsonObject) -> Unit = { _, _ -> },
+    /**
+     * Called for each `bodylink`/`digest` frame — the station's ~1 Hz body
+     * status ({ dock, parts, online, ts }). Display-only by design (the phone
+     * never drives the body anymore); staleness-tolerant.
+     */
+    private val onBodyDigest: (JsonObject) -> Unit = {},
+) : BrainLink {
     private val _connected = MutableStateFlow(false)
-    val connected: StateFlow<Boolean> = _connected.asStateFlow()
+    override val connected: StateFlow<Boolean> = _connected.asStateFlow()
+
+    override val enabled: Boolean get() = url.isNotBlank()
 
     private val client = HttpClient(OkHttp) { install(WebSockets) }
     private val json = Json { encodeDefaults = true }
@@ -103,10 +131,11 @@ class StationLink(
     private var heartbeatJob: Job? = null
     private var senderJob: Job? = null
 
-    // Outgoing frames, drained by ONE sender coroutine per session so frames
-    // leave in publish order (a launch-per-frame sender reordered obs `seq`
-    // under load). Bounded + drop-oldest: when the station is slow/unreachable
-    // we shed telemetry instead of growing a queue on the phone.
+    // Outgoing TELEMETRY frames, drained by ONE sender coroutine per session so
+    // frames leave in publish order (a launch-per-frame sender reordered obs
+    // `seq` under load). Bounded + drop-oldest: when the station is slow or
+    // unreachable we shed telemetry instead of growing a queue on the phone.
+    // Turn-correctness frames bypass this — see [publishCritical].
     private val outbox = kotlinx.coroutines.channels.Channel<String>(
         capacity = 256,
         onBufferOverflow = kotlinx.coroutines.channels.BufferOverflow.DROP_OLDEST,
@@ -115,7 +144,7 @@ class StationLink(
     /** Begin connecting (and auto-reconnecting). No-op if url is blank. */
     fun start() {
         if (url.isBlank()) {
-            Timber.i("StationLink: no station URL — disabled (dock runs standalone)")
+            Timber.i("StationLink: no station URL — disabled (no station = no brain)")
             return
         }
         loopJob = scope.launch {
@@ -125,7 +154,7 @@ class StationLink(
                     runSession()
                     backoffMs = 1000L
                 } catch (t: Throwable) {
-                    Timber.d("StationLink: not connected (${t.message}); retrying — dock unaffected")
+                    Timber.d("StationLink: not connected (${t.message}); retrying")
                 }
                 _connected.value = false
                 session = null
@@ -138,16 +167,30 @@ class StationLink(
     private suspend fun runSession() {
         val s = client.webSocketSession(url)
         session = s
-        // hello + subscribe (we only listen to config/station; obs is publish-only here)
+        // hello v2 (protocol.ts): this peer = the `phone` slot of its dock.
         s.send(json.encodeToString(JsonObject.serializer(), buildJsonObject {
-            put("t", "hello"); put("role", "app"); put("id", appId)
-            put("dock", dock); put("label", "$dock phone")
+            put("t", "hello"); put("role", "device"); put("id", appId)
+            put("dock", dock); put("component", "phone")
+            put("kind", "dock-android-app")
+            put("caps", buildJsonArray { add("voice"); add("face"); add("camera") })
+            put("label", "$dock phone")
             // OTA gate (docs/OTA.md §3): build is the only version on the wire.
             if (build > 0) put("build", build)
         }))
         s.send(json.encodeToString(JsonObject.serializer(), buildJsonObject {
             put("t", "subscribe")
-            put("topics", buildJsonArray { add("config"); add("station"); add("ota"); add("media"); add("perception") })
+            put("topics", buildJsonArray {
+                add("config"); add("station"); add("ota"); add("media")
+                add("perception"); add("agent"); add("bodylink")
+            })
+        }))
+        // Deterministic brain resync: say hello on the agent topic AFTER
+        // subscribing — the brain replies with a directed `brain-status`. (The
+        // station also pushes brain-status on peer-joined, but that push can
+        // race this socket's subscribe frame; this one can't miss.)
+        s.send(json.encodeToString(JsonObject.serializer(), buildJsonObject {
+            put("t", "publish"); put("topic", "agent"); put("kind", "hello")
+            put("payload", buildJsonObject {})
         }))
         // Announce which config keys we care about. The station replies with a
         // directed snapshot of just these, then pushes their changes live.
@@ -160,7 +203,7 @@ class StationLink(
             }))
         }
         _connected.value = true
-        Timber.i("StationLink: connected to $url (dock=$dock); announced ${configInterest.size} config keys")
+        Timber.i("StationLink: connected to $url (dock=$dock, component=phone); announced ${configInterest.size} config keys")
         heartbeatJob?.cancel()
         heartbeatJob = scope.launch { heartbeatLoop() }
         senderJob?.cancel()
@@ -175,9 +218,8 @@ class StationLink(
             }
         }
 
-        // Drain inbound. Config pushes/snapshots (topic 'config') feed the
-        // ConfigCache via onConfigFrame; everything else keeps the socket
-        // healthy and lets us notice closes.
+        // Drain inbound. Each topic's frames feed their wired callback;
+        // everything else keeps the socket healthy and lets us notice closes.
         for (frame in s.incoming) {
             if (frame is Frame.Text) handleInbound(frame.readText())
         }
@@ -188,56 +230,71 @@ class StationLink(
         // station wraps published events as {t:'event', topic, kind, payload, ...}
         val topic = frame["topic"]?.jsonPrimitive?.content
         val kind = frame["kind"]?.jsonPrimitive?.content
-        if (topic == "config") {
-            val payload = frame["payload"] as? JsonObject ?: return
-            runCatching { onConfigFrame(payload) }
-                .onFailure { Timber.d("config frame handling failed: ${it.message}") }
-        } else if (topic == "ota" && kind == "available") {
-            val payload = frame["payload"] as? JsonObject ?: return
-            runCatching { onOtaOffer(payload) }
-                .onFailure { Timber.d("ota offer handling failed: ${it.message}") }
-        } else if (topic == "media" && kind != null) {
-            val payload = frame["payload"] as? JsonObject ?: return
-            runCatching { onMediaFrame(kind, payload) }
-                .onFailure { Timber.d("media frame handling failed: ${it.message}") }
-        } else if (topic == "perception" && kind != null) {
-            val payload = frame["payload"] as? JsonObject ?: return
-            runCatching { onPerceptionFrame(kind, payload) }
-                .onFailure { Timber.d("perception frame handling failed: ${it.message}") }
+        val payload = frame["payload"] as? JsonObject
+        when {
+            topic == "config" && payload != null ->
+                runCatching { onConfigFrame(payload) }
+                    .onFailure { Timber.d("config frame handling failed: ${it.message}") }
+            topic == "ota" && kind == "available" && payload != null ->
+                runCatching { onOtaOffer(payload) }
+                    .onFailure { Timber.d("ota offer handling failed: ${it.message}") }
+            topic == "media" && kind != null && payload != null ->
+                runCatching { onMediaFrame(kind, payload) }
+                    .onFailure { Timber.d("media frame handling failed: ${it.message}") }
+            topic == "perception" && kind != null && payload != null ->
+                runCatching { onPerceptionFrame(kind, payload) }
+                    .onFailure { Timber.d("perception frame handling failed: ${it.message}") }
+            topic == "agent" && kind != null && payload != null ->
+                runCatching { onAgentFrame(kind, payload) }
+                    .onFailure { Timber.w("agent frame ($kind) handling failed: ${it.message}") }
+            topic == "bodylink" && kind == "digest" && payload != null ->
+                runCatching { onBodyDigest(payload) }
+                    .onFailure { Timber.d("body digest handling failed: ${it.message}") }
         }
     }
 
     private suspend fun heartbeatLoop() {
         while (session != null) {
-            val links = linkStatus()
             publish("station", "heartbeat", buildJsonObject {
-                put("role", "app")
+                put("component", "phone")
                 // OTA build in every heartbeat (docs/OTA.md §3) — keeps the
                 // station's version view fresh + self-healing without a full
                 // reconnect. Just the gate int; small payload.
                 if (build > 0) put("build", build)
-                // links the station can't see itself — drives its mesh view.
-                put("links", buildJsonObject {
-                    put("body", links.bodyConnected)
-                    put("llm", links.llmReachable)
-                })
             })
             delay(10_000)
         }
     }
 
-    /** Publish one frame on a topic. Queued in order; silently dropped if not
-     *  connected (the dock is fully functional without a station). */
-    fun publish(topic: String, kind: String, payload: JsonObject) {
+    /** Publish one TELEMETRY frame on a topic. Queued in order; silently
+     *  dropped if not connected and shed (oldest-first) under backpressure. */
+    override fun publish(topic: String, kind: String, payload: JsonObject) {
         if (session == null) return
-        outbox.trySend(json.encodeToString(JsonObject.serializer(), buildJsonObject {
-            put("t", "publish"); put("topic", topic); put("kind", kind)
-            put("payload", payload)
-        }))
+        outbox.trySend(encodePublish(topic, kind, payload))
     }
 
-    /** Publish one agent-core event on the `obs` topic. */
-    fun emitAgentEvent(dto: JsonObject) = publish("obs", "event", dto)
+    /**
+     * Send one CRITICAL frame now — or fail. Bypasses the lossy outbox: no
+     * queueing, no replay after reconnect; returns false when the link is down
+     * or the send throws, so the caller can fail the user-visible action
+     * honestly instead of having it ghost-execute half a minute later.
+     */
+    override suspend fun publishCritical(topic: String, kind: String, payload: JsonObject): Boolean {
+        val s = session ?: return false
+        return try {
+            s.send(encodePublish(topic, kind, payload))
+            true
+        } catch (t: Throwable) {
+            Timber.w("StationLink critical send ($topic/$kind) failed: ${t.message}")
+            false
+        }
+    }
+
+    private fun encodePublish(topic: String, kind: String, payload: JsonObject): String =
+        json.encodeToString(JsonObject.serializer(), buildJsonObject {
+            put("t", "publish"); put("topic", topic); put("kind", kind)
+            put("payload", payload)
+        })
 
     fun stop() {
         loopJob?.cancel(); heartbeatJob?.cancel(); senderJob?.cancel()
@@ -246,9 +303,3 @@ class StationLink(
         client.close()
     }
 }
-
-/** The app's own outgoing link states, reported to the station each heartbeat. */
-data class AppLinks(
-    val bodyConnected: Boolean = false,
-    val llmReachable: Boolean = false,
-)

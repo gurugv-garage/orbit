@@ -24,7 +24,7 @@ import kotlinx.coroutines.flow.SharedFlow
 
 /**
  * Live, transparent scrolling log of the agent's emitted loop events — replaces
- * the old "no events" placeholder. Each emitted line (from [DockAgent.events],
+ * the old "no events" placeholder. Each emitted line (from [dev.orbit.dock.agent.RemoteBrain.events],
  * e.g. "+812ms TOOL_START move_body{...}") appends at the bottom and the view
  * auto-scrolls, like a tail -f. No card background — just faint monospace text
  * over the face so it reads as ambient telemetry, not a panel.

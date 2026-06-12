@@ -4,7 +4,6 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -28,12 +27,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import dev.orbit.dock.BuildConfig
 import dev.orbit.dock.agent.AgentState
-import dev.orbit.dock.agent.DockAgent
 import dev.orbit.dock.agent.DockTools
-import dev.orbit.dock.body.BodyIntent
-import dev.orbit.dock.body.BodyLinkComms
-import dev.orbit.dock.body.BodyStateCatalog
-import dev.orbit.dock.body.ui.BodyBadge
+import dev.orbit.dock.agent.RemoteBrain
 import dev.orbit.dock.perception.FaceTracker
 import dev.orbit.dock.perception.PerceptionBus
 import dev.orbit.dock.perception.PerceptionEvent
@@ -46,13 +41,11 @@ import dev.orbit.dock.ui.face.FaceState
 import dev.orbit.dock.ui.face.PerceptionWiring
 import dev.orbit.dock.ui.perm.rememberPermissions
 import dev.orbit.dock.ui.status.StatusBar
-import androidx.compose.foundation.layout.width
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import kotlinx.coroutines.launch
-import timber.log.Timber
 
 @Composable
 fun DockScreen() {
@@ -60,8 +53,8 @@ fun DockScreen() {
     val controller = remember { FaceController() }
     val scope = rememberCoroutineScope()
     var botSubtitle by remember { mutableStateOf("") }
-    // construction order: agent depends on tools+tts; tts callback updates agent state.
-    val agentRef = remember { object { var value: DockAgent? = null } }
+    // construction order: brain depends on tools+link; tts callback updates brain state.
+    val agentRef = remember { object { var value: RemoteBrain? = null } }
     // Forward ref: tools is built before wiring but needs to clear the transcript
     // on turn-settle (action-only turns must not leave the user's words on screen).
     val wiringRef = remember { object { var value: PerceptionWiring? = null } }
@@ -76,146 +69,42 @@ fun DockScreen() {
             PerceptionBus.emit(PerceptionEvent.Speaking(active = speaking))
         })
     }
-    // BodyLink host history (last 5 successful connects, persisted).
-    val hostStore = remember { dev.orbit.dock.body.BodyHostStore(ctx) }
-    // Station-synced config (faceGestures, bodyAddr, …). Resolves baked-default
-    // ← persisted ← live station pushes; works fully offline. Shared by
-    // DockTools (gestures), StationLink (feeds pushes), and the body host below.
+    // Station-synced config (faceGestures live at the STATION now; the keys left
+    // here are dock-local UX). Resolves baked-default ← persisted ← live pushes;
+    // works fully offline.
     val configCache = remember { dev.orbit.dock.config.ConfigCache(ctx) }
-    // BodyLink client. Initial host, highest-trust first:
-    //   1. dock.bodyAddr from config (station tells us where the body is — the
-    //      station learns it each time the body connects; cached/baked offline)
-    //   2. last successful host from local history
-    //   3. compile-time BODY_HOST default
-    //   4. a sensible literal so the badge is always live
-    val bodyComms = remember {
-        val initialHost = configCache.string("bodyAddr", "").takeIf { it.isNotBlank() }
-            ?: hostStore.lastHost()
-            ?: BuildConfig.BODY_HOST.takeIf { it.isNotBlank() }
-            ?: "192.168.1.10:17317"
-        val catalog = BodyStateCatalog.load(ctx)
-        BodyLinkComms(
-            host = initialHost,
-            scope = scope,
-            catalog = catalog,
-            onConnected = { h -> hostStore.recordSuccess(h) },
-        )
-    }
-    // When the station pushes a new body address (the body reconnected at a new
-    // IP), retarget the BodyLink to it. Registered once.
-    LaunchedEffect(configCache, bodyComms) {
-        configCache.onChange { key ->
-            if (key == "bodyAddr") {
-                val addr = configCache.string("bodyAddr", "")
-                if (addr.isNotBlank() && addr != bodyComms.currentHost) {
-                    timber.log.Timber.i("config: body address changed → reconnecting BodyLink to $addr")
-                    bodyComms.reconnect(addr)
-                }
-            }
-        }
-    }
-    var showConnectDialog by remember { mutableStateOf(false) }
-    // Live senses shared between perception (writer) and the agent (reader) so
+    // Live senses shared between perception (writer) and the brain (reader) so
     // the LLM knows what the camera actually sees this turn.
     val perception = remember { dev.orbit.dock.agent.PerceptionSnapshot() }
     // Face tracker doubles as the camera-frame source for vision turns. Created
-    // here (before the agent) so the agent can pull the latest frame each turn.
+    // here (before the brain) so each turn-request can carry the latest frame.
     val faceTracker = remember { FaceTracker(ctx) }
     if (BuildConfig.DEBUG) {
         dev.orbit.dock.perception.CameraFrameProvider.debugInstance = faceTracker
     }
-    // Forward ref so DockTools' remember_face can publish via the station link
-    // (the link is built below, after the tools).
+    // Forward ref so perception wiring below can publish via the station link
+    // (the link is built after the tools).
     val stationLinkRef = remember { mutableStateOf<dev.orbit.dock.station.StationLink?>(null) }
-    // In-flight recollect_face requests: reqId → deferred result, resolved by the
-    // inbound `recognize-result` frame.
-    val pendingRecognize = remember { java.util.concurrent.ConcurrentHashMap<String, kotlinx.coroutines.CompletableDeferred<dev.orbit.dock.agent.RecognizeOutcome>>() }
     // Pre-turn identity sync: recognition fires when STT arms (parallel with the
     // user's speech); the turn start AWAITS it (bounded) so the prompt is
     // grounded with who's actually talking, not a stale identity.
     val preTurnGrounding = remember { dev.orbit.dock.agent.PreTurnGrounding() }
-    // Enroll failure policy: one silent retry with a fresh frame, then a spoken
-    // correction (a swallowed "no face detected" used to leave the user
-    // believing the dock saved their face when it hadn't).
-    val enrollRetry = remember { dev.orbit.dock.agent.EnrollRetry() }
     // Recognition photos: a FRESH on-demand high-res still (640px), falling back
     // to the latest 320px analysis frame when capture isn't available. The
     // analysis stream stays small — stills cost only when identity is needed.
     val recognitionPhoto: suspend () -> String? = remember {
         { faceTracker.captureRecognitionJpegBase64() ?: faceTracker.latestJpegBase64() }
     }
-    val tools = remember(controller, tts, bodyComms, configCache) {
+    val tools = remember(controller, tts) {
         DockTools(
             controller,
             tts,
             onSubtitle = { botSubtitle = it },
             onToolCall = { name -> agentRef.value?.setToolCalling(name) },
-            body = bodyComms,
             perception = perception,
             onTurnSettled = { wiringRef.value?.clearTranscript() },
-            config = configCache,
-            // remember_face → send a FRESH high-res still for the station to
-            // enroll (appends for a known name). Tracked by enrollRetry so a
-            // station-side failure retries once, then speaks a correction.
-            onEnrollRequest = { name ->
-                enrollRetry.begin(name)
-                scope.launch {
-                    val photo = recognitionPhoto()
-                    stationLinkRef.value?.publish(
-                        "perception", "enroll-request",
-                        kotlinx.serialization.json.buildJsonObject {
-                            put("name", kotlinx.serialization.json.JsonPrimitive(name))
-                            if (photo != null) put("photo", kotlinx.serialization.json.JsonPrimitive(photo))
-                        },
-                    )
-                }
-            },
-            // recollect_face → fresh high-res still, await the result. Budget
-            // covers capture (~300ms) + station detect/embed; on timeout the
-            // tool falls back honestly ("couldn't check just now").
-            onRecognizeRequest = {
-                val link = stationLinkRef.value
-                if (link == null) null else {
-                    val photo = recognitionPhoto()
-                    val reqId = java.util.UUID.randomUUID().toString()
-                    val deferred = kotlinx.coroutines.CompletableDeferred<dev.orbit.dock.agent.RecognizeOutcome>()
-                    pendingRecognize[reqId] = deferred
-                    link.publish("perception", "recognize-request",
-                        kotlinx.serialization.json.buildJsonObject {
-                            put("reqId", kotlinx.serialization.json.JsonPrimitive(reqId))
-                            if (photo != null) put("photo", kotlinx.serialization.json.JsonPrimitive(photo))
-                        })
-                    val result = kotlinx.coroutines.withTimeoutOrNull(3_500) { deferred.await() }
-                    pendingRecognize.remove(reqId)
-                    result
-                }
-            },
-            // confirm_face → append a fresh high-res still as more training data.
-            onConfirmRequest = { name ->
-                scope.launch {
-                    val photo = recognitionPhoto()
-                    stationLinkRef.value?.publish(
-                        "perception", "confirm-request",
-                        kotlinx.serialization.json.buildJsonObject {
-                            put("name", kotlinx.serialization.json.JsonPrimitive(name))
-                            if (photo != null) put("photo", kotlinx.serialization.json.JsonPrimitive(photo))
-                        })
-                }
-            },
-            // forget_face → tell the station to drop the wrong name.
-            onForgetRequest = { name ->
-                stationLinkRef.value?.publish(
-                    "perception", "forget-request",
-                    kotlinx.serialization.json.buildJsonObject {
-                        put("name", kotlinx.serialization.json.JsonPrimitive(name))
-                    })
-            },
         ).also { dev.orbit.dock.agent.ToolsTestController.tools = it }
     }
-    // Runtime model selection (persisted). Changing it rebuilds the agent so the
-    // new transport/model takes effect immediately; default comes from the build.
-    val modelStore = remember { dev.orbit.dock.agent.ModelStore(ctx) }
-    var selectedModel by remember { mutableStateOf(modelStore.selected()) }
     // OTA self-update (docs/OTA.md §5). Holds a forward ref so onOtaOffer below
     // can hand offers to it; the updater publishes progress/result back via the
     // station link. Silent install when the app is device-owner, else a system
@@ -225,8 +114,12 @@ fun DockScreen() {
     // onMediaFrame can route signaling answers/ICE into it; it's built after the
     // link (publishes via the link).
     val mediaStreamerRef = remember { mutableStateOf<dev.orbit.dock.perception.MediaStreamer?>(null) }
-    // Optional orbit-station link (observability + presence). Empty STATION_URL
-    // → disabled; the dock is fully functional without it.
+    // Body status, display-only: the station drives the body now; the phone just
+    // renders the ~1 Hz digest it's sent ({ online, parts }).
+    var bodyOnline by remember { mutableStateOf(false) }
+    // The station link — the dock's nervous system since the server-brain
+    // cutover (the LLM loop lives there). Empty STATION_URL → no brain; the
+    // face/perception UX still runs.
     val stationLink = remember {
         dev.orbit.dock.station.StationLink(
             url = BuildConfig.STATION_URL,
@@ -234,13 +127,6 @@ fun DockScreen() {
             appId = "${BuildConfig.DOCK_NAME}-app",
             scope = scope,
             build = BuildConfig.VERSION_CODE,
-            // report our own links so the station knows the full mesh.
-            linkStatus = {
-                dev.orbit.dock.station.AppLinks(
-                    bodyConnected = bodyComms.connected.value,
-                    llmReachable = selectedModel.baseUrl.isNotBlank(),
-                )
-            },
             // feed flat config pushes/snapshots into the cache.
             onConfigFrame = { payload ->
                 val key = (payload["key"] as? kotlinx.serialization.json.JsonPrimitive)?.content
@@ -264,7 +150,7 @@ fun DockScreen() {
             },
             // route WebRTC signaling (producer-answer / producer-ice) to the streamer.
             onMediaFrame = { kind, payload -> mediaStreamerRef.value?.onMediaFrame(kind, payload) },
-            // station stream-processing results → PerceptionBus → agent re-grounds.
+            // station stream-processing results → PerceptionBus → re-grounding.
             // payload is the PerceptionResult envelope { kind, payload: {...}, confidence }.
             onPerceptionFrame = { kind, envelope ->
                 val inner = envelope["payload"] as? kotlinx.serialization.json.JsonObject
@@ -293,38 +179,11 @@ fun DockScreen() {
                             dev.orbit.dock.perception.PerceptionEvent.UserIdentified(name, 0f)
                         else null
                     }
-                    // enroll-result: confirm / retry-with-fresh-frame / spoken
-                    // correction — a swallowed failure used to leave the user
-                    // believing their face was saved when it wasn't.
-                    "enroll-result" -> {
-                        val ok = prim(envelope, "ok")?.content?.toBooleanStrictOrNull() ?: false
-                        val nm = prim(envelope, "name")?.content
-                        val reason = prim(envelope, "reason")?.content
-                        Timber.i("enroll-result: ok=$ok name=$nm reason=$reason")
-                        when (val action = enrollRetry.onResult(nm, ok)) {
-                            is dev.orbit.dock.agent.EnrollRetry.Action.Retry -> {
-                                Timber.i("enroll retry ${action.attempt} for ${action.name} (fresh frame)")
-                                scope.launch {
-                                    kotlinx.coroutines.delay(400) // let the subject settle
-                                    val photo = recognitionPhoto()
-                                    stationLinkRef.value?.publish(
-                                        "perception", "enroll-request",
-                                        kotlinx.serialization.json.buildJsonObject {
-                                            put("name", kotlinx.serialization.json.JsonPrimitive(action.name))
-                                            if (photo != null) put("photo", kotlinx.serialization.json.JsonPrimitive(photo))
-                                        },
-                                    )
-                                }
-                            }
-                            is dev.orbit.dock.agent.EnrollRetry.Action.GiveUp ->
-                                tools.speakSystem(action.line)
-                            else -> {}
-                        }
-                        null
-                    }
                     // recognize-result: parse (RecognizeResultParser), cache the
-                    // categorical verdict, resolve the awaiting tool / unblock a
-                    // pending pre-turn grounding.
+                    // categorical verdict, unblock a pending pre-turn grounding.
+                    // (The recollect/enroll TOOL round-trips are gone — face
+                    // tools run in-process at the station now; only the pre-turn
+                    // grounding still asks from the phone.)
                     "recognize-result" -> {
                         val (reqId, outcome) = dev.orbit.dock.agent.RecognizeResultParser.parse(envelope)
                         when {
@@ -340,7 +199,6 @@ fun DockScreen() {
                                 dev.orbit.dock.agent.PerceptionSnapshot.SeenPerson(it.name, it.tentative, it.side)
                             })
                         }
-                        reqId?.let { pendingRecognize.remove(it) }?.complete(outcome)
                         // a pre-turn (STT-arm) recognition came home → the next
                         // turn no longer needs to wait.
                         if (reqId?.startsWith("stt-") == true) preTurnGrounding.complete()
@@ -349,6 +207,13 @@ fun DockScreen() {
                     else -> null
                 }
                 event?.let { dev.orbit.dock.perception.PerceptionBus.emit(it) }
+            },
+            // the server brain's frames → the RemoteBrain facade.
+            onAgentFrame = { kind, payload -> agentRef.value?.onAgentFrame(kind, payload) },
+            // ~1 Hz body digest → status LED (display only).
+            onBodyDigest = { payload ->
+                bodyOnline = (payload["online"] as? kotlinx.serialization.json.JsonPrimitive)
+                    ?.content?.toBooleanStrictOrNull() ?: false
             },
         ).also { it.start(); stationLinkRef.value = it }
     }
@@ -374,15 +239,14 @@ fun DockScreen() {
         val unregister = otaUpdater.registerInstallResultReceiver()
         onDispose { unregister() }
     }
-    val agent = remember(tools, selectedModel) {
-        DockAgent(
+    // The brain facade: turns go UP to the station's LLM loop; speak/tool/status
+    // frames come back DOWN (StationLink.onAgentFrame above). Same surface as
+    // the old on-phone DockAgent, so everything below is unchanged.
+    val agent = remember(tools) {
+        RemoteBrain(
             tools,
-            baseUrl = selectedModel.baseUrl,
-            model = selectedModel.model,
-            api = selectedModel.api,
-            visionEnabled = selectedModel.vision,
+            stationLink,
             cameraFrame = faceTracker,
-            stationLink = stationLink,
         ).also { agentRef.value = it }
     }
 
@@ -401,21 +265,10 @@ fun DockScreen() {
         }
     }
 
-    // Start the BodyLink session lifecycle.
-    DisposableEffect(bodyComms) {
-        dev.orbit.dock.body.ui.BodyTestController.comms = bodyComms
-        bodyComms.start()
-        onDispose {
-            bodyComms.stop()
-            dev.orbit.dock.body.ui.BodyTestController.comms = null
-        }
-    }
-    val bodyConnected by bodyComms.connected.collectAsState()
     val stationConnected by stationLink.connected.collectAsState()
     // perception models warming up on cold start (wake-word/VAD/STT). Until
     // ready, the dock can't hear — show a brief "waking up" hint.
     val perceptionReady by dev.orbit.dock.perception.PerceptionReady.ready.collectAsState()
-    val bodyIntent by bodyComms.intent.collectAsState()
     val agentState by agent.state.collectAsState()
     val wiring = remember(controller, agent) {
         PerceptionWiring(
@@ -434,10 +287,6 @@ fun DockScreen() {
         ).also { wiringRef.value = it }
     }
 
-    // Keyed on `agent`: a model switch rebuilds the agent, and THIS effect's
-    // re-run shuts the previous one down (scope + HTTP client). Keyed on Unit
-    // it captured the FIRST agent forever — every switched-away agent leaked
-    // and final disposal hit a stale instance.
     DisposableEffect(agent) {
         onDispose { agent.shutdown() }
     }
@@ -446,6 +295,15 @@ fun DockScreen() {
     }
 
     LaunchedEffect(Unit) { wiring.attach(scope) }
+
+    // Stream STT transcripts (partials + finals) to the brain so it pre-warms
+    // the session while the user is still talking. Pre-warm only — the turn
+    // trigger stays onUserUtterance above.
+    LaunchedEffect(agent) {
+        PerceptionBus.events.collect { ev ->
+            if (ev is PerceptionEvent.Transcript) agent.noteTranscript(ev.text, ev.isFinal)
+        }
+    }
 
     // Pre-turn recollect: the moment STT arms (the user is about to speak,
     // facing the dock), capture a fresh still and fire one recognize-request.
@@ -540,7 +398,7 @@ fun DockScreen() {
     }
 
     // Face tracker — bound to the activity lifecycle (created above as the
-    // camera-frame source for the agent).
+    // camera-frame source for the brain).
     val lifecycleOwner = LocalLifecycleOwner.current
     DisposableEffect(camGranted, camMuted) {
         if (camGranted && !camMuted) {
@@ -645,7 +503,7 @@ fun DockScreen() {
                     .weight(1f)
                     .padding(8.dp),
             ) {
-                // Debug HUD: agent loop events overlaid on the LEFT edge, so it
+                // Debug HUD: brain frames overlaid on the LEFT edge, so it
                 // doesn't push the face off-centre (it's ambient telemetry around
                 // the frame, not a layout column).
                 dev.orbit.dock.ui.widgets.EventLog(
@@ -663,8 +521,6 @@ fun DockScreen() {
                         eyesClosed = camMuted && !privacy,
                     )
                     // Who the station last recognized (lags a new face by ~1-2s).
-                    // Right edge, below the model card — clear of the centre READY
-                    // pill and the top badges (the whole frame border is debug HUD).
                     seenName?.let { who ->
                         Text(
                             "👤 $who",
@@ -672,7 +528,7 @@ fun DockScreen() {
                             color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
                             modifier = Modifier
                                 .align(Alignment.CenterEnd)
-                                .padding(end = 16.dp, bottom = 64.dp), // sits above the model chip
+                                .padding(end = 16.dp, bottom = 64.dp),
                         )
                     }
                     Subtitle(
@@ -713,14 +569,6 @@ fun DockScreen() {
                                 .padding(top = 60.dp),
                         )
                     }
-                    BodyBadge(
-                        connected = bodyConnected,
-                        intent = bodyIntent,
-                        onTap = { showConnectDialog = true },
-                        modifier = Modifier
-                            .align(Alignment.TopEnd)
-                            .padding(12.dp),
-                    )
                     // Version label (top-start) — what build is running, handy
                     // for confirming OTA updates landed. Replaces the old exit X.
                     androidx.compose.material3.Text(
@@ -744,11 +592,6 @@ fun DockScreen() {
                         )
                     }
                 }
-                dev.orbit.dock.ui.widgets.ModelChip(
-                    selected = selectedModel,
-                    onSelect = { opt -> modelStore.select(opt); selectedModel = opt },
-                    modifier = Modifier.align(Alignment.CenterEnd).width(120.dp).padding(8.dp),
-                )
             }
             DevBarHost(controller = controller)
             StatusBar(
@@ -759,7 +602,9 @@ fun DockScreen() {
                 // (incl. during TTS, since AEC keeps it capturing for barge-in).
                 micOn = micLive,
                 camOn = camGranted && !camMuted,
-                bodyConnected = bodyConnected,
+                // && stationConnected: with the link down the digest is stale —
+                // we DON'T know the body state, so don't claim it.
+                bodyConnected = stationConnected && bodyOnline,
                 stationConnected = stationConnected,
                 stationAddr = BuildConfig.STATION_URL
                     .removePrefix("ws://").removePrefix("wss://").removeSuffix("/ws"),
@@ -768,20 +613,6 @@ fun DockScreen() {
                 onWakeClick = if (BuildConfig.DEBUG) {
                     { PerceptionBus.emit(PerceptionEvent.WakeWord(label = "(debug)")) }
                 } else null,
-                onLinkClick = { showConnectDialog = true },
-            )
-        }
-
-        // Connect dialog — opened by tapping the body badge.
-        if (showConnectDialog) {
-            dev.orbit.dock.body.ui.BodyConnectDialog(
-                store = hostStore,
-                currentHost = bodyComms.currentHost,
-                onConnect = { host ->
-                    bodyComms.reconnect(host)
-                    showConnectDialog = false
-                },
-                onDismiss = { showConnectDialog = false },
             )
         }
     }
@@ -803,7 +634,7 @@ private fun Subtitle(
     // Priority:
     //  1) bot is speaking → show what it's saying (bright blue)
     //  2) user transcript live (user text)
-    //  3) agent is thinking / tool-calling / failed → show agent status
+    //  3) brain is thinking / tool-calling / failed → show its status
     //  4) idle state hint
     when {
         botSubtitle.isNotBlank() -> Text(

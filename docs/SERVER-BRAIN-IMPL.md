@@ -2,7 +2,7 @@
 
 ## 0. Implementation status (living — update as stages land)
 
-**Branch `server-brain`, uncommitted. Last updated 2026-06-12.**
+**Branch `server-brain` (stage 1 committed: e142852 + 9aaf71c; stage 2 in tree). Last updated 2026-06-12.**
 
 **Stage 1 — station: DONE** (71 tests green; E2E verified via `npm run
 smoke:brain` AND a Playwright browser run of the test console; real Gemini
@@ -47,19 +47,61 @@ turns: tool fan-out → fake body received the `happy` gesture's `set_target`s
 - obs kind `brain-debug`: the console's rich stream (full deltas, ttft,
   usage) — browsers-only; devices never subscribe obs.
 
-**TODO — Stage 2 (phone), next:**
-- [ ] `RemoteBrain.kt` (same public surface as DockAgent; epoch gating;
-      canned failure lines from `turn-status.code`; `agent`/`hello` handshake)
-- [ ] `StationLink`: `publishCritical`, `agent`+`bodylink` subscribe +
-      callbacks, hello v2 (`component:"phone"`, caps voice/face/camera),
-      `presence` consumption, drop `links` reporting
-- [ ] transcript partials (pre-warm) + `speech-status` from TTS callbacks
-- [ ] body-status panel from `digest`; delete the §4 table (DockAgent,
-      DockStreamFn, llm/, BodyLink* , StreamingReplyExtractor, …)
-- [ ] `local.properties` → `STATION_URL` + `DOCK_NAME` only
-- [ ] phone unit tests (RemoteBrainTest, StationLinkTest)
+**Stage 2 — phone: DONE** (all `:app` unit tests green incl. 13-case
+`RemoteBrainTest`; E2E verified on the **emulator** (emulator-5554) AND the
+**physical pad** (nabu) against the live station: hello v2 → deterministic
+`brain-status` handshake (~400 ms), adb-injected turns → `set_face` tool-call
+dispatch+ack on the phone, sentence-split speak frames → TTS, supersede,
+wifi-drop → reconnect → next turn clean; driven via the debug
+`DebugTestReceiver` broadcasts).
 
-**TODO — Stage 3 (firmware), after:**
+- ✅ `StationLink`: hello v2 (`component:"phone"`, kind `dock-android-app`,
+  caps voice/face/camera), subscribes `agent`+`bodylink`, `onAgentFrame`/
+  `onBodyDigest` callbacks, `agent`/`hello` after subscribe,
+  `publishCritical` (send-or-fail, bypasses the DROP_OLDEST outbox),
+  heartbeat `links` reporting dropped; `BrainLink` interface = test seam
+- ✅ `RemoteBrain.kt`: DockAgent's exact public surface; turnId epoch gating
+  (stale speak/tool/status dropped); reqId dedupe; canned failure lines per
+  `code`/`detail` (timeout / lost-train-of-thought / model-unreachable);
+  `stop()` silences locally FIRST then `turn-cancel`; link-drop mid-turn
+  fails the turn audibly; 75 s local watchdog (> station's 60 s ceiling);
+  transcript pre-warm (≥100 ms throttle, latest-wins, finals always);
+  camera frame attached to every turn-request (the BRAIN gates vision now)
+- ✅ deletions landed (§4 table): `DockAgent`, `DockStreamFn`, `DockPrompt`,
+  `DockToolSchemas`, `SafeCompute`, `ModelCatalog`+`ModelChip` (model picker
+  UI gone — the station config owns the model), `StreamingReplyExtractor`,
+  `DockToolsAdapter`, `EnrollRetry`, the whole `body/` package (+ DevPanel
+  BODY tab, `states.json`), `:agent-core`+`:bench` out of the Gradle build,
+  `AppLinks`; `local.properties` → `STATION_URL`+`DOCK_NAME`(+wake-word/
+  signing) only; `ConfigCache.INTEREST` → phone-local UX keys only
+- ✅ `DockTools` slimmed to face UI + TTS + perception reads;
+  `currentContext()` no longer claims body state — the **station** composes
+  the `Body: CONNECTED/NOT connected` grounding line from its own directory
+  (`session.ts`), since it owns the body link
+- ✅ body status LED fed by the `bodylink`/`digest` frames (display-only)
+
+**Fixed during stage 2 (caught by the emulator E2E, regression-tested):**
+- **supersede clobber** (`session.ts handleTurnRequest`): awaiting only
+  `agent.waitForIdle()` let the superseded turn's `finally` run AFTER the new
+  turn started, wiping `#activeTurnId` — the new turn's speak frames then
+  shipped with a dead turnId and the phone (correctly) dropped the whole
+  reply. Now the previous `#runTurn`'s FULL lifecycle is awaited (`#running`
+  promise + `#latestReq` newest-wins). Server tests 72/72.
+
+**Operational notes (stage 2):**
+- Two devices helloing the same `(dock, component)` displace each other in a
+  loop (collision rule working as designed) — don't leave the emulator and
+  the pad running the same dock name; give test devices their own DOCK_NAME.
+- The shared Gemini free-tier key hit its DAILY quota during testing;
+  `brainModel` flipped to `openrouter/google/gemini-2.5-flash` via the config
+  console (OPENROUTER_API_KEY also in station `.env`) — live-switchable, no
+  restart.
+
+**Remaining phone work (needs a human / physical setup):** real-mic STT +
+wake-word quality, audible TTS verification, real-face recognition flows,
+MIUI/doze behavior over hours, release-build OTA path.
+
+**TODO — Stage 3 (firmware), next:**
 - [ ] remove BodyLink WS server + `bodyAddr`; hello v2 (`component:"body"`,
       caps `["servo"]`); consume `presence`; staleness tripwire (30 s);
       `BL_FW_BUILD` bump; `test_body.sh` → station REST
