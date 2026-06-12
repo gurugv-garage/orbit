@@ -23,6 +23,9 @@ TS pi); the app's `RemoteBrain` ships turn-requests up the station WS and
 renders the brain's `speak`/`tool-call`/`turn-status` frames as dock UX. Body
 motion is driven by the station too — the phone only displays a ~1 Hz body
 digest. Wire protocol + design: [docs/SERVER-BRAIN-IMPL.md](docs/SERVER-BRAIN-IMPL.md).
+Brain **extension capabilities** (exposing pi's own documented surface — Skills,
+Extensions/`registerTool`, Custom Models/Providers — a committed goal, not yet
+built): [docs/SERVER-BRAIN-SELFMOD.md](docs/SERVER-BRAIN-SELFMOD.md).
 
 Subfolders: **`app/`** (the Android app — Gradle root, see below),
 **`body-firmware/`** (the ESP32 servo controller, `dock_body_v0`; see Firmware

@@ -455,7 +455,7 @@ exists. Deps: `@earendil-works/pi-agent-core`, `@earendil-works/pi-ai`.
 | `sentence.ts` | TS port of `StreamingReplyExtractor` + speech sanitation (Kotlin test vectors ported first — they are the spec). |
 | `prompt.ts` | ported `DockPrompt.SYSTEM` + per-turn assembly (persona override + `"\n\nCurrent state — " + context`). |
 | `safe-compute.ts` | TS port of `SafeCompute`. |
-| `store.ts` | pi harness JSONL, one file per session under `.data/brain/<dock>/<sessionId>.jsonl` + session summaries; lazy reload of the open session after restart; session open/close per §3.0; idle-time compaction trigger. |
+| `store.ts` | per-session transcript + index under `.data/brain/<dock>/` (`sessions.json` index + `<sessionId>.json` capped transcript, atomic tmp+rename) + session summaries; lazy reload of the open session after restart; session open/close per §3.0; idle-time compaction trigger. **NOTE (as built):** the plan allowed pi's harness JSONL *repo*, but it is built around the coding agent's entry/branching/fork tree — more machinery than a capped (~48-msg), strictly-linear dock transcript needs, and the transcript is rewritten each turn anyway (sanitizeHistory), so a whole-file atomic write is simpler and equally crash-safe. Kept swappable behind the same `SessionStore` surface; the JSONL repo becomes worth it only if branching/fork/rewind ever lands. |
 
 **Turn lifecycle — port `DockAgent` semantics 1:1, don't redesign:**
 supersede = abort + **await full unwind** before the new prompt (the
@@ -729,6 +729,16 @@ heartbeat granularity, with no device→device traffic.
 - *Generic RPC framework / per-tool ack levels*: YAGNI — one fire-and-forget
   shape.
 - *Kotlin fallback / local brain*: ruled out by decision.
+
+**Deferred to a separate doc (a committed goal, not a rejection):**
+- *Brain extension capabilities* — exposing **pi's own documented extension
+  surface** (pi.dev/docs/latest): Skills (`SKILL.md` packs), Extensions
+  (`registerTool`/`on`), Custom Models/Providers (`setModel`/`registerProvider`).
+  Nothing orbit-invented — the brain embeds the pi SDK, so this is *using* pi's
+  surface. v1 exposes **none** of it (the toolset is fixed; the model reads
+  human-set config, never writes it). Each feature is grant-gated
+  (`brainExtensions`, default-off); design + decision log + TODO:
+  [SERVER-BRAIN-SELFMOD.md](SERVER-BRAIN-SELFMOD.md).
 
 ## 10. Build order (not a rollout)
 
