@@ -257,4 +257,73 @@ class RemoteBrainTest {
         assertThat(r.speaker.spoken.single()).contains("STATION_URL")
         assertThat(r.link.sent("turn-request")).isEmpty()
     }
+
+    // ── failure diagnosis: the dock says what actually went wrong ────────────
+
+    @Test
+    fun `daily quota error is diagnosed specifically`() {
+        // the real Gemini free-tier 429 body
+        val err = """{"error":{"code":429,"message":"Quota exceeded for metric: generativelanguage.googleapis.com/generate_content_free_tier_requests, limit: 20","status":"RESOURCE_EXHAUSTED","details":[{"quotaId":"GenerateRequestsPerDayPerProjectPerModel-FreeTier"}]}}"""
+        val d = diagnoseTurnFailure("llm_error", "model-unreachable", err)
+        assertThat(d.label).contains("quota")
+        assertThat(d.spoken.lowercase()).contains("daily")
+    }
+
+    @Test
+    fun `per-minute rate limit differs from daily quota`() {
+        val err = """{"error":{"code":429,"message":"Resource exhausted, please retry","status":"RESOURCE_EXHAUSTED"}}"""
+        val d = diagnoseTurnFailure("llm_error", "model-unreachable", err)
+        assertThat(d.label).contains("rate")
+        assertThat(d.spoken.lowercase()).contains("few seconds")
+    }
+
+    @Test
+    fun `out of credits (402) is diagnosed`() {
+        val err = "402 This request requires more credits, or fewer max_tokens."
+        val d = diagnoseTurnFailure("llm_error", "model-unreachable", err)
+        assertThat(d.label).contains("credits")
+        assertThat(d.spoken.lowercase()).contains("credits")
+    }
+
+    @Test
+    fun `bad api key (401) is diagnosed`() {
+        val d = diagnoseTurnFailure("llm_error", "model-unreachable", "401 Unauthorized: invalid API key")
+        assertThat(d.label).contains("key")
+        assertThat(d.spoken.lowercase()).contains("key")
+    }
+
+    @Test
+    fun `unknown model (404) is diagnosed`() {
+        val d = diagnoseTurnFailure("llm_error", "model-unreachable", "404 model not found: gemini-9-ultra")
+        assertThat(d.label).contains("model")
+        assertThat(d.spoken.lowercase()).contains("model name")
+    }
+
+    @Test
+    fun `provider overload (503) is diagnosed as temporary`() {
+        val err = """{"error":{"code":503,"message":"This model is currently experiencing high demand.","status":"UNAVAILABLE"}}"""
+        val d = diagnoseTurnFailure("llm_error", "model-unreachable", err)
+        assertThat(d.label).contains("overloaded")
+        assertThat(d.spoken.lowercase()).contains("temporary")
+    }
+
+    @Test
+    fun `timeout keeps its friendly line`() {
+        val d = diagnoseTurnFailure("timeout", "", "")
+        assertThat(d.spoken.lowercase()).contains("too long")
+    }
+
+    @Test
+    fun `unknown provider error surfaces a trimmed gist instead of a blank line`() {
+        val err = """{"error":{"message":"the flux capacitor desynchronized unexpectedly"}}"""
+        val d = diagnoseTurnFailure("llm_error", "model-unreachable", err)
+        assertThat(d.spoken).contains("flux capacitor desynchronized")
+    }
+
+    @Test
+    fun `blank error degrades gracefully`() {
+        val d = diagnoseTurnFailure("llm_error", "model-unreachable", "")
+        assertThat(d.spoken).isNotEmpty()
+        assertThat(d.label).isNotEmpty()
+    }
 }

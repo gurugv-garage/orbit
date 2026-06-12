@@ -314,22 +314,16 @@ class RemoteBrain(
             "failed" -> {
                 val code = p.str("code")
                 val detail = p.str("detail")
+                val rawError = p.str("error")
                 endTurnLocally()
-                TurnLog.attemptFailed(p.str("error").ifEmpty { code })
-                _state.value = AgentState.Failed(
-                    when (code) {
-                        "timeout" -> "turn timed out"
-                        else -> "model error"
-                    },
-                )
-                // Canned lines live HERE (TTS is local; same words as DockAgent).
-                tools.speakSystem(
-                    when {
-                        code == "timeout" -> "That took too long, sorry — ask me again?"
-                        detail == "lost-train-of-thought" -> "Sorry, I lost my train of thought there."
-                        else -> "I couldn't reach my model. Check the connection."
-                    },
-                )
+                TurnLog.attemptFailed(rawError.ifEmpty { code })
+                // Diagnose the ACTUAL provider error so the dock can say what's
+                // really wrong (quota, no credits, bad key, …) instead of a
+                // blanket "couldn't reach my model".
+                val diag = diagnoseTurnFailure(code, detail, rawError)
+                _state.value = AgentState.Failed(diag.label)
+                // Canned lines are local (TTS is on the phone).
+                tools.speakSystem(diag.spoken)
             }
             "cancelled" -> {
                 // Normally we initiated this (stop() already silenced + idled);
@@ -397,4 +391,94 @@ class RemoteBrain(
         const val TURN_WATCHDOG_MS = 75_000L
         fun newUtteranceId() = "u-" + java.util.UUID.randomUUID().toString().take(8)
     }
+}
+
+/** A diagnosed turn failure: [label] is the short on-screen status; [spoken] is
+ *  the (local TTS) line the dock says — specific to the actual cause. */
+data class TurnFailure(val label: String, val spoken: String)
+
+/**
+ * Turn the station's `failed` turn-status into a SPECIFIC, human explanation.
+ *
+ * The station forwards the provider's real message in `error` (e.g. a 429
+ * quota body, a 402 "needs credits", a 401 bad key). The phone used to ignore
+ * it and always say "I couldn't reach my model" — unhelpful when the truth is
+ * "your Gemini free quota is used up for today". This classifies the raw error
+ * so the dock tells you what's actually wrong and what to do about it.
+ *
+ * Pure + top-level so it's unit-tested (RemoteBrainTest) against real provider
+ * error strings.
+ */
+fun diagnoseTurnFailure(code: String, detail: String, error: String): TurnFailure {
+    // structural cases first (these don't carry a provider body)
+    if (code == "timeout") {
+        return TurnFailure("timed out", "That took too long, sorry — ask me again?")
+    }
+    if (detail == "lost-train-of-thought") {
+        return TurnFailure("lost the thread", "Sorry, I lost my train of thought there.")
+    }
+    if (code == "link_lost") {
+        return TurnFailure("link lost", "I lost my connection to the station. Let me reconnect.")
+    }
+
+    val e = error.lowercase()
+    fun has(vararg needles: String) = needles.any { it in e }
+
+    return when {
+        error.isBlank() ->
+            TurnFailure("model error", "I couldn't reach my brain just now. Mind trying again?")
+
+        // rate limit / quota exhausted (429 / RESOURCE_EXHAUSTED)
+        has("429", "resource_exhausted", "rate limit", "rate-limit", "too many requests", "quota") -> {
+            val daily = has("perday", "per day", "requestsperday", "daily")
+            if (daily)
+                TurnFailure("daily quota used up",
+                    "I've hit my model's daily free limit. It'll reset later, or someone can add credits or switch my model.")
+            else
+                TurnFailure("rate limited",
+                    "I'm being rate-limited right now — too many requests in a row. Give me a few seconds and ask again.")
+        }
+
+        // out of credits / billing (402)
+        has("402", "more credits", "insufficient", "billing", "payment", "afford") ->
+            TurnFailure("out of credits",
+                "My model account is out of credits. Someone needs to top it up or switch me to another model.")
+
+        // bad / missing API key (401 / 403)
+        has("401", "403", "api key", "api_key", "unauthorized", "permission denied", "invalid key", "no api key") ->
+            TurnFailure("bad API key",
+                "My model key looks wrong or missing. Check the provider key in the station settings.")
+
+        // model name not found / unavailable (404 / model not found)
+        has("404", "not found", "no such model", "does not exist", "unknown model") ->
+            TurnFailure("model not found",
+                "The model I'm set to use wasn't found. Check the brain model name in the station settings.")
+
+        // provider overloaded / down (500 / 503)
+        has("503", "500", "overloaded", "unavailable", "high demand", "service unavailable", "internal error") ->
+            TurnFailure("model overloaded",
+                "My model provider is overloaded right now. That's usually temporary — try again in a moment.")
+
+        // network to the provider
+        has("timeout", "timed out", "econn", "network", "fetch failed", "socket", "dns", "getaddrinfo") ->
+            TurnFailure("network error",
+                "I couldn't reach my model over the network. Check the station's internet connection.")
+
+        // fallback: surface a trimmed version of whatever the provider said
+        else -> {
+            val gist = providerGist(error)
+            TurnFailure("model error",
+                if (gist.isNotBlank()) "My model errored: $gist" else "My model hit an error I didn't recognize. Try again?")
+        }
+    }
+}
+
+/** Pull a short, speakable gist out of a raw provider error (often a nested
+ *  JSON blob). Best-effort: find a "message": "..." or fall back to the first
+ *  line, trimmed to a sentence-ish length. */
+private fun providerGist(error: String): String {
+    val m = Regex("\"message\"\\s*:\\s*\"([^\"]{3,200})\"").find(error)?.groupValues?.get(1)
+    val raw = (m ?: error.lineSequence().firstOrNull { it.isNotBlank() } ?: "").trim()
+    val cleaned = raw.replace(Regex("\\s+"), " ").take(140)
+    return cleaned
 }
