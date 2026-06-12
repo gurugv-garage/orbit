@@ -10,10 +10,13 @@
  *                     speech-status
  *   station → phone:  tool-call, speak, turn-status, brain-status (directed)
  *
- *   GET  /api/brain/docks                lanes + open session
- *   GET  /api/brain/:dock/sessions       session index (incl. summaries)
- *   GET  /api/brain/:dock/history        open session transcript
- *   POST /api/brain/:dock/session/end    close now (next turn opens fresh)
+ *   GET    /api/brain/docks                lanes + open session
+ *   GET    /api/brain/:dock/sessions       session index (incl. summaries)
+ *   GET    /api/brain/:dock/history        open session transcript
+ *   POST   /api/brain/:dock/session/end    close now (next turn opens fresh)
+ *   GET    /api/brain/:dock/skills         installed skills (name+description)
+ *   POST   /api/brain/:dock/skills         install a SKILL.md ({ content })
+ *   DELETE /api/brain/:dock/skills/:name   remove an installed skill
  */
 
 import type { Bus } from '../../core/bus.js';
@@ -26,6 +29,8 @@ import { getFaceTools } from '../perception/index.js';
 import { RpcBroker } from './rpc.js';
 import { DockBrainSession, type TurnRequest } from './session.js';
 import { SessionStore } from './store.js';
+import { installDockSkill, listDockSkills, removeDockSkill } from './skills.js';
+import type { IncomingMessage } from 'node:http';
 
 const IDLE_SWEEP_MS = 60_000;
 
@@ -183,7 +188,44 @@ export function brainModule(w: BrainWiring): StationModule {
         json(res, ok ? 200 : 404, { ok });
         return true;
       }
+      // ── skills (docs/SERVER-BRAIN-SELFMOD.md §1a) — per-dock install/list/remove.
+      // The dock's NEXT session picks up an installed skill (loaded per turn).
+      m = subPath.match(/^\/([^/]+)\/skills$/);
+      if (m && req.method === 'GET') {
+        json(res, 200, await listDockSkills(store.root, decodeURIComponent(m[1]!)));
+        return true;
+      }
+      if (m && req.method === 'POST') {
+        const dock = decodeURIComponent(m[1]!);
+        try {
+          const body = JSON.parse(await readBody(req)) as { content?: string };
+          if (typeof body.content !== 'string' || body.content.trim().length === 0) {
+            json(res, 400, { error: 'body.content (the SKILL.md text) is required' });
+            return true;
+          }
+          const name = await installDockSkill(store.root, dock, body.content);
+          json(res, 200, { ok: true, name });
+        } catch (err) {
+          json(res, 400, { error: String(err instanceof Error ? err.message : err) });
+        }
+        return true;
+      }
+      m = subPath.match(/^\/([^/]+)\/skills\/([^/]+)$/);
+      if (m && req.method === 'DELETE') {
+        const ok = await removeDockSkill(store.root, decodeURIComponent(m[1]!), decodeURIComponent(m[2]!));
+        json(res, ok ? 200 : 404, { ok });
+        return true;
+      }
       return false;
     },
   };
+}
+
+function readBody(req: IncomingMessage): Promise<string> {
+  return new Promise((resolve, reject) => {
+    let data = '';
+    req.on('data', (c) => (data += c));
+    req.on('end', () => resolve(data));
+    req.on('error', reject);
+  });
 }

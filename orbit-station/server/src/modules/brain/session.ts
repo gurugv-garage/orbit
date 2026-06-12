@@ -51,6 +51,7 @@ import { buildSystemPrompt, isVisionIntent } from './prompt.js';
 import { RpcBroker } from './rpc.js';
 import { SentenceStreamer } from './sentence.js';
 import { SessionStore, type SessionMeta } from './store.js';
+import { loadDockSkills, type DockSkills } from './skills.js';
 import { buildDockTools, buildGrantTools, type ToolTurnContext } from './tools.js';
 import type { MoveStep } from './schemas.js';
 
@@ -84,6 +85,9 @@ export class DockBrainSession {
 
   #agent?: Agent;
   #meta?: SessionMeta;
+  // per-dock skills (pi progressive disclosure), reloaded each turn so a
+  // freshly-installed SKILL.md applies next-turn with no session restart.
+  #skills: DockSkills = { skills: [], promptBlock: '' };
 
   // the in-flight turn's FULL lifecycle promise (#runTurn incl. finally) and
   // the newest request — supersede ordering (see handleTurnRequest).
@@ -136,6 +140,18 @@ export class DockBrainSession {
     const all = this.#d.config('brainGrants') as Record<string, Record<string, string[]>> | undefined;
     const mine = all?.[this.dock];
     return mine && typeof mine === 'object' ? mine : {};
+  }
+
+  /** Load this dock's skills (gated by `brainSkills` config, default on).
+   *  Non-fatal: any error → no skills, dock behaves as before. */
+  async #loadSkills(): Promise<DockSkills> {
+    if (this.#d.config('brainSkills') === false) return { skills: [], promptBlock: '' };
+    try {
+      return await loadDockSkills(this.#d.store.root, this.dock);
+    } catch (err) {
+      this.#d.log?.(`[brain] ${this.dock}: skill load failed (ignored): ${String(err)}`);
+      return { skills: [], promptBlock: '' };
+    }
   }
 
   get sessionId(): string | undefined {
@@ -355,17 +371,27 @@ export class DockBrainSession {
     // system prompt, so a fresh engagement still knows this morning's context.
     const memory = this.#d.store.sessions(this.dock)
       .find((m) => m.closedAt != null && m.summary && m.sessionId !== this.#meta?.sessionId)?.summary;
+    // per-dock skills, reloaded each turn from the dock's own folder (tenancy =
+    // the path); a freshly-installed SKILL.md thus applies next-turn. Failure is
+    // non-fatal — a dock with no/broken skills behaves exactly as before.
+    this.#skills = await this.#loadSkills();
     agent.state.systemPrompt = buildSystemPrompt({
       persona: str(this.#d.config('brainPersona')),
       memory,
+      skills: this.#skills.promptBlock,
       context: [bodyLine, req.context?.state].filter(Boolean).join(' '),
     });
     agent.state.model = this.#resolveModel();
     agent.state.thinkingLevel = (str(this.#d.config('brainThinkingLevel')) ?? 'off') as never;
     // cross-dock grants (config json { <dock>: { <target>: [caps] } }) become
     // extra tools — re-derived each turn so a granted/revoked dock applies
-    // next-turn, no session restart.
-    agent.state.tools = [...this.#baseTools, ...buildGrantTools(this.dock, this.#grants(), this.#d.motion)];
+    // next-turn, no session restart. invoke_skill joins them when the dock has
+    // any skills (the on-demand half of progressive disclosure).
+    agent.state.tools = [
+      ...this.#baseTools,
+      ...buildGrantTools(this.dock, this.#grants(), this.#d.motion),
+      ...(this.#skills.tool ? [this.#skills.tool] : []),
+    ];
     this.#debug('turn-start', {
       text: req.trigger.text,
       model: `${agent.state.model.provider}/${agent.state.model.id}`,

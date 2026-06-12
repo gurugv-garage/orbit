@@ -181,6 +181,11 @@ export const REGISTRY: ConfigEntry[] = [
     description: 'Attach the camera frame only on vision-intent turns (small vision models fixate on an always-present image and ignore movement commands).',
   }),
   entry({
+    key: 'brainSkills', type: 'boolean', schema: z.boolean(), default: true, tags: ['station'],
+    label: 'Skills',
+    description: 'Load per-dock pi Skills from .data/brain/<dock>/skills/ (progressive disclosure: names+descriptions in the prompt, full body via the invoke_skill tool). Off = no skills loaded for any dock.',
+  }),
+  entry({
     key: 'brainSessionIdleMin', type: 'number', schema: z.number().int().min(1).max(24 * 60), default: 30, tags: ['station'],
     label: 'Session idle close (min)',
     description: 'A brain session closes after this many minutes without a turn (then compacts to a summary). The next turn opens a fresh session.',

@@ -64,10 +64,13 @@ the TUI-only features (**Themes, Keybindings, TUI Components**) don't apply, and
 doesn't need. That leaves the three that are real extension points for an
 embedded agent:
 
-- **Skills** — on-demand capability packs
+- **Skills** — on-demand capability packs. **✅ DONE (2026-06-12)** — per-dock,
+  hosted on raw `Agent`, installable from the console (§4 TODO, `skills.ts`).
 - **Extensions** — `registerTool` + `on(event)` (the brain already does the
-  equivalent in-process; pi's extension API is the documented shape for more)
-- **Custom Models / Custom Providers** — model + provider self-config
+  equivalent in-process; pi's extension API is the documented shape for more).
+  *Not yet exposed for dock-/third-party-authored modules.*
+- **Custom Models / Custom Providers** — model + provider self-config.
+  *Not yet exposed (the human sets `brainModel`).*
 
 Everything below is one of those three. Nothing else.
 
@@ -187,18 +190,29 @@ shape and place as `brainGrants` in
 
 ## 4. TODO
 
-**Layer decision (blocks everything — verified gap):**
-- [ ] decide `Agent` vs `AgentHarness`: migrate the brain to `AgentHarness` (gets
-      `setModel`/`setTools`/skills host for free) **or** replicate the wanted
-      bits against raw `Agent` (we already assign `state.tools`/`state.model`).
+**Layer decision (RESOLVED — raw `Agent`):**
+- [x] decided **raw `Agent`**, not `AgentHarness`. `AgentHarness` owns its own
+      session/phase/queue/compaction and would force a rewrite of our tuned turn
+      lifecycle (supersede, our `SessionStore`, abort handling). Instead we host
+      pi's `loadSkills` + `formatSkillInvocation` ourselves against `Agent` —
+      a few lines at the per-turn assembly. (`AgentHarness` stays an option if we
+      ever want its prompt-templates/steering machinery.)
 
-**Skills (pi Skills — lowest risk, near-term):**
-- [ ] `brainExtensions` config entry (registry + gate read in `session.ts`)
-- [ ] per-dock skills root `.data/brain/<dock>/skills/` + optional shared dir
-- [ ] host `loadSkills` + skill invocation into the embedded SDK agent (gated)
-- [ ] **`buildSystemPrompt` skills block** (progressive disclosure) + re-test the
-      terse small-model prompt on the live cheap model
-- [ ] console: per-dock skill-pack list/upload/remove
+**Skills (pi Skills — DONE, landed 2026-06-12):**
+- [x] `brainSkills` config gate (registry + read in `session.ts#loadSkills`,
+      default on)
+- [x] per-dock skills root `.data/brain/<dock>/skills/` (tenancy = the folder)
+- [x] host `loadSkills` + `invoke_skill` tool in the embedded `Agent`
+      (`skills.ts`), re-derived per turn so an install applies next-turn
+- [x] **`buildSystemPrompt` skills block** (progressive disclosure: names+descs
+      in the prompt, full body via `invoke_skill`)
+- [x] console: per-dock skill list / install (paste `SKILL.md`) / remove
+      (`web/src/modules/Skills.tsx` + `GET|POST|DELETE /api/brain/:dock/skills`)
+- [x] tests: install/list/remove round-trip, lane guard, bad-frontmatter
+      rejection, **skill rides the turn system prompt + tool offered**
+      (`skills.test.ts`); verified live via REST against a running station
+- [ ] re-test the terse small-model prompt on the live cheap model (needs a key)
+- [ ] optional: shared station pack dir (currently per-dock only)
 
 **Tools / Extensions (pi Extensions):**
 - [ ] gate `brainExtensions.tools`; keep first-party in-process tools as-is

@@ -42,6 +42,12 @@ export class SessionStore {
     this.#root = root;
   }
 
+  /** The data root (`.data/brain`) — skills.ts resolves per-dock skill dirs
+   *  under the same tree. */
+  get root(): string {
+    return this.#root;
+  }
+
   /** The open (not yet closed) session for a dock, if any. */
   openSession(dock: string): SessionMeta | undefined {
     return this.#index(dock).find((s) => s.closedAt == null);

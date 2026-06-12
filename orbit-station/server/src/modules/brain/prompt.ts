@@ -63,7 +63,7 @@ and answer in words.
  * Per-turn assembly — mirrors DockAgent.runTurn: stock prompt (+ optional
  * persona from the dock profile) + the live perception grounding line.
  */
-export function buildSystemPrompt(opts: { persona?: string; context?: string; memory?: string }): string {
+export function buildSystemPrompt(opts: { persona?: string; context?: string; memory?: string; skills?: string }): string {
   let p = SYSTEM;
   if (opts.persona && opts.persona.trim().length > 0) p += `\n\n${opts.persona.trim()}`;
   // memory = the previous session's compacted summary (session seeding): the
@@ -71,6 +71,9 @@ export function buildSystemPrompt(opts: { persona?: string; context?: string; me
   if (opts.memory && opts.memory.trim().length > 0) {
     p += `\n\nMemory from your earlier conversations today (background — use it, don't recite it): ${opts.memory.trim()}`;
   }
+  // skills = pi progressive disclosure (names+descriptions only; full body via
+  // the invoke_skill tool). Per-dock, loaded from the dock's own folder.
+  if (opts.skills && opts.skills.trim().length > 0) p += `\n\n${opts.skills.trim()}`;
   if (opts.context && opts.context.trim().length > 0) p += `\n\nCurrent state — ${opts.context.trim()}`;
   return p;
 }
