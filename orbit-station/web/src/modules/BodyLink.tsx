@@ -7,29 +7,77 @@ interface ParamSpec { type: string; unit: string; range: [number | null, number 
 interface PartSpec { description?: string; home?: Record<string, number>; params: Record<string, ParamSpec>; }
 interface Profile { body: { device_id: string; name: string; parts: Record<string, PartSpec> }; }
 type BodyState = Record<string, Record<string, number>>;
+interface DockInfo { name: string; components: Array<{ component: string; caps?: string[]; online: boolean }>; }
+interface Digest { dock: string; online: boolean; state: BodyState; ts: number; }
+
+/** docks that have a body slot at all (declared or observed). */
+const hasBody = (d: DockInfo) =>
+  d.components.some((c) => (c.caps ?? []).includes('servo') || c.component === 'body');
+const bodyOnline = (d: DockInfo) =>
+  d.components.some(
+    (c) => ((c.caps ?? []).includes('servo') || c.component === 'body') && c.online,
+  );
 
 export function BodyLink() {
+  const [docks, setDocks] = useState<DockInfo[]>([]);
+  const [dock, setDock] = useState<string>('');
   const [profile, setProfile] = useState<Profile | null>(null);
   const [state, setState] = useState<BodyState>({});
+  const [online, setOnline] = useState(false);
+
+  // dock list: anything with a body slot; default to the first ONLINE body.
+  useEffect(() => {
+    api.get<DockInfo[]>('/docks').then((all) => {
+      const bodied = all.filter(hasBody);
+      setDocks(bodied);
+      setDock((cur) => cur || (bodied.find(bodyOnline) ?? bodied[0])?.name || '');
+    }).catch(() => {});
+  }, []);
 
   const load = useCallback(() => {
-    api.get<Profile | { error: string }>('/bodylink/profile').then((p) => setProfile('body' in p ? p : null)).catch(() => {});
-    api.get<BodyState>('/bodylink/state').then(setState).catch(() => {});
-  }, []);
+    if (!dock) return;
+    const q = `?dock=${encodeURIComponent(dock)}`;
+    api.get<Profile | { error: string }>(`/bodylink/profile${q}`)
+      .then((p) => setProfile('body' in p ? p : null)).catch(() => {});
+    api.get<{ online?: boolean; state?: BodyState }>(`/bodylink/state${q}`)
+      .then((s) => { setState(s.state ?? {}); setOnline(s.online ?? false); }).catch(() => {});
+  }, [dock]);
   useEffect(load, [load]);
 
+  // Live updates ride the ~1 Hz digest (it carries the dock, so multi-dock
+  // fan-in filters cleanly; raw `state` frames don't name their dock).
   useStationEvents('bodylink', useCallback((e) => {
-    if (e.kind === 'profile') setProfile(e.payload as Profile);
-    else if (e.kind === 'state') setState(e.payload as BodyState);
-    else if (e.kind === 'applied') load();
-  }, [load]));
+    if (e.kind === 'digest') {
+      const d = e.payload as Digest;
+      if (d.dock !== dock) return;
+      setState(d.state ?? {});
+      setOnline(d.online);
+    } else if (e.kind === 'profile') {
+      load(); // a body (re)connected somewhere — re-resolve our view
+    }
+  }, [dock, load]));
+
+  const picker = docks.length > 1 && (
+    <div className="row" style={{ gap: 6, marginBottom: 12 }}>
+      {docks.map((d) => (
+        <button key={d.name} onClick={() => { setProfile(null); setDock(d.name); }}
+          style={dock === d.name ? { borderColor: 'var(--accent)', color: 'var(--accent)' } : {}}>
+          {d.name}{bodyOnline(d) ? ' ●' : ''}
+        </button>
+      ))}
+    </div>
+  );
 
   if (!profile) {
     return (
       <section>
         <h2 className="title">BodyLink Console</h2>
-        <p className="subtitle">Drive the body directly, bypassing the dock app.</p>
-        <div className="empty">No body connected. Flash/boot the ESP32 (it dials into <code>/ws</code> and sends its profile), or run <code>npm run smoke</code>.</div>
+        <p className="subtitle">Drive the body directly — same motion executor the brain uses.</p>
+        {picker}
+        <div className="empty">
+          No body profile{dock ? ` for ${dock}` : ''}. Flash/boot the ESP32 (it dials
+          into <code>/ws</code> and sends its profile), or run <code>npm run smoke:brain</code>.
+        </div>
       </section>
     );
   }
@@ -37,17 +85,21 @@ export function BodyLink() {
   return (
     <section>
       <h2 className="title">BodyLink Console</h2>
-      <p className="subtitle">{profile.body.name} · <span className="mono">{profile.body.device_id}</span></p>
+      <p className="subtitle">
+        {dock} · {profile.body.name} · <span className="mono">{profile.body.device_id}</span>
+        {' '}· <span style={{ color: online ? 'var(--good)' : 'var(--bad)' }}>{online ? 'online' : 'offline'}</span>
+      </p>
+      {picker}
       <div className="grid">
         {Object.entries(profile.body.parts).map(([part, spec]) => (
-          <PartControl key={part} part={part} spec={spec} state={state[part] ?? {}} />
+          <PartControl key={`${dock}/${part}`} dock={dock} part={part} spec={spec} state={state[part] ?? {}} />
         ))}
       </div>
     </section>
   );
 }
 
-function PartControl({ part, spec, state }: { part: string; spec: PartSpec; state: Record<string, number> }) {
+function PartControl({ dock, part, spec, state }: { dock: string; part: string; spec: PartSpec; state: Record<string, number> }) {
   const main = 'pulse_width_us' in spec.params ? 'pulse_width_us' : Object.keys(spec.params)[0]!;
   const ps = spec.params[main]!;
   const lo = ps.range[0] ?? 0;
@@ -56,13 +108,13 @@ function PartControl({ part, spec, state }: { part: string; spec: PartSpec; stat
   const angles = main === 'pulse_width_us' && hasAngle(part);
 
   // `val` = what the CONSOLE last COMMANDED (not the live reported state, which
-  // drifts as the phone heartbeats the body). Start at home so a fresh load is
-  // deterministic — 0° for an angle part — instead of capturing a moving report.
+  // drifts as the executor heartbeats the body). Start at home so a fresh load
+  // is deterministic — 0° for an angle part — instead of capturing a moving report.
   const [val, setVal] = useState<number>(home);
 
   // The brain's LIMIT for this part — shown for reference (asymmetric: min,max).
   // The console is NOT bound by it (drive past it to calibrate the real stop).
-  // NOTE: duplicated from the app's DEGREE_LIMITS for now — shared store later.
+  // NOTE: duplicated from the brain's DEGREE_LIMITS for now — shared store later.
   const [limitLoDeg, limitHiDeg] = angles ? DEGREE_RANGE[part]! : [0, 0];
   const limitLoUs = angles ? degreesToUs(part, limitLoDeg) : lo; // brain-limit endpoints in µs
   const limitHiUs = angles ? degreesToUs(part, limitHiDeg) : hi;
@@ -82,7 +134,7 @@ function PartControl({ part, spec, state }: { part: string; spec: PartSpec; stat
     // Console drives the FULL hardware range — only the servo's µs bounds clamp.
     const clamped = Math.max(lo, Math.min(hi, Math.round(v)));
     setVal(clamped);
-    api.post('/bodylink/command', { parts: { [part]: { [main]: clamped, duration_ms: durationMs } } }).catch(() => {});
+    api.post('/bodylink/command', { dock, parts: { [part]: { [main]: clamped, duration_ms: durationMs } } }).catch(() => {});
   };
   /** nudge by ±µs for fine calibration toward a gear stop. */
   const nudge = (d: number) => send(val + d);

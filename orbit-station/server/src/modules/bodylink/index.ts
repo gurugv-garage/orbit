@@ -147,9 +147,15 @@ export function bodylinkModule(deps: {
     async route(ctx: RouteContext) {
       const { req, res, subPath, url } = ctx;
       const dockParam = url.searchParams.get('dock') ?? undefined;
-      /** default to the single known dock when unambiguous (console back-compat). */
+      /** default when no ?dock=: the one dock with an ONLINE body wins; else
+       *  the single known dock (console back-compat). Smoke/test docks linger
+       *  in the directory, so "exactly one known" almost never holds — online
+       *  servo presence is the signal that matters. */
       function pickDock(): string | undefined {
         if (dockParam) return dockParam;
+        const online = deps.directory.docks().map((d) => d.name)
+          .filter((name) => deps.motion.isOnline(name));
+        if (online.length === 1) return online[0];
         const known = [...new Set([...docks.keys(), ...deps.directory.docks().map((d) => d.name)])];
         return known.length === 1 ? known[0] : undefined;
       }

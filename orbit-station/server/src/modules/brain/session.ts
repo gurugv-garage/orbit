@@ -91,6 +91,7 @@ export class DockBrainSession {
 
   // ── per-turn state (reset in #runTurn) ────────────────────────────────────
   #activeTurnId?: string;
+  #triggerText = '';
   #cancelled = false;
   #timedOut = false;
   #spokeThisTurn = false;
@@ -274,6 +275,7 @@ export class DockBrainSession {
 
     // reset per-turn state
     this.#activeTurnId = req.turnId;
+    this.#triggerText = req.trigger.text;
     this.#cancelled = false;
     this.#timedOut = false;
     this.#spokeThisTurn = false;
@@ -440,8 +442,11 @@ export class DockBrainSession {
   #onAgentEvent(event: AgentEvent): void {
     switch (event.type) {
       case 'agent_start':
+        // NOT lastUserText(agent): pi emits agent_start BEFORE appending the
+        // new user message, so deriving the trigger from history labeled
+        // every turn with the PREVIOUS utterance (seen live on the console).
         this.#shipObs('TurnStart', {
-          trigger: { kind: 'user', text: this.#turnCtx.turnId === this.#activeTurnId ? lastUserText(this.#agent) : '' },
+          trigger: { kind: 'user', text: this.#triggerText },
         });
         break;
       case 'turn_start':
@@ -657,20 +662,6 @@ function assistantText(m: unknown): string {
   return msg.content.filter((c) => c.type === 'text').map((c) => c.text ?? '').join('');
 }
 
-function lastUserText(agent?: Agent): string {
-  if (!agent) return '';
-  const msgs = agent.state.messages;
-  for (let i = msgs.length - 1; i >= 0; i--) {
-    const m = msgs[i] as { role?: string; content?: unknown };
-    if (m.role === 'user') {
-      if (typeof m.content === 'string') return m.content;
-      const text = (m.content as Array<{ type?: string; text?: string }>)
-        ?.filter((c) => c.type === 'text').map((c) => c.text ?? '').join('');
-      return text ?? '';
-    }
-  }
-  return '';
-}
 
 /** Session summary at close — the seed for phase-2 memory. (pi harness
  *  compaction is the upgrade path; a tail-of-conversation digest is enough

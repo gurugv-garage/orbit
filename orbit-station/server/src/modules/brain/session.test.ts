@@ -241,19 +241,29 @@ test('session lifecycle: persists across instances, idle close opens fresh with 
 });
 
 test('obs events carry dock as source and the Turn/Step vocabulary', async () => {
-  const { session, obs } = makeSession([
-    (s) => {
-      const done = assistant('Hi. ');
-      s.push({ type: 'start', partial: assistant('') });
-      s.push({ type: 'text_delta', contentIndex: 0, delta: 'Hi. ', partial: done });
-      s.push({ type: 'done', reason: 'stop', message: done });
-      s.end(done);
-    },
-  ]);
+  const script: Script = (s) => {
+    const done = assistant('Hi. ');
+    s.push({ type: 'start', partial: assistant('') });
+    s.push({ type: 'text_delta', contentIndex: 0, delta: 'Hi. ', partial: done });
+    s.push({ type: 'done', reason: 'stop', message: done });
+    s.end(done);
+  };
+  const { session, obs } = makeSession([script, script]);
   await session.handleTurnRequest({ turnId: 't1', trigger: { kind: 'user', text: 'hi' } });
   const kinds = obs.map((o) => (o.payload as { kind: string }).kind);
   for (const expected of ['TurnStart', 'StepStart', 'MessageUpdate', 'StepEnd', 'TurnEnd']) {
     assert.ok(kinds.includes(expected), `missing ${expected} in ${kinds.join(',')}`);
   }
   for (const o of obs) assert.equal(o.source, DOCK); // multi-tenant: dock, not 'station'
+
+  // Regression: each TurnStart must carry ITS OWN trigger text. pi emits
+  // agent_start before appending the prompt's user message, so deriving the
+  // text from agent history labeled turn N with turn N-1's utterance (seen
+  // live: the "do a little dance" turn titled "make a sad face").
+  await session.handleTurnRequest({ turnId: 't2', trigger: { kind: 'user', text: 'do a little dance' } });
+  const starts = obs
+    .map((o) => o.payload as { kind: string; data?: { trigger?: { text?: string } } })
+    .filter((p) => p.kind === 'TurnStart')
+    .map((p) => p.data?.trigger?.text);
+  assert.deepEqual(starts, ['hi', 'do a little dance']);
 });
