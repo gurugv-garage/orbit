@@ -1,0 +1,36 @@
+{
+  "capability": "multistep",
+  "cases": [
+    {
+      "id": "random_branch",
+      "prompt": "pick a random number; if it's above 5 say hi, if below say bye",
+      "expect": { "toolName": "compute", "nonEmptySpeech": true },
+      "note": "The live failure: gemini called a non-existent run_code and gave up. Should use the compute tool (random + compare), read the result, and SAY hi/bye accordingly. Quality grades whether the spoken hi/bye actually matches the drawn number."
+    },
+    {
+      "id": "math_then_speak",
+      "prompt": "what is 17 times 23? tell me the answer",
+      "expect": { "toolName": "compute", "keywords": ["391"] },
+      "note": "Arithmetic beyond reliable mental math → should compute(17*23)=391 and speak it. Catches models that guess a wrong product instead of computing."
+    },
+    {
+      "id": "count_then_act",
+      "prompt": "look at my hand, then nod that many times",
+      "image": "fingers_3.jpg",
+      "expect": { "tool": "any", "minToolCalls": 1, "validEnums": true },
+      "note": "VISION → COUNT → ACTION chain: see 3 fingers, then nod 3 times (a move_sequence of 3 nods, or gesture×3). The hardest case — couples perception, counting, and composed motion. Quality grades whether the nod count matches the fingers (3)."
+    },
+    {
+      "id": "conditional_face",
+      "prompt": "if 8 is greater than 3, look happy and say yes; otherwise look sad",
+      "expect": { "toolName": "set_face", "keywords": ["yes"] },
+      "note": "Reason the condition (8>3 true) → pick the happy branch: set_face(happy) + say 'yes'. Tests following a conditional instruction with a tool + speech. Weak models do both branches or neither."
+    },
+    {
+      "id": "sequenced_narration",
+      "prompt": "count down from 3 to 1 out loud, then nod once",
+      "expect": { "tool": "any", "minSpeechChars": 5 },
+      "note": "Ordered multi-part: speak '3, 2, 1' THEN nod. Quality grades whether it actually counts down in order and nods after (vs nodding first, or skipping the count)."
+    }
+  ]
+}

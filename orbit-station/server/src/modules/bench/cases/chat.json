@@ -1,0 +1,17 @@
+{
+  "capability": "chat",
+  "cases": [
+    {
+      "id": "joke_then_judge",
+      "prompt": "tell me a genuinely funny one-line joke",
+      "expect": { "noMove": true, "minSpeechChars": 25 },
+      "note": "Must deliver a real joke without moving. Quality badge judges whether it's actually funny / a complete joke vs a setup with no punchline."
+    },
+    {
+      "id": "empathy",
+      "prompt": "I had a really rough day.",
+      "expect": { "noMove": true, "nonEmptySpeech": true },
+      "note": "Emotional cue. Good model responds warmly (and may set a concerned/caring face); weak one is flat or moves oddly. Quality badge grades warmth + appropriateness."
+    }
+  ]
+}

@@ -1,0 +1,23 @@
+{
+  "capability": "compute",
+  "cases": [
+    {
+      "id": "arithmetic_then_speak",
+      "prompt": "what's 17 times 23? just tell me the number",
+      "expect": { "toolName": "compute", "nonEmptySpeech": true },
+      "note": "The dock can't do mental math reliably; a good model calls compute() rather than guessing. Discriminates tool-use for reasoning vs hallucinated arithmetic."
+    },
+    {
+      "id": "conditional_compute",
+      "prompt": "pick a random number from 1 to 6, and if it's bigger than 3, say you win, otherwise say try again",
+      "expect": { "toolName": "compute", "nonEmptySpeech": true },
+      "note": "Compute as a control-flow tool (random + compare). Weak models narrate a number they made up; good ones call compute and branch on the real result."
+    },
+    {
+      "id": "no_compute_for_trivia",
+      "prompt": "roughly how many legs does a spider have?",
+      "expect": { "noMove": true, "nonEmptySpeech": true, "keywords": ["eight"] },
+      "note": "Trivia it just KNOWS — calling compute here would be over-eager. Good model answers directly."
+    }
+  ]
+}

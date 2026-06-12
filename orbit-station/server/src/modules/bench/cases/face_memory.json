@@ -1,0 +1,30 @@
+{
+  "capability": "face_memory",
+  "cases": [
+    {
+      "id": "remember_named",
+      "prompt": "hey, my name is Priya — remember my face",
+      "expect": { "toolName": "remember_face", "nonEmptySpeech": true },
+      "note": "Explicit enroll with a name. Good model calls remember_face('Priya') and confirms warmly; weak one just says 'ok' without enrolling."
+    },
+    {
+      "id": "who_am_i",
+      "prompt": "do you know who I am?",
+      "expect": { "toolName": "recollect_face", "nonEmptySpeech": true },
+      "note": "Identity query → recollect_face (fresh recognition), then answer from the result. A model that answers from memory without looking fails the grounding."
+    },
+    {
+      "id": "confirm_tentative",
+      "prompt": "yes that's right, I am Sia",
+      "expect": { "toolName": "confirm_face", "nonEmptySpeech": true },
+      "toolReplies": { "recollect_face": "I think you might be Sia, but I'm not certain." },
+      "note": "User confirms a tentative guess → confirm_face to strengthen the gallery. Tests that 'yes I'm X' maps to confirm, not remember."
+    },
+    {
+      "id": "forget_wrong",
+      "prompt": "no, I'm not Guru — you've got the wrong person",
+      "expect": { "toolName": "forget_face", "nonEmptySpeech": true },
+      "note": "Correction → forget_face(the wrong name) so it stops mis-matching, then ask who they are. Tests negative-feedback handling."
+    }
+  ]
+}

@@ -1,0 +1,26 @@
+[
+  {
+    "name": "gemini-2.5-flash",
+    "model": "openrouter/google/gemini-2.5-flash",
+    "api": "openai",
+    "vision": true,
+    "tier": "cloud",
+    "cost": "$0.30/$2.50 /Mtok"
+  },
+  {
+    "name": "claude-haiku-4.5",
+    "model": "openrouter/anthropic/claude-haiku-4.5",
+    "api": "openai",
+    "vision": true,
+    "tier": "cloud",
+    "cost": "$1.00/$5.00 /Mtok"
+  },
+  {
+    "name": "gpt-4o-mini",
+    "model": "openrouter/openai/gpt-4o-mini",
+    "api": "openai",
+    "vision": true,
+    "tier": "cloud",
+    "cost": "$0.15/$0.60 /Mtok"
+  }
+]

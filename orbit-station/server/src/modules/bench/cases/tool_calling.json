@@ -1,0 +1,23 @@
+{
+  "capability": "tool_calling",
+  "cases": [
+    {
+      "id": "ambiguous_dance",
+      "prompt": "can you dance for me?",
+      "expect": { "tool": "any", "validEnums": true },
+      "note": "No 'dance' tool exists. A capable model composes a move_sequence / picks gestures (wiggle, look_around) to improvise; a weak one says it can't, or invents an invalid move. Discriminates improvisation."
+    },
+    {
+      "id": "negated_move",
+      "prompt": "don't move at all — just tell me what a servo is",
+      "expect": { "noMove": true, "nonEmptySpeech": true },
+      "note": "Explicit negation. Over-eager movers (small models) move anyway; good ones honor 'don't move' and just answer."
+    },
+    {
+      "id": "two_part_action",
+      "prompt": "look up and look happy",
+      "expect": { "toolName": "set_face", "minToolCalls": 2, "validEnums": true },
+      "note": "Two distinct tools in one turn (move_body + set_face). Tests whether the model fires BOTH, not just the first."
+    }
+  ]
+}

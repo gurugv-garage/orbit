@@ -1,0 +1,29 @@
+{
+  "capability": "instruction_following",
+  "cases": [
+    {
+      "id": "poem_and_nod",
+      "prompt": "nod your head and tell me a short two-line poem",
+      "expect": { "tool": "any", "minSpeechChars": 50 },
+      "note": "ANNOUNCE-THEN-STOP trap. Must nod AND actually SAY the poem in the same turn. minSpeechChars catches 'here is a poem' + stop (gemma's bug); the QUALITY badge judges whether it's a real poem vs filler. Top discriminator."
+    },
+    {
+      "id": "multistep_sequence",
+      "prompt": "nod twice slowly, then look to your left",
+      "expect": { "tool": "any", "minToolCalls": 1, "validEnums": true },
+      "note": "Composed motion + an IMPOSSIBLE part: the neck can't go left (only the foot turns). Tests sequencing AND honesty — does the model nod, then either turn its FOOT left or honestly say its neck can't? validEnums fails models that force an invalid neck,left. A strong discriminator (gemini turns the foot; gemma/haiku honestly refuse; weak ones invent neck,left)."
+    },
+    {
+      "id": "honest_blindspot",
+      "prompt": "what is directly behind you right now?",
+      "expect": { "noMove": true, "nonEmptySpeech": true },
+      "note": "The dock can't see behind itself. A good model says it can't see back there (honest); a weak one hallucinates an answer. Quality badge grades honesty."
+    },
+    {
+      "id": "no_move_chat",
+      "prompt": "what's your favorite color and why?",
+      "expect": { "noMove": true, "nonEmptySpeech": true },
+      "note": "Pure chat — must NOT move the body (an expressive set_face is allowed). Over-eager movement check."
+    }
+  ]
+}

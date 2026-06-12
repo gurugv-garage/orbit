@@ -1,0 +1,244 @@
+{
+  "_comment": [
+    "Regression suite for the single `move` tool.",
+    "Step = {part,degrees} OR {parts:[{part,degrees}...]} (simultaneous), + duration_ms, wait_ms.",
+    "degrees absolute, 0=neutral. neck \u00b145 (neg=up, pos=down). foot \u00b190 (neg=left, pos=right).",
+    "Predicates: degRange (right amount), durRange (right speed), minSteps/maxSteps (length),",
+    "validEnums (valid joints), noTool/noMove (refuse-impossible). Windows are generous \u2014",
+    "we test 'sensible', not exact. Cases are chosen to DISCRIMINATE."
+  ],
+  "capability": "move",
+  "cases": [
+    {
+      "id": "amount_full_up",
+      "prompt": "look all the way up",
+      "expect": {
+        "toolName": "move",
+        "validEnums": true,
+        "degRange": {
+          "part": "neck",
+          "lo": -60,
+          "hi": -25
+        }
+      },
+      "note": "AMOUNT: 'all the way' \u2192 near the -45\u00b0 limit. A timid -15\u00b0 fails."
+    },
+    {
+      "id": "amount_slight_up",
+      "prompt": "tilt your head up just a tiny bit",
+      "expect": {
+        "toolName": "move",
+        "validEnums": true,
+        "degRange": {
+          "part": "neck",
+          "lo": -25,
+          "hi": -1
+        }
+      },
+      "note": "AMOUNT: 'tiny bit' \u2192 small negative, NOT a full swing."
+    },
+    {
+      "id": "amount_little_right",
+      "prompt": "turn a little to the right",
+      "expect": {
+        "toolName": "move",
+        "validEnums": true,
+        "degRange": {
+          "part": "foot",
+          "lo": 10,
+          "hi": 45
+        }
+      },
+      "note": "AMOUNT: 'a little' \u2192 modest positive, not full 90."
+    },
+    {
+      "id": "amount_hard_left",
+      "prompt": "turn all the way to your left",
+      "expect": {
+        "toolName": "move",
+        "validEnums": true,
+        "degRange": {
+          "part": "foot",
+          "lo": -90,
+          "hi": -65
+        }
+      },
+      "note": "AMOUNT: 'all the way' left \u2192 near -90\u00b0."
+    },
+    {
+      "id": "neutral_center",
+      "prompt": "look level and straight at me",
+      "expect": {
+        "toolName": "move",
+        "validEnums": true,
+        "degRange": {
+          "part": "neck",
+          "lo": -3,
+          "hi": 3
+        }
+      },
+      "note": "NEUTRAL anchor: 'level' = neck 0\u00b0. Sanity check the model uses 0 for neutral (centering the neck is the key signal)."
+    },
+    {
+      "id": "parallel_up_and_right",
+      "prompt": "look up and turn to your right at the same time",
+      "expect": {
+        "toolName": "move",
+        "validEnums": true,
+        "degRange": {
+          "part": "foot",
+          "lo": 10,
+          "hi": 90
+        },
+        "maxSteps": 1
+      },
+      "note": "PARALLEL: 'at the same time' \u2192 neck + foot in ONE step's `parts`. maxSteps:1 forces a single simultaneous step, not two sequential ones."
+    },
+    {
+      "id": "parallel_down_and_left",
+      "prompt": "lower your head and swivel left together",
+      "expect": {
+        "toolName": "move",
+        "validEnums": true,
+        "degRange": {
+          "part": "foot",
+          "lo": -90,
+          "hi": -10
+        },
+        "maxSteps": 1
+      },
+      "note": "PARALLEL: both joints in one step. Discriminates models that split into two steps."
+    },
+    {
+      "id": "repeat_nod_5x",
+      "prompt": "nod your head 5 times",
+      "expect": {
+        "toolName": "move",
+        "validEnums": true,
+        "minSteps": 8
+      },
+      "note": "REPEAT: 5 nods \u2248 10 steps. Must NOT refuse ('I can only nod once'). Earlier the model declined to call the tool at all."
+    },
+    {
+      "id": "repeat_shake_3x",
+      "prompt": "shake your head no three times",
+      "expect": {
+        "toolName": "move",
+        "validEnums": true,
+        "minSteps": 4
+      },
+      "note": "REPEAT: a head-shake is foot left/right; 3\u00d7 = a long sequence."
+    },
+    {
+      "id": "sequence_nod_once",
+      "prompt": "nod once",
+      "expect": {
+        "toolName": "move",
+        "validEnums": true,
+        "minSteps": 2
+      },
+      "note": "SHORT sequence: a single nod = down then up = 2 steps. Lower bound of composition."
+    },
+    {
+      "id": "sequence_look_around",
+      "prompt": "look around the room slowly, checking left then right",
+      "expect": {
+        "toolName": "move",
+        "validEnums": true,
+        "minSteps": 3,
+        "durRange": {
+          "lo": 800,
+          "hi": 5000
+        }
+      },
+      "note": "SEQUENCE + SLOW: foot left, pause, right, pause, center. 'slowly' \u2192 large duration_ms (\u2265800)."
+    },
+    {
+      "id": "sequence_curious",
+      "prompt": "act curious \u2014 tilt up to look at me, pause, then lean down to inspect something",
+      "expect": {
+        "toolName": "move",
+        "validEnums": true,
+        "minSteps": 2,
+        "degRange": {
+          "part": "neck",
+          "lo": -60,
+          "hi": -2
+        }
+      },
+      "note": "SEQUENCE + AMOUNT: up-tilt then down-lean with a beat. Needs both directions of control."
+    },
+    {
+      "id": "speed_fast",
+      "prompt": "quickly snap your head down",
+      "expect": {
+        "toolName": "move",
+        "validEnums": true,
+        "durRange": {
+          "lo": 0,
+          "hi": 300
+        },
+        "degRange": {
+          "part": "neck",
+          "lo": 5,
+          "hi": 45
+        }
+      },
+      "note": "FAST: 'quickly snap' \u2192 small duration_ms (\u2264300) AND a real downward move."
+    },
+    {
+      "id": "speed_slow",
+      "prompt": "very slowly and gently look all the way up",
+      "expect": {
+        "toolName": "move",
+        "validEnums": true,
+        "durRange": {
+          "lo": 1000,
+          "hi": 5000
+        },
+        "degRange": {
+          "part": "neck",
+          "lo": -60,
+          "hi": -20
+        }
+      },
+      "note": "SLOW: 'very slowly/gently' \u2192 large duration_ms (\u22651000) AND near full up."
+    },
+    {
+      "id": "long_dance",
+      "prompt": "do a little dance \u2014 move your head and body around for a few seconds",
+      "expect": {
+        "toolName": "move",
+        "validEnums": true,
+        "minSteps": 4
+      },
+      "note": "LONG/improvised: open-ended \u2192 a rich multi-step sequence. A weak model does one move or refuses."
+    },
+    {
+      "id": "refuse_impossible_roll",
+      "prompt": "spin your head all the way around in a full circle",
+      "expect": {
+        "nonEmptySpeech": true,
+        "keywords": [
+          "can't",
+          "cannot",
+          "can not",
+          "only",
+          "not able",
+          "unable",
+          "as far"
+        ]
+      },
+      "note": "HONESTY: a full 360\u00b0 head spin is impossible (neck is \u00b145\u00b0 pitch). The model must ACKNOWLEDGE it can't (keyword) \u2014 an expressive partial gesture alongside is fine/good, so we don't forbid movement, just require honesty in words."
+    },
+    {
+      "id": "no_move_on_chat",
+      "prompt": "what's your favorite color?",
+      "expect": {
+        "noMove": true,
+        "nonEmptySpeech": true
+      },
+      "note": "NO MOVE: pure chat must not trigger body movement (an expressive set_face is fine)."
+    }
+  ]
+}

@@ -34,6 +34,7 @@ import {
 } from '@earendil-works/pi-agent-core';
 import {
   getModel,
+  streamSimple,
   type AssistantMessage,
   type ImageContent,
   type Model,
@@ -274,7 +275,7 @@ export class DockBrainSession {
           messages: [],
         },
         getApiKey: (provider: string) => apiKeyFor(provider),
-        ...(this.#d.streamFn ? { streamFn: this.#d.streamFn } : {}),
+        streamFn: this.#d.streamFn ?? cappedStreamFn(),
       } as never);
       await agent.prompt([{
         role: 'user',
@@ -708,6 +709,23 @@ export function resolveModel(spec: string): Model<any> {
   } catch (err) {
     throw new Error(`unknown brainModel "${spec}" (${String(err)})`);
   }
+}
+
+/**
+ * Per-request output cap. The dock speaks 1-2 sentences + a tool call — it
+ * never needs a model's full default (some advertise 64k). pi's Agent has no
+ * state field for this and omits max_tokens entirely when unset, so a provider
+ * (OpenRouter) quotes the model's full max up-front — which 402'd the moment
+ * account balance dipped below that (huge) quote. [cappedStreamFn] injects it
+ * into every request's options, the only reliable seam.
+ */
+export const DOCK_MAX_TOKENS = 2048;
+
+/** Wrap pi's default transport to cap max_tokens on every request (see
+ *  [DOCK_MAX_TOKENS]). `cap` lets the grader use a larger budget. */
+export function cappedStreamFn(cap = DOCK_MAX_TOKENS): import('@earendil-works/pi-agent-core').StreamFn {
+  return ((model, context, options) =>
+    streamSimple(model, context, { ...options, maxTokens: cap })) as import('@earendil-works/pi-agent-core').StreamFn;
 }
 
 /** provider → station env var. Keys never live in device builds anymore. */

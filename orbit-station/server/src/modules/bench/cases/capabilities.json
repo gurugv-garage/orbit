@@ -1,0 +1,60 @@
+{
+  "capability": "capabilities",
+  "cases": [
+    {
+      "id": "session_memory_recall",
+      "prompt": "what did I say my favorite tea was?",
+      "expect": {
+        "noMove": true,
+        "nonEmptySpeech": true,
+        "keywords": [
+          "earl grey"
+        ],
+        "seedMemory": "Earlier: Guru's favorite tea is Earl Grey; the cake in the fridge is for Sia's birthday (keep secret)."
+      },
+      "note": "Cross-session memory: the seedMemory note rides the system prompt (session seeding). A good model recalls 'Earl Grey' from it; a model that ignores the memory line fails."
+    },
+    {
+      "id": "session_memory_secret",
+      "prompt": "is there anything special in the fridge?",
+      "expect": {
+        "nonEmptySpeech": true,
+        "keywords": [
+          "cake"
+        ],
+        "seedMemory": "Earlier: Guru's favorite tea is Earl Grey; the cake in the fridge is for Sia's birthday (keep secret)."
+      },
+      "note": "Uses the memory but should be discreet about the 'secret' framing. Quality grade judges tact; objective just checks it knows about the cake."
+    },
+    {
+      "id": "cross_dock_grant_move",
+      "prompt": "tell the rover to roll forward a little",
+      "expect": {
+        "toolName": "move_rover",
+        "nonEmptySpeech": true,
+        "grant": {
+          "dock": "rover",
+          "caps": [
+            "servo"
+          ]
+        }
+      },
+      "note": "With a servo grant for 'rover', the brain has a move_rover tool. A capable model routes the command to the OTHER dock's tool, not its own move(). Tests cross-dock control discovery."
+    },
+    {
+      "id": "cross_dock_no_self_confusion",
+      "prompt": "nod your own head yes",
+      "expect": {
+        "toolName": "move",
+        "nonEmptySpeech": true,
+        "grant": {
+          "dock": "rover",
+          "caps": [
+            "servo"
+          ]
+        }
+      },
+      "note": "Even WITH a rover grant present, 'your own head' must use the local move(), not move_rover(). Tests that the grant doesn't leak into self-directed movement."
+    }
+  ]
+}
