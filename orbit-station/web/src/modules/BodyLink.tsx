@@ -90,12 +90,229 @@ export function BodyLink() {
         {' '}· <span style={{ color: online ? 'var(--good)' : 'var(--bad)' }}>{online ? 'online' : 'offline'}</span>
       </p>
       {picker}
+      <Moves dock={dock} online={online} />
       <div className="grid">
         {Object.entries(profile.body.parts).map(([part, spec]) => (
           <PartControl key={`${dock}/${part}`} dock={dock} part={part} spec={spec} state={state[part] ?? {}} />
         ))}
       </div>
     </section>
+  );
+}
+
+/**
+ * A choreographed move = a list of steps in the brain's `move` vocabulary
+ * (absolute degrees per joint, duration + beat in ms). The server's Motion
+ * executor runs it (POST /bodylink/play → runSteps), so it heartbeats and
+ * one move supersedes the previous — same as the LLM's move tool.
+ *
+ * Limits the server enforces: neck −60°(up)…+35°(down), foot ±90° swivel.
+ * (+neck = nod down, −neck = look up.) We stay inside them so nothing clamps.
+ */
+type Step = { part?: string; degrees?: number; parts?: Array<{ part: string; degrees: number }>; duration_ms?: number; wait_ms?: number };
+
+const HOME: Step = { parts: [{ part: 'neck', degrees: 0 }, { part: 'foot', degrees: 0 }], duration_ms: 400 };
+
+const MOVES: Array<{ id: string; label: string; emoji: string; len: 'short' | 'long'; steps: Step[] }> = [
+  {
+    id: 'yes', label: 'Nod Yes', emoji: '👍', len: 'short',
+    steps: [
+      { part: 'neck', degrees: 30, duration_ms: 200 },
+      { part: 'neck', degrees: -10, duration_ms: 200 },
+      { part: 'neck', degrees: 30, duration_ms: 200 },
+      { part: 'neck', degrees: 0, duration_ms: 250 },
+    ],
+  },
+  {
+    id: 'no', label: 'Shake No', emoji: '🙅', len: 'short',
+    steps: [
+      { part: 'foot', degrees: -35, duration_ms: 180 },
+      { part: 'foot', degrees: 35, duration_ms: 220 },
+      { part: 'foot', degrees: -30, duration_ms: 200 },
+      { part: 'foot', degrees: 30, duration_ms: 200 },
+      { part: 'foot', degrees: 0, duration_ms: 250 },
+    ],
+  },
+  {
+    id: 'shocked', label: 'Shocked', emoji: '😱', len: 'short',
+    steps: [
+      // snap up + recoil to the side, FREEZE, then a slow shaken settle
+      { parts: [{ part: 'neck', degrees: -55 }, { part: 'foot', degrees: 45 }], duration_ms: 120, wait_ms: 600 },
+      { part: 'foot', degrees: 25, duration_ms: 150 },
+      { part: 'foot', degrees: 45, duration_ms: 150, wait_ms: 300 },
+      { parts: [{ part: 'neck', degrees: 0 }, { part: 'foot', degrees: 0 }], duration_ms: 600 },
+    ],
+  },
+  {
+    id: 'curious', label: 'Curious', emoji: '🤔', len: 'long',
+    steps: [
+      // cock head up, slow scan one way, pause, scan back, peer in close
+      { part: 'neck', degrees: -25, duration_ms: 400, wait_ms: 200 },
+      { part: 'foot', degrees: -40, duration_ms: 700, wait_ms: 400 },
+      { part: 'foot', degrees: 40, duration_ms: 900, wait_ms: 400 },
+      { part: 'foot', degrees: 0, duration_ms: 500 },
+      { part: 'neck', degrees: 20, duration_ms: 400, wait_ms: 500 },
+      { part: 'neck', degrees: 0, duration_ms: 400 },
+    ],
+  },
+  {
+    id: 'happy', label: 'Happy Dance', emoji: '🥳', len: 'long',
+    steps: [
+      // bouncy nods while swiveling side to side, building, then a flourish
+      { parts: [{ part: 'neck', degrees: 25 }, { part: 'foot', degrees: -30 }], duration_ms: 220 },
+      { parts: [{ part: 'neck', degrees: -10 }, { part: 'foot', degrees: 30 }], duration_ms: 220 },
+      { parts: [{ part: 'neck', degrees: 25 }, { part: 'foot', degrees: -30 }], duration_ms: 220 },
+      { parts: [{ part: 'neck', degrees: -10 }, { part: 'foot', degrees: 30 }], duration_ms: 220 },
+      { parts: [{ part: 'neck', degrees: 25 }, { part: 'foot', degrees: -45 }], duration_ms: 180 },
+      { parts: [{ part: 'neck', degrees: -10 }, { part: 'foot', degrees: 45 }], duration_ms: 180 },
+      { parts: [{ part: 'neck', degrees: 25 }, { part: 'foot', degrees: -45 }], duration_ms: 180 },
+      { parts: [{ part: 'neck', degrees: -10 }, { part: 'foot', degrees: 45 }], duration_ms: 180 },
+      // spin-out flourish: full swivel, look up, settle home
+      { part: 'foot', degrees: 80, duration_ms: 350 },
+      { part: 'foot', degrees: -80, duration_ms: 500 },
+      { parts: [{ part: 'neck', degrees: -30 }, { part: 'foot', degrees: 0 }], duration_ms: 300, wait_ms: 200 },
+      { part: 'neck', degrees: 0, duration_ms: 300 },
+    ],
+  },
+  {
+    id: 'sad', label: 'Sad', emoji: '😔', len: 'long',
+    steps: [
+      // head droops down slowly, hangs low, slow heavy sway, stays down
+      { part: 'neck', degrees: 35, duration_ms: 1200, wait_ms: 600 },
+      { part: 'foot', degrees: -20, duration_ms: 1000 },
+      { part: 'foot', degrees: 20, duration_ms: 1400 },
+      { part: 'foot', degrees: 0, duration_ms: 1000, wait_ms: 800 },
+      { part: 'neck', degrees: 28, duration_ms: 700 },
+    ],
+  },
+  {
+    id: 'confused', label: 'Confused', emoji: '😵‍💫', len: 'short',
+    steps: [
+      // head tilts up one way, snaps the other, double-takes, can't make sense of it
+      { parts: [{ part: 'neck', degrees: -20 }, { part: 'foot', degrees: -30 }], duration_ms: 350, wait_ms: 250 },
+      { parts: [{ part: 'neck', degrees: -28 }, { part: 'foot', degrees: 35 }], duration_ms: 300, wait_ms: 250 },
+      { part: 'foot', degrees: -25, duration_ms: 250 },
+      { part: 'foot', degrees: 25, duration_ms: 250, wait_ms: 200 },
+      // a little "huh?" jerk up, then a slow puzzled settle
+      { part: 'neck', degrees: -35, duration_ms: 150, wait_ms: 400 },
+      { parts: [{ part: 'neck', degrees: -8 }, { part: 'foot', degrees: 0 }], duration_ms: 500 },
+    ],
+  },
+  {
+    id: 'studying', label: 'Studying', emoji: '📖', len: 'long',
+    steps: [
+      // bend down to the book and stay down — just keep reading the page,
+      // eyes tracking left→right→left→right for a good while.
+      { part: 'neck', degrees: 35, duration_ms: 900, wait_ms: 400 },
+      { part: 'foot', degrees: -25, duration_ms: 800, wait_ms: 250 },
+      { part: 'foot', degrees: 25, duration_ms: 1000, wait_ms: 250 },
+      { part: 'foot', degrees: -25, duration_ms: 1000, wait_ms: 250 },
+      { part: 'foot', degrees: 25, duration_ms: 1000, wait_ms: 250 },
+      { part: 'foot', degrees: -22, duration_ms: 900, wait_ms: 300 },
+      { part: 'foot', degrees: 22, duration_ms: 900, wait_ms: 300 },
+      { part: 'foot', degrees: -18, duration_ms: 900, wait_ms: 400 },
+      { part: 'foot', degrees: 0, duration_ms: 700 },
+    ],
+  },
+  {
+    id: 'coaster', label: 'Roller Coaster', emoji: '🎢', len: 'long',
+    steps: [
+      // 1) slow click-click climb up the lift hill — tilt back, look up
+      { parts: [{ part: 'neck', degrees: -45 }, { part: 'foot', degrees: 0 }], duration_ms: 1400, wait_ms: 250 },
+      // 2) hang at the crest, peek over the edge...
+      { part: 'neck', degrees: 10, duration_ms: 400, wait_ms: 350 },
+      // 3) THE DROP — slam forward and down
+      { part: 'neck', degrees: 35, duration_ms: 250, wait_ms: 150 },
+      // 4) bottom of the drop, whip into a hard right turn
+      { parts: [{ part: 'neck', degrees: 5 }, { part: 'foot', degrees: 75 }], duration_ms: 300 },
+      // 5) snap back through a left turn
+      { parts: [{ part: 'neck', degrees: 5 }, { part: 'foot', degrees: -75 }], duration_ms: 350 },
+      // 6) airtime hop up
+      { parts: [{ part: 'neck', degrees: -30 }, { part: 'foot', degrees: 0 }], duration_ms: 200 },
+      // 7) and back down, banking right
+      { parts: [{ part: 'neck', degrees: 30 }, { part: 'foot', degrees: 55 }], duration_ms: 250 },
+      // 8) quick rattly left-right-left through the last turns
+      { part: 'foot', degrees: -50, duration_ms: 200 },
+      { part: 'foot', degrees: 40, duration_ms: 200 },
+      // 9) coast to a stop, settle home
+      { parts: [{ part: 'neck', degrees: 0 }, { part: 'foot', degrees: 0 }], duration_ms: 600 },
+    ],
+  },
+  {
+    id: 'bullied', label: 'Bullied', emoji: '🥺', len: 'long',
+    steps: [
+      // 1) turns hopefully toward the others, looking up to be included
+      { parts: [{ part: 'neck', degrees: -25 }, { part: 'foot', degrees: -40 }], duration_ms: 600, wait_ms: 300 },
+      // 2) leans in eagerly... but they ignore it
+      { part: 'foot', degrees: -55, duration_ms: 400, wait_ms: 600 },
+      // 3) turns the other way hoping someone else will include it
+      { parts: [{ part: 'neck', degrees: -20 }, { part: 'foot', degrees: 45 }], duration_ms: 600, wait_ms: 700 },
+      // 4) a shove — knocked sharply aside, head jolts
+      { parts: [{ part: 'neck', degrees: 15 }, { part: 'foot', degrees: 80 }], duration_ms: 150, wait_ms: 200 },
+      // 5) flinch/recoil away from them, pulls back small
+      { parts: [{ part: 'neck', degrees: 25 }, { part: 'foot', degrees: 30 }], duration_ms: 350, wait_ms: 400 },
+      // 6) one last small hopeful glance up... left alone
+      { parts: [{ part: 'neck', degrees: -8 }, { part: 'foot', degrees: 0 }], duration_ms: 700, wait_ms: 800 },
+      // 7) it sinks in — head droops all the way down, turns away
+      { parts: [{ part: 'neck', degrees: 35 }, { part: 'foot', degrees: -20 }], duration_ms: 1600, wait_ms: 700 },
+      // 8) a slow, heavy, sad little sway — hangs there low
+      { part: 'foot', degrees: 15, duration_ms: 1400 },
+      { part: 'foot', degrees: -10, duration_ms: 1200, wait_ms: 600 },
+      { parts: [{ part: 'neck', degrees: 33 }, { part: 'foot', degrees: 0 }], duration_ms: 800 },
+    ],
+  },
+  {
+    id: 'attitude', label: 'Attitude', emoji: '💅', len: 'long',
+    steps: [
+      // 1) sharp head-snap to face them, chin up — "excuse me?"
+      { parts: [{ part: 'neck', degrees: -25 }, { part: 'foot', degrees: 30 }], duration_ms: 180, wait_ms: 400 },
+      // 2) slow look-you-up-and-down: down...
+      { part: 'neck', degrees: 25, duration_ms: 500 },
+      // 3) ...and back up, unimpressed
+      { part: 'neck', degrees: -30, duration_ms: 600, wait_ms: 450 },
+      // 4) sassy head bob/wobble while "telling you off"
+      { parts: [{ part: 'neck', degrees: -10 }, { part: 'foot', degrees: 20 }], duration_ms: 200 },
+      { parts: [{ part: 'neck', degrees: -22 }, { part: 'foot', degrees: -15 }], duration_ms: 200 },
+      { parts: [{ part: 'neck', degrees: -10 }, { part: 'foot', degrees: 20 }], duration_ms: 200 },
+      { parts: [{ part: 'neck', degrees: -22 }, { part: 'foot', degrees: -15 }], duration_ms: 200, wait_ms: 300 },
+      // 5) dismissive turn-AWAY — "talk to the hand", nose in the air
+      { parts: [{ part: 'neck', degrees: -45 }, { part: 'foot', degrees: -80 }], duration_ms: 350, wait_ms: 700 },
+      // 6) a single side-eye flick back at them...
+      { part: 'foot', degrees: -55, duration_ms: 250, wait_ms: 500 },
+      // 7) ...nope. chin right back up, hold the cocky pose
+      { parts: [{ part: 'neck', degrees: -40 }, { part: 'foot', degrees: -70 }], duration_ms: 300, wait_ms: 600 },
+    ],
+  },
+];
+
+function Moves({ dock, online }: { dock: string; online: boolean }) {
+  const [running, setRunning] = useState<string | null>(null);
+
+  const play = (id: string, steps: Step[]) => {
+    setRunning(id);
+    api.post('/bodylink/play', { dock, steps })
+      .catch(() => {})
+      .finally(() => setTimeout(() => setRunning((r) => (r === id ? null : r)), 1200));
+  };
+  const stop = () => { setRunning(null); api.post('/bodylink/play', { dock, steps: [HOME] }).catch(() => {}); };
+
+  return (
+    <div className="card" style={{ marginBottom: 12 }}>
+      <h3>Moves <span className="muted" style={{ fontWeight: 400, fontSize: 12 }}>· choreographed sequences (server-run)</span></h3>
+      {!online && <div className="muted" style={{ marginBottom: 8 }}>body offline — moves won't reach the servos.</div>}
+      <div className="row" style={{ flexWrap: 'wrap', gap: 6 }}>
+        {MOVES.map((m) => (
+          <button key={m.id} onClick={() => play(m.id, m.steps)} disabled={!online}
+            title={`${m.len} · ${m.steps.length} steps`}
+            style={running === m.id ? { borderColor: 'var(--accent)', color: 'var(--accent)' } : {}}>
+            {m.emoji} {m.label}
+            <span className="muted" style={{ fontSize: 10, marginLeft: 4 }}>{m.len}</span>
+          </button>
+        ))}
+        <div className="spacer" />
+        <button onClick={stop} disabled={!online}>⏹ Home</button>
+      </div>
+    </div>
   );
 }
 

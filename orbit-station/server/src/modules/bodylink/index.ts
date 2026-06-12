@@ -19,6 +19,7 @@
  *   GET  /api/bodylink/profile?dock=    capability profile
  *   GET  /api/bodylink/state?dock=      latest reported state
  *   POST /api/bodylink/command          { dock?, parts } → executor (clamped)
+ *   POST /api/bodylink/play             { dock?, steps } → runSteps (choreography)
  */
 
 import type { Bus } from '../../core/bus.js';
@@ -28,6 +29,7 @@ import type { Hub } from '../../core/hub.js';
 import type { RouteContext, StationModule } from '../../core/module.js';
 import type { Directory } from '../docks/directory.js';
 import type { MotionExecutor } from './motion.js';
+import type { MoveStep } from '../brain/schemas.js';
 
 const DIGEST_MIN_INTERVAL_MS = 1_000;
 
@@ -168,6 +170,23 @@ export function bodylinkModule(deps: {
       if (subPath === '/state' && req.method === 'GET') {
         const dock = pickDock();
         json(res, 200, dock ? { dock, online: deps.motion.isOnline(dock), state: body(dock).state, targets: deps.motion.targets(dock) } : {});
+        return true;
+      }
+      // operator-driven timed choreography → the brain's `move` runner (the
+      // console's dance/gesture buttons). Fire-and-forget like the move tool:
+      // returns the status string immediately; the sequence runs server-side
+      // with the normal heartbeat. A new play/command supersedes it.
+      if (subPath === '/play' && req.method === 'POST') {
+        const cmd = JSON.parse(await readBody(req)) as { dock?: string; steps?: unknown };
+        const dock = cmd.dock ?? pickDock();
+        if (!dock) { json(res, 400, { error: 'which dock? pass {dock}' }); return true; }
+        try {
+          const status = deps.motion.runSteps(dock, (cmd.steps ?? []) as MoveStep[]);
+          maybeDigest(dock, true);
+          json(res, 200, { dock, status });
+        } catch (e) {
+          json(res, 400, { error: e instanceof Error ? e.message : String(e) });
+        }
         return true;
       }
       // operator set_target → the same master the brain uses (last write wins).
