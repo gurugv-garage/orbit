@@ -7,7 +7,6 @@ import { Observability } from './modules/Observability';
 import { Brain } from './modules/Brain';
 import { Config } from './modules/Config';
 import { BodyLink } from './modules/BodyLink';
-import { Mind } from './modules/Mind';
 import { Bench } from './modules/Bench';
 import { Ota } from './modules/Ota';
 import { LiveStream } from './modules/LiveStream';
@@ -20,11 +19,10 @@ const VIEWS: ViewDef[] = [
   { id: 'observability', label: 'Observability', ico: '📡', el: <Observability /> },
   { id: 'brain', label: 'Brain', ico: '🗣', el: <Brain /> },
   { id: 'config', label: 'Config', ico: '⚙', el: <Config /> },
-  { id: 'bodylink', label: 'BodyLink', ico: '🦾', el: <BodyLink /> },
+  { id: 'bodylink', label: 'Body', ico: '🦾', el: <BodyLink /> },
   { id: 'live', label: 'Live', ico: '📹', el: <LiveStream /> },
   { id: 'perception', label: 'Perception', ico: '🧠', el: <Perception /> },
   { id: 'ota', label: 'Updates', ico: '⬆', el: <Ota /> },
-  { id: 'mind', label: 'Mind', ico: '✦', el: <Mind /> },
   { id: 'bench', label: 'Benchmarks', ico: '📊', el: <Bench /> },
 ];
 

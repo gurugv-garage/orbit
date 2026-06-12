@@ -124,7 +124,9 @@ fun DockScreen() {
         dev.orbit.dock.station.StationLink(
             url = BuildConfig.STATION_URL,
             dock = BuildConfig.DOCK_NAME,
-            appId = "${BuildConfig.DOCK_NAME}-app",
+            // install UUID, not dock-derived: `id` names the METAL (hello v2) —
+            // a swapped/forgotten second phone must not impersonate this one.
+            appId = dev.orbit.dock.station.InstallId.get(ctx),
             scope = scope,
             build = BuildConfig.VERSION_CODE,
             // feed flat config pushes/snapshots into the cache.

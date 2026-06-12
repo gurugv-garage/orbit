@@ -18,8 +18,11 @@
 #define BL_PROTOCOL_VERSION   0
 #define BL_WS_PORT            17317
 
-#define BL_DEVICE_ID          "xiao-esp32-001"
-#define BL_DEVICE_NAME        "dock-body-smoke-v0"
+// Fallback instance id — station_link overwrites it with the MAC-derived
+// "body-xxxxxx" at startup (hello v2: `id` names the hardware; two boards in
+// a house must never share it).
+#define BL_DEVICE_ID          "body-unknown"
+#define BL_DEVICE_NAME        "dock-body"
 
 // ── Encoders (return malloc'd string, caller frees) ─────────────────────
 

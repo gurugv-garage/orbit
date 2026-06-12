@@ -71,7 +71,7 @@ export function BodyLink() {
   if (!profile) {
     return (
       <section>
-        <h2 className="title">BodyLink Console</h2>
+        <h2 className="title">Body Console</h2>
         <p className="subtitle">Drive the body directly — same motion executor the brain uses.</p>
         {picker}
         <div className="empty">
@@ -84,7 +84,7 @@ export function BodyLink() {
 
   return (
     <section>
-      <h2 className="title">BodyLink Console</h2>
+      <h2 className="title">Body Console</h2>
       <p className="subtitle">
         {dock} · {profile.body.name} · <span className="mono">{profile.body.device_id}</span>
         {' '}· <span style={{ color: online ? 'var(--good)' : 'var(--bad)' }}>{online ? 'online' : 'offline'}</span>

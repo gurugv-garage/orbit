@@ -103,6 +103,15 @@ export class Directory {
     return [...names].map((n) => this.dockInfo(n));
   }
 
+  /** Forget a dock entirely (test docks, retired hardware). Refused while
+   *  any of its components is live — disconnect first, then forget. */
+  forget(name: string): boolean {
+    if (this.#getRoster().some((p) => p.role !== 'browser' && p.dock === name)) return false;
+    const had = this.#docks.delete(name);
+    if (had) this.#save();
+    return had;
+  }
+
   /** Console edit: replace a dock's expected composition. */
   setManifest(dock: string, manifest: string[]): void {
     this.#dock(dock).manifest = [...new Set(manifest)];

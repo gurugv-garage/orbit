@@ -19,6 +19,7 @@
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "esp_websocket_client.h"
+#include "esp_mac.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "cJSON.h"
@@ -50,6 +51,10 @@ static const char *TAG = "station";
 
 static esp_websocket_client_handle_t s_client = NULL;
 static bool    s_profile_sent = false;
+// hello-v2 `id` = the hardware instance: MAC-derived, never name-derived
+// (two boards must never share an id). Filled at start; BL_DEVICE_ID is the
+// fallback if the MAC read fails.
+static char    s_device_id[20] = BL_DEVICE_ID;
 static int64_t s_last_cmd_ms  = 0;     // 0 = no command yet (tripwire unarmed)
 static bool    s_stale_latched = false;
 
@@ -112,7 +117,7 @@ static void send_hello(void) {
     cJSON *f = cJSON_CreateObject();
     cJSON_AddStringToObject(f, "t", "hello");
     cJSON_AddStringToObject(f, "role", "device");
-    cJSON_AddStringToObject(f, "id", BL_DEVICE_ID);
+    cJSON_AddStringToObject(f, "id", s_device_id);
     cJSON_AddStringToObject(f, "dock", DOCK_NAME);
     cJSON_AddStringToObject(f, "component", "body");
     cJSON_AddStringToObject(f, "kind", "dock-body-fw");
@@ -135,7 +140,7 @@ static void send_hello(void) {
 // payload = profile body { body:{ device_id, name, fw_version, parts } }
 static cJSON *build_profile_payload(void) {
     cJSON *body = cJSON_CreateObject();
-    cJSON_AddStringToObject(body, "device_id", BL_DEVICE_ID);
+    cJSON_AddStringToObject(body, "device_id", s_device_id);
     cJSON_AddStringToObject(body, "name", BL_DEVICE_NAME);
     cJSON_AddStringToObject(body, "fw_version", BL_FW_VERSION);
     cJSON_AddItemToObject(body, "parts", build_profile_parts());
@@ -317,6 +322,11 @@ static void station_task(void *arg) {
 // ── public ──────────────────────────────────────────────────────────────
 
 esp_err_t station_link_start(void) {
+    uint8_t mac[6];
+    if (esp_read_mac(mac, ESP_MAC_WIFI_STA) == ESP_OK) {
+        snprintf(s_device_id, sizeof(s_device_id), "body-%02x%02x%02x",
+                 mac[3], mac[4], mac[5]);
+    }
     if (STATION_URL[0] == '\0') {
         ESP_LOGI(TAG, "STATION_URL empty — station client disabled (servos hold center)");
         return ESP_OK;

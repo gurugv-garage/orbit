@@ -15,7 +15,8 @@
  *     self-heal after missed frames.
  *
  *   GET /api/docks                     all known docks (composition + live state)
- *   PUT /api/docks/:name/manifest      edit a dock's expected components
+ *   PUT    /api/docks/:name/manifest   edit a dock's expected components
+ *   DELETE /api/docks/:name            forget a dock (refused while live)
  */
 
 import type { Bus } from '../../core/bus.js';
@@ -102,6 +103,18 @@ export function docksModule(directory: Directory, getHub: () => Hub): StationMod
         directory.setManifest(dock, body.manifest);
         announce(dock);
         json(res, 200, directory.dockInfo(dock));
+        return true;
+      }
+      const del = subPath.match(/^\/([^/]+)$/);
+      if (del && req.method === 'DELETE') {
+        const dock = decodeURIComponent(del[1]!);
+        const ok = directory.forget(dock);
+        if (ok) {
+          bus.publish({ topic: 'station', kind: 'dock-removed', payload: { name: dock }, source: 'station' });
+          json(res, 200, { ok: true });
+        } else {
+          json(res, 409, { error: 'dock has live components (or is unknown) — disconnect first' });
+        }
         return true;
       }
       return false;

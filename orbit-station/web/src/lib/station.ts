@@ -86,4 +86,6 @@ export const api = {
     fetch(`/api${path}`, { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }).then((r) => r.json() as Promise<T>),
   post: <T>(path: string, body: unknown): Promise<T> =>
     fetch(`/api${path}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }).then((r) => r.json() as Promise<T>),
+  del: <T>(path: string): Promise<T> =>
+    fetch(`/api${path}`, { method: 'DELETE' }).then((r) => r.json() as Promise<T>),
 };
