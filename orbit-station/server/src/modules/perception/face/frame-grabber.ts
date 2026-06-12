@@ -36,15 +36,22 @@ export class FrameGrabber {
   #wroteHeader = false;
   #width = 0;
   #height = 0;
+  #frameIndex = 0;
 
   start(): void {
     if (this.#started) return;
     this.#started = true;
-    // Read IVF from stdin; decode VP8 → one MJPEG frame/sec on stdout.
+    // Read IVF from stdin; decode VP8 → one MJPEG per DECODED frame on stdout.
+    // NOT `-r 1`: that rate-limits against the IVF timestamp clock (1/30s per
+    // frame), but the dock feeds ~1-2 REAL fps — so ffmpeg emitted one JPEG per
+    // ~30 input frames ≈ every 20+ wall seconds, and `latest()`'s freshness
+    // window (1.5 s) almost never caught one. That starved every stream-frame
+    // consumer (recollect fallback, the /frame debug route, the brain's vision
+    // grab). Passthrough = a JPEG per decoded frame, at the real input rate.
     this.#ff = spawn('ffmpeg', [
       '-loglevel', 'error',
       '-f', 'ivf', '-i', 'pipe:0',
-      '-r', '1', '-f', 'image2pipe', '-vcodec', 'mjpeg', 'pipe:1',
+      '-fps_mode', 'passthrough', '-f', 'image2pipe', '-vcodec', 'mjpeg', 'pipe:1',
     ]);
     this.#ff.stdout?.on('data', (c: Buffer) => this.#collect(c));
     this.#ff.stderr?.on('data', () => {/* swallow */});
@@ -112,7 +119,7 @@ export class FrameGrabber {
       this.#write(ivfHeader(this.#width, this.#height));
       this.#wroteHeader = true;
     }
-    this.#write(ivfFrameHeader(data.length));
+    this.#write(ivfFrameHeader(data.length, this.#frameIndex++));
     this.#write(data);
   }
 
@@ -162,12 +169,11 @@ function ivfHeader(w: number, h: number): Buffer {
   return b;
 }
 
-let ivfFrameIndex = 0;
 /** 12-byte IVF frame header (size + monotonic timestamp). */
-function ivfFrameHeader(size: number): Buffer {
+function ivfFrameHeader(size: number, index: number): Buffer {
   const b = Buffer.alloc(12);
   b.writeUInt32LE(size, 0);
-  b.writeUInt32LE(ivfFrameIndex++, 4); // 64-bit ts; low word is enough at our rate
+  b.writeUInt32LE(index, 4); // 64-bit ts; low word is enough at our rate
   b.writeUInt32LE(0, 8);
   return b;
 }

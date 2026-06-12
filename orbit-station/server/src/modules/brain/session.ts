@@ -314,18 +314,26 @@ export class DockBrainSession {
       historyMessages: agent.state.messages.length,
     });
 
-    // vision gate (brain-side now; the phone always attaches when it has one)
-    const gate = this.#d.config('brainVisionGate') !== false;
-    const wantImage = req.imageBase64 != null && (!gate || isVisionIntent(req.trigger.text));
+    // vision gate (brain-side). Image source, in order: the phone-attached
+    // photo (sent only when its SFU stream is down — quality + no-stream
+    // fallback), else a frame grabbed from the dock's LIVE STREAM — the video
+    // is already flowing, so a vision turn costs no per-turn upload.
+    const streamId = this.#d.directory.resolveCap(this.dock, 'camera')?.id;
     this.#turnCtx = {
       turnId: req.turnId,
       imageBase64: req.imageBase64, // face tools may use the frame even on gated turns
-      streamId: this.#d.directory.resolveCap(this.dock, 'camera')?.id,
+      streamId,
     };
-
+    const gate = this.#d.config('brainVisionGate') !== false;
     const content: (TextContent | ImageContent)[] = [{ type: 'text', text: req.trigger.text }];
-    if (wantImage && req.imageBase64) {
-      content.push({ type: 'image', data: req.imageBase64, mimeType: req.imageMime ?? 'image/jpeg' });
+    if (!gate || isVisionIntent(req.trigger.text)) {
+      const grabbed = req.imageBase64 == null && streamId != null
+        ? this.#d.getFaces()?.frame(streamId) : undefined;
+      const image = req.imageBase64 ?? grabbed;
+      if (image) {
+        content.push({ type: 'image', data: image, mimeType: req.imageBase64 ? (req.imageMime ?? 'image/jpeg') : 'image/jpeg' });
+        this.#debug('vision', { source: req.imageBase64 ? 'phone-photo' : 'sfu-frame' });
+      }
     }
 
     this.#sendToVoice('turn-status', { turnId: req.turnId, state: 'accepted' });

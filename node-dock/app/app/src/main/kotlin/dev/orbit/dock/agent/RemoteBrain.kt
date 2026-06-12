@@ -45,10 +45,14 @@ import timber.log.Timber
 class RemoteBrain(
     private val tools: DockTools,
     private val link: BrainLink,
-    /** Camera frames — attached to the turn-request when available; the BRAIN
-     *  gates whether the model actually sees it (brainVisionGate config + its
-     *  vision-intent check; face tools may use the frame even on gated turns). */
+    /** Camera frames — attached to the turn-request ONLY when [uploadFrame]
+     *  says the brain can't grab one itself; the BRAIN gates whether the model
+     *  actually sees it (brainVisionGate + its vision-intent check). */
     private val cameraFrame: CameraFrameProvider? = null,
+    /** True → ship the camera JPEG with the turn-request. False (the normal
+     *  case: the live SFU stream is up) → skip the upload; the brain grabs
+     *  the frame from the stream it's already receiving. */
+    private val uploadFrame: () -> Boolean = { true },
     /** Local belt-and-braces ceiling: the station enforces its own turn timeout
      *  and reports `failed (timeout)`; this only fires when the station itself
      *  went silent mid-turn (crash without a WS close). > server's 60s. */
@@ -214,14 +218,13 @@ class RemoteBrain(
         replyAcc = ""
         turnStartMs = System.currentTimeMillis()
         tools.beginTurn()
-        trace("TURN_REQUEST \"$userText\"")
+        // Camera frame: uploaded only when the brain can't grab it from the
+        // live SFU stream (uploadFrame = stream down / not streaming). Vision
+        // gating stays the brain's call either way.
+        val image = if (uploadFrame()) cameraFrame?.latestJpegBase64() else null
+        trace("TURN_REQUEST \"$userText\"" + if (image != null) " (+frame)" else "")
         TurnLog.startTurn(userText)
         _state.value = AgentState.Waiting(BRAIN_LABEL)
-
-        // The camera frame rides every turn-request when the camera is live;
-        // vision gating (small-model fixation, brainVisionGate) is the brain's
-        // call now — and face tools can use the frame even on gated turns.
-        val image = cameraFrame?.latestJpegBase64()
         val sent = link.publishCritical("agent", "turn-request", buildJsonObject {
             put("turnId", turnId)
             put("trigger", buildJsonObject { put("kind", "user"); put("text", userText) })

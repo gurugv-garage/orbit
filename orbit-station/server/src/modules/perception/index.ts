@@ -69,6 +69,10 @@ export interface FaceToolsApi {
   recognize(opts: { photo?: string; streamId?: string }): Promise<RecognizeOut>;
   confirm(opts: { name: string; photo?: string; streamId?: string }): Promise<{ ok: boolean }>;
   forget(opts: { name: string; streamId?: string }): Promise<{ ok: boolean }>;
+  /** The latest decoded frame of a live SFU stream as base64 JPEG — the
+   *  brain's vision source when the phone didn't attach a photo (the video
+   *  is already flowing; vision turns need no extra upload). */
+  frame(streamId: string): string | undefined;
 }
 
 const faceToolsRef: { current?: FaceToolsApi } = {};
@@ -160,6 +164,9 @@ export function perceptionModule(getHub: () => ProcessingHub): StationModule {
             return { ok: r.ok };
           }
           return { ok: false };
+        },
+        frame(streamId) {
+          return face.currentFrame(streamId)?.toString('base64');
         },
         async forget({ name, streamId }) {
           const n = name.trim();

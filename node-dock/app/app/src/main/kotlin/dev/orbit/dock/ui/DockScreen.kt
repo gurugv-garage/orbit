@@ -249,6 +249,9 @@ fun DockScreen() {
             tools,
             stationLink,
             cameraFrame = faceTracker,
+            // upload the JPEG only when the live A/V stream is DOWN — when
+            // it's up the brain grabs frames from the SFU (no per-turn upload).
+            uploadFrame = { mediaStreamerRef.value?.isStreaming() != true },
         ).also { agentRef.value = it }
     }
 

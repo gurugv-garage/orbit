@@ -43,7 +43,7 @@ function assistant(text: string, stopReason: AssistantMessage['stopReason'] = 's
 /** A scripted transport: each call shifts the next script entry. */
 type Script = (stream: AssistantMessageEventStream, signal?: AbortSignal) => void;
 
-function makeSession(scripts: Script[], opts: { config?: Record<string, unknown> } = {}) {
+function makeSession(scripts: Script[], opts: { config?: Record<string, unknown>; faces?: unknown } = {}) {
   const bus = new Bus();
   const roster = [phonePeer()];
   const directory = new Directory(() => roster, join(tmpdir(), `dir-${Math.random()}.json`));
@@ -56,11 +56,13 @@ function makeSession(scripts: Script[], opts: { config?: Record<string, unknown>
   bus.on('obs', (m) => obs.push(m));
 
   const config = { brainModel: 'openai-compatible/faux@http://test', ...opts.config };
+  const ctxs: Array<{ messages?: unknown[] }> = [];
   const deps: SessionDeps = {
     bus, directory, rpc, motion, store,
-    getFaces: () => undefined,
+    getFaces: () => opts.faces as never,
     config: (k) => config[k as keyof typeof config],
-    streamFn: ((_model: unknown, _ctx: unknown, options?: { signal?: AbortSignal }) => {
+    streamFn: ((_model: unknown, ctx: { messages?: unknown[] }, options?: { signal?: AbortSignal }) => {
+      ctxs.push(ctx);
       const stream = createAssistantMessageEventStream();
       const script = scripts.shift();
       if (!script) throw new Error('script exhausted');
@@ -69,7 +71,7 @@ function makeSession(scripts: Script[], opts: { config?: Record<string, unknown>
     }) as never,
   };
   const session = new DockBrainSession(DOCK, deps);
-  return { session, frames, obs, motion, store, bus };
+  return { session, frames, obs, motion, store, bus, ctxs };
 }
 
 const speakFrames = (frames: BusMessage[]) =>
@@ -215,6 +217,35 @@ test('supersede: the new turn keeps its turnId — the old turn\'s unwind must n
     .map((f) => f.payload as { turnId: string; state: string })
     .filter((p) => p.turnId === 't2');
   assert.equal(t2Statuses.at(-1)?.state, 'done');
+});
+
+test('vision: with no phone photo, the brain grabs the frame from the live SFU stream', async () => {
+  const script: Script = (s) => {
+    const done = assistant('I see things. ');
+    s.push({ type: 'start', partial: assistant('') });
+    s.push({ type: 'text_delta', contentIndex: 0, delta: 'I see things. ', partial: done });
+    s.push({ type: 'done', reason: 'stop', message: done });
+    s.end(done);
+  };
+  const grabbed: string[] = [];
+  const { session, ctxs } = makeSession([script, script], {
+    faces: { frame: (id: string) => { grabbed.push(id); return 'U0ZVRlJBTUU='; } },
+  });
+
+  // vision-intent + no imageBase64 → frame comes from the stream (the phone
+  // peer's id is the streamId, resolved via the camera cap)
+  await session.handleTurnRequest({ turnId: 't1', trigger: { kind: 'user', text: 'what do you see right now' } });
+  assert.deepEqual(grabbed, ['phone-hw-1']);
+  const msgs = ctxs.at(-1)!.messages as Array<{ role: string; content: Array<{ type: string; data?: string }> }>;
+  const user = msgs.filter((m) => m.role === 'user').at(-1)!;
+  assert.ok(user.content.some((c) => c.type === 'image' && c.data === 'U0ZVRlJBTUU='), 'image attached from SFU');
+
+  // NON-vision turn: gated — no grab, no image
+  await session.handleTurnRequest({ turnId: 't2', trigger: { kind: 'user', text: 'nod please' } });
+  assert.equal(grabbed.length, 1);
+  const user2 = (ctxs.at(-1)!.messages as Array<{ role: string; content: Array<{ type: string }> }>)
+    .filter((m) => m.role === 'user').at(-1)!;
+  assert.ok(!user2.content.some((c) => c.type === 'image'), 'no image on gated turn');
 });
 
 test('session lifecycle: persists across instances, idle close opens fresh with summary', async () => {
