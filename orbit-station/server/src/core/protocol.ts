@@ -1,32 +1,47 @@
 /**
  * orbit-station wire protocol — the single WebSocket vocabulary.
  *
- * ONE WebSocket endpoint (`/ws`) serves three kinds of peer:
+ * ONE WebSocket endpoint (`/ws`) serves two kinds of peer:
  *   - browser UI   (the dashboard; subscribes to topics, sends control commands)
- *   - firmware     (ESP32 body; subscribes to config, reports body state)
- *   - app          (the dock Android app; reports agent traces, listens to config)
+ *   - device       (a dock component: the phone app, the ESP32 body, a future
+ *                   rover part — anything physical that dials in)
  *
  * Every frame is JSON with a `t` (type) discriminator and a `topic`. A peer
  * announces itself with `hello`, then subscribes to topics. The hub fans out
  * `event` frames to every subscriber of a topic. Modules own their topics.
  *
+ * ## Identity model (hello v2 — see docs/SERVER-BRAIN-IMPL.md §2)
+ *
+ * A **dock** is the tenant: a named composition of components ("anne-bot" =
+ * phone + body; the rover = a dock whose parts declare drive/nav). Four
+ * identities, deliberately separate:
+ *   - `dock`       which composed unit this peer belongs to (tenant)
+ *   - `component`  the slot within the dock ("phone", "body", "cam-2")
+ *   - `kind`+`build` the software running in that slot (OTA targets this)
+ *   - `id`         the hardware/instance (mac, install uuid — diagnostics)
+ * Address = (dock, component). State binds to the address, never the
+ * hardware: swapping the phone in a slot continues the same sessions.
+ * Components also declare `caps` (capability tags) so station modules route
+ * by capability — nothing hardcodes "app" or "firmware".
+ *
  * This file is the contract; keep it dependency-free so a firmware/app author
  * can read just this to integrate.
  */
 
-/** What a connecting peer claims to be. Drives which topics it may publish to. */
-export type PeerRole = 'browser' | 'firmware' | 'app' | 'fake';
+/** What a connecting peer claims to be. `fake` = dev/smoke peers. */
+export type PeerRole = 'browser' | 'device' | 'fake';
 
 /** Topic namespaces, one per module. Subscriptions are exact-match on these. */
 export type Topic =
-  | 'obs'          // observability: agent-core Session/Turn/Step/event stream
+  | 'obs'          // observability: agent Session/Turn/Step/event stream
   | 'config'       // config push: defaults + live changes
-  | 'bodylink'     // direct body control + reported state
+  | 'bodylink'     // body command path: set_target in, applied/state/digest out
   | 'mind'         // mind module's awareness/announcements (stub for now)
-  | 'station'      // station-level: peer presence, health
+  | 'station'      // station-level: peer presence, dock directory, health
   | 'ota'          // self-update: availability offers + progress/result (docs/OTA.md)
   | 'media'        // WebRTC live A/V: SDP/ICE signaling for the in-process SFU
-  | 'client'       // dock → station client facts (battery, on-device vad/face) for processing
+  | 'client'       // dock → station client facts (battery, on-device vad/face)
+  | 'agent'        // the dock brain: transcripts/turns up, tool-calls/speak down
   | 'perception';  // processor results (identity/presence/…) → dock agent + console
 
 // ── peer → station ─────────────────────────────────────────────────────────
@@ -34,21 +49,28 @@ export type Topic =
 export interface HelloFrame {
   t: 'hello';
   role: PeerRole;
-  /** Stable id for this peer (firmware mac, app instance, "ui-xxxx", etc.). */
+  /** Stable hardware/instance id (firmware mac, app install uuid, "ui-xxxx"). */
   id: string;
-  /**
-   * The named dock this peer belongs to (e.g. "anne-bot"). A dock = one app +
-   * one firmware. The station groups peers by this name. `browser` peers omit
-   * it. Set/flashed on each device.
-   */
+  /** The named dock this peer belongs to (e.g. "anne-bot"). Devices only. */
   dock?: string;
   /**
-   * Firmware only: the peer's own phone-facing BodyLink server address
-   * ("<ip>:17317"). The ESP32 is a WS *server* for the phone (BodyLink design);
-   * it dials the station purely to register. The station brokers this address
-   * to the matching dock's app so the app knows where its body is.
+   * The slot this peer fills within its dock (e.g. "phone", "body") — unique
+   * per dock. (dock, component) is the peer's ADDRESS; directed traffic and
+   * presence are keyed by it. Devices only.
    */
-  bodyAddr?: string;
+  component?: string;
+  /**
+   * The software running in the slot, e.g. "dock-android-app",
+   * "dock-body-fw". With `build`, this is what OTA targets.
+   */
+  kind?: string;
+  /**
+   * Capability tags this component serves — e.g. phone: ["voice","face",
+   * "camera"], body: ["servo"]. Station modules route by capability
+   * (directory `resolveCap`), so differently-shaped docks need no station
+   * changes.
+   */
+  caps?: string[];
   /** Optional human label for the console. */
   label?: string;
   /**
@@ -112,34 +134,58 @@ export function isInboundFrame(v: unknown): v is InboundFrame {
   return !!v && typeof v === 'object' && typeof (v as { t?: unknown }).t === 'string';
 }
 
+// ── addressing ───────────────────────────────────────────────────────────────
+
+/** A component address: which slot of which dock. Resolved to the live peer
+ *  by the hub at fan-out time (see BusMessage.toAddr). */
+export interface ComponentAddr {
+  dock: string;
+  component: string;
+}
+
 // ── dock directory ───────────────────────────────────────────────────────────
 
-/** A member of a dock, as the station currently sees it. */
-export interface DockMember {
-  role: PeerRole;
+/** One component of a dock, as the station currently sees it. */
+export interface DockComponent {
+  /** the slot name within the dock ("phone", "body", …). */
+  component: string;
+  /** the software in the slot ("dock-android-app", "dock-body-fw"). */
+  kind?: string;
+  /** capability tags this component serves ("voice", "servo", …). */
+  caps?: string[];
+  /** hardware/instance id currently filling the slot. */
   id: string;
   label?: string;
   online: boolean;
   /** remote IP (captured server-side). */
   ip?: string;
-  /** ms epoch of the last frame seen from this member (incl. heartbeats). */
+  /** ms epoch of the last frame seen from this component (incl. heartbeats). */
   lastSeen?: number;
   /** OTA running build (docs/OTA.md §3) — the device's monotonic version. */
   build?: number;
-  /** mesh links this member reports (app: body/llm; firmware: phoneClient). */
+  /** mesh links this component reports in its heartbeat. */
   links?: Record<string, boolean>;
 }
 
 /**
- * What the station knows about one named dock = one app + one firmware.
- * Published on the `station` topic (kind `dock-updated`) whenever it changes,
- * so the app learns its body's address and the console renders the dock.
+ * What the station knows about one named dock: its expected composition (the
+ * manifest) and the live state of each component. Published on the `station`
+ * topic (kind `dock-updated`) whenever it changes; per-member `presence`
+ * frames are additionally directed to the dock's own components so every
+ * component knows whether its siblings are online.
  */
 export interface DockInfo {
   /** the dock name from peers' hello, e.g. "anne-bot". */
   name: string;
-  /** the firmware's phone-facing BodyLink address ("<ip>:17317"), if known. */
-  bodyAddr?: string;
-  app?: DockMember;
-  firmware?: DockMember;
+  /** expected component slots (from the dockManifest config; observed slots
+   *  are merged in so an undeclared dock still renders). */
+  manifest: string[];
+  components: DockComponent[];
+}
+
+/** The per-member sibling-presence frame (station topic, kind `presence`,
+ *  directed to each online component of the dock). */
+export interface PresenceFrame {
+  dock: string;
+  components: Array<Pick<DockComponent, 'component' | 'kind' | 'online' | 'build'>>;
 }

@@ -62,7 +62,7 @@ function pump(track: MediaStreamTrack, payloadType: number, tsStep: number, inte
 
 async function main() {
   // ── producer: the fake dock ────────────────────────────────────────────────
-  const dock = peer('app', 'fake-dock-app', { dock: 'fake-dock' });
+  const dock = peer('device', 'fake-dock-app', { dock: 'fake-dock', component: 'phone', kind: 'dock-android-app', caps: ['camera'] });
   await dock.ready;
 
   const prodPc = new RTCPeerConnection({});

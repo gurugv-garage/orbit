@@ -1,87 +1,107 @@
 /**
- * Dock registry — the station's directory of named docks.
+ * Docks module — publishes the dock directory (composition + live presence).
  *
- * A **dock** (e.g. "anne-bot") = one app + one firmware. Everyone knows the
- * station: the dock app and the ESP32 both dial in and declare their `dock`
- * name in `hello` (the ESP32 also reports its phone-facing `bodyAddr`, since it
- * stays a WS *server* for the phone per the BodyLink design). The station
- * groups peers by dock name and **brokers the body address to the matching
- * app** — that's how the app learns where its body lives.
+ * A **dock** (e.g. "anne-bot") is a named composition of components (phone,
+ * body, …; docs/SERVER-BRAIN-IMPL.md §2). Every component dials the station
+ * and declares its address (dock, component) + capabilities in `hello`. The
+ * [Directory] (directory.ts) tracks composition; this module wires it to the
+ * bus + console:
  *
- * Live: on any membership change the station publishes `dock-updated` on the
- * `station` topic. The app subscribes to `station`, sees its dock's `bodyAddr`,
- * and dials its ESP32. The console renders docks from the same stream.
+ *   - on any membership change: `dock-updated` (undirected, station topic)
+ *     for consoles, and a `presence` frame DIRECTED to each online component
+ *     of that dock — the sibling-awareness loop (the app knows the body is
+ *     offline, the body knows the phone is gone) with no device↔device
+ *     traffic. Presence also re-sends on a slow cadence so devices
+ *     self-heal after missed frames.
  *
- *   GET /api/docks         all known docks (current membership + bodyAddr)
+ *   GET /api/docks                     all known docks (composition + live state)
+ *   PUT /api/docks/:name/manifest      edit a dock's expected components
  */
 
 import type { Bus } from '../../core/bus.js';
 import { json } from '../../core/http.js';
-import type { Hub } from '../../core/hub.js';
+import type { IncomingMessage } from 'node:http';
 import type { RouteContext, StationModule } from '../../core/module.js';
-import type { DockInfo, DockMember, PeerRole } from '../../core/protocol.js';
+import type { PresenceFrame } from '../../core/protocol.js';
+import type { Directory } from './directory.js';
+import type { Hub, RosterEntry } from '../../core/hub.js';
 
-interface PeerEvt { role: PeerRole; id: string; label?: string; dock?: string; bodyAddr?: string; }
+/** slow re-send so devices that missed a presence frame self-heal. */
+const PRESENCE_RESEND_MS = 10_000;
 
-export function docksModule(getHub: () => Hub): StationModule {
-  const docks = new Map<string, DockInfo>();
+interface PeerEvt {
+  role?: string; id?: string; dock?: string; component?: string;
+  kind?: string; caps?: string[]; build?: number; label?: string;
+}
+
+export function docksModule(directory: Directory, getHub: () => Hub): StationModule {
   let bus: Bus;
 
-  /** Compute a dock's current makeup from the LIVE roster (fresh ip/lastSeen). */
-  function computeDock(name: string): DockInfo {
-    const roster = getHub().roster().filter((p) => p.dock === name);
-    const app = roster.find((p) => p.role === 'app');
-    const fw = roster.find((p) => p.role === 'firmware');
-
-    const info: DockInfo = { name };
-    if (app) info.app = member(app, true);
-    if (fw) {
-      info.firmware = member(fw, true);
-      if (fw.bodyAddr) info.bodyAddr = fw.bodyAddr;
-    }
-    // keep last-known offline members so the console shows "anne-bot (app offline)"
-    const prev = docks.get(name);
-    if (prev) {
-      if (!info.app && prev.app) info.app = { ...prev.app, online: false };
-      if (!info.firmware && prev.firmware) info.firmware = { ...prev.firmware, online: false };
-      if (!info.bodyAddr && prev.bodyAddr) info.bodyAddr = prev.bodyAddr;
-    }
-    return info;
-  }
-
-  /** Recompute + cache + announce a dock (on membership change). */
-  function recompute(name: string): void {
-    const info = computeDock(name);
-    docks.set(name, info);
+  /** Publish the composed view: console broadcast + directed sibling presence. */
+  function announce(dock: string): void {
+    const info = directory.dockInfo(dock);
     bus.publish({ topic: 'station', kind: 'dock-updated', payload: info, source: 'station' });
+
+    const presence: PresenceFrame = {
+      dock,
+      components: info.components.map((c) => ({
+        component: c.component, kind: c.kind, online: c.online, build: c.build,
+      })),
+    };
+    for (const c of info.components) {
+      if (!c.online) continue;
+      bus.publish({
+        topic: 'station', kind: 'presence', payload: presence, source: 'station',
+        toAddr: { dock, component: c.component },
+      });
+    }
   }
 
   return {
     name: 'docks',
     topic: 'station',
-    description: 'named-dock directory (app + firmware grouping; brokers body address to the app)',
+    description: 'dock directory: composition (manifest), live presence, capability addressing',
 
     init(b) {
       bus = b;
       bus.on('station', (msg) => {
         if (msg.source !== 'station') return;
-        if (msg.kind === 'peer-joined' || msg.kind === 'peer-left') {
+        if (msg.kind === 'peer-joined' || msg.kind === 'peer-left' || msg.kind === 'peer-updated') {
           const p = msg.payload as PeerEvt;
-          if (p.dock) recompute(p.dock);
+          if (!p.dock) return;
+          if (msg.kind !== 'peer-left') {
+            const live = getHub().roster().find((r) => r.id === p.id && r.dock === p.dock);
+            if (live) directory.noteSeen(live);
+          }
+          announce(p.dock);
         }
       });
+
+      const timer = setInterval(() => {
+        for (const d of directory.docks()) {
+          if (d.components.some((c) => c.online)) announce(d.name);
+        }
+      }, PRESENCE_RESEND_MS);
+      timer.unref?.();
     },
 
     async route(ctx: RouteContext) {
-      if (ctx.subPath === '/' && ctx.req.method === 'GET') {
-        // Recompute from the live roster so ip/lastSeen are current for the UI's
-        // heartbeat display (it polls this). Known docks not currently grouped
-        // still appear (offline members retained by computeDock).
-        const names = new Set(docks.keys());
-        for (const p of getHub().roster()) if (p.dock) names.add(p.dock);
-        const fresh = [...names].map(computeDock);
-        fresh.forEach((d) => docks.set(d.name, d));
-        json(ctx.res, 200, fresh);
+      const { req, res, subPath } = ctx;
+      if (subPath === '/' && req.method === 'GET') {
+        json(res, 200, directory.docks());
+        return true;
+      }
+      const m = subPath.match(/^\/([^/]+)\/manifest$/);
+      if (m && req.method === 'PUT') {
+        const body = JSON.parse(await readBody(req)) as { manifest?: string[] };
+        if (!Array.isArray(body.manifest) || body.manifest.some((s) => typeof s !== 'string')) {
+          json(res, 400, { error: 'manifest must be a string[]' });
+          return true;
+        }
+        const dock = decodeURIComponent(m[1]!);
+        directory.setManifest(dock, body.manifest);
+        announce(dock);
+        json(res, 200, directory.dockInfo(dock));
         return true;
       }
       return false;
@@ -89,9 +109,13 @@ export function docksModule(getHub: () => Hub): StationModule {
   };
 }
 
-function member(
-  p: { role: PeerRole; id: string; label?: string; ip?: string; lastSeen: number; build?: number; links?: Record<string, boolean> },
-  online: boolean,
-): DockMember {
-  return { role: p.role, id: p.id, label: p.label, online, ip: p.ip, lastSeen: p.lastSeen, build: p.build, links: p.links };
+function readBody(req: IncomingMessage): Promise<string> {
+  return new Promise((resolve, reject) => {
+    let data = '';
+    req.on('data', (c) => (data += c));
+    req.on('end', () => resolve(data));
+    req.on('error', reject);
+  });
 }
+
+export type { RosterEntry };

@@ -3,13 +3,15 @@
  *   - inbound `publish` frames  → bus.publish (so modules + mind react)
  *   - bus messages              → outbound `event` frames to topic subscribers
  *
- * Tracks each peer's role, id, and subscriptions. Announces peer connect/
- * disconnect on the `station` topic so the console can show a live roster.
+ * Tracks each peer's identity (role, id, dock, component, kind, caps) and
+ * subscriptions. Announces peer connect/disconnect on the `station` topic so
+ * the directory + console stay live. Resolves `toAddr` (dock, component)
+ * directed messages against the live peer set at fan-out time.
  */
 
 import type { Server as HttpServer, IncomingMessage } from 'node:http';
 import { WebSocketServer, WebSocket } from 'ws';
-import type { Bus } from './bus.js';
+import { isDirected, type Bus } from './bus.js';
 import {
   isInboundFrame,
   type EventFrame,
@@ -19,12 +21,24 @@ import {
   type Topic,
 } from './protocol.js';
 
+/** How long a silent socket lives. The hub pings every PING_INTERVAL_MS; a
+ *  peer that misses PING_MISSES pongs is terminated, so a silently-dead phone
+ *  or ESP32 link is detected in ~6 s (the BodyLink §5.1 budget, now hub-side)
+ *  instead of at TCP timeout. */
+const PING_INTERVAL_MS = 2_000;
+const PING_MISSES = 3;
+
 export interface RosterEntry {
   role: PeerRole;
   id: string;
   label?: string;
   dock?: string;
-  bodyAddr?: string;
+  /** the slot this peer fills within its dock ("phone", "body", …). */
+  component?: string;
+  /** the software in the slot ("dock-android-app", "dock-body-fw"). */
+  kind?: string;
+  /** capability tags ("voice", "face", "camera", "servo", …). */
+  caps?: string[];
   /** OTA running build (docs/OTA.md §3): the monotonic gate — the only version a device reports. */
   build?: number;
   /** peer's remote IP, captured server-side from the socket. */
@@ -33,7 +47,7 @@ export interface RosterEntry {
   lastSeen: number;
   /** ms epoch when this peer connected. */
   connectedAt: number;
-  /** mesh links this peer reports in its heartbeat (app: body/llm; fw: phoneClient). */
+  /** mesh links this peer reports in its heartbeat. */
   links?: Record<string, boolean>;
   topics: Topic[];
 }
@@ -43,13 +57,11 @@ interface Peer {
   role: PeerRole;
   id: string;
   label?: string;
-  /** the named dock this peer belongs to (app/firmware only). */
   dock?: string;
-  /** firmware only: its phone-facing BodyLink address ("<ip>:17317"). */
-  bodyAddr?: string;
-  /** OTA running build (docs/OTA.md §3): the monotonic gate. */
+  component?: string;
+  kind?: string;
+  caps?: string[];
   build?: number;
-  /** remote IP from the socket. */
   ip?: string;
   lastSeen: number;
   connectedAt: number;
@@ -57,17 +69,36 @@ interface Peer {
   topics: Set<Topic>;
   /** true once the peer has sent a valid `hello`. Pre-hello peers are hidden. */
   announced: boolean;
+  /** missed-pong counter for the liveness sweep. */
+  missedPongs: number;
 }
 
 export class Hub {
   #wss: WebSocketServer;
   #peers = new Map<WebSocket, Peer>();
   #bus: Bus;
+  #pingTimer: NodeJS.Timeout;
 
   constructor(server: HttpServer, bus: Bus) {
     this.#bus = bus;
     this.#wss = new WebSocketServer({ server, path: '/ws' });
     this.#wss.on('connection', (ws, req) => this.#onConnect(ws, req));
+
+    // Liveness sweep: ws-level ping/pong so dead sockets surface fast on every
+    // peer type (phones in doze, power-cycled ESP32s). Any pong (or frame)
+    // resets the counter.
+    this.#pingTimer = setInterval(() => {
+      for (const peer of this.#peers.values()) {
+        if (peer.ws.readyState !== WebSocket.OPEN) continue;
+        if (peer.missedPongs >= PING_MISSES) {
+          peer.ws.terminate(); // 'close' handler announces peer-left
+          continue;
+        }
+        peer.missedPongs++;
+        try { peer.ws.ping(); } catch { /* close handles it */ }
+      }
+    }, PING_INTERVAL_MS);
+    this.#pingTimer.unref?.();
 
     // Bus → sockets: every bus message becomes an event frame for subscribers.
     bus.on('*', (msg) => {
@@ -81,8 +112,16 @@ export class Hub {
       const json = JSON.stringify(frame);
       for (const peer of this.#peers.values()) {
         if (!peer.topics.has(msg.topic)) continue;
-        // directed message: only the addressed peer receives it.
-        if (msg.to != null && peer.id !== msg.to) continue;
+        // directed message: only the addressed peer receives it — by peer id
+        // (`to`) or by component address (`toAddr`, resolved right here
+        // against the live peer, so reconnects need nothing special).
+        if (isDirected(msg)) {
+          const byId = msg.to != null && peer.id === msg.to;
+          const byAddr = msg.toAddr != null
+            && peer.dock === msg.toAddr.dock
+            && peer.component === msg.toAddr.component;
+          if (!byId && !byAddr) continue;
+        }
         // never echo a publisher's own frame back to it — the dock's
         // recognize-request photos (~15KB base64 each) were bouncing back to
         // the phone on every listen. No peer consumes its own publishes
@@ -91,8 +130,8 @@ export class Hub {
         // backpressure guard: a stalled peer (sleeping browser tab, dead
         // phone link) buffers sends in process memory without bound. Shed
         // BROADCAST traffic to it past 1MB buffered; directed frames
-        // (signaling, results) still send — they're small and must arrive.
-        if (msg.to == null && peer.ws.bufferedAmount > 1_000_000) continue;
+        // (signaling, results, tool-calls) still send — they must arrive.
+        if (!isDirected(msg) && peer.ws.bufferedAmount > 1_000_000) continue;
         peer.ws.send(json);
       }
     });
@@ -105,7 +144,9 @@ export class Hub {
       id: p.id,
       label: p.label,
       dock: p.dock,
-      bodyAddr: p.bodyAddr,
+      component: p.component,
+      kind: p.kind,
+      caps: p.caps,
       build: p.build,
       ip: p.ip,
       lastSeen: p.lastSeen,
@@ -119,20 +160,27 @@ export class Hub {
     const now = Date.now();
     const peer: Peer = {
       ws, role: 'fake', id: 'unknown', topics: new Set(), announced: false,
-      ip: remoteIp(req), lastSeen: now, connectedAt: now,
+      ip: remoteIp(req), lastSeen: now, connectedAt: now, missedPongs: 0,
     };
     this.#peers.set(ws, peer);
 
     ws.on('message', (data) => this.#onMessage(peer, data.toString()));
+    ws.on('pong', () => { peer.missedPongs = 0; peer.lastSeen = Date.now(); });
     ws.on('close', () => {
       this.#peers.delete(ws);
-      if (peer.announced) this.#announce('peer-left', { role: peer.role, id: peer.id, dock: peer.dock });
+      if (peer.announced) {
+        this.#announce('peer-left', {
+          role: peer.role, id: peer.id, dock: peer.dock,
+          component: peer.component, kind: peer.kind,
+        });
+      }
     });
     ws.on('error', () => ws.close());
   }
 
   #onMessage(peer: Peer, raw: string): void {
     peer.lastSeen = Date.now();   // any frame counts as liveness (incl. heartbeats)
+    peer.missedPongs = 0;
     let frame: unknown;
     try {
       frame = JSON.parse(raw);
@@ -145,20 +193,39 @@ export class Hub {
     const f = frame as InboundFrame;
 
     switch (f.t) {
-      case 'hello':
+      case 'hello': {
         peer.role = f.role;
         peer.id = f.id;
         peer.label = f.label;
         peer.dock = f.dock;
-        peer.bodyAddr = f.bodyAddr;
+        peer.component = f.component;
+        peer.kind = f.kind;
+        peer.caps = f.caps;
         peer.build = f.build;
         peer.announced = true;
+        // Address collision: a second peer claiming an occupied
+        // (dock, component) displaces the old one — that's the hardware-swap
+        // path (and the stale-socket-racing-a-reconnect path). Newest wins;
+        // the displaced peer is told and dropped.
+        if (peer.dock && peer.component) {
+          for (const other of this.#peers.values()) {
+            if (other === peer || !other.announced) continue;
+            if (other.dock === peer.dock && other.component === peer.component) {
+              this.#send(other.ws, {
+                t: 'error',
+                message: `displaced: ${peer.dock}/${peer.component} re-claimed by ${peer.id}`,
+              });
+              other.ws.terminate(); // close handler announces its peer-left
+            }
+          }
+        }
         this.#send(peer.ws, { t: 'welcome', id: peer.id, serverTime: Date.now() });
         this.#announce('peer-joined', {
           role: peer.role, id: peer.id, label: peer.label, dock: peer.dock,
-          bodyAddr: peer.bodyAddr, build: peer.build,
+          component: peer.component, kind: peer.kind, caps: peer.caps, build: peer.build,
         });
         break;
+      }
       case 'subscribe':
         f.topics.forEach((t) => peer.topics.add(t));
         break;
@@ -166,8 +233,8 @@ export class Hub {
         f.topics.forEach((t) => peer.topics.delete(t));
         break;
       case 'publish':
-        // Capture the mesh links a peer reports in its heartbeat (app: body/llm;
-        // firmware: phoneClient) so the roster shows who's connected to what.
+        // Capture the mesh links a peer reports in its heartbeat so the
+        // roster shows who's connected to what.
         if (f.kind === 'heartbeat') {
           const hb = f.payload as { links?: Record<string, boolean>; build?: number } | null;
           if (hb?.links && typeof hb.links === 'object') peer.links = hb.links;
@@ -179,7 +246,8 @@ export class Hub {
             // a build change is OTA-relevant — let modules re-evaluate (the ota
             // module re-checks behind/uptodate + refreshes its console card).
             this.#announce('peer-updated', {
-              role: peer.role, id: peer.id, dock: peer.dock, build: peer.build,
+              role: peer.role, id: peer.id, dock: peer.dock, component: peer.component,
+              kind: peer.kind, build: peer.build,
             });
           }
         }

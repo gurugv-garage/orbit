@@ -19,7 +19,7 @@ import type { AgentEventDto } from '../modules/observability/types.js';
 
 const URL = process.env.STATION_WS ?? 'ws://localhost:8099/ws';
 
-interface HelloExtra { dock?: string; bodyAddr?: string }
+interface HelloExtra { dock?: string; component?: string; kind?: string; caps?: string[] }
 function peer(role: string, id: string, label: string, onOpen: (ws: WebSocket) => void, extra: HelloExtra = {}): WebSocket {
   const ws = new WebSocket(URL, { rejectUnauthorized: false });
   ws.on('open', () => {
@@ -53,14 +53,14 @@ function emitTurn(ws: WebSocket, sessionId: string, turnNo: number) {
 }
 
 // the two peers of one dock, "anne-bot" — exactly how the real app + ESP32 will hello.
-peer('app', 'anne-bot-app', 'anne-bot phone (smoke)', (ws) => {
+peer('device', 'anne-bot-app', 'anne-bot phone (smoke)', (ws) => {
   const sid = `sess-${Date.now().toString(36)}`;
   let n = 0;
   setInterval(() => emitTurn(ws, sid, n++), 5000);
   emitTurn(ws, sid, n++);
-}, { dock: 'anne-bot' });
+}, { dock: 'anne-bot', component: 'phone', kind: 'dock-android-app', caps: ['voice', 'face', 'camera'] });
 
-peer('firmware', 'anne-bot-esp32', 'anne-bot body (smoke)', (ws) => {
+peer('device', 'anne-bot-esp32', 'anne-bot body (smoke)', (ws) => {
   ws.send(JSON.stringify({ t: 'subscribe', topics: ['bodylink'] }));
   const profile = {
     body: {
@@ -83,6 +83,6 @@ peer('firmware', 'anne-bot-esp32', 'anne-bot body (smoke)', (ws) => {
       }
     }
   });
-}, { dock: 'anne-bot', bodyAddr: '192.168.1.42:17317' });
+}, { dock: 'anne-bot', component: 'body', kind: 'dock-body-fw', caps: ['servo'] });
 
 console.log(`smoke client connected to ${URL} — Ctrl-C to stop`);

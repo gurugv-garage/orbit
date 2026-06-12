@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { api } from '../lib/station';
 import { useStationEvents } from '../lib/useStation';
 import { useDocks, useNow, relTime } from '../lib/useDocks';
-import type { AgentEventDto, DockInfo, DockMember, PeerInfo } from '../lib/protocol';
+import type { AgentEventDto, DockInfo, DockComponent, PeerInfo } from '../lib/protocol';
 
 export function Overview() {
   const [peers, setPeers] = useState<PeerInfo[]>([]);
@@ -56,17 +56,17 @@ export function Overview() {
           <div className="muted">No peers connected. Start the dock app, ESP32, or run <code>npm run smoke</code>.</div>
         ) : (
           <table>
-            <thead><tr><th>role</th><th>id</th><th>dock</th><th>build</th><th>ip</th><th>seen</th><th>body addr</th></tr></thead>
+            <thead><tr><th>role</th><th>id</th><th>dock</th><th>component</th><th>build</th><th>ip</th><th>seen</th></tr></thead>
             <tbody>
               {peers.map((p) => (
                 <tr key={p.id + p.role}>
                   <td><span className={`pill ${roleClass(p.role)}`}>{p.role}</span></td>
                   <td className="mono">{p.id}</td>
                   <td className="mono">{p.dock ?? '—'}</td>
+                  <td className="mono">{p.component ?? '—'}</td>
                   <td className="mono">{p.build ?? '—'}</td>
                   <td className="muted mono">{p.ip ?? '—'}</td>
                   <td className="muted" title={new Date(p.lastSeen).toLocaleString()}>{relTime(p.lastSeen, now)}</td>
-                  <td className="muted mono">{p.bodyAddr ?? ''}</td>
                 </tr>
               ))}
             </tbody>
@@ -81,13 +81,15 @@ function DockCard({ dock, now }: { dock: DockInfo; now: number }) {
   return (
     <div className="card">
       <h3>{dock.name}</h3>
-      <MemberRow kind="app" m={dock.app} now={now} />
-      <MemberRow kind="firmware" m={dock.firmware} now={now} extra={dock.bodyAddr ? `body @ ${dock.bodyAddr}` : undefined} />
+      {dock.components.map((c) => (
+        <MemberRow key={c.component} kind={c.component} m={c} now={now}
+          extra={c.caps?.length ? c.caps.join(' ') : undefined} />
+      ))}
     </div>
   );
 }
 
-function MemberRow({ kind, m, now, extra }: { kind: string; m?: DockMember; now: number; extra?: string }) {
+function MemberRow({ kind, m, now, extra }: { kind: string; m?: DockComponent; now: number; extra?: string }) {
   const cls = !m ? 'off' : m.online ? 'on' : 'wait';
   return (
     <div style={{ padding: '6px 0', borderTop: '1px solid var(--line)' }}>
@@ -131,7 +133,7 @@ function linkLabel(key: string): string {
 }
 
 function roleClass(role: string): string {
-  return role === 'firmware' ? 'warn' : role === 'app' ? 'good' : 'acc';
+  return role === 'device' ? 'good' : 'acc';
 }
 function fmtUptime(s: number): string {
   if (s < 60) return `${s}s`;

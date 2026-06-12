@@ -7,7 +7,7 @@
  * eventually be just another subscriber here.
  */
 
-import type { Topic } from './protocol.js';
+import type { ComponentAddr, Topic } from './protocol.js';
 
 export interface BusMessage {
   topic: Topic;
@@ -22,6 +22,19 @@ export interface BusMessage {
    * per-peer config snapshots. Unset = normal broadcast to all subscribers.
    */
   to?: string;
+  /**
+   * Optional target ADDRESS (dock + component slot) — the preferred way for
+   * modules to direct a frame. Resolved against the live roster at fan-out
+   * time by the hub, so reconnects/hardware swaps need nothing special on
+   * the send path. If both `to` and `toAddr` are set, a peer matching either
+   * receives it.
+   */
+  toAddr?: ComponentAddr;
+}
+
+/** True when a message is directed (peer-id or address). */
+export function isDirected(msg: BusMessage): boolean {
+  return msg.to != null || msg.toAddr != null;
 }
 
 type Handler = (msg: BusMessage) => void;

@@ -32,8 +32,9 @@ import { launchBuild, isRunning, attachCmd, sessionName } from './build.js';
 const TARGETS: OtaTarget[] = ['body', 'app'];
 const isTarget = (s: string): s is OtaTarget => (TARGETS as string[]).includes(s);
 
-/** The role that owns each target (for roster filtering + directed announce). */
-const TARGET_ROLE: Record<OtaTarget, 'firmware' | 'app'> = { body: 'firmware', app: 'app' };
+/** The software `kind` (hello v2) that owns each target — OTA targets the
+ *  software in a slot, not a role. */
+const TARGET_KIND: Record<OtaTarget, string> = { body: 'dock-body-fw', app: 'dock-android-app' };
 
 /** Per-target live build-session status for the console (§7.4). */
 interface BuildStatus {
@@ -66,9 +67,9 @@ export function otaModule(getHub: () => Hub): StationModule {
     return `http://${lanHost()}:${port}/api/ota/${target}/${ARTIFACT_FILE[target]}`;
   }
 
-  /** The connected peers that own a target (firmware for body, app for app). */
+  /** The connected peers running a target's software (matched by hello kind). */
   function peersFor(target: OtaTarget): RosterEntry[] {
-    return getHub().roster().filter((p) => p.role === TARGET_ROLE[target]);
+    return getHub().roster().filter((p) => p.kind === TARGET_KIND[target]);
   }
 
   /** Send an `available` offer to one peer (directed). docs/OTA.md §1. */
@@ -169,16 +170,16 @@ export function otaModule(getHub: () => Hub): StationModule {
       bus.on('station', (msg) => {
         if (msg.source !== 'station') return;
         if (msg.kind !== 'peer-joined' && msg.kind !== 'peer-updated') return;
-        const p = msg.payload as { role?: string };
-        const target = TARGETS.find((t) => TARGET_ROLE[t] === p.role);
+        const p = msg.payload as { kind?: string };
+        const target = TARGETS.find((t) => TARGET_KIND[t] === p.kind);
         if (!target) return;
         announce(target);     // offers only to behind peers; safe to call broadly
         emitState(target);    // refresh the console card
       });
       bus.on('station', (msg) => {
         if (msg.source === 'station' && msg.kind === 'peer-left') {
-          const p = msg.payload as { role?: string };
-          const target = TARGETS.find((t) => TARGET_ROLE[t] === p.role);
+          const p = msg.payload as { kind?: string };
+          const target = TARGETS.find((t) => TARGET_KIND[t] === p.kind);
           if (target) emitState(target);
         }
       });

@@ -11,9 +11,6 @@
  *     records it and pushes — directed to that peer — a snapshot of those keys,
  *     then live `changed` pushes for them. A peer only ever receives keys it
  *     registered. The console UI reads the interest map to show who wants what.
- *   - bodyAddr: when the BODY (firmware) connects it reports its phone-facing
- *     address; the station writes it as the `bodyAddr` config (same path), so
- *     any interested peer (the app) learns where the body is and reconnects.
  *
  * Read:   GET  /api/config              all effective entries (typed + lastUpdated + tags + interested)
  *         GET  /api/config/export       flat key→value dump (build bake)
@@ -32,8 +29,10 @@ function isError(r: EffectiveEntry | ValidationError): r is ValidationError {
   return (r as ValidationError).error != null;
 }
 
-export function configModule(): StationModule {
-  const store = new ConfigStore();
+export function configModule(sharedStore?: ConfigStore): StationModule {
+  // main.ts may pass a shared store so other modules (the brain) read
+  // effective values in-process without a second sqlite handle.
+  const store = sharedStore ?? new ConfigStore();
   let bus: Bus;
   /** peerId → set of keys that peer registered interest in. */
   const interest = new Map<string, Set<string>>();
@@ -79,15 +78,6 @@ export function configModule(): StationModule {
       });
 
       bus.on('station', (msg) => {
-        // Body connected → record its reported address as the bodyAddr config,
-        // pushing to interested peers (the app) over the normal config path.
-        if (msg.kind === 'peer-joined') {
-          const p = msg.payload as { role?: string; bodyAddr?: string };
-          if (p?.role === 'firmware' && p.bodyAddr && store.get('bodyAddr')?.value !== p.bodyAddr) {
-            const r = store.set('bodyAddr', p.bodyAddr);
-            if (!isError(r)) pushToInterested(r);
-          }
-        }
         // Peer left → forget its interest so the UI/roster stays accurate.
         if (msg.kind === 'peer-left') {
           const id = (msg.payload as { id?: string })?.id;

@@ -157,10 +157,38 @@ export const REGISTRY: ConfigEntry[] = [
   entry({ key: 'ttsRate', type: 'number', schema: z.number().min(0.5).max(2), default: 1.0, tags: ['brain'] }),
   entry({ key: 'cameraDefaultOn', type: 'boolean', schema: z.boolean(), default: false, tags: ['brain'] }),
   entry({ key: 'thinkingLevel', type: 'text', schema: z.enum(['low', 'medium', 'high']), default: 'low', tags: ['brain'] }),
+  // ── server brain (docs/SERVER-BRAIN-IMPL.md §3.1) — consumed in-process by
+  // the brain module, applied at turn start; tag 'station' (never pushed to
+  // devices). Provider API keys are station env vars, not config.
   entry({
-    key: 'bodyAddr', type: 'text', schema: z.string(), default: '', tags: ['brain', 'body'],
-    label: 'Body address',
-    description: 'ESP32 body WS address ("ip:port"). Set automatically by the station each time the body connects (reports its phone-facing address); the app caches it and reconnects on change. Empty = app uses its own cached/baked default.',
+    key: 'brainModel', type: 'text', schema: z.string(), default: 'google/gemini-2.5-flash', tags: ['station'],
+    label: 'Brain model',
+    description: 'pi-ai model for dock brain sessions as "provider/modelId" (e.g. "google/gemini-2.5-flash", "anthropic/claude-haiku-4-5", "openai-compatible/<model>@<baseUrl>" for a LAN Ollama). Applied on the next turn.',
+  }),
+  entry({
+    key: 'brainPersona', type: 'text', schema: z.string(), default: '', tags: ['station'],
+    label: 'Brain persona',
+    description: 'Optional extra persona text appended to the dock system prompt. Empty = the stock prompt.',
+  }),
+  entry({
+    key: 'brainThinkingLevel', type: 'text', schema: z.enum(['off', 'minimal', 'low', 'medium', 'high']), default: 'off', tags: ['station'],
+    description: 'Extended reasoning budget for brain turns. Off = lowest latency (the dock default); higher levels stream thinking before answering.',
+  }),
+  entry({ key: 'brainTurnTimeoutMs', type: 'number', schema: z.number().int().min(5_000).max(300_000), default: 60_000, tags: ['station'] }),
+  entry({ key: 'brainMaxHistoryMessages', type: 'number', schema: z.number().int().min(8).max(400), default: 48, tags: ['station'] }),
+  entry({
+    key: 'brainVisionGate', type: 'boolean', schema: z.boolean(), default: true, tags: ['station'],
+    description: 'Attach the camera frame only on vision-intent turns (small vision models fixate on an always-present image and ignore movement commands).',
+  }),
+  entry({
+    key: 'brainSessionIdleMin', type: 'number', schema: z.number().int().min(1).max(24 * 60), default: 30, tags: ['station'],
+    label: 'Session idle close (min)',
+    description: 'A brain session closes after this many minutes without a turn (then compacts to a summary). The next turn opens a fresh session.',
+  }),
+  entry({
+    key: 'brainGrants', type: 'json', schema: z.record(z.string(), z.record(z.string(), z.array(z.string()))), default: {}, tags: ['station'],
+    label: 'Cross-dock grants',
+    description: 'Which OTHER docks each dock\'s brain may act on, by capability: { "<dock>": { "<targetDock>": ["nav", …] } }. Tool exposure is gated by this; default none.',
   }),
   entry({
     key: 'faceGestures', type: 'json', schema: faceGesturesSchema, default: FACE_GESTURES_DEFAULT, tags: ['brain'],

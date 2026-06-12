@@ -1,5 +1,5 @@
 import { useDocks, useNow, relTime } from '../lib/useDocks';
-import type { DockInfo, DockMember } from '../lib/protocol';
+import type { DockInfo, DockComponent } from '../lib/protocol';
 
 /**
  * Compact, always-on dock status for the sidebar. Shows every named dock with
@@ -23,13 +23,12 @@ function SideDock({ dock, now }: { dock: DockInfo; now: number }) {
   return (
     <div className="side-dock">
       <div className="side-dock-name">{dock.name}</div>
-      <MemberLine kind="app" m={dock.app} now={now} />
-      <MemberLine kind="firmware" m={dock.firmware} now={now} />
+      {dock.components.map((c) => <MemberLine key={c.component} kind={c.component} m={c} now={now} />)}
     </div>
   );
 }
 
-function MemberLine({ kind, m, now }: { kind: string; m?: DockMember; now: number }) {
+function MemberLine({ kind, m, now }: { kind: string; m?: DockComponent; now: number }) {
   const cls = !m ? 'off' : m.online ? 'on' : 'wait';
   return (
     <div className="side-dock-row" title={memberTitle(kind, m)}>
@@ -42,7 +41,7 @@ function MemberLine({ kind, m, now }: { kind: string; m?: DockMember; now: numbe
   );
 }
 
-function memberTitle(kind: string, m?: DockMember): string {
+function memberTitle(kind: string, m?: DockComponent): string {
   if (!m) return `${kind}: not connected`;
   const parts = [m.id];
   if (m.build != null) parts.push(`build ${m.build}`);

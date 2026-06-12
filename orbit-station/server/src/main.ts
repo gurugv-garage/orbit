@@ -2,45 +2,75 @@
  * orbit-station entrypoint.
  *
  * One process: HTTP(S) server (browser UI + REST/ingest) + one WebSocket hub
- * (firmware/app/browser peers) + an in-process bus that ties the modules
- * together. Replaces the old `plat` stub; the real-time media pipeline
- * (WebRTC/STT/TTS) is a separate concern, slated to live as a sidecar later.
+ * (device/browser peers) + an in-process bus that ties the modules together.
+ * Since the server-brain cutover (docs/SERVER-BRAIN-IMPL.md) this process is
+ * also the dock's BRAIN (pi agent sessions) and the body's single master
+ * (motion executor) — the station is the one WebSocket server in the system.
  */
 
 import { networkInterfaces } from 'node:os';
+import { readFileSync } from 'node:fs';
 import { Bus } from './core/bus.js';
 import { Hub } from './core/hub.js';
 import { createServer } from './core/http.js';
 import type { StationModule } from './core/module.js';
 import { observabilityModule } from './modules/observability/index.js';
 import { configModule } from './modules/config/index.js';
+import { ConfigStore } from './modules/config/store.js';
 import { bodylinkModule } from './modules/bodylink/index.js';
+import { MotionExecutor } from './modules/bodylink/motion.js';
 import { mediaModule } from './modules/media/index.js';
 import { ProcessingHub } from './modules/perception/hub.js';
 import { perceptionModule } from './modules/perception/index.js';
 import { mindModule } from './modules/mind/index.js';
 import { benchModule } from './modules/bench/index.js';
 import { docksModule } from './modules/docks/index.js';
+import { Directory } from './modules/docks/directory.js';
+import { brainModule } from './modules/brain/index.js';
 import { otaModule } from './modules/ota/index.js';
 import { stationModule } from './modules/station.js';
+
+// LLM provider keys live in the STATION's environment now (never in device
+// builds — docs/SERVER-BRAIN-IMPL.md §3.1). For dev convenience they load
+// from a gitignored `orbit-station/.env` (KEY=VALUE lines; real env wins).
+loadDotEnv(new URL('../../.env', import.meta.url).pathname);
 
 const PORT = Number(process.env.PORT ?? 8099);
 const HOST = process.env.HOST ?? '0.0.0.0';
 
+function loadDotEnv(path: string): void {
+  // Boot-visible either way: a missing/late-created .env once cost a debugging
+  // session (the watcher doesn't watch .env — touch main.ts to reload it).
+  try {
+    let n = 0;
+    for (const line of readFileSync(path, 'utf8').split('\n')) {
+      const m = line.match(/^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)\s*$/);
+      if (!m || line.trim().startsWith('#')) continue;
+      if (process.env[m[1]!] == null) process.env[m[1]!] = m[2]!;
+      n++;
+    }
+    console.log(`  .env: ${n} key(s) loaded`);
+  } catch {
+    console.log('  .env: none (provider keys must come from the environment)');
+  }
+}
+
 async function main() {
   const bus = new Bus();
 
-  // The stream-processing hub IS the SFU's media tap; it fans media + WS facts to
-  // registered processors. Built lazily here so it can resolve streamId→dockId from
-  // the live roster (set after the WS hub exists). Phase 0: zero processors → no
-  // behavior change; the perception module registers processors in init().
+  // Shared building blocks wired here (modules otherwise touch only the bus):
+  //  - ConfigStore: one sqlite handle; config module owns writes, the brain
+  //    reads effective values in-process.
+  //  - Directory: dock composition + capability addressing (docks module
+  //    publishes it; brain/bodylink/media resolve through it).
+  //  - MotionExecutor: the body's single master (brain tools + console).
+  //  - ProcessingHub: the SFU's media tap (perception processors).
+  const configStore = new ConfigStore();
   let processingHub: ProcessingHub | undefined;
 
-  // Module registry. Order doesn't matter; each owns a topic + optional routes.
   const modules: StationModule[] = [
     observabilityModule(),
-    configModule(),
-    bodylinkModule(),
+    configModule(configStore),
     mediaModule(() => processingHub),   // WebRTC SFU; tap = the processing hub (or MEDIA_SINK fallback).
     mindModule(),
     benchModule(),
@@ -49,15 +79,19 @@ async function main() {
   const { server, secure } = createServer(modules);
   const hub = new Hub(server, bus);
 
-  // Now the roster exists → build the processing hub (resolves peer id → dock name).
+  // Roster-dependent wiring (needs the hub).
+  const directory = new Directory(() => hub.roster());
+  const motion = new MotionExecutor(bus, directory);
   processingHub = new ProcessingHub(bus, (streamId) =>
     hub.roster().find((p) => p.id === streamId)?.dock ?? streamId);
 
-  // Perception registers processors onto the processing hub (built above).
   modules.push(perceptionModule(() => processingHub!));
-
-  // these need the hub (live roster); add after it exists.
-  modules.push(docksModule(() => hub));
+  modules.push(docksModule(directory, () => hub));
+  modules.push(bodylinkModule({ directory, motion, getHub: () => hub }));
+  modules.push(brainModule({
+    directory, motion, getHub: () => hub,
+    config: (key) => configStore.get(key)?.value,
+  }));
   modules.push(otaModule(() => hub));   // OTA: version-compare against live roster
   // station meta module needs the registry + hub; add it last.
   modules.push(stationModule(() => modules, () => hub));

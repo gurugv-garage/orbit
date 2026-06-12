@@ -43,6 +43,40 @@ import { classifyDistance, TENTATIVE_THRESHOLD } from './face/gallery.js';
 // Gallery persists next to the server's data (alongside the db). One file.
 const GALLERY_PATH = fileURLToPath(new URL('../../../data/face-gallery.json', import.meta.url));
 
+/** One recognized (or unrecognized) face, as the brain's tools consume it. */
+export interface RecognizedPerson {
+  name: string | null;
+  tentative: string | null;
+  confidence: number;
+  side: 'left' | 'center' | 'right';
+}
+export interface RecognizeOut {
+  name: string | null;
+  tentative: string | null;
+  confidence: number;
+  noFace: boolean;
+  people: RecognizedPerson[];
+}
+
+/**
+ * In-process face API for the server brain's tools (remember/recollect/
+ * confirm/forget_face) — the same operations the WS request/result flow
+ * serves, minus the round-trip. Photo-first (the turn-request's attached
+ * camera JPEG); falls back to the dock's live SFU frame via `streamId`.
+ */
+export interface FaceToolsApi {
+  enroll(opts: { name: string; photo?: string; streamId?: string }): Promise<{ ok: boolean; reason?: string }>;
+  recognize(opts: { photo?: string; streamId?: string }): Promise<RecognizeOut>;
+  confirm(opts: { name: string; photo?: string; streamId?: string }): Promise<{ ok: boolean }>;
+  forget(opts: { name: string; streamId?: string }): Promise<{ ok: boolean }>;
+}
+
+const faceToolsRef: { current?: FaceToolsApi } = {};
+/** The live FaceToolsApi (set when the perception module inits). */
+export function getFaceTools(): FaceToolsApi | undefined {
+  return faceToolsRef.current;
+}
+
 export function perceptionModule(getHub: () => ProcessingHub): StationModule {
   let state: PerceptionState;
   let bus: Bus;
@@ -67,6 +101,73 @@ export function perceptionModule(getHub: () => ProcessingHub): StationModule {
       // Always-on processors. More land here as phases progress (audio, …).
       hub.register(presenceProcessor());
       hub.register(face);
+
+      // In-process face API for the server brain (docs/SERVER-BRAIN-IMPL.md §3.1):
+      // the same operations the WS request/result flow below serves, exposed as
+      // function calls so the brain's tools skip the round-trip.
+      faceToolsRef.current = {
+        async enroll({ name, photo, streamId }) {
+          const n = name.trim();
+          if (!n) return { ok: false, reason: 'no name' };
+          if (photo) {
+            const d = await describeBase64(photo);
+            if (!d) return { ok: false, reason: 'no face detected' };
+            gallery.enroll(n, d, photo, gallery.has(n)); // append for a known name
+            return { ok: true };
+          }
+          if (streamId) return face.enrollCurrent(streamId, n);
+          return { ok: false, reason: 'no photo or stream' };
+        },
+        async recognize({ photo, streamId }) {
+          let faces: DetectedFace[] = [];
+          if (photo) {
+            faces = await describeAllBase64(photo);
+          } else if (streamId) {
+            const buf = face.currentFrame(streamId);
+            if (buf) { try { faces = await describeAllFaces(buf); } catch { faces = []; } }
+          }
+          const people = faces.map((f) => {
+            const m = gallery.match(f.descriptor, TENTATIVE_THRESHOLD);
+            const verdict = m ? classifyDistance(m.distance) : 'none';
+            return {
+              name: verdict === 'confident' ? m!.name : null,
+              tentative: verdict === 'tentative' ? m!.name : null,
+              confidence: m ? Math.max(0, 1 - m.distance) : 0,
+              side: sideOf(f.cx),
+            };
+          });
+          const confident = people.filter((x) => x.name).sort((a, b) => b.confidence - a.confidence);
+          const tentatives = people.filter((x) => !x.name && x.tentative).sort((a, b) => b.confidence - a.confidence);
+          const primary = confident[0] ?? tentatives[0];
+          return {
+            name: confident[0]?.name ?? null,
+            tentative: confident[0] ? null : (tentatives[0]?.tentative ?? null),
+            confidence: primary?.confidence ?? 0,
+            noFace: faces.length === 0,
+            people,
+          };
+        },
+        async confirm({ name, photo, streamId }) {
+          const n = name.trim();
+          if (!n) return { ok: false };
+          if (photo) {
+            const d = await describeBase64(photo);
+            if (d) { gallery.enroll(n, d, photo, true); return { ok: true }; }
+            return { ok: false };
+          }
+          if (streamId) {
+            const r = await face.enrollCurrent(streamId, n);
+            return { ok: r.ok };
+          }
+          return { ok: false };
+        },
+        async forget({ name, streamId }) {
+          const n = name.trim();
+          if (!n) return { ok: false };
+          if (streamId) { void face.forgetCurrent(streamId, n); return { ok: true }; }
+          return { ok: gallery.remove(n) };
+        },
+      };
 
       // Agent-driven enrollment over the WS: the dock's `remember_face` tool
       // publishes `perception`/`enroll-request {name}`; we enroll the face it's
@@ -143,8 +244,10 @@ export function perceptionModule(getHub: () => ProcessingHub): StationModule {
       // world-state so the agent re-grounds immediately (identity is one field).
       bus.on('station', (msg) => {
         if (msg.kind !== 'peer-joined') return;
-        const p = msg.payload as { role?: string; id?: string; dock?: string } | null;
-        if (p?.role !== 'app' || !p.dock) return;
+        const p = msg.payload as { caps?: string[]; id?: string; dock?: string } | null;
+        // re-ground whichever component renders identity/face state (the phone
+        // declares the 'face' cap) — routing by capability, not role.
+        if (!p?.dock || !(p.caps ?? []).includes('face')) return;
         const ws = state.get(p.dock);
         if (ws) bus.publish({ topic: 'perception', kind: 'snapshot', payload: ws, source: 'station', to: p.id });
       });

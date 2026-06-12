@@ -3,8 +3,8 @@
  * Source of truth: server/src/core/protocol.ts — keep in sync.
  */
 
-export type Topic = 'obs' | 'config' | 'bodylink' | 'mind' | 'station' | 'ota' | 'media' | 'client' | 'perception';
-export type PeerRole = 'browser' | 'firmware' | 'app' | 'fake';
+export type Topic = 'obs' | 'config' | 'bodylink' | 'mind' | 'station' | 'ota' | 'media' | 'client' | 'agent' | 'perception';
+export type PeerRole = 'browser' | 'device' | 'fake';
 
 export interface EventFrame {
   t: 'event';
@@ -44,18 +44,20 @@ export interface AgentEventDto {
 }
 
 export interface PeerInfo {
-  role: PeerRole; id: string; label?: string; dock?: string; bodyAddr?: string;
+  role: PeerRole; id: string; label?: string; dock?: string;
+  component?: string; kind?: string; caps?: string[];
   ip?: string; lastSeen: number; connectedAt: number; build?: number; links?: Record<string, boolean>; topics: Topic[];
 }
 
 // dock directory (mirror of server/.../core/protocol.ts) ──────────────────────
-export interface DockMember {
-  role: PeerRole; id: string; label?: string; online: boolean; ip?: string; lastSeen?: number;
+// A dock is a composition of COMPONENTS (hello v2): address = (dock, component).
+export interface DockComponent {
+  component: string; kind?: string; caps?: string[]; id: string; label?: string;
+  online: boolean; ip?: string; lastSeen?: number;
   build?: number; links?: Record<string, boolean>;
 }
 export interface DockInfo {
   name: string;
-  bodyAddr?: string;
-  app?: DockMember;
-  firmware?: DockMember;
+  manifest: string[];
+  components: DockComponent[];
 }

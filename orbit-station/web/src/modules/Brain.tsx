@@ -1,0 +1,755 @@
+/**
+ * Brain — the server-brain test console. A fake phone + a turn inspector.
+ *
+ * Two data paths, deliberately separate:
+ *   - a SECOND WebSocket as a `device` peer (dock/<phone>, caps voice+face):
+ *     the exact tenancy path a real phone takes — turn-request up, speak /
+ *     tool-call / turn-status down (tool-calls auto-acked, fire-and-forget).
+ *   - the console's normal browser socket: the brain's `brain-debug` stream
+ *     on the obs topic (full text/thinking deltas, TTFT, per-step usage) —
+ *     browsers-only, never sent to devices.
+ *
+ * NOTE: claiming a dock whose real phone is online DISPLACES it (newest-wins
+ * = the hardware-swap rule) — hence the `web-test` default dock.
+ */
+
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useStationEvents } from '../lib/useStation';
+import type { EventFrame } from '../lib/protocol';
+
+// ── types ────────────────────────────────────────────────────────────────────
+
+interface StepDebug {
+  step: number;
+  startedAt: number;
+  ttftMs?: number;
+  /** reasoning phase: first thinking token → first answer token. */
+  thinkingMs?: number;
+  /** step start → first ANSWER token (ttftMs counts thinking tokens too). */
+  ttftTextMs?: number;
+  ms?: number;
+  stopReason?: string;
+  model?: string;
+  usage?: { input: number; output: number; total: number; cost?: number };
+  tools: { name: string; args?: unknown; ms?: number; isError?: boolean; result?: string; at: number }[];
+}
+
+interface TurnDebug {
+  turnId: string;
+  text: string;
+  model?: string;
+  thinkingLevel?: string;
+  historyMessages?: number;
+  startedAt: number;
+  steps: StepDebug[];
+  streamText: string;
+  thinkingText: string;
+  speaks: { seq: number; text: string; at: number }[];
+  state?: 'done' | 'failed' | 'cancelled';
+  code?: string;
+  error?: string;
+  totalMs?: number;
+}
+
+interface SessionMeta {
+  sessionId: string; openedAt: number; lastTurnEndedAt: number;
+  closedAt?: number; turns: number; summary?: string;
+}
+
+interface BrainConfig { brainModel: string; brainThinkingLevel: string; brainPersona: string; brainTurnTimeoutMs: number }
+
+/** A condensed prior exchange from a resumed/open session's transcript. */
+interface PastExchange { user: string; reply: string }
+
+function pastFromHistory(messages: unknown[]): PastExchange[] {
+  const out: PastExchange[] = [];
+  let cur: PastExchange | null = null;
+  for (const m of messages as Array<{ role?: string; content?: unknown }>) {
+    if (m.role === 'user') {
+      const text = typeof m.content === 'string'
+        ? m.content
+        : ((m.content as Array<{ type?: string; text?: string }>) ?? [])
+            .filter((c) => c.type === 'text').map((c) => c.text ?? '').join('');
+      if (cur) out.push(cur);
+      cur = { user: text, reply: '' };
+    } else if (m.role === 'assistant' && cur) {
+      const text = ((m.content as Array<{ type?: string; text?: string }>) ?? [])
+        .filter((c) => c.type === 'text').map((c) => c.text ?? '').join('');
+      if (text) cur.reply += (cur.reply ? ' ' : '') + text;
+    }
+  }
+  if (cur) out.push(cur);
+  return out;
+}
+
+const MODEL_PRESETS = [
+  'google/gemini-2.5-flash',
+  'google/gemini-2.5-pro',
+  'anthropic/claude-haiku-4-5',
+  'anthropic/claude-sonnet-4-6',
+  'openai/gpt-4o-mini',
+  'openai-compatible/qwen3:8b@http://localhost:11434/v1',
+];
+const THINKING_LEVELS = ['off', 'minimal', 'low', 'medium', 'high'];
+
+const wsUrl = () => `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`;
+const fmtMs = (ms?: number) => (ms == null ? '—' : ms >= 1000 ? `${(ms / 1000).toFixed(2)}s` : `${Math.round(ms)}ms`);
+const fmtCost = (c?: number) => (c == null || c === 0 ? '' : `$${c.toFixed(5)}`);
+
+// ── component ────────────────────────────────────────────────────────────────
+
+export function Brain() {
+  const [dock, setDock] = useState('web-test');
+  const [connected, setConnected] = useState(false);
+  const [brainReady, setBrainReady] = useState(false);
+  const [input, setInput] = useState('');
+  const [turnActive, setTurnActive] = useState(false);
+  const [sessions, setSessions] = useState<SessionMeta[]>([]);
+  const [cfg, setCfg] = useState<BrainConfig | null>(null);
+  const [cfgDirty, setCfgDirty] = useState<Partial<BrainConfig>>({});
+  const [selected, setSelected] = useState<string | null>(null);
+  const [past, setPast] = useState<PastExchange[]>([]);
+  const [, bump] = useState(0); // re-render tick for ref-held turn map
+
+  const ws = useRef<WebSocket | null>(null);
+  const turns = useRef<Map<string, TurnDebug>>(new Map());
+  const order = useRef<string[]>([]);
+  const activeTurnId = useRef('');
+  const chatScroll = useRef<HTMLDivElement>(null);
+  const inputEl = useRef<HTMLInputElement>(null);
+  const dockRef = useRef(dock);
+  dockRef.current = dock;
+
+  const rerender = useCallback(() => bump((n) => n + 1), []);
+
+  // ── debug stream (browser socket, obs topic, kind brain-debug) ────────────
+  const onDebug = useCallback((e: EventFrame) => {
+    if (e.kind !== 'brain-debug') return;
+    const p = e.payload as Record<string, any>;
+    if (p.dock !== dockRef.current || !p.turnId) return;
+    let t = turns.current.get(p.turnId);
+    if (!t && p.type !== 'turn-start') return;
+    switch (p.type) {
+      case 'turn-start':
+        t = {
+          turnId: p.turnId, text: p.text ?? '', model: p.model, thinkingLevel: p.thinkingLevel,
+          historyMessages: p.historyMessages, startedAt: p.ts,
+          steps: [], streamText: '', thinkingText: '', speaks: [],
+        };
+        turns.current.set(p.turnId, t);
+        order.current.push(p.turnId);
+        if (order.current.length > 12) turns.current.delete(order.current.shift()!);
+        setSelected(p.turnId);
+        break;
+      case 'step-start':
+        t!.steps.push({ step: p.step, startedAt: p.ts, tools: [] });
+        break;
+      case 'ttft': {
+        const s = t!.steps.find((x) => x.step === p.step);
+        if (s) s.ttftMs = p.ms;
+        break;
+      }
+      case 'text-delta': t!.streamText += p.delta ?? ''; break;
+      case 'thinking-delta': t!.thinkingText += p.delta ?? ''; break;
+      case 'speak': t!.speaks.push({ seq: p.seq, text: p.text, at: p.ts }); break;
+      case 'tool-start':
+        t!.steps.at(-1)?.tools.push({ name: p.name, args: p.args, at: p.ts });
+        break;
+      case 'tool-end': {
+        const tool = t!.steps.at(-1)?.tools.find((x) => x.name === p.name && x.ms == null);
+        if (tool) { tool.ms = p.ms; tool.isError = p.isError; tool.result = p.result; }
+        break;
+      }
+      case 'step-end': {
+        const s = t!.steps.find((x) => x.step === p.step);
+        if (s) { s.ms = p.ms; s.ttftMs = p.ttftMs ?? s.ttftMs; s.thinkingMs = p.thinkingMs; s.ttftTextMs = p.ttftTextMs; s.stopReason = p.stopReason; s.model = p.model; s.usage = p.usage; }
+        break;
+      }
+      case 'turn-end':
+        t!.state = p.state; t!.code = p.code; t!.error = p.error; t!.totalMs = p.totalMs;
+        break;
+    }
+    rerender();
+  }, [rerender]);
+  useStationEvents('obs', onDebug);
+
+  useEffect(() => {
+    chatScroll.current?.scrollTo({ top: chatScroll.current.scrollHeight });
+  });
+
+  // ── config (model control) ────────────────────────────────────────────────
+  const loadConfig = useCallback(async () => {
+    try {
+      const r = await fetch('/api/config');
+      const data = await r.json() as { entries: { key: string; value: unknown }[] };
+      const v = (k: string) => data.entries.find((e) => e.key === k)?.value;
+      setCfg({
+        brainModel: String(v('brainModel') ?? ''),
+        brainThinkingLevel: String(v('brainThinkingLevel') ?? 'off'),
+        brainPersona: String(v('brainPersona') ?? ''),
+        brainTurnTimeoutMs: Number(v('brainTurnTimeoutMs') ?? 60000),
+      });
+      setCfgDirty({});
+    } catch { /* station down */ }
+  }, []);
+  useEffect(() => { void loadConfig(); }, [loadConfig]);
+
+  const applyConfig = async () => {
+    if (Object.keys(cfgDirty).length === 0) return;
+    await fetch('/api/config', {
+      method: 'PATCH', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(cfgDirty),
+    });
+    await loadConfig();
+  };
+  const effective = { ...cfg, ...cfgDirty } as BrainConfig | null;
+  const dirty = Object.keys(cfgDirty).length > 0;
+
+  // ── fake-phone socket ─────────────────────────────────────────────────────
+  const refreshSessions = useCallback(async (d: string) => {
+    try {
+      const r = await fetch(`/api/brain/${encodeURIComponent(d)}/sessions`);
+      if (r.ok) setSessions(await r.json());
+    } catch { /* ignore */ }
+  }, []);
+
+  /** hydrate the transcript with the open session's prior exchanges. */
+  const loadHistory = useCallback(async (d: string) => {
+    try {
+      const r = await fetch(`/api/brain/${encodeURIComponent(d)}/history`);
+      if (r.ok) setPast(pastFromHistory(await r.json()));
+    } catch { /* ignore */ }
+  }, []);
+
+  const resumeSession = useCallback(async (sessionId: string) => {
+    const d = dockRef.current.trim() || 'web-test';
+    const r = await fetch(`/api/brain/${encodeURIComponent(d)}/session/${encodeURIComponent(sessionId)}/resume`, { method: 'POST' });
+    if (r.ok) {
+      turns.current.clear();
+      order.current = [];
+      setSelected(null);
+      await refreshSessions(d);
+      await loadHistory(d);
+    }
+  }, [refreshSessions, loadHistory]);
+
+  const pub = (topic: string, kind: string, payload: unknown) =>
+    ws.current?.send(JSON.stringify({ t: 'publish', topic, kind, payload }));
+
+  const disconnect = useCallback(() => {
+    ws.current?.close();
+    ws.current = null;
+    setConnected(false); setBrainReady(false); setTurnActive(false);
+  }, []);
+
+  const connect = useCallback(() => {
+    disconnect();
+    const d = dockRef.current.trim() || 'web-test';
+    const sock = new WebSocket(wsUrl());
+    ws.current = sock;
+    sock.onopen = () => {
+      sock.send(JSON.stringify({
+        t: 'hello', role: 'device', id: `web-phone-${Math.random().toString(36).slice(2, 8)}`,
+        dock: d, component: 'phone', kind: 'web-test-phone', caps: ['voice', 'face'],
+        label: `${d} console test phone`,
+      }));
+      sock.send(JSON.stringify({ t: 'subscribe', topics: ['agent'] }));
+      // deterministic resync handshake: hello AFTER subscribing (the
+      // peer-joined push can race the subscribe frame server-side)
+      sock.send(JSON.stringify({ t: 'publish', topic: 'agent', kind: 'hello', payload: {} }));
+      setConnected(true);
+      void refreshSessions(d);
+      void loadHistory(d);
+      setTimeout(() => inputEl.current?.focus(), 50);
+    };
+    sock.onclose = () => { setConnected(false); setBrainReady(false); };
+    sock.onmessage = (m) => {
+      let f: { t?: string; kind?: string; payload?: any; message?: string };
+      try { f = JSON.parse(m.data as string); } catch { return; }
+      if (f.t !== 'event') return;
+      const p = f.payload ?? {};
+      if (f.kind === 'brain-status') setBrainReady(true);
+      else if (f.kind === 'tool-call') {
+        pub('agent', 'tool-result', {
+          reqId: p.reqId, toolCallId: p.toolCallId, turnId: p.turnId,
+          content: `${p.name} dispatched (console fake phone)`, isError: false,
+        });
+      } else if (f.kind === 'turn-status') {
+        if (p.turnId !== activeTurnId.current) return;
+        if (p.state === 'done' || p.state === 'failed' || p.state === 'cancelled') {
+          setTurnActive(false);
+          pub('agent', 'speech-status', { turnId: p.turnId, speaking: true });
+          setTimeout(() => pub('agent', 'speech-status', { turnId: p.turnId, speaking: false }), 250);
+          void refreshSessions(dockRef.current.trim() || 'web-test');
+          setTimeout(() => inputEl.current?.focus(), 50);
+        }
+      }
+    };
+    sock.onerror = () => sock.close();
+  }, [disconnect, refreshSessions, loadHistory]);
+  useEffect(() => () => disconnect(), [disconnect]);
+
+  const send = () => {
+    const text = input.trim();
+    if (!text || !connected || turnActive) return;
+    setInput('');
+    const id = `t-${Math.random().toString(36).slice(2, 10)}`;
+    activeTurnId.current = id;
+    setTurnActive(true);
+    pub('agent', 'transcript', { utteranceId: id, text, isFinal: true });
+    pub('agent', 'turn-request', {
+      turnId: id,
+      trigger: { kind: 'user', text },
+      context: { state: 'You are talking through the station console (a test phone, no camera).' },
+    });
+  };
+
+  const cancel = () => {
+    if (!turnActive) return;
+    pub('agent', 'turn-cancel', { turnId: activeTurnId.current });
+  };
+
+  const endSession = async () => {
+    const d = dockRef.current.trim() || 'web-test';
+    await fetch(`/api/brain/${encodeURIComponent(d)}/session/end`, { method: 'POST' });
+    setPast([]);
+    turns.current.clear();
+    order.current = [];
+    setSelected(null);
+    void refreshSessions(d);
+  };
+
+  // ── derived ───────────────────────────────────────────────────────────────
+  const turnList = order.current.map((id) => turns.current.get(id)!).filter(Boolean);
+  const sel = (selected != null ? turns.current.get(selected) : undefined) ?? turnList.at(-1);
+  const open = sessions.find((s) => s.closedAt == null);
+  const totals = useMemo(() => {
+    if (!sel) return null;
+    const input = sel.steps.reduce((a, s) => a + (s.usage?.input ?? 0), 0);
+    const output = sel.steps.reduce((a, s) => a + (s.usage?.output ?? 0), 0);
+    const cost = sel.steps.reduce((a, s) => a + (s.usage?.cost ?? 0), 0);
+    return { input, output, cost };
+  }, [sel, sel?.totalMs, sel?.steps.length]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  return (
+    <section className="brain">
+      <style>{CSS}</style>
+
+      {/* ── status strip ── */}
+      <div className="br-strip">
+        <span className="br-logo">◈ BRAIN</span>
+        <span className="br-sep" />
+        <label className="br-lbl">dock</label>
+        <input className="br-in br-dock" value={dock} disabled={connected} onChange={(e) => setDock(e.target.value)} />
+        {!connected
+          ? <button className="br-btn acc" onClick={connect}>connect</button>
+          : <button className="br-btn" onClick={disconnect}>disconnect</button>}
+        <span className="br-sep" />
+        <Led on={connected} pulse={false} label="link" />
+        <Led on={brainReady} pulse={turnActive} label="brain" />
+        <span className="br-sep" />
+        {open
+          ? <span className="br-chip mono" title={`opened ${new Date(open.openedAt).toLocaleTimeString()}`}>{open.sessionId} · {open.turns}t</span>
+          : <span className="br-chip dim">no session</span>}
+        <div className="spacer" />
+        <button className="br-btn" onClick={endSession} disabled={!open}>end session</button>
+      </div>
+
+      {/* ── model strip ── */}
+      {effective && (
+        <div className="br-strip">
+          <label className="br-lbl">model</label>
+          <select className="br-in" value={MODEL_PRESETS.includes(effective.brainModel) ? effective.brainModel : '_custom'}
+            onChange={(e) => { if (e.target.value !== '_custom') setCfgDirty((d) => ({ ...d, brainModel: e.target.value })); }}>
+            {MODEL_PRESETS.map((m) => <option key={m} value={m}>{m}</option>)}
+            <option value="_custom">custom…</option>
+          </select>
+          <input className="br-in br-model mono" value={effective.brainModel}
+            onChange={(e) => setCfgDirty((d) => ({ ...d, brainModel: e.target.value }))} />
+          <label className="br-lbl">think</label>
+          <div className="br-seg">
+            {THINKING_LEVELS.map((l) => (
+              <button key={l} className={effective.brainThinkingLevel === l ? 'on' : ''}
+                onClick={() => setCfgDirty((d) => ({ ...d, brainThinkingLevel: l }))}>{l}</button>
+            ))}
+          </div>
+          <label className="br-lbl">timeout</label>
+          <input className="br-in br-num mono" type="number" value={effective.brainTurnTimeoutMs}
+            onChange={(e) => setCfgDirty((d) => ({ ...d, brainTurnTimeoutMs: Number(e.target.value) }))} />
+          <button className={`br-btn ${dirty ? 'acc glow' : ''}`} onClick={applyConfig} disabled={!dirty}>apply</button>
+        </div>
+      )}
+
+      {/* ── main ── */}
+      <div className="br-grid">
+        <div className="br-panel br-chat">
+          <div className="br-scroll" ref={chatScroll}>
+            {turnList.length === 0 && (
+              <div className="br-empty">
+                <div className="br-empty-glyph">◈</div>
+                <div>{connected ? 'say something below — the whole turn lands here live' : 'connect to start a session'}</div>
+                <div className="dim">streaming text · thinking · tool calls · sentences · latency · tokens</div>
+              </div>
+            )}
+            {past.length > 0 && (
+              <div className="br-past">
+                <div className="br-lbl">earlier in this session</div>
+                {past.map((x, i) => (
+                  <div key={i} className="br-past-x">
+                    <div className="br-past-u">❯ {x.user}</div>
+                    {x.reply && <div className="br-past-r">{x.reply}</div>}
+                  </div>
+                ))}
+              </div>
+            )}
+            {turnList.map((t) => <Turn key={t.turnId} t={t} sel={sel?.turnId === t.turnId} onSelect={() => setSelected(t.turnId)} />)}
+          </div>
+          <div className="br-composer">
+            <span className={`br-prompt ${turnActive ? 'busy' : ''}`}>{turnActive ? '◌' : '❯'}</span>
+            <input
+              ref={inputEl}
+              placeholder={connected ? (turnActive ? 'turn running…' : 'say something…') : 'offline — connect first'}
+              value={input} disabled={!connected}
+              onChange={(e) => setInput(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter') send(); if (e.key === 'Escape') cancel(); }}
+            />
+            {turnActive
+              ? <button className="br-btn bad" onClick={cancel}>cancel (esc)</button>
+              : <button className="br-btn acc" onClick={send} disabled={!connected || input.trim() === ''}>send ⏎</button>}
+          </div>
+        </div>
+
+        <div className="br-panel br-inspector">
+          {!sel ? (
+            <div className="br-empty"><div className="br-empty-glyph">⟢</div><div className="dim">turn inspector</div></div>
+          ) : (
+            <>
+              <div className="br-insp-head">
+                <span className="mono br-turnid">{sel.turnId}</span>
+                <span className="dim">{sel.model} · think:{sel.thinkingLevel} · {sel.historyMessages} msg history</span>
+              </div>
+              <Timeline turn={sel} />
+              <table className="br-steps">
+                <thead><tr><th>step</th><th>ttft</th><th>think</th><th>total</th><th>stop</th><th>in</th><th>out</th><th>cost</th></tr></thead>
+                <tbody>
+                  {sel.steps.map((s) => (
+                    <tr key={s.step}>
+                      <td className="dim">{s.step}</td>
+                      <td>{fmtMs(s.ttftMs)}</td>
+                      <td className={s.thinkingMs ? '' : 'dim'}>{s.thinkingMs != null ? fmtMs(s.thinkingMs) : '—'}</td>
+                      <td>{fmtMs(s.ms)}</td>
+                      <td className="dim">{s.stopReason ?? '…'}</td>
+                      <td>{s.usage?.input ?? ''}</td>
+                      <td>{s.usage?.output ?? ''}</td>
+                      <td className="dim">{fmtCost(s.usage?.cost)}</td>
+                    </tr>
+                  ))}
+                  {totals && (
+                    <tr className="br-totals">
+                      <td>Σ</td>
+                      <td>{fmtMs(sel.steps[0]?.ttftMs)}</td>
+                      <td>{(() => { const th = sel.steps.reduce((a, s) => a + (s.thinkingMs ?? 0), 0); return th > 0 ? fmtMs(th) : '—'; })()}</td>
+                      <td>{fmtMs(sel.totalMs)}</td>
+                      <td />
+                      <td>{totals.input}</td>
+                      <td>{totals.output}</td>
+                      <td>{fmtCost(totals.cost)}</td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+              <div className="br-hist">
+                <div className="br-lbl" style={{ marginBottom: 4 }}>turns</div>
+                {/* (sessions panel rendered after this block) */}
+                {turnList.slice().reverse().map((t) => (
+                  <div key={t.turnId} className={`br-hist-row ${sel.turnId === t.turnId ? 'sel' : ''}`}
+                    onClick={() => setSelected(t.turnId)}>
+                    <span className={`br-led tiny ${t.state ?? 'live'}`} />
+                    <span className="br-hist-text">{t.text}</span>
+                    <span className="mono dim">{fmtMs(t.totalMs)}</span>
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
+          {sessions.length > 0 && (
+            <div className="br-sess">
+              <div className="br-lbl" style={{ margin: '10px 0 4px' }}>sessions</div>
+              {sessions.slice(0, 8).map((sx) => (
+                <div key={sx.sessionId} className="br-sess-row" title={sx.summary ?? ''}>
+                  <span className={`br-led tiny ${sx.closedAt == null ? 'on' : 'off'}`} />
+                  <span className="mono br-sess-id">{sx.sessionId}</span>
+                  <span className="dim">{sx.turns}t · {new Date(sx.openedAt).toLocaleDateString()} {new Date(sx.openedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+                  <span className="br-sess-sum dim">{sx.summary?.split('\n').at(-1) ?? ''}</span>
+                  <span className="spacer" />
+                  {sx.closedAt == null
+                    ? <span className="br-chip mini">open</span>
+                    : <button className="br-btn tiny" onClick={() => resumeSession(sx.sessionId)}>continue</button>}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+    </section>
+  );
+}
+
+// ── pieces ───────────────────────────────────────────────────────────────────
+
+function Led({ on, pulse, label }: { on: boolean; pulse: boolean; label: string }) {
+  return (
+    <span className="br-ledwrap" title={`${label}: ${on ? 'up' : 'down'}`}>
+      <span className={`br-led ${on ? 'on' : 'off'} ${pulse ? 'pulse' : ''}`} />
+      <span className="br-lbl">{label}</span>
+    </span>
+  );
+}
+
+function Turn({ t, sel, onSelect }: { t: TurnDebug; sel: boolean; onSelect: () => void }) {
+  const live = t.state == null;
+  return (
+    <div className={`br-turn ${t.state ?? 'live'} ${sel ? 'sel' : ''}`} onClick={onSelect}>
+      <div className="br-user"><span className="br-caret">❯</span> {t.text}</div>
+      {t.thinkingText && (
+        <details className="br-think">
+          <summary>thinking <span className="dim">({t.thinkingText.length} chars)</span></summary>
+          <div>{t.thinkingText}</div>
+        </details>
+      )}
+      {t.streamText && (
+        <div className="br-reply">{t.streamText}{live && <span className="br-cursor">▋</span>}</div>
+      )}
+      {t.steps.flatMap((s) => s.tools).map((tool, i) => (
+        <div key={i} className={`br-tool ${tool.isError ? 'err' : ''}`}>
+          <span className="br-tool-ico">⚙</span> {tool.name}
+          <span className="br-args">{JSON.stringify(tool.args)}</span>
+          {tool.ms != null && <span className="br-chip mini">{fmtMs(tool.ms)}</span>}
+          {tool.result && <span className="br-result">→ {tool.result}</span>}
+        </div>
+      ))}
+      {t.speaks.length > 0 && (
+        <div className="br-speaks">
+          {t.speaks.map((s) => <span key={s.seq} className="br-speak">▸ {s.text}</span>)}
+        </div>
+      )}
+      {t.error && <div className="br-error mono">{t.error}</div>}
+      <div className="br-foot">
+        <span className={`br-led tiny ${t.state ?? 'live'}`} />
+        <span className={`br-state ${t.state ?? 'live'}`}>{t.state ?? 'running'}{t.code ? ` · ${t.code}` : ''}</span>
+        <span className="dim mono">{fmtMs(t.totalMs ?? Date.now() - t.startedAt)}</span>
+        {t.steps.length > 0 && <span className="dim">{t.steps.length} step{t.steps.length > 1 ? 's' : ''}</span>}
+      </div>
+    </div>
+  );
+}
+
+function Timeline({ turn }: { turn: TurnDebug }) {
+  const total = Math.max(turn.totalMs ?? Date.now() - turn.startedAt, 1);
+  const pct = (at: number) => `${Math.min(((at - turn.startedAt) / total) * 100, 100)}%`;
+  const widthPct = (fromMs: number, toMs: number) =>
+    `${Math.max(Math.min(((toMs - fromMs) / total) * 100, 100), 0.4)}%`;
+  // ms ruler ticks: 4 divisions
+  const ticks = [0.25, 0.5, 0.75].map((f) => ({ left: `${f * 100}%`, label: fmtMs(total * f) }));
+
+  return (
+    <div className="br-tl">
+      <div className="br-tl-bar">
+        {ticks.map((tk, i) => <span key={i} className="br-tl-tick" style={{ left: tk.left }} />)}
+        {turn.steps.map((s) => {
+          const ttftEnd = s.ttftMs != null ? s.startedAt + s.ttftMs : undefined;
+          const thinkEnd = ttftEnd != null && s.thinkingMs != null ? ttftEnd + s.thinkingMs : undefined;
+          const stepEnd = s.ms != null ? s.startedAt + s.ms : Date.now();
+          const streamFrom = thinkEnd ?? ttftEnd ?? s.startedAt;
+          return (
+            <span key={s.step}>
+              {ttftEnd != null && (
+                <span className="br-tl-seg wait" title={`step ${s.step} ttft ${fmtMs(s.ttftMs)}`}
+                  style={{ left: pct(s.startedAt), width: widthPct(s.startedAt, ttftEnd) }} />
+              )}
+              {thinkEnd != null && (
+                <span className="br-tl-seg think" title={`step ${s.step} thinking ${fmtMs(s.thinkingMs)}`}
+                  style={{ left: pct(ttftEnd!), width: widthPct(ttftEnd!, thinkEnd) }} />
+              )}
+              <span className="br-tl-seg stream" title={`step ${s.step}`}
+                style={{ left: pct(streamFrom), width: widthPct(streamFrom, stepEnd) }} />
+            </span>
+          );
+        })}
+        {turn.steps.flatMap((s) => s.tools).map((tool, i) => (
+          <span key={`t${i}`} className={`br-tl-mark tool ${tool.isError ? 'err' : ''}`}
+            title={`${tool.name} ${fmtMs(tool.ms)}`} style={{ left: pct(tool.at) }} />
+        ))}
+        {turn.speaks.map((s) => (
+          <span key={`s${s.seq}`} className="br-tl-mark speak" title={s.text} style={{ left: pct(s.at) }} />
+        ))}
+      </div>
+      <div className="br-tl-legend">
+        <span><i className="k wait" />ttft</span>
+        <span><i className="k think" />think</span>
+        <span><i className="k stream" />stream</span>
+        <span><i className="k tool" />tool</span>
+        <span><i className="k speak" />sentence</span>
+        <span className="spacer" />
+        <span className="mono">{fmtMs(turn.totalMs ?? Date.now() - turn.startedAt)}</span>
+      </div>
+    </div>
+  );
+}
+
+// ── styles ───────────────────────────────────────────────────────────────────
+
+const CSS = `
+.brain { display: flex; flex-direction: column; gap: 10px; height: calc(100vh - 32px); }
+.brain .mono { font-family: ui-monospace, 'SF Mono', Menlo, monospace; }
+.brain .dim { color: var(--dim); }
+.brain .spacer { flex: 1; }
+
+/* strips */
+.brain .br-strip { display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  background: linear-gradient(180deg, var(--panel-2), var(--panel)); border: 1px solid var(--line);
+  border-radius: var(--radius); padding: 8px 12px; }
+.brain .br-logo { font-weight: 700; letter-spacing: .18em; font-size: 12px; color: var(--accent);
+  text-shadow: 0 0 14px rgba(93,184,255,.45); }
+.brain .br-sep { width: 1px; height: 18px; background: var(--line); }
+.brain .br-lbl { font-size: 9px; color: var(--dim); text-transform: uppercase; letter-spacing: .14em; }
+.brain .br-in { background: var(--bg-2); border: 1px solid var(--line); color: var(--fg);
+  border-radius: 6px; padding: 5px 9px; font-size: 12px; outline: none; }
+.brain .br-in:focus { border-color: var(--accent); box-shadow: 0 0 0 1px rgba(93,184,255,.25); }
+.brain .br-dock { width: 110px; font-family: ui-monospace, Menlo, monospace; }
+.brain .br-model { flex: 1; min-width: 200px; font-size: 11px; }
+.brain .br-num { width: 80px; }
+.brain select.br-in { max-width: 230px; }
+
+/* buttons */
+.brain .br-btn { background: var(--bg-2); border: 1px solid var(--line); color: var(--dim);
+  border-radius: 6px; padding: 5px 13px; font-size: 11px; text-transform: uppercase;
+  letter-spacing: .1em; cursor: pointer; transition: all .15s; }
+.brain .br-btn:hover:not(:disabled) { color: var(--fg); border-color: var(--accent); }
+.brain .br-btn:disabled { opacity: .35; cursor: default; }
+.brain .br-btn.acc { color: var(--accent); border-color: rgba(93,184,255,.4); }
+.brain .br-btn.acc:hover:not(:disabled) { box-shadow: var(--glow); }
+.brain .br-btn.glow { box-shadow: var(--glow); }
+.brain .br-btn.bad { color: var(--bad); border-color: rgba(255,107,129,.4); }
+
+/* segmented control */
+.brain .br-seg { display: flex; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
+.brain .br-seg button { background: var(--bg-2); border: none; color: var(--dim); font-size: 10px;
+  padding: 5px 9px; cursor: pointer; text-transform: uppercase; letter-spacing: .06em; }
+.brain .br-seg button + button { border-left: 1px solid var(--line); }
+.brain .br-seg button.on { background: rgba(93,184,255,.15); color: var(--accent); }
+
+/* LEDs */
+.brain .br-ledwrap { display: inline-flex; align-items: center; gap: 5px; }
+.brain .br-led { width: 8px; height: 8px; border-radius: 50%; background: #2a3450; display: inline-block; flex: none; }
+.brain .br-led.on, .brain .br-led.done { background: var(--good); box-shadow: 0 0 8px rgba(74,214,160,.6); }
+.brain .br-led.off { background: #2a3450; }
+.brain .br-led.live { background: var(--accent); box-shadow: 0 0 8px rgba(93,184,255,.6); animation: br-pulse 1.2s infinite; }
+.brain .br-led.failed { background: var(--bad); box-shadow: 0 0 8px rgba(255,107,129,.6); }
+.brain .br-led.cancelled { background: var(--warn); }
+.brain .br-led.pulse { animation: br-pulse 1.2s infinite; }
+.brain .br-led.tiny { width: 6px; height: 6px; }
+@keyframes br-pulse { 0%,100% { opacity: 1; } 50% { opacity: .35; } }
+
+.brain .br-chip { font-size: 10px; padding: 3px 9px; border-radius: 20px; border: 1px solid var(--line);
+  background: var(--bg-2); color: var(--fg); }
+.brain .br-chip.mini { padding: 1px 7px; color: var(--good); border-color: rgba(74,214,160,.3); margin-left: 7px; }
+
+/* grid */
+.brain .br-grid { display: grid; grid-template-columns: minmax(420px, 5fr) minmax(300px, 3fr);
+  gap: 10px; flex: 1; min-height: 0; }
+@media (max-width: 1000px) { .brain .br-grid { grid-template-columns: 1fr; } }
+.brain .br-panel { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius);
+  display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
+
+/* transcript */
+.brain .br-chat { min-height: 0; }
+.brain .br-scroll { flex: 1; overflow-y: auto; padding: 6px 14px; }
+.brain .br-empty { height: 100%; display: flex; flex-direction: column; align-items: center;
+  justify-content: center; gap: 6px; color: var(--dim); font-size: 12px; }
+.brain .br-empty-glyph { font-size: 42px; opacity: .25; text-shadow: 0 0 24px rgba(93,184,255,.5); }
+.brain .br-turn { padding: 12px 10px 8px; margin: 6px 0; border-left: 2px solid var(--line);
+  border-radius: 4px; cursor: pointer; transition: background .15s, border-color .15s; }
+.brain .br-turn:hover { background: rgba(255,255,255,.015); }
+.brain .br-turn.sel { background: rgba(93,184,255,.045); }
+.brain .br-turn.live { border-left-color: var(--accent); }
+.brain .br-turn.done { border-left-color: rgba(74,214,160,.5); }
+.brain .br-turn.failed { border-left-color: rgba(255,107,129,.6); }
+.brain .br-turn.cancelled { border-left-color: rgba(255,200,97,.6); }
+.brain .br-user { font-family: ui-monospace, Menlo, monospace; font-size: 13px; color: var(--accent); }
+.brain .br-caret { opacity: .6; }
+.brain .br-reply { margin: 8px 0 2px 14px; font-size: 13.5px; line-height: 1.55; white-space: pre-wrap; }
+.brain .br-cursor { color: var(--accent); animation: br-pulse .9s infinite; margin-left: 1px; }
+.brain .br-think { margin: 6px 0 0 14px; font-size: 11px; color: var(--dim); }
+.brain .br-think summary { cursor: pointer; letter-spacing: .04em; }
+.brain .br-think div { white-space: pre-wrap; font-style: italic; border-left: 1px solid var(--line);
+  padding: 6px 10px; margin-top: 4px; max-height: 150px; overflow-y: auto; }
+.brain .br-tool { margin: 6px 0 0 14px; font-size: 11px; font-family: ui-monospace, Menlo, monospace;
+  color: var(--accent-2); }
+.brain .br-tool.err { color: var(--bad); }
+.brain .br-tool-ico { opacity: .7; }
+.brain .br-args { color: var(--dim); margin-left: 6px; }
+.brain .br-result { color: var(--dim); margin-left: 6px; }
+.brain .br-speaks { display: flex; flex-wrap: wrap; gap: 5px; margin: 8px 0 0 14px; }
+.brain .br-speak { font-size: 11px; padding: 3px 10px; border-radius: 12px; color: var(--good);
+  background: rgba(74,214,160,.07); border: 1px solid rgba(74,214,160,.22); }
+.brain .br-error { margin: 8px 0 0 14px; font-size: 11px; color: var(--bad);
+  background: rgba(255,107,129,.06); border: 1px solid rgba(255,107,129,.25);
+  border-radius: 6px; padding: 6px 10px; white-space: pre-wrap; }
+.brain .br-foot { display: flex; align-items: center; gap: 8px; margin: 9px 0 0 14px; font-size: 10px; }
+.brain .br-state { text-transform: uppercase; letter-spacing: .12em; }
+.brain .br-state.live { color: var(--accent); } .brain .br-state.done { color: var(--good); }
+.brain .br-state.failed { color: var(--bad); } .brain .br-state.cancelled { color: var(--warn); }
+
+/* composer */
+.brain .br-composer { display: flex; align-items: center; gap: 10px; padding: 10px 14px;
+  border-top: 1px solid var(--line); background: var(--bg-2); }
+.brain .br-prompt { color: var(--accent); font-family: ui-monospace, Menlo, monospace; font-size: 15px; }
+.brain .br-prompt.busy { animation: br-spin 1s linear infinite; display: inline-block; }
+@keyframes br-spin { to { transform: rotate(360deg); } }
+.brain .br-composer input { flex: 1; background: none; border: none; outline: none; color: var(--fg);
+  font-size: 13.5px; font-family: ui-monospace, Menlo, monospace; }
+.brain .br-composer input::placeholder { color: var(--dim); opacity: .6; }
+
+/* inspector */
+.brain .br-inspector { padding: 12px 14px; gap: 12px; overflow-y: auto; }
+.brain .br-insp-head { display: flex; flex-direction: column; gap: 2px; font-size: 11px; }
+.brain .br-turnid { color: var(--accent); font-size: 12px; }
+.brain .br-tl-bar { position: relative; height: 22px; background: var(--bg-2); border: 1px solid var(--line);
+  border-radius: 5px; overflow: hidden; }
+.brain .br-tl-tick { position: absolute; top: 0; height: 100%; width: 1px; background: var(--line); opacity: .6; }
+.brain .br-tl-seg { position: absolute; top: 0; height: 100%; }
+.brain .br-tl-seg.wait { background: repeating-linear-gradient(45deg, rgba(255,200,97,.22), rgba(255,200,97,.22) 4px, rgba(255,200,97,.1) 4px, rgba(255,200,97,.1) 8px); }
+.brain .br-tl-seg.stream { background: linear-gradient(180deg, rgba(93,184,255,.5), rgba(93,184,255,.3)); }
+.brain .br-tl-seg.think { background: repeating-linear-gradient(45deg, rgba(143,123,255,.35), rgba(143,123,255,.35) 4px, rgba(143,123,255,.15) 4px, rgba(143,123,255,.15) 8px); }
+.brain .br-tl-mark { position: absolute; top: 3px; width: 3px; height: 16px; border-radius: 2px; }
+.brain .br-tl-mark.tool { background: var(--accent-2); box-shadow: 0 0 6px rgba(143,123,255,.7); }
+.brain .br-tl-mark.tool.err { background: var(--bad); }
+.brain .br-tl-mark.speak { background: var(--good); box-shadow: 0 0 6px rgba(74,214,160,.7); }
+.brain .br-tl-legend { display: flex; gap: 12px; align-items: center; font-size: 9px; color: var(--dim);
+  text-transform: uppercase; letter-spacing: .1em; margin-top: 5px; }
+.brain .br-tl-legend .k { display: inline-block; width: 9px; height: 7px; border-radius: 2px; margin-right: 4px; }
+.brain .br-tl-legend .k.wait { background: rgba(255,200,97,.4); } .brain .br-tl-legend .k.stream { background: rgba(93,184,255,.55); }
+.brain .br-tl-legend .k.think { background: rgba(143,123,255,.5); }
+.brain .br-tl-legend .k.tool { background: var(--accent-2); } .brain .br-tl-legend .k.speak { background: var(--good); }
+.brain .br-steps { width: 100%; font-size: 11.5px; font-family: ui-monospace, Menlo, monospace; border-collapse: collapse; }
+.brain .br-steps th { font-size: 9px; color: var(--dim); text-transform: uppercase; letter-spacing: .12em;
+  text-align: left; padding: 3px 8px 5px 0; border-bottom: 1px solid var(--line); font-weight: 500; }
+.brain .br-steps td { padding: 4px 8px 4px 0; border-bottom: 1px solid rgba(30,39,64,.5); }
+.brain .br-totals td { border-top: 1px solid var(--line); border-bottom: none; color: var(--accent); }
+.brain .br-hist { display: flex; flex-direction: column; gap: 1px; }
+.brain .br-hist-row { display: flex; gap: 8px; align-items: center; font-size: 11px; padding: 4px 6px;
+  border-radius: 5px; cursor: pointer; }
+.brain .br-hist-row.sel, .brain .br-hist-row:hover { background: rgba(93,184,255,.07); }
+.brain .br-hist-text { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.brain .br-past { opacity: .55; border-bottom: 1px dashed var(--line); padding: 8px 10px 10px; margin-bottom: 4px; }
+.brain .br-past-x { margin-top: 7px; }
+.brain .br-past-u { font-family: ui-monospace, Menlo, monospace; font-size: 12px; color: var(--accent); }
+.brain .br-past-r { font-size: 12px; margin: 2px 0 0 14px; color: var(--fg); }
+.brain .br-sess { border-top: 1px solid var(--line); margin-top: 10px; }
+.brain .br-sess-row { display: flex; gap: 8px; align-items: center; font-size: 11px; padding: 4px 6px; border-radius: 5px; }
+.brain .br-sess-row:hover { background: rgba(93,184,255,.05); }
+.brain .br-sess-id { color: var(--accent); font-size: 10px; }
+.brain .br-sess-sum { max-width: 28%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.brain .br-btn.tiny { padding: 2px 9px; font-size: 9px; }
+`;
