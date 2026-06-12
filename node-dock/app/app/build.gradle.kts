@@ -99,6 +99,15 @@ android {
         }
         debug {
             isMinifyEnabled = false
+            // Sign DEBUG with the release keystore too (when configured): one
+            // signing identity across every build, so an adb-pushed debug build
+            // can still take a release OTA and vice versa. Android refuses
+            // cross-signature updates — debug-key sideload + release-key OTA
+            // was exactly the observed "OTA fails after adb push" failure.
+            // Without a keystore this falls back to the stock debug key.
+            if (hasReleaseSigning) {
+                signingConfig = signingConfigs.getByName("release")
+            }
         }
     }
 
