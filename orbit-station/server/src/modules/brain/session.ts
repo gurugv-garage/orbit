@@ -91,6 +91,11 @@ export class DockBrainSession {
   // the always-paid config, or latched mid-turn when the free key hits a
   // quota/overload and we retry on the paid one.
   #usePaidKey = false;
+
+  // "Approve all" for code/file mutations: latched when the user taps it on a
+  // confirm dialog; auto-approves subsequent mutations for the rest of THIS
+  // session (re-arms on close). Session-scoped, not persisted.
+  #approveAllMutations = false;
   // per-dock skills (pi progressive disclosure), reloaded each turn so a
   // freshly-installed SKILL.md applies next-turn with no session restart.
   #skills: DockSkills = { skills: [], promptBlock: '' };
@@ -277,6 +282,7 @@ export class DockBrainSession {
     this.#d.log?.(`[brain] ${this.dock}: session ${sessionId} closed (${reason})`);
     this.#meta = undefined;
     this.#agent = undefined;
+    this.#approveAllMutations = false; // approve-all is session-scoped; re-arm on close
     void this.#compactSummary(sessionId, messages);
   }
 
@@ -693,16 +699,27 @@ export class DockBrainSession {
 
   /** Ask the dock to CONFIRM a mutating code/file action before it runs. RPCs
    *  a `confirm` tool-call to the dock's face surface; the UI shows it and acks
-   *  approve/deny. Anything but an explicit, non-error "approved" = DENY
-   *  (offline, timeout, decline all fail safe). */
+   *  approve / deny / approve-all. Anything but an explicit, non-error approval
+   *  = DENY (offline, timeout, decline all fail safe).
+   *
+   *  "Approve all" (the user tapped it once) latches #approveAllMutations for
+   *  the rest of the session: subsequent mutations skip the RPC entirely. */
   async #confirmOnDock(summary: string, detail: string): Promise<boolean> {
+    if (this.#approveAllMutations) return true; // session-wide approval already given
     const ack = await this.#d.rpc.call({
       dock: this.dock, cap: 'face', turnId: this.#activeTurnId ?? '',
       toolCallId: `confirm-${randomUUID().slice(0, 8)}`,
       name: 'confirm', args: { summary, detail },
       timeoutMs: 120_000, // a human is reading + deciding
     });
-    return !ack.isError && /^(approved|yes|true|ok)$/i.test(ack.content.trim());
+    if (ack.isError) return false;
+    const reply = ack.content.trim();
+    if (/^(approved[-_]all|approve[-_]all|all)$/i.test(reply)) {
+      this.#approveAllMutations = true; // every mutation this session is now auto-approved
+      this.#d.log?.(`[brain] ${this.dock}: approve-all latched for this session`);
+      return true;
+    }
+    return /^(approved|yes|true|ok)$/i.test(reply);
   }
 
   /** One spoken sentence → directed speak frame to the voice component. */

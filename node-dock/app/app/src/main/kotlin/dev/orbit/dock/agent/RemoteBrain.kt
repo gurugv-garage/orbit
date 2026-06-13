@@ -320,16 +320,18 @@ class RemoteBrain(
         }
     }
 
-    /** The user tapped Approve/Deny on a [pendingConfirm] dialog: ack the
-     *  parked confirm tool-call so the brain's tool proceeds or aborts. */
-    fun resolveConfirm(approved: Boolean) {
+    /** The user's choice on a [pendingConfirm] dialog. `approveAll` latches
+     *  session-wide auto-approval at the station (no more prompts this session);
+     *  `approved` is a one-shot yes; otherwise deny. */
+    fun resolveConfirm(approved: Boolean, approveAll: Boolean = false) {
         val req = _pendingConfirm.value ?: return
         _pendingConfirm.value = null
-        trace("CONFIRM ${if (approved) "approved" else "denied"} ${req.summary}")
+        val content = when { approveAll -> "approved-all"; approved -> "approved"; else -> "denied" }
+        trace("CONFIRM $content ${req.summary}")
         scope.launch {
             link.publishCritical("agent", "tool-result", buildJsonObject {
                 put("reqId", req.reqId); put("toolCallId", req.toolCallId); put("turnId", req.turnId)
-                put("content", if (approved) "approved" else "denied"); put("isError", false)
+                put("content", content); put("isError", false)
             })
         }
     }

@@ -251,14 +251,16 @@ export function Brain() {
   const pub = (topic: string, kind: string, payload: unknown) =>
     ws.current?.send(JSON.stringify({ t: 'publish', topic, kind, payload }));
 
-  // approve/deny a parked confirm (mutating code/file tool) → ack the tool-result
-  const resolveConfirm = (approved: boolean) => {
+  // approve / deny / approve-all a parked confirm (mutating code/file tool).
+  // 'all' latches session-wide auto-approval at the station.
+  const resolveConfirm = (mode: 'approve' | 'deny' | 'all') => {
     const c = confirm;
     if (!c) return;
     setConfirm(null);
     pub('agent', 'tool-result', {
       reqId: c.reqId, toolCallId: c.toolCallId, turnId: c.turnId,
-      content: approved ? 'approved' : 'denied', isError: false,
+      content: mode === 'all' ? 'approved-all' : mode === 'approve' ? 'approved' : 'denied',
+      isError: false,
     });
   };
 
@@ -552,13 +554,14 @@ export function Brain() {
 
       {/* approve/deny a mutating code/file tool (write/edit/run) */}
       {confirm && (
-        <div className="br-confirm-overlay" onClick={() => resolveConfirm(false)}>
+        <div className="br-confirm-overlay" onClick={() => resolveConfirm('deny')}>
           <div className="br-confirm" onClick={(e) => e.stopPropagation()}>
             <div className="br-confirm-title">{confirm.summary}</div>
             {confirm.detail && <pre className="br-confirm-detail">{confirm.detail}</pre>}
             <div className="br-confirm-actions">
-              <button className="br-btn" onClick={() => resolveConfirm(false)}>Deny</button>
-              <button className="br-btn acc" onClick={() => resolveConfirm(true)}>Approve</button>
+              <button className="br-btn" onClick={() => resolveConfirm('deny')}>Deny</button>
+              <button className="br-btn" onClick={() => resolveConfirm('all')}>Approve all (session)</button>
+              <button className="br-btn acc" onClick={() => resolveConfirm('approve')}>Approve</button>
             </div>
           </div>
         </div>

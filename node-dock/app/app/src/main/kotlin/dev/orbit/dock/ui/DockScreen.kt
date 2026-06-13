@@ -630,6 +630,7 @@ fun DockScreen() {
                 summary = req.summary,
                 detail = req.detail,
                 onApprove = { agent.resolveConfirm(true) },
+                onApproveAll = { agent.resolveConfirm(approved = true, approveAll = true) },
                 onDeny = { agent.resolveConfirm(false) },
             )
         }
@@ -641,18 +642,26 @@ private fun ConfirmDialog(
     summary: String,
     detail: String,
     onApprove: () -> Unit,
+    onApproveAll: () -> Unit,
     onDeny: () -> Unit,
 ) {
     androidx.compose.material3.AlertDialog(
         onDismissRequest = onDeny, // dismiss = deny (safe default)
         title = { Text(summary) },
         text = {
-            if (detail.isNotBlank()) {
-                Text(
-                    detail,
-                    fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
-                    style = MaterialTheme.typography.bodySmall,
-                )
+            androidx.compose.foundation.layout.Column {
+                if (detail.isNotBlank()) {
+                    Text(
+                        detail,
+                        fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
+                // session-wide opt-out of further prompts
+                androidx.compose.material3.TextButton(
+                    onClick = onApproveAll,
+                    modifier = Modifier.padding(top = 8.dp),
+                ) { Text("Approve all (this session)") }
             }
         },
         confirmButton = {

@@ -434,3 +434,47 @@ test('google quota with NO paid key → fails (no infinite retry)', async () => 
     if (prevPaid === undefined) delete process.env.GEMINI_API_KEY_PAID_ACC; else process.env.GEMINI_API_KEY_PAID_ACC = prevPaid;
   }
 });
+
+test('approve-all: first confirm latches session-wide auto-approval; later mutations skip the prompt', async () => {
+  // a step that calls run_command(echo …) then ends the turn.
+  const runCmd = (cmd: string): Script => (s) => {
+    const m = assistant('');
+    m.content.push({ type: 'toolCall', id: `call-${cmd}`, name: 'run_command', arguments: { command: `echo ${cmd}` } });
+    m.stopReason = 'toolUse';
+    s.push({ type: 'toolcall_end', contentIndex: 0, toolCall: m.content[0] as never, partial: m });
+    s.push({ type: 'done', reason: 'toolUse', message: m });
+    s.end(m);
+  };
+  const finish: Script = (s) => {
+    const done = assistant('Done. ');
+    s.push({ type: 'start', partial: assistant('') });
+    s.push({ type: 'text_delta', contentIndex: 0, delta: 'Done. ', partial: done });
+    s.push({ type: 'done', reason: 'stop', message: done });
+    s.end(done);
+  };
+  // turn 1: run_command → (confirm) → finish.  turn 2: run_command → finish.
+  const { session, frames, bus } = makeSession(
+    [runCmd('one'), finish, runCmd('two'), finish],
+    { config: { brainFileAccess: true } },
+  );
+
+  // phone: ack the FIRST confirm with approved-all; count confirm prompts.
+  let confirmPrompts = 0;
+  bus.on('agent', (m) => {
+    if (m.kind !== 'tool-call' || m.source !== 'station') return;
+    const p = m.payload as { reqId: string; toolCallId: string; name: string };
+    if (p.name === 'confirm') confirmPrompts++;
+    queueMicrotask(() => bus.publish({
+      topic: 'agent', kind: 'tool-result', source: 'phone-hw-1',
+      payload: { reqId: p.reqId, toolCallId: p.toolCallId, content: 'approved-all', isError: false },
+    }));
+  });
+
+  await session.handleTurnRequest({ turnId: 't1', trigger: { kind: 'user', text: 'run one' } });
+  await session.handleTurnRequest({ turnId: 't2', trigger: { kind: 'user', text: 'run two' } });
+
+  // exactly ONE confirm prompt across both mutations — the latch suppressed the
+  // second. (The bus var is captured from makeSession's closure scope.)
+  assert.equal(confirmPrompts, 1, `expected 1 confirm prompt, got ${confirmPrompts}`);
+  assert.equal(frames.filter((f) => f.kind === 'turn-status' && (f.payload as { state: string }).state === 'done').length, 2);
+});
