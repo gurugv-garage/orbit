@@ -8,7 +8,7 @@
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { apiKeyFor, isQuotaOrOverload, hasPaidKey } from './session.js';
+import { apiKeyFor, isQuotaOrOverload, hasPaidKey, keyStatusFor } from './session.js';
 
 function withEnv(vars: Record<string, string | undefined>, fn: () => void) {
   const prev: Record<string, string | undefined> = {};
@@ -50,4 +50,42 @@ test('isQuotaOrOverload matches the fixable provider errors', () => {
   assert.equal(isQuotaOrOverload('401 invalid api key'), false);
   assert.equal(isQuotaOrOverload(undefined), false);
   assert.equal(isQuotaOrOverload(''), false);
+});
+
+test('keyStatusFor names the key the console shows', () => {
+  withEnv({ GEMINI_API_KEY: 'free', GEMINI_API_KEY_PAID_ACC: 'paid', OPENROUTER_API_KEY: 'or' }, () => {
+    // google, free (alwaysPaid off): free key + paid fallback
+    const g = keyStatusFor('google/gemini-2.5-flash', false);
+    assert.equal(g.provider, 'google');
+    assert.equal(g.keyName, 'GEMINI_API_KEY');
+    assert.equal(g.keySet, true);
+    assert.deepEqual(g.paidFallback, { keyName: 'GEMINI_API_KEY_PAID_ACC', keySet: true });
+    assert.equal(g.alwaysPaid, false);
+
+    // google, alwaysPaid on: paid key directly, no fallback line
+    const gp = keyStatusFor('google/gemini-2.5-flash', true);
+    assert.equal(gp.keyName, 'GEMINI_API_KEY_PAID_ACC');
+    assert.equal(gp.alwaysPaid, true);
+    assert.equal(gp.paidFallback, null);
+
+    // openrouter: its own key, no google fallback
+    const or = keyStatusFor('openrouter/google/gemini-2.5-flash', false);
+    assert.equal(or.keyName, 'OPENROUTER_API_KEY');
+    assert.equal(or.keySet, true);
+    assert.equal(or.paidFallback, null);
+
+    // LAN/openai-compatible: no key at all
+    const lan = keyStatusFor('openai-compatible/llama3@http://localhost:11434/v1', false);
+    assert.equal(lan.keyName, null);
+    assert.equal(lan.keySet, false);
+  });
+});
+
+test('keyStatusFor: alwaysPaid with NO paid key stays on free (and still shows the fallback unset)', () => {
+  withEnv({ GEMINI_API_KEY: 'free', GEMINI_API_KEY_PAID_ACC: undefined }, () => {
+    const g = keyStatusFor('google/gemini-2.5-flash', true);
+    assert.equal(g.alwaysPaid, false);            // no paid key → not actually paid
+    assert.equal(g.keyName, 'GEMINI_API_KEY');
+    assert.deepEqual(g.paidFallback, { keyName: 'GEMINI_API_KEY_PAID_ACC', keySet: false });
+  });
 });

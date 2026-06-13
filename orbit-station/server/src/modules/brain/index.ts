@@ -11,6 +11,7 @@
  *   station → phone:  tool-call, speak, turn-status, brain-status (directed)
  *
  *   GET    /api/brain/docks                lanes + open session
+ *   GET    /api/brain/keystatus            which API key the current model uses
  *   GET    /api/brain/:dock/sessions       session index (incl. summaries)
  *   GET    /api/brain/:dock/history        open session transcript
  *   POST   /api/brain/:dock/session/end    close now (next turn opens fresh)
@@ -27,7 +28,7 @@ import type { Directory } from '../docks/directory.js';
 import type { MotionExecutor } from '../bodylink/motion.js';
 import { getFaceTools } from '../perception/index.js';
 import { RpcBroker } from './rpc.js';
-import { DockBrainSession, type TurnRequest } from './session.js';
+import { DockBrainSession, type TurnRequest, keyStatusFor } from './session.js';
 import { SessionStore } from './store.js';
 import { installDockSkill, listDockSkills, removeDockSkill } from './skills.js';
 import type { IncomingMessage } from 'node:http';
@@ -159,6 +160,14 @@ export function brainModule(w: BrainWiring): StationModule {
           inflightToolCalls: rpc.inflight(s.dock),
         }));
         json(res, 200, lanes);
+        return true;
+      }
+      // which API key the brain will use for the current model (name + set/unset
+      // + the paid fallback) — surfaced in the console so the active key is
+      // never a mystery.
+      if (req.method === 'GET' && subPath === '/keystatus') {
+        const model = typeof w.config('brainModel') === 'string' ? (w.config('brainModel') as string) : '';
+        json(res, 200, keyStatusFor(model, w.config('brainAlwaysPaid') === true));
         return true;
       }
       let m = subPath.match(/^\/([^/]+)\/sessions$/);

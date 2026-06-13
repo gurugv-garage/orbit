@@ -57,6 +57,13 @@ interface SessionMeta {
 }
 
 interface BrainConfig { brainModel: string; brainThinkingLevel: string; brainPersona: string; brainTurnTimeoutMs: number }
+interface KeyStatus {
+  provider: string;
+  keyName: string | null;
+  keySet: boolean;
+  paidFallback: { keyName: string; keySet: boolean } | null;
+  alwaysPaid: boolean;
+}
 
 /** A condensed prior exchange from a resumed/open session's transcript. */
 interface PastExchange { user: string; reply: string }
@@ -107,6 +114,7 @@ export function Brain() {
   const [sessions, setSessions] = useState<SessionMeta[]>([]);
   const [cfg, setCfg] = useState<BrainConfig | null>(null);
   const [cfgDirty, setCfgDirty] = useState<Partial<BrainConfig>>({});
+  const [keyStatus, setKeyStatus] = useState<KeyStatus | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
   const [past, setPast] = useState<PastExchange[]>([]);
   const [, bump] = useState(0); // re-render tick for ref-held turn map
@@ -190,6 +198,11 @@ export function Brain() {
         brainTurnTimeoutMs: Number(v('brainTurnTimeoutMs') ?? 60000),
       });
       setCfgDirty({});
+      // which API key the current model resolves to (name + set/unset + fallback)
+      try {
+        const kr = await fetch('/api/brain/keystatus');
+        if (kr.ok) setKeyStatus(await kr.json() as KeyStatus);
+      } catch { /* ignore */ }
     } catch { /* station down */ }
   }, []);
   useEffect(() => { void loadConfig(); }, [loadConfig]);
@@ -377,6 +390,28 @@ export function Brain() {
           <input className="br-in br-num mono" type="number" value={effective.brainTurnTimeoutMs}
             onChange={(e) => setCfgDirty((d) => ({ ...d, brainTurnTimeoutMs: Number(e.target.value) }))} />
           <button className={`br-btn ${dirty ? 'acc glow' : ''}`} onClick={applyConfig} disabled={!dirty}>apply</button>
+          {keyStatus && (
+            <span className="br-key" title={`provider: ${keyStatus.provider}`}>
+              <label className="br-lbl">key</label>
+              {keyStatus.keyName ? (
+                <span className={`br-key-name ${keyStatus.keySet ? 'ok' : 'bad'}`}
+                  title={keyStatus.keySet ? 'set in station .env' : 'NOT set in station .env'}>
+                  <span className="br-key-dot" />{keyStatus.keyName}
+                  {keyStatus.alwaysPaid && <span className="br-key-tag">paid</span>}
+                </span>
+              ) : (
+                <span className="br-key-name dim" title="local/LAN model — no API key">— none (local)</span>
+              )}
+              {keyStatus.paidFallback && (
+                <span className={`br-key-fallback ${keyStatus.paidFallback.keySet ? 'ok' : 'bad'}`}
+                  title={keyStatus.paidFallback.keySet
+                    ? 'paid key is set — used as fallback on quota/overload'
+                    : 'paid fallback key is NOT set'}>
+                  ↳ fallback {keyStatus.paidFallback.keyName}
+                </span>
+              )}
+            </span>
+          )}
         </div>
       )}
 
@@ -613,6 +648,18 @@ const CSS = `
   text-shadow: 0 0 14px rgba(93,184,255,.45); }
 .brain .br-sep { width: 1px; height: 18px; background: var(--line); }
 .brain .br-lbl { font-size: 9px; color: var(--dim); text-transform: uppercase; letter-spacing: .14em; }
+.brain .br-key { display: inline-flex; align-items: center; gap: 7px; }
+.brain .br-key-name { display: inline-flex; align-items: center; gap: 5px; font-family: ui-monospace, Menlo, monospace;
+  font-size: 11px; padding: 3px 8px; border-radius: 6px; border: 1px solid var(--line); background: var(--bg-2); }
+.brain .br-key-name.ok { color: var(--fg); }
+.brain .br-key-name.bad { color: #ff6b6b; border-color: rgba(255,107,107,.4); }
+.brain .br-key-name.dim { color: var(--dim); }
+.brain .br-key-dot { width: 7px; height: 7px; border-radius: 50%; background: #3ad29f; box-shadow: 0 0 6px rgba(58,210,159,.6); }
+.brain .br-key-name.bad .br-key-dot { background: #ff6b6b; box-shadow: 0 0 6px rgba(255,107,107,.6); }
+.brain .br-key-tag { font-size: 8px; text-transform: uppercase; letter-spacing: .1em; padding: 1px 5px; border-radius: 4px;
+  background: rgba(255,196,84,.18); color: #ffc454; border: 1px solid rgba(255,196,84,.35); }
+.brain .br-key-fallback { font-size: 10px; color: var(--dim); font-family: ui-monospace, Menlo, monospace; }
+.brain .br-key-fallback.bad { color: #ff9b6b; }
 .brain .br-in { background: var(--bg-2); border: 1px solid var(--line); color: var(--fg);
   border-radius: 6px; padding: 5px 9px; font-size: 12px; outline: none; }
 .brain .br-in:focus { border-color: var(--accent); box-shadow: 0 0 0 1px rgba(93,184,255,.25); }

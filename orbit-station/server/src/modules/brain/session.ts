@@ -844,6 +844,50 @@ export function hasPaidKey(): boolean {
   return !!process.env.GEMINI_API_KEY_PAID_ACC;
 }
 
+/** The env-var name a provider+paid combination resolves to (NOT the value).
+ *  Mirrors apiKeyFor's selection so the console can show which key is in use. */
+export function keyEnvName(provider: string, paid = false): string | undefined {
+  switch (provider) {
+    case 'google': return paid ? 'GEMINI_API_KEY_PAID_ACC' : 'GEMINI_API_KEY';
+    case 'anthropic': return 'ANTHROPIC_API_KEY';
+    case 'openai': return 'OPENAI_API_KEY';
+    case 'openrouter': return 'OPENROUTER_API_KEY';
+    default: return undefined; // openai-compatible / LAN: no key
+  }
+}
+
+export interface KeyStatus {
+  provider: string;
+  /** the env var the NEXT turn will use (paid when alwaysPaid, else free). */
+  keyName: string | null;
+  /** is that key actually set in the station env? */
+  keySet: boolean;
+  /** google only: the paid fallback exists and would be tried on a 429/503. */
+  paidFallback: { keyName: string; keySet: boolean } | null;
+  /** true when alwaysPaid is on AND a paid key exists (google). */
+  alwaysPaid: boolean;
+}
+
+/** Resolve which API key the dock brain will use for a model spec — names +
+ *  set/unset, the paid fallback, and the always-paid state — for the console. */
+export function keyStatusFor(modelSpec: string, alwaysPaid: boolean): KeyStatus {
+  const spec = modelSpec || 'google/gemini-2.5-flash';
+  const slash = spec.indexOf('/');
+  let provider = slash > 0 ? spec.slice(0, slash) : 'google';
+  const rest = slash > 0 ? spec.slice(slash + 1) : spec;
+  if (provider === 'openai-compatible' || rest.includes('@')) provider = 'openai-compatible';
+
+  const usePaidNow = provider === 'google' && alwaysPaid && hasPaidKey();
+  const keyName = keyEnvName(provider, usePaidNow) ?? null;
+  const keySet = keyName != null && !!process.env[keyName];
+
+  const paidFallback = provider === 'google' && !usePaidNow
+    ? { keyName: 'GEMINI_API_KEY_PAID_ACC', keySet: hasPaidKey() }
+    : null;
+
+  return { provider, keyName, keySet, paidFallback, alwaysPaid: usePaidNow };
+}
+
 function assistantText(m: unknown): string {
   const msg = m as { role?: string; content?: Array<{ type?: string; text?: string }> };
   if (msg.role !== 'assistant' || !Array.isArray(msg.content)) return '';
