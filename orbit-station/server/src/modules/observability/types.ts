@@ -52,7 +52,12 @@ export interface AgentEventDto {
     trigger?: { kind: string; text?: string };
     stopReason?: string;
     /** usage if the host reports it on StepEnd / MessageEnd. */
-    usage?: { inputTokens?: number; outputTokens?: number };
+    usage?: { inputTokens?: number; outputTokens?: number; totalTokens?: number; cost?: number };
+    /** rich per-step timings (StepEnd) — mirrors the live inspector. */
+    ms?: number;
+    ttftMs?: number;
+    thinkingMs?: number;
+    ttftTextMs?: number;
     model?: string;
     [k: string]: unknown;
   };
@@ -81,7 +86,13 @@ export interface StepRecord {
   model?: string;
   stopReason?: string;
   text?: string;
-  usage?: { inputTokens?: number; outputTokens?: number };
+  usage?: { inputTokens?: number; outputTokens?: number; totalTokens?: number; cost?: number };
+  /** rich timings the host reports on StepEnd (mirrors the live brain-debug
+   *  inspector so a resumed session renders identically). */
+  ms?: number;
+  ttftMs?: number;
+  thinkingMs?: number;
+  ttftTextMs?: number;
   tools: ToolCallRecord[];
 }
 

@@ -49,6 +49,8 @@ interface TurnDebug {
   code?: string;
   error?: string;
   totalMs?: number;
+  /** true = hydrated from the obs tree on resume (a prior turn), not live. */
+  resumed?: boolean;
 }
 
 interface SessionMeta {
@@ -68,6 +70,67 @@ interface ConfirmReq { reqId: string; toolCallId: string; turnId: string; summar
 
 /** A condensed prior exchange from a resumed/open session's transcript. */
 interface PastExchange { user: string; reply: string }
+
+/** Map a persisted observability Session tree → the SAME TurnDebug objects the
+ *  live brain-debug stream builds, so a resumed session renders with the full
+ *  inspector (steps, tools, tokens, cost, ttft) — not a flat reply. The obs
+ *  StepEnd now carries the rich timings + cost (server enrichment), so resumed
+ *  turns match live exactly. */
+function turnsFromObs(session: { turns?: ObsTurn[] }): TurnDebug[] {
+  return (session.turns ?? []).map((t) => {
+    const steps: StepDebug[] = (t.steps ?? []).map((s) => ({
+      step: s.index,
+      startedAt: s.startedAt,
+      ttftMs: s.ttftMs ?? (s.streamStartedAt != null ? s.streamStartedAt - s.startedAt : undefined),
+      thinkingMs: s.thinkingMs,
+      ttftTextMs: s.ttftTextMs,
+      ms: s.ms ?? (s.endedAt != null ? s.endedAt - s.startedAt : undefined),
+      stopReason: s.stopReason,
+      model: s.model,
+      usage: s.usage ? {
+        input: s.usage.inputTokens ?? 0, output: s.usage.outputTokens ?? 0,
+        total: s.usage.totalTokens ?? 0, cost: s.usage.cost,
+      } : undefined,
+      tools: (s.tools ?? []).map((tc) => ({
+        name: tc.toolName, args: tc.args, isError: tc.isError, result: tc.result,
+        ms: tc.endedAt != null ? tc.endedAt - tc.startedAt : undefined, at: tc.startedAt,
+      })),
+    }));
+    const reply = steps.map((s) => s.tools).length // assistant text lives on step.text in obs
+      ? (t.steps ?? []).map((s) => s.text ?? '').filter(Boolean).join(' ')
+      : '';
+    // A turn FAILED only if its LAST step errored — an early step error that
+    // was recovered (e.g. free-key 429 → paid retry succeeds) is not a failure.
+    // Tool errors don't fail the turn either; the model narrates and continues.
+    const lastStep = steps[steps.length - 1];
+    const hadErr = lastStep?.stopReason === 'error';
+    return {
+      turnId: t.turnId,
+      text: t.trigger?.text ?? '',
+      startedAt: t.startedAt,
+      steps,
+      streamText: reply,
+      thinkingText: '',
+      speaks: [],
+      state: hadErr ? 'failed' : 'done',
+      totalMs: t.endedAt != null ? t.endedAt - t.startedAt : undefined,
+      resumed: true,
+    } satisfies TurnDebug;
+  });
+}
+
+interface ObsTurn {
+  turnId: string; startedAt: number; endedAt?: number;
+  trigger?: { kind: string; text?: string };
+  steps?: ObsStep[];
+}
+interface ObsStep {
+  index: number; startedAt: number; endedAt?: number; streamStartedAt?: number;
+  model?: string; stopReason?: string; text?: string;
+  ms?: number; ttftMs?: number; thinkingMs?: number; ttftTextMs?: number;
+  usage?: { inputTokens?: number; outputTokens?: number; totalTokens?: number; cost?: number };
+  tools?: { toolName: string; args?: unknown; isError?: boolean; result?: string; startedAt: number; endedAt?: number }[];
+}
 
 function pastFromHistory(messages: unknown[]): PastExchange[] {
   const out: PastExchange[] = [];
@@ -242,14 +305,38 @@ export function Brain() {
   const resumeSession = useCallback(async (sessionId: string) => {
     const d = dockRef.current.trim() || 'web-test';
     const r = await fetch(`/api/brain/${encodeURIComponent(d)}/session/${encodeURIComponent(sessionId)}/resume`, { method: 'POST' });
-    if (r.ok) {
-      turns.current.clear();
-      order.current = [];
-      setSelected(null);
-      await refreshSessions(d);
-      await loadHistory(d);
-    }
-  }, [refreshSessions, loadHistory]);
+    if (!r.ok) return;
+    turns.current.clear();
+    order.current = [];
+    setSelected(null);
+    setPast([]);
+    await refreshSessions(d);
+    // Hydrate the rich inspector from the persisted obs tree (same UI as live).
+    // Fall back to the flat transcript strip only if obs has no trace.
+    try {
+      const o = await fetch(`/api/observability/sessions/${encodeURIComponent(sessionId)}`);
+      if (o.ok) {
+        const tree = await o.json();
+        const hydrated = turnsFromObs(tree);
+        if (hydrated.length > 0) {
+          for (const t of hydrated) { turns.current.set(t.turnId, t); order.current.push(t.turnId); }
+          rerender();
+          return;
+        }
+      }
+    } catch { /* fall through to flat history */ }
+    await loadHistory(d);
+  }, [refreshSessions, loadHistory, rerender]);
+
+  const deleteSession = useCallback(async (sessionId: string) => {
+    if (!window.confirm(`Delete session ${sessionId}? This removes its transcript and trace permanently.`)) return;
+    const d = dockRef.current.trim() || 'web-test';
+    const r = await fetch(`/api/brain/${encodeURIComponent(d)}/session/${encodeURIComponent(sessionId)}`, { method: 'DELETE' });
+    if (r.status === 409) { window.alert('That session is currently open — end it first.'); return; }
+    // drop the obs trace too
+    await fetch(`/api/observability/sessions/${encodeURIComponent(sessionId)}`, { method: 'DELETE' }).catch(() => {});
+    await refreshSessions(d);
+  }, [refreshSessions]);
 
   const pub = (topic: string, kind: string, payload: unknown) =>
     ws.current?.send(JSON.stringify({ t: 'publish', topic, kind, payload }));
@@ -474,7 +561,26 @@ export function Brain() {
                 </div>
               </>
             )}
-            {turnList.map((t) => <Turn key={t.turnId} t={t} sel={sel?.turnId === t.turnId} onSelect={() => setSelected(t.turnId)} />)}
+            {turnList.map((t, i) => {
+              // divider between resumed (obs-hydrated) history and live turns
+              const prevResumed = i > 0 && turnList[i - 1]!.resumed;
+              const showLiveDivider = prevResumed && !t.resumed;
+              const showHistBanner = i === 0 && t.resumed;
+              return (
+                <Fragment key={t.turnId}>
+                  {showHistBanner && (
+                    <div className="br-past-banner"><span className="br-lbl">earlier in this session</span><span className="br-past-line" /></div>
+                  )}
+                  {showLiveDivider && (
+                    <div className="br-past-banner"><span className="br-lbl">live</span><span className="br-past-line" /></div>
+                  )}
+                  <Turn t={t} sel={sel?.turnId === t.turnId} onSelect={() => setSelected(t.turnId)} />
+                </Fragment>
+              );
+            })}
+            {turnList.length > 0 && turnList[turnList.length - 1]!.resumed && (
+              <div className="br-past-banner"><span className="br-lbl">live</span><span className="br-past-line" /></div>
+            )}
           </div>
           <div className="br-composer">
             <span className={`br-prompt ${turnActive ? 'busy' : ''}`}>{turnActive ? '◌' : '❯'}</span>
@@ -576,7 +682,10 @@ export function Brain() {
                   <span className="spacer" />
                   {sx.closedAt == null
                     ? <span className="br-chip mini">open</span>
-                    : <button className="br-btn tiny" onClick={() => resumeSession(sx.sessionId)}>continue</button>}
+                    : <>
+                        <button className="br-btn tiny" onClick={() => resumeSession(sx.sessionId)}>continue</button>
+                        <button className="br-btn tiny bad" title="delete permanently" onClick={() => deleteSession(sx.sessionId)}>✕</button>
+                      </>}
                 </div>
               ))}
             </div>

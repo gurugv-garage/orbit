@@ -558,3 +558,14 @@ test('resume: can switch between old sessions repeatedly (regression: 2nd resume
   // re-resuming the already-live one is a clean no-op true
   assert.equal(session.resume(ids[2]!), true);
 });
+
+test('store.delete: removes a closed session, refuses the open one', () => {
+  const { store } = makeSession([]);
+  const m = store.open('del-dock');
+  store.turnEnded('del-dock', m.sessionId, []);
+  assert.equal(store.delete('del-dock', m.sessionId), 'open'); // can't delete a live session
+  store.close('del-dock', m.sessionId, 'bye');
+  assert.equal(store.delete('del-dock', m.sessionId), 'deleted');
+  assert.equal(store.sessions('del-dock').length, 0);
+  assert.equal(store.delete('del-dock', 'sess-nope'), 'gone');
+});

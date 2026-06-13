@@ -58,6 +58,11 @@ export class ObsStore {
           step.stopReason = ev.data?.stopReason;
           step.model = ev.data?.model;
           if (ev.data?.usage) step.usage = ev.data.usage;
+          // rich timings (mirror the live inspector for resumed sessions)
+          if (ev.data?.ms != null) step.ms = ev.data.ms;
+          if (ev.data?.ttftMs != null) step.ttftMs = ev.data.ttftMs;
+          if (ev.data?.thinkingMs != null) step.thinkingMs = ev.data.thinkingMs;
+          if (ev.data?.ttftTextMs != null) step.ttftTextMs = ev.data.ttftTextMs;
         }
         break;
       }
@@ -211,6 +216,19 @@ export class ObsStore {
 
   get(sessionId: string): SessionRecord | undefined {
     return this.#sessions.get(sessionId);
+  }
+
+  /** Permanently delete a session's trace (in-memory + SQLite + FTS). */
+  delete(sessionId: string): boolean {
+    const had = this.#sessions.delete(sessionId);
+    this.#order = this.#order.filter((id) => id !== sessionId);
+    const keys = this.#db.prepare(`SELECT turn_id FROM obs_turns WHERE session_id=?`).all(sessionId) as { turn_id: string }[];
+    for (const { turn_id } of keys) {
+      this.#db.prepare(`DELETE FROM obs_fts WHERE turn_key=?`).run(ftsKey(sessionId, turn_id));
+    }
+    const info = this.#db.prepare(`DELETE FROM obs_turns WHERE session_id=?`).run(sessionId);
+    this.#db.prepare(`DELETE FROM obs_sessions WHERE session_id=?`).run(sessionId);
+    return had || info.changes > 0;
   }
 
   #session(id: string, source: string, ts: number): SessionRecord {

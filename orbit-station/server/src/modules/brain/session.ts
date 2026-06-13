@@ -699,21 +699,34 @@ export class DockBrainSession {
       }
       case 'turn_end': {
         const m = event.message as AssistantMessage;
+        const stepMs = Date.now() - this.#stepStartedAt;
+        // the reasoning phase: first thinking token → first answer token
+        // (or step end when the step never produced answer text)
+        const thinkingMs = this.#stepThinkAt != null
+          ? (this.#stepTextAt ?? Date.now()) - this.#stepThinkAt
+          : undefined;
+        const ttftTextMs = this.#stepTextAt != null ? this.#stepTextAt - this.#stepStartedAt : undefined;
+        // Persist the SAME rich timings + cost on the obs StepEnd as the live
+        // debug stream carries, so a resumed session's inspector matches live
+        // exactly (the obs tree is the single source for resumed turns).
         this.#shipObs('StepEnd', {
           model: (m as { model?: string }).model ?? '',
           stopReason: (m as { stopReason?: string }).stopReason,
-          usage: m.usage ? { inputTokens: m.usage.input, outputTokens: m.usage.output } : undefined,
+          ms: stepMs,
+          ttftMs: this.#stepTtft,
+          thinkingMs,
+          ttftTextMs,
+          usage: m.usage ? {
+            inputTokens: m.usage.input, outputTokens: m.usage.output,
+            totalTokens: m.usage.totalTokens, cost: m.usage.cost?.total,
+          } : undefined,
         });
         this.#debug('step-end', {
           step: this.#stepIndex,
-          ms: Date.now() - this.#stepStartedAt,
+          ms: stepMs,
           ttftMs: this.#stepTtft,
-          // the reasoning phase: first thinking token → first answer token
-          // (or step end when the step never produced answer text)
-          thinkingMs: this.#stepThinkAt != null
-            ? (this.#stepTextAt ?? Date.now()) - this.#stepThinkAt
-            : undefined,
-          ttftTextMs: this.#stepTextAt != null ? this.#stepTextAt - this.#stepStartedAt : undefined,
+          thinkingMs,
+          ttftTextMs,
           stopReason: (m as { stopReason?: string }).stopReason,
           model: (m as { model?: string }).model ?? '',
           usage: m.usage ? {

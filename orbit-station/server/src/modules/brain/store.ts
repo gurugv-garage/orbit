@@ -19,7 +19,7 @@
  * transcript needs. This stays swappable behind the same surface.)
  */
 
-import { mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import type { AgentMessage } from '@earendil-works/pi-agent-core';
@@ -111,6 +111,20 @@ export class SessionStore {
     if (!meta) return;
     meta.summary = summary;
     this.#writeIndex(dock, idx);
+  }
+
+  /** Delete a session permanently: drop it from the index and remove its
+   *  transcript file. Refuses the currently-OPEN session (close/end it first) —
+   *  returns 'open' so the caller can surface that; 'gone' if it never existed;
+   *  'deleted' on success. */
+  delete(dock: string, sessionId: string): 'deleted' | 'open' | 'gone' {
+    const idx = this.#index(dock);
+    const meta = idx.find((s) => s.sessionId === sessionId);
+    if (!meta) return 'gone';
+    if (meta.closedAt == null) return 'open'; // never delete a live session out from under a turn
+    this.#writeIndex(dock, idx.filter((s) => s.sessionId !== sessionId));
+    try { rmSync(this.#file(dock, `${sessionId}.json`), { force: true }); } catch { /* already gone */ }
+    return 'deleted';
   }
 
   /** Re-open a closed session (console "continue"). The caller must have

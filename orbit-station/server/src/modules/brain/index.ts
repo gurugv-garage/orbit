@@ -189,6 +189,16 @@ export function brainModule(w: BrainWiring): StationModule {
         json(res, 200, { ok: true });
         return true;
       }
+      // delete a specific session (transcript + index entry). Refuses the
+      // currently-open one; the obs trace is dropped via the obs DELETE route.
+      m = subPath.match(/^\/([^/]+)\/session\/([^/]+)$/);
+      if (m && req.method === 'DELETE') {
+        const dock = decodeURIComponent(m[1]!);
+        const sid = decodeURIComponent(m[2]!);
+        const r = store.delete(dock, sid);
+        json(res, r === 'deleted' ? 200 : r === 'open' ? 409 : 404, { ok: r === 'deleted', reason: r });
+        return true;
+      }
       m = subPath.match(/^\/([^/]+)\/session\/([^/]+)\/resume$/);
       if (m && req.method === 'POST') {
         // session(dock) (not sessions.get): the lane may not exist yet after

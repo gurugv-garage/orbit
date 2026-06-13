@@ -86,6 +86,11 @@ export function observabilityModule(): StationModule {
         json(res, 200, s);
         return true;
       }
+      if (m && req.method === 'DELETE') {
+        const ok = store.delete(decodeURIComponent(m[1]!));
+        json(res, ok ? 200 : 404, { ok });
+        return true;
+      }
 
       return false;
     },
