@@ -29,6 +29,8 @@ interface StepDebug {
   ttftTextMs?: number;
   ms?: number;
   stopReason?: string;
+  /** the step's error text when it errored (provider body, etc.). */
+  error?: string;
   model?: string;
   usage?: { input: number; output: number; total: number; cost?: number };
   tools: { name: string; args?: unknown; ms?: number; isError?: boolean; result?: string; at: number }[];
@@ -86,6 +88,7 @@ function turnsFromObs(session: { turns?: ObsTurn[] }): TurnDebug[] {
       ttftTextMs: s.ttftTextMs,
       ms: s.ms ?? (s.endedAt != null ? s.endedAt - s.startedAt : undefined),
       stopReason: s.stopReason,
+      error: s.error,
       model: s.model,
       usage: s.usage ? {
         input: s.usage.inputTokens ?? 0, output: s.usage.outputTokens ?? 0,
@@ -126,7 +129,7 @@ interface ObsTurn {
 }
 interface ObsStep {
   index: number; startedAt: number; endedAt?: number; streamStartedAt?: number;
-  model?: string; stopReason?: string; text?: string;
+  model?: string; stopReason?: string; error?: string; text?: string;
   ms?: number; ttftMs?: number; thinkingMs?: number; ttftTextMs?: number;
   usage?: { inputTokens?: number; outputTokens?: number; totalTokens?: number; cost?: number };
   tools?: { toolName: string; args?: unknown; isError?: boolean; result?: string; startedAt: number; endedAt?: number }[];
@@ -238,7 +241,7 @@ export function Brain() {
       }
       case 'step-end': {
         const s = t!.steps.find((x) => x.step === p.step);
-        if (s) { s.ms = p.ms; s.ttftMs = p.ttftMs ?? s.ttftMs; s.thinkingMs = p.thinkingMs; s.ttftTextMs = p.ttftTextMs; s.stopReason = p.stopReason; s.model = p.model; s.usage = p.usage; }
+        if (s) { s.ms = p.ms; s.ttftMs = p.ttftMs ?? s.ttftMs; s.thinkingMs = p.thinkingMs; s.ttftTextMs = p.ttftTextMs; s.stopReason = p.stopReason; s.error = p.error; s.model = p.model; s.usage = p.usage; }
         break;
       }
       case 'turn-end':
@@ -715,6 +718,27 @@ export function Brain() {
 
 /** Expanded detail for one step: timings, each tool (name + args + result or
  *  error), and the step/turn error text. */
+/** Provider errors often arrive as a nested JSON blob; pull the human message
+ *  + status/code out, else show the raw text. */
+function prettyError(raw: string): string {
+  try {
+    let v: unknown = JSON.parse(raw);
+    // unwrap { error: { message: "{...}" } } and stringified inner json
+    for (let i = 0; i < 3 && v && typeof v === 'object'; i++) {
+      const e = (v as { error?: unknown }).error ?? v;
+      const msg = (e as { message?: unknown }).message;
+      if (typeof msg === 'string') {
+        const trimmed = msg.trim();
+        if (trimmed.startsWith('{')) { try { v = JSON.parse(trimmed); continue; } catch { return trimmed; } }
+        const code = (e as { code?: unknown }).code ?? (e as { status?: unknown }).status;
+        return code != null ? `${code}: ${trimmed}` : trimmed;
+      }
+      v = e === v ? null : e;
+    }
+  } catch { /* not json */ }
+  return raw;
+}
+
 function StepDetail({ step, turnError }: { step: StepDebug; turnError?: string }) {
   const fmtArgs = (a: unknown) => {
     if (a == null) return '';
@@ -732,7 +756,16 @@ function StepDetail({ step, turnError }: { step: StepDebug; turnError?: string }
         {step.usage?.cost != null && <span>cost <b className="mono">{fmtCost(step.usage.cost)}</b></span>}
       </div>
 
-      {step.tools.length === 0 && !turnError && (
+      {/* the step's own error (e.g. the 429 body) — shown even when a later
+          step recovered the turn, so an errored step says WHAT failed. */}
+      {step.error && (
+        <div className="br-sd-block">
+          <div className="br-sd-k err">error</div>
+          <pre className="br-sd-pre err">{prettyError(step.error)}</pre>
+        </div>
+      )}
+
+      {step.tools.length === 0 && !step.error && !turnError && (
         <div className="br-sd-empty dim">No tools called in this step.</div>
       )}
 

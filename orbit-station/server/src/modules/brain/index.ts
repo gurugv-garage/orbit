@@ -30,7 +30,9 @@ import { getFaceTools } from '../perception/index.js';
 import { RpcBroker } from './rpc.js';
 import { DockBrainSession, type TurnRequest, keyStatusFor } from './session.js';
 import { SessionStore } from './store.js';
-import { installDockSkill, listDockSkills, removeDockSkill } from './skills.js';
+import { installDockSkill, listDockSkills, removeDockSkill, loadDockSkills } from './skills.js';
+import { buildSystemPrompt } from './prompt.js';
+import { FILE_TOOLS_PROMPT } from './filetools.js';
 import type { IncomingMessage } from 'node:http';
 
 const IDLE_SWEEP_MS = 60_000;
@@ -170,6 +172,16 @@ export function brainModule(w: BrainWiring): StationModule {
         json(res, 200, keyStatusFor(model, w.config('brainAlwaysPaid') === true));
         return true;
       }
+      // the dock's full brain CONTEXT in one call: effective config, key status,
+      // live composition, memory (latest summary), skills, and the system
+      // prompt the brain would actually send right now. Powers the Brain view's
+      // "dock console" — everything about THIS dock's brain in context.
+      const pm = subPath.match(/^\/([^/]+)\/profile$/);
+      if (pm && req.method === 'GET') {
+        const dock = decodeURIComponent(pm[1]!);
+        void buildDockProfile(dock, w, store).then((p) => json(res, 200, p));
+        return true;
+      }
       let m = subPath.match(/^\/([^/]+)\/sessions$/);
       if (m && req.method === 'GET') {
         json(res, 200, store.sessions(decodeURIComponent(m[1]!)));
@@ -247,4 +259,67 @@ function readBody(req: IncomingMessage): Promise<string> {
     req.on('end', () => resolve(data));
     req.on('error', reject);
   });
+}
+
+/**
+ * The dock's full brain context in one payload — the "dock console" data:
+ * effective config, key status, live composition, memory (latest closed
+ * session's summary), skills, and the SYSTEM PROMPT the brain would send right
+ * now (assembled exactly as a turn would, minus the live per-turn perception).
+ */
+async function buildDockProfile(dock: string, w: BrainWiring, store: SessionStore) {
+  const cfg = (k: string) => w.config(k);
+  const str = (k: string) => (typeof cfg(k) === 'string' ? (cfg(k) as string) : '');
+  const model = str('brainModel');
+
+  // skills (per-dock folder) + the prompt block they contribute
+  let skills: Awaited<ReturnType<typeof loadDockSkills>> = { skills: [], promptBlock: '' };
+  try { skills = await loadDockSkills(store.root, dock); } catch { /* none */ }
+
+  // memory = the latest CLOSED session's summary (what seeds a fresh session)
+  const sessions = store.sessions(dock);
+  const memory = sessions.find((s) => s.closedAt != null && s.summary)?.summary;
+
+  // live composition (voice/face/camera/servo presence)
+  const info = w.directory.dockInfo(dock);
+  const fileAccess = cfg('brainFileAccess') === true;
+  const bodyLine = w.directory.resolveCap(dock, 'servo') != null
+    ? 'Body: CONNECTED. Parts you can move — neck (head tilt), foot (base swivel); use the move tool.'
+    : 'Body: NOT connected (movement requests will be ignored).';
+
+  // the effective system prompt, assembled as a real turn would (sans the live
+  // perception snapshot, which only exists mid-turn).
+  const systemPrompt = buildSystemPrompt({
+    persona: str('brainPersona') || undefined,
+    memory,
+    skills: [skills.promptBlock, fileAccess ? FILE_TOOLS_PROMPT : ''].filter(Boolean).join('\n\n') || undefined,
+    context: bodyLine,
+  });
+
+  const grantsAll = cfg('brainGrants') as Record<string, unknown> | undefined;
+
+  return {
+    dock,
+    config: {
+      brainModel: model,
+      brainPersona: str('brainPersona'),
+      brainThinkingLevel: str('brainThinkingLevel') || 'off',
+      brainTurnTimeoutMs: typeof cfg('brainTurnTimeoutMs') === 'number' ? cfg('brainTurnTimeoutMs') : 60_000,
+      brainSkills: cfg('brainSkills') !== false,
+      brainFileAccess: fileAccess,
+      brainAlwaysPaid: cfg('brainAlwaysPaid') === true,
+      brainGrants: (grantsAll && typeof grantsAll === 'object' ? (grantsAll as Record<string, unknown>)[dock] : undefined) ?? {},
+    },
+    key: keyStatusFor(model, cfg('brainAlwaysPaid') === true),
+    composition: {
+      components: info.components.map((c) => ({
+        component: c.component, kind: c.kind, caps: c.caps, online: c.online, build: c.build,
+      })),
+    },
+    memory: memory ?? null,
+    skills: skills.skills.map((s) => ({ name: s.name, description: s.description })),
+    sessionCount: sessions.length,
+    openSession: sessions.find((s) => s.closedAt == null)?.sessionId ?? null,
+    systemPrompt,
+  };
 }

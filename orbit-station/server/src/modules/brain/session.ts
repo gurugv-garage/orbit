@@ -708,10 +708,14 @@ export class DockBrainSession {
         const ttftTextMs = this.#stepTextAt != null ? this.#stepTextAt - this.#stepStartedAt : undefined;
         // Persist the SAME rich timings + cost on the obs StepEnd as the live
         // debug stream carries, so a resumed session's inspector matches live
+        // the step's own error message (e.g. the 429 body) when it errored —
+        // so an errored step shows WHAT failed, even when the turn recovered.
+        const stepError = (m as { errorMessage?: string }).errorMessage;
         // exactly (the obs tree is the single source for resumed turns).
         this.#shipObs('StepEnd', {
           model: (m as { model?: string }).model ?? '',
           stopReason: (m as { stopReason?: string }).stopReason,
+          error: stepError,
           ms: stepMs,
           ttftMs: this.#stepTtft,
           thinkingMs,
@@ -724,6 +728,7 @@ export class DockBrainSession {
         this.#debug('step-end', {
           step: this.#stepIndex,
           ms: stepMs,
+          error: stepError,
           ttftMs: this.#stepTtft,
           thinkingMs,
           ttftTextMs,

@@ -57,6 +57,7 @@ export class ObsStore {
           step.endedAt = ev.ts;
           step.stopReason = ev.data?.stopReason;
           step.model = ev.data?.model;
+          if (typeof ev.data?.error === 'string') step.error = ev.data.error;
           if (ev.data?.usage) step.usage = ev.data.usage;
           // rich timings (mirror the live inspector for resumed sessions)
           if (ev.data?.ms != null) step.ms = ev.data.ms;

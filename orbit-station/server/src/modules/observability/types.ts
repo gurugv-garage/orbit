@@ -85,6 +85,9 @@ export interface StepRecord {
   endedAt?: number;
   model?: string;
   stopReason?: string;
+  /** the step's error message when stopReason === 'error' (provider error body
+   *  etc.) — shown in the inspector even when a later step recovered the turn. */
+  error?: string;
   text?: string;
   usage?: { inputTokens?: number; outputTokens?: number; totalTokens?: number; cost?: number };
   /** rich timings the host reports on StepEnd (mirrors the live brain-debug
