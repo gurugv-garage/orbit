@@ -86,6 +86,10 @@ export class DockBrainSession {
 
   #agent?: Agent;
   #meta?: SessionMeta;
+  // paid-key selection for google: true = use GEMINI_API_KEY_PAID_ACC. Set by
+  // the always-paid config, or latched mid-turn when the free key hits a
+  // quota/overload and we retry on the paid one.
+  #usePaidKey = false;
   // per-dock skills (pi progressive disclosure), reloaded each turn so a
   // freshly-installed SKILL.md applies next-turn with no session restart.
   #skills: DockSkills = { skills: [], promptBlock: '' };
@@ -328,7 +332,9 @@ export class DockBrainSession {
         tools: this.#baseTools,
         messages,
       },
-      getApiKey: (provider) => apiKeyFor(provider),
+      // reads #usePaidKey at call time, so flipping it mid-turn (quota fallback)
+      // takes effect on the very next provider request — no agent rebuild.
+      getApiKey: (provider) => apiKeyFor(provider, this.#usePaidKey),
       ...(this.#d.streamFn ? { streamFn: this.#d.streamFn } : {}),
     });
     agent.subscribe((event) => this.#onAgentEvent(event));
@@ -390,6 +396,9 @@ export class DockBrainSession {
     });
     agent.state.model = this.#resolveModel();
     agent.state.thinkingLevel = (str(this.#d.config('brainThinkingLevel')) ?? 'off') as never;
+    // paid-key policy, re-read each turn: always-paid config forces it; else
+    // start on the free key and fall back to paid only if this turn 429s/503s.
+    this.#usePaidKey = this.#d.config('brainAlwaysPaid') === true && hasPaidKey();
     // cross-dock grants (config json { <dock>: { <target>: [caps] } }) become
     // extra tools — re-derived each turn so a granted/revoked dock applies
     // next-turn, no session restart. invoke_skill joins them when the dock has
@@ -437,9 +446,34 @@ export class DockBrainSession {
       agent.abort();
     }, timeoutMs);
 
+    const userMessage = { role: 'user', content, timestamp: Date.now() } as AgentMessage;
     let failCode: FailCode | undefined;
     try {
-      await agent.prompt([{ role: 'user', content, timestamp: Date.now() } as AgentMessage]);
+      await agent.prompt([userMessage]);
+      // AUTO-FALLBACK: free key hit a quota/overload → retry this turn ONCE on
+      // the paid account (google only, when a paid key exists and we weren't
+      // already on it). The paid key clears 429/503; a real error still fails.
+      if (!this.#cancelled && !this.#timedOut && !this.#usePaidKey
+          && hasPaidKey() && agent.state.model.provider === 'google'
+          && isQuotaOrOverload(agent.state.errorMessage)) {
+        this.#d.log?.(`[brain] ${this.dock}: free key ${agent.state.errorMessage?.slice(0, 60)}… → retrying on paid account`);
+        this.#debug('paid-fallback', { reason: agent.state.errorMessage?.slice(0, 120) });
+        this.#usePaidKey = true;
+        // The failed prompt already appended the user message (and possibly a
+        // trailing error-assistant). Drop any trailing assistant and CONTINUE
+        // from the existing transcript — re-prompting would duplicate the user
+        // message. getApiKey now returns the paid key; the retry overwrites
+        // agent.state.errorMessage (cleared on success, set again on a real fail).
+        const msgs = agent.state.messages;
+        while (msgs.length > 0 && (msgs[msgs.length - 1] as { role?: string }).role === 'assistant') {
+          msgs.pop();
+        }
+        if (msgs.length > 0 && (msgs[msgs.length - 1] as { role?: string }).role === 'user') {
+          await agent.continue();
+        } else {
+          await agent.prompt([userMessage]);
+        }
+      }
       const errMsg = agent.state.errorMessage;
       if (this.#timedOut) failCode = 'timeout';
       else if (!this.#cancelled && errMsg) failCode = 'llm_error';
@@ -776,16 +810,37 @@ export function cappedStreamFn(cap = DOCK_MAX_TOKENS): import('@earendil-works/p
     streamSimple(model, context, { ...options, maxTokens: cap })) as import('@earendil-works/pi-agent-core').StreamFn;
 }
 
-/** provider → station env var. Keys never live in device builds anymore. */
-export function apiKeyFor(provider: string): string | undefined {
+/** provider → station env var. Keys never live in device builds anymore.
+ *  `paid` selects the paid-account key for providers that have one (google:
+ *  GEMINI_API_KEY_PAID_ACC) — used as the overload/quota fallback and the
+ *  always-paid switch. Falls back to the free key if the paid one is unset. */
+export function apiKeyFor(provider: string, paid = false): string | undefined {
   const env = process.env;
   switch (provider) {
-    case 'google': return env.GEMINI_API_KEY ?? env.GOOGLE_API_KEY;
+    case 'google':
+      return paid
+        ? (env.GEMINI_API_KEY_PAID_ACC ?? env.GEMINI_API_KEY ?? env.GOOGLE_API_KEY)
+        : (env.GEMINI_API_KEY ?? env.GOOGLE_API_KEY);
     case 'anthropic': return env.ANTHROPIC_API_KEY;
     case 'openai': return env.OPENAI_API_KEY;
     case 'openrouter': return env.OPENROUTER_API_KEY;
     default: return undefined;
   }
+}
+
+/** True when a provider error is a quota/rate-limit/overload — the cases the
+ *  paid-account key can fix (mirrors the dock's diagnoseTurnFailure). */
+export function isQuotaOrOverload(errorMessage: string | undefined): boolean {
+  if (!errorMessage) return false;
+  const e = errorMessage.toLowerCase();
+  return ['429', 'resource_exhausted', 'rate limit', 'rate-limit', 'too many requests',
+    'quota', '503', 'overloaded', 'unavailable', 'high demand']
+    .some((n) => e.includes(n));
+}
+
+/** Whether the google paid-account key is even configured. */
+export function hasPaidKey(): boolean {
+  return !!process.env.GEMINI_API_KEY_PAID_ACC;
 }
 
 function assistantText(m: unknown): string {

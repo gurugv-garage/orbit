@@ -191,6 +191,11 @@ export const REGISTRY: ConfigEntry[] = [
     description: 'Give the brain FULL pi coding tools — read/write/edit any file + run shell commands on the station host, INCLUDING its own source. read_file is direct (ask it about its code); every write/edit/run requires user confirmation on the dock UI. Off by default; turning this on lets an LLM modify the running robot.',
   }),
   entry({
+    key: 'brainAlwaysPaid', type: 'boolean', schema: z.boolean(), default: false, tags: ['station'],
+    label: 'Always use paid key',
+    description: 'For Google/Gemini: always use the paid-account key (GEMINI_API_KEY_PAID_ACC) instead of the free key. Off = use the free key and fall back to the paid one only when the free key hits a quota or overload (429/503). No effect if no paid key is set.',
+  }),
+  entry({
     key: 'brainSessionIdleMin', type: 'number', schema: z.number().int().min(1).max(24 * 60), default: 30, tags: ['station'],
     label: 'Session idle close (min)',
     description: 'A brain session closes after this many minutes without a turn (then compacts to a summary). The next turn opens a fresh session.',

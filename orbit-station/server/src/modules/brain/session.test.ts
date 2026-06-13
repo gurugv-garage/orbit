@@ -377,3 +377,60 @@ test('obs events carry dock as source and the Turn/Step vocabulary', async () =>
     .map((p) => p.data?.trigger?.text);
   assert.deepEqual(starts, ['hi', 'do a little dance']);
 });
+
+test('google free-key quota → auto-retry on the paid account → turn succeeds', async () => {
+  const prevPaid = process.env.GEMINI_API_KEY_PAID_ACC;
+  const prevFree = process.env.GEMINI_API_KEY;
+  process.env.GEMINI_API_KEY = 'free';
+  process.env.GEMINI_API_KEY_PAID_ACC = 'paid';
+  try {
+    // call #1: the free key 429s; call #2 (paid): a normal reply.
+    const fail = (s: AssistantMessageEventStream) => {
+      const m = assistant('', 'stop');
+      (m as { errorMessage?: string }).errorMessage =
+        '{"error":{"code":429,"status":"RESOURCE_EXHAUSTED"}}';
+      s.push({ type: 'done', reason: 'stop', message: m });
+      s.end(m);
+    };
+    const ok = (s: AssistantMessageEventStream) => {
+      const partial = assistant('');
+      s.push({ type: 'start', partial });
+      s.push({ type: 'text_delta', contentIndex: 0, delta: 'Hello there. ', partial: assistant('Hello there. ') });
+      const done = assistant('Hello there. ');
+      s.push({ type: 'done', reason: 'stop', message: done });
+      s.end(done);
+    };
+    const { session, frames } = makeSession([fail, ok], {
+      config: { brainModel: 'google/gemini-2.5-flash' },
+    });
+    await session.handleTurnRequest({ turnId: 't1', trigger: { kind: 'user', text: 'hi' } });
+    const last = frames.filter((f) => f.kind === 'turn-status').at(-1)!.payload as { state: string };
+    assert.equal(last.state, 'done'); // the paid retry rescued the turn (would be 'failed' without fallback)
+    assert.ok(speakFrames(frames).join(' ').includes('Hello there'), 'the paid retry response was spoken');
+  } finally {
+    if (prevPaid === undefined) delete process.env.GEMINI_API_KEY_PAID_ACC; else process.env.GEMINI_API_KEY_PAID_ACC = prevPaid;
+    if (prevFree === undefined) delete process.env.GEMINI_API_KEY; else process.env.GEMINI_API_KEY = prevFree;
+  }
+});
+
+test('google quota with NO paid key → fails (no infinite retry)', async () => {
+  const prevPaid = process.env.GEMINI_API_KEY_PAID_ACC;
+  delete process.env.GEMINI_API_KEY_PAID_ACC;
+  try {
+    const fail = (s: AssistantMessageEventStream) => {
+      const m = assistant('', 'stop');
+      (m as { errorMessage?: string }).errorMessage = '429 RESOURCE_EXHAUSTED';
+      s.push({ type: 'error', reason: 'error', error: m });
+      s.end(m);
+    };
+    // only ONE script entry: if it retried, the harness would throw "script exhausted"
+    const { session, frames } = makeSession([fail], {
+      config: { brainModel: 'google/gemini-2.5-flash' },
+    });
+    await session.handleTurnRequest({ turnId: 't1', trigger: { kind: 'user', text: 'hi' } });
+    const last = frames.filter((f) => f.kind === 'turn-status').at(-1)!.payload as { state: string; code?: string };
+    assert.equal(last.state, 'failed');
+  } finally {
+    if (prevPaid === undefined) delete process.env.GEMINI_API_KEY_PAID_ACC; else process.env.GEMINI_API_KEY_PAID_ACC = prevPaid;
+  }
+});
