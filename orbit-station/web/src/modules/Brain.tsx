@@ -70,6 +70,23 @@ interface KeyStatus {
 }
 interface ConfirmReq { reqId: string; toolCallId: string; turnId: string; summary: string; detail: string }
 
+/** The dock's full brain context (GET /api/brain/:dock/profile). */
+interface DockProfile {
+  dock: string;
+  config: {
+    brainModel: string; brainPersona: string; brainThinkingLevel: string; brainTurnTimeoutMs: number;
+    brainSkills: boolean; brainFileAccess: boolean; brainAlwaysPaid: boolean;
+    brainGrants: Record<string, string[]>;
+  };
+  key: KeyStatus;
+  composition: { components: { component: string; kind?: string; caps?: string[]; online: boolean; build?: number }[] };
+  memory: string | null;
+  skills: { name: string; description: string }[];
+  sessionCount: number;
+  openSession: string | null;
+  systemPrompt: string;
+}
+
 /** A condensed prior exchange from a resumed/open session's transcript. */
 interface PastExchange { user: string; reply: string }
 
@@ -182,6 +199,8 @@ export function Brain() {
   const [cfg, setCfg] = useState<BrainConfig | null>(null);
   const [cfgDirty, setCfgDirty] = useState<Partial<BrainConfig>>({});
   const [keyStatus, setKeyStatus] = useState<KeyStatus | null>(null);
+  const [profile, setProfile] = useState<DockProfile | null>(null);
+  const [showContext, setShowContext] = useState(false);
   const [confirm, setConfirm] = useState<ConfirmReq | null>(null);
   const [expandedStep, setExpandedStep] = useState<number | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
@@ -278,6 +297,15 @@ export function Brain() {
   }, []);
   useEffect(() => { void loadConfig(); }, [loadConfig]);
 
+  // the dock's full brain context (config, key, composition, memory, skills,
+  // system prompt) — loaded on connect + after any config change.
+  const loadProfile = useCallback(async (d: string) => {
+    try {
+      const r = await fetch(`/api/brain/${encodeURIComponent(d)}/profile`);
+      if (r.ok) setProfile(await r.json() as DockProfile);
+    } catch { /* ignore */ }
+  }, []);
+
   const applyConfig = async () => {
     if (Object.keys(cfgDirty).length === 0) return;
     await fetch('/api/config', {
@@ -285,6 +313,7 @@ export function Brain() {
       body: JSON.stringify(cfgDirty),
     });
     await loadConfig();
+    await loadProfile(dockRef.current.trim() || 'web-test');
   };
   const effective = { ...cfg, ...cfgDirty } as BrainConfig | null;
   const dirty = Object.keys(cfgDirty).length > 0;
@@ -381,6 +410,7 @@ export function Brain() {
       setConnected(true);
       void refreshSessions(d);
       void loadHistory(d);
+      void loadProfile(d);
       setTimeout(() => inputEl.current?.focus(), 50);
     };
     sock.onclose = () => { setConnected(false); setBrainReady(false); };
@@ -417,7 +447,7 @@ export function Brain() {
       }
     };
     sock.onerror = () => sock.close();
-  }, [disconnect, refreshSessions, loadHistory]);
+  }, [disconnect, refreshSessions, loadHistory, loadProfile]);
   useEffect(() => () => disconnect(), [disconnect]);
 
   const send = () => {
@@ -530,8 +560,17 @@ export function Brain() {
               )}
             </span>
           )}
+          {connected && profile && (
+            <button className={`br-btn ${showContext ? 'acc' : ''}`} style={{ marginLeft: 'auto' }}
+              onClick={() => setShowContext((v) => !v)}>
+              {showContext ? '▾' : '▸'} dock context
+            </button>
+          )}
         </div>
       )}
+
+      {/* ── dock context: this dock's full brain state in one place ── */}
+      {connected && profile && showContext && <DockContext p={profile} />}
 
       {/* ── main ── */}
       <div className="br-grid">
@@ -715,6 +754,82 @@ export function Brain() {
 }
 
 // ── pieces ───────────────────────────────────────────────────────────────────
+
+/** The dock's full brain context — everything about THIS dock in one panel:
+ *  live composition, config/profile, memory, skills, and the system prompt. */
+function DockContext({ p }: { p: DockProfile }) {
+  const grants = Object.entries(p.config.brainGrants ?? {});
+  return (
+    <div className="br-ctx">
+      <div className="br-ctx-grid">
+        {/* composition — who's online in this dock */}
+        <div className="br-ctx-card">
+          <div className="br-ctx-h">composition</div>
+          {p.composition.components.length === 0
+            ? <span className="dim">no components seen</span>
+            : p.composition.components.map((c) => (
+                <div key={c.component} className="br-ctx-comp">
+                  <span className={`br-led tiny ${c.online ? 'on' : 'off'}`} />
+                  <span className="mono">{c.component}</span>
+                  <span className="dim">{c.kind}{c.build != null ? ` ·b${c.build}` : ''}</span>
+                  <span className="br-ctx-caps">{(c.caps ?? []).join(' ')}</span>
+                </div>
+              ))}
+        </div>
+
+        {/* profile / config */}
+        <div className="br-ctx-card">
+          <div className="br-ctx-h">brain profile</div>
+          <KV k="model" v={p.config.brainModel} />
+          <KV k="thinking" v={p.config.brainThinkingLevel} />
+          <KV k="persona" v={p.config.brainPersona || '(stock)'} />
+          <KV k="timeout" v={`${(p.config.brainTurnTimeoutMs / 1000).toFixed(0)}s`} />
+          <KV k="key" v={`${p.key.keyName ?? '—'}${p.key.keySet ? '' : ' (unset!)'}${p.key.alwaysPaid ? ' · paid' : ''}`} />
+          <div className="br-ctx-flags">
+            <span className={`br-flag ${p.config.brainSkills ? 'on' : ''}`}>skills</span>
+            <span className={`br-flag ${p.config.brainFileAccess ? 'danger' : ''}`}>code-access</span>
+            <span className={`br-flag ${p.config.brainAlwaysPaid ? 'on' : ''}`}>always-paid</span>
+          </div>
+          {grants.length > 0 && (
+            <div className="br-ctx-grants">grants: {grants.map(([d, caps]) => `${d}[${caps.join(',')}]`).join('  ')}</div>
+          )}
+        </div>
+
+        {/* skills */}
+        <div className="br-ctx-card">
+          <div className="br-ctx-h">skills <span className="dim">({p.skills.length})</span></div>
+          {p.skills.length === 0
+            ? <span className="dim">none installed — add in the Skills tab</span>
+            : p.skills.map((s) => (
+                <div key={s.name} className="br-ctx-skill">
+                  <span className="mono br-ctx-skill-n">{s.name}</span>
+                  <span className="dim">{s.description}</span>
+                </div>
+              ))}
+        </div>
+
+        {/* memory */}
+        <div className="br-ctx-card">
+          <div className="br-ctx-h">memory <span className="dim">(seeds new sessions)</span></div>
+          {p.memory
+            ? <div className="br-ctx-mem">{p.memory}</div>
+            : <span className="dim">nothing remembered yet across sessions</span>}
+          <div className="dim" style={{ marginTop: 6, fontSize: 10 }}>{p.sessionCount} sessions · {p.openSession ? `open: ${p.openSession}` : 'none open'}</div>
+        </div>
+      </div>
+
+      {/* the system prompt the brain would actually send */}
+      <details className="br-ctx-sys">
+        <summary>system prompt <span className="dim">({p.systemPrompt.length} chars — what the brain sends now)</span></summary>
+        <pre className="br-ctx-sys-pre">{p.systemPrompt}</pre>
+      </details>
+    </div>
+  );
+}
+
+function KV({ k, v }: { k: string; v: string }) {
+  return <div className="br-kv"><span className="br-kv-k">{k}</span><span className="br-kv-v mono">{v}</span></div>;
+}
 
 /** Expanded detail for one step: timings, each tool (name + args + result or
  *  error), and the step/turn error text. */
@@ -929,6 +1044,30 @@ const CSS = `
   background: rgba(255,196,84,.18); color: #ffc454; border: 1px solid rgba(255,196,84,.35); }
 .brain .br-key-fallback { font-size: 10px; color: var(--dim); font-family: ui-monospace, Menlo, monospace; }
 .brain .br-key-fallback.bad { color: #ff9b6b; }
+/* dock context panel */
+.brain .br-ctx { margin: 0 0 10px; padding: 12px; border: 1px solid var(--line); border-radius: 10px; background: rgba(10,14,26,.4); }
+.brain .br-ctx-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 10px; }
+.brain .br-ctx-card { padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg-1); }
+.brain .br-ctx-h { font-size: 9px; text-transform: uppercase; letter-spacing: .14em; color: var(--accent); margin-bottom: 8px; }
+.brain .br-ctx-comp { display: flex; align-items: center; gap: 7px; font-size: 11px; margin: 3px 0; }
+.brain .br-ctx-caps { color: var(--accent-2); font-size: 10px; font-family: ui-monospace, Menlo, monospace; margin-left: auto; }
+.brain .br-kv { display: flex; gap: 8px; font-size: 11px; margin: 2px 0; }
+.brain .br-kv-k { color: var(--dim); min-width: 56px; }
+.brain .br-kv-v { color: var(--fg); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.brain .br-ctx-flags { display: flex; gap: 5px; margin-top: 8px; flex-wrap: wrap; }
+.brain .br-flag { font-size: 9px; text-transform: uppercase; letter-spacing: .08em; padding: 2px 7px; border-radius: 5px;
+  border: 1px solid var(--line); color: var(--dim); }
+.brain .br-flag.on { color: var(--good); border-color: rgba(74,214,160,.4); background: rgba(74,214,160,.08); }
+.brain .br-flag.danger { color: var(--bad); border-color: rgba(255,107,129,.45); background: rgba(255,107,129,.1); }
+.brain .br-ctx-grants { margin-top: 8px; font-size: 10px; color: var(--accent-2); font-family: ui-monospace, Menlo, monospace; }
+.brain .br-ctx-skill { font-size: 11px; margin: 4px 0; display: flex; flex-direction: column; }
+.brain .br-ctx-skill-n { color: var(--accent-2); }
+.brain .br-ctx-mem { font-size: 11px; color: var(--fg); line-height: 1.5; white-space: pre-wrap; }
+.brain .br-ctx-sys { margin-top: 10px; }
+.brain .br-ctx-sys summary { cursor: pointer; font-size: 11px; color: var(--accent); }
+.brain .br-ctx-sys-pre { margin: 8px 0 0; padding: 10px 12px; background: var(--bg-2); border: 1px solid var(--line); border-radius: 8px;
+  font-size: 11px; color: var(--fg); white-space: pre-wrap; word-break: break-word; max-height: 360px; overflow: auto;
+  font-family: ui-monospace, Menlo, monospace; line-height: 1.5; }
 .brain .br-confirm-overlay { position: fixed; inset: 0; background: rgba(0,0,0,.55); display: flex;
   align-items: center; justify-content: center; z-index: 100; }
 .brain .br-confirm { background: var(--bg-1); border: 1px solid var(--accent); border-radius: 12px;
