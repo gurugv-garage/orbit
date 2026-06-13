@@ -570,7 +570,32 @@ export function Brain() {
       )}
 
       {/* ── dock context: this dock's full brain state in one place ── */}
-      {connected && profile && showContext && <DockContext p={profile} />}
+      {connected && profile && showContext && (
+        <DockContext
+          p={profile}
+          onPatchConfig={async (partial) => {
+            await fetch('/api/config', {
+              method: 'PATCH', headers: { 'content-type': 'application/json' },
+              body: JSON.stringify(partial),
+            });
+            await loadConfig();
+            await loadProfile(profile.dock);
+          }}
+          onInstallSkill={async (content) => {
+            const r = await fetch(`/api/brain/${encodeURIComponent(profile.dock)}/skills`, {
+              method: 'POST', headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({ content }),
+            });
+            const body = await r.json().catch(() => ({}));
+            await loadProfile(profile.dock);
+            return r.ok ? { ok: true, name: body.name } : { ok: false, error: body.error ?? 'install failed' };
+          }}
+          onRemoveSkill={async (name) => {
+            await fetch(`/api/brain/${encodeURIComponent(profile.dock)}/skills/${encodeURIComponent(name)}`, { method: 'DELETE' });
+            await loadProfile(profile.dock);
+          }}
+        />
+      )}
 
       {/* ── main ── */}
       <div className="br-grid">
@@ -755,10 +780,37 @@ export function Brain() {
 
 // ── pieces ───────────────────────────────────────────────────────────────────
 
-/** The dock's full brain context — everything about THIS dock in one panel:
- *  live composition, config/profile, memory, skills, and the system prompt. */
-function DockContext({ p }: { p: DockProfile }) {
+const SKILL_TEMPLATE = `---
+name: my-skill
+description: What this does and when to use it.
+---
+# My skill
+
+Step-by-step instructions for the dock to follow.
+`;
+
+/** The dock's full brain context — everything about THIS dock in one panel,
+ *  EDITABLE in place: config (model/persona/thinking + flag toggles), skills
+ *  (install/remove), memory, composition, and the live system prompt. */
+function DockContext({ p, onPatchConfig, onInstallSkill, onRemoveSkill }: {
+  p: DockProfile;
+  onPatchConfig: (partial: Record<string, unknown>) => Promise<void>;
+  onInstallSkill: (content: string) => Promise<{ ok: boolean; name?: string; error?: string }>;
+  onRemoveSkill: (name: string) => Promise<void>;
+}) {
   const grants = Object.entries(p.config.brainGrants ?? {});
+  const [model, setModel] = useState(p.config.brainModel);
+  const [persona, setPersona] = useState(p.config.brainPersona);
+  const [draft, setDraft] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  // keep local edit fields in sync when the profile reloads
+  useEffect(() => { setModel(p.config.brainModel); setPersona(p.config.brainPersona); }, [p.config.brainModel, p.config.brainPersona]);
+
+  const save = async (partial: Record<string, unknown>) => { setBusy(true); try { await onPatchConfig(partial); } finally { setBusy(false); } };
+  const modelDirty = model !== p.config.brainModel;
+  const personaDirty = persona !== p.config.brainPersona;
+
   return (
     <div className="br-ctx">
       <div className="br-ctx-grid">
@@ -777,35 +829,72 @@ function DockContext({ p }: { p: DockProfile }) {
               ))}
         </div>
 
-        {/* profile / config */}
+        {/* profile / config — EDITABLE */}
         <div className="br-ctx-card">
           <div className="br-ctx-h">brain profile</div>
-          <KV k="model" v={p.config.brainModel} />
-          <KV k="thinking" v={p.config.brainThinkingLevel} />
-          <KV k="persona" v={p.config.brainPersona || '(stock)'} />
-          <KV k="timeout" v={`${(p.config.brainTurnTimeoutMs / 1000).toFixed(0)}s`} />
+          <div className="br-kv">
+            <span className="br-kv-k">model</span>
+            <input className="br-ctx-in mono" value={model} onChange={(e) => setModel(e.target.value)} />
+            {modelDirty && <button className="br-btn tiny acc" disabled={busy} onClick={() => save({ brainModel: model })}>set</button>}
+          </div>
+          <div className="br-kv">
+            <span className="br-kv-k">thinking</span>
+            <div className="br-seg sm">
+              {THINKING_LEVELS.map((l) => (
+                <button key={l} className={p.config.brainThinkingLevel === l ? 'on' : ''}
+                  disabled={busy} onClick={() => save({ brainThinkingLevel: l })}>{l}</button>
+              ))}
+            </div>
+          </div>
+          <div className="br-kv">
+            <span className="br-kv-k">persona</span>
+            <input className="br-ctx-in" placeholder="(stock)" value={persona} onChange={(e) => setPersona(e.target.value)} />
+            {personaDirty && <button className="br-btn tiny acc" disabled={busy} onClick={() => save({ brainPersona: persona })}>set</button>}
+          </div>
           <KV k="key" v={`${p.key.keyName ?? '—'}${p.key.keySet ? '' : ' (unset!)'}${p.key.alwaysPaid ? ' · paid' : ''}`} />
           <div className="br-ctx-flags">
-            <span className={`br-flag ${p.config.brainSkills ? 'on' : ''}`}>skills</span>
-            <span className={`br-flag ${p.config.brainFileAccess ? 'danger' : ''}`}>code-access</span>
-            <span className={`br-flag ${p.config.brainAlwaysPaid ? 'on' : ''}`}>always-paid</span>
+            <button className={`br-flag ${p.config.brainSkills ? 'on' : ''}`} disabled={busy}
+              onClick={() => save({ brainSkills: !p.config.brainSkills })}>skills</button>
+            <button className={`br-flag ${p.config.brainFileAccess ? 'danger' : ''}`} disabled={busy}
+              onClick={() => { if (p.config.brainFileAccess || window.confirm("Enable code access? This lets the LLM read/modify the station's own code (every write/run is confirmed on the dock).")) save({ brainFileAccess: !p.config.brainFileAccess }); }}>code-access</button>
+            <button className={`br-flag ${p.config.brainAlwaysPaid ? 'on' : ''}`} disabled={busy}
+              onClick={() => save({ brainAlwaysPaid: !p.config.brainAlwaysPaid })}>always-paid</button>
           </div>
           {grants.length > 0 && (
             <div className="br-ctx-grants">grants: {grants.map(([d, caps]) => `${d}[${caps.join(',')}]`).join('  ')}</div>
           )}
         </div>
 
-        {/* skills */}
+        {/* skills — install / remove */}
         <div className="br-ctx-card">
           <div className="br-ctx-h">skills <span className="dim">({p.skills.length})</span></div>
           {p.skills.length === 0
-            ? <span className="dim">none installed — add in the Skills tab</span>
+            ? <span className="dim">none installed</span>
             : p.skills.map((s) => (
                 <div key={s.name} className="br-ctx-skill">
-                  <span className="mono br-ctx-skill-n">{s.name}</span>
+                  <div className="br-ctx-skill-row">
+                    <span className="mono br-ctx-skill-n">{s.name}</span>
+                    <button className="br-btn tiny bad" title="remove" disabled={busy} onClick={() => onRemoveSkill(s.name)}>✕</button>
+                  </div>
                   <span className="dim">{s.description}</span>
                 </div>
               ))}
+          <details className="br-ctx-add">
+            <summary>+ install a skill</summary>
+            <textarea className="br-ctx-skill-ta mono" rows={7} spellCheck={false}
+              placeholder={SKILL_TEMPLATE} value={draft} onChange={(e) => setDraft(e.target.value)} />
+            <div className="row" style={{ gap: 8, marginTop: 6, alignItems: 'center' }}>
+              <button className="br-btn tiny acc" disabled={busy || !draft.trim()}
+                onClick={async () => {
+                  setBusy(true); setMsg(null);
+                  const r = await onInstallSkill(draft);
+                  setMsg(r.ok ? { ok: true, text: `installed "${r.name}"` } : { ok: false, text: r.error ?? 'failed' });
+                  if (r.ok) setDraft('');
+                  setBusy(false);
+                }}>install</button>
+              {msg && <span className={msg.ok ? 'dim' : 'err'}>{msg.text}</span>}
+            </div>
+          </details>
         </div>
 
         {/* memory */}
@@ -1061,7 +1150,19 @@ const CSS = `
 .brain .br-flag.danger { color: var(--bad); border-color: rgba(255,107,129,.45); background: rgba(255,107,129,.1); }
 .brain .br-ctx-grants { margin-top: 8px; font-size: 10px; color: var(--accent-2); font-family: ui-monospace, Menlo, monospace; }
 .brain .br-ctx-skill { font-size: 11px; margin: 4px 0; display: flex; flex-direction: column; }
-.brain .br-ctx-skill-n { color: var(--accent-2); }
+.brain .br-ctx-skill-row { display: flex; align-items: center; gap: 6px; }
+.brain .br-ctx-skill-n { color: var(--accent-2); flex: 1; }
+.brain .br-ctx-in { flex: 1; min-width: 0; background: var(--bg-2); border: 1px solid var(--line); color: var(--fg);
+  border-radius: 5px; padding: 3px 7px; font-size: 11px; outline: none; }
+.brain .br-ctx-in:focus { border-color: var(--accent); }
+.brain .br-seg.sm button { font-size: 9px; padding: 2px 6px; }
+.brain .br-ctx-add { margin-top: 8px; }
+.brain .br-ctx-add summary { cursor: pointer; font-size: 10px; color: var(--accent); }
+.brain .br-ctx-skill-ta { width: 100%; margin-top: 6px; background: var(--bg-2); border: 1px solid var(--line);
+  color: var(--fg); border-radius: 6px; padding: 7px; font-size: 11px; outline: none; resize: vertical; }
+.brain .br-btn.tiny.bad { color: var(--bad); border-color: rgba(255,107,129,.35); }
+.brain .br-flag { cursor: pointer; background: none; }
+.brain .br-flag:disabled { opacity: .5; cursor: default; }
 .brain .br-ctx-mem { font-size: 11px; color: var(--fg); line-height: 1.5; white-space: pre-wrap; }
 .brain .br-ctx-sys { margin-top: 10px; }
 .brain .br-ctx-sys summary { cursor: pointer; font-size: 11px; color: var(--accent); }
