@@ -149,17 +149,17 @@ function entry(e: Omit<ConfigEntry, 'jsonSchema'>): ConfigEntry {
 }
 
 export const REGISTRY: ConfigEntry[] = [
-  entry({ key: 'logLevel', type: 'text', schema: z.enum(['debug', 'info', 'warn', 'error']), default: 'info', tags: ['station'] }),
-  entry({ key: 'heartbeatSec', type: 'number', schema: z.number().int().min(1).max(120), default: 10, tags: ['station'] }),
-
-  entry({ key: 'idleAnimations', type: 'boolean', schema: z.boolean(), default: true, tags: ['brain'] }),
-  entry({ key: 'gazeTracking', type: 'boolean', schema: z.boolean(), default: true, tags: ['brain'] }),
-  entry({ key: 'ttsRate', type: 'number', schema: z.number().min(0.5).max(2), default: 1.0, tags: ['brain'] }),
-  entry({ key: 'cameraDefaultOn', type: 'boolean', schema: z.boolean(), default: false, tags: ['brain'] }),
-  entry({ key: 'thinkingLevel', type: 'text', schema: z.enum(['low', 'medium', 'high']), default: 'low', tags: ['brain'] }),
   // ── server brain (docs/SERVER-BRAIN-IMPL.md §3.1) — consumed in-process by
   // the brain module, applied at turn start; tag 'station' (never pushed to
   // devices). Provider API keys are station env vars, not config.
+  //
+  // Registry = LIVE-TUNABLE OPS ONLY. Tuning/dev knobs that don't change at
+  // runtime live in code (brain/constants.ts): MAX_HISTORY_MESSAGES,
+  // SESSION_IDLE_MIN, VISION_GATE. Twelve dead keys (logLevel, heartbeatSec,
+  // idleAnimations, gazeTracking, ttsRate, cameraDefaultOn, the old
+  // thinkingLevel, the four servo limits, idleGestures) were removed — they
+  // were read by no component (server/web/app/firmware); the body's clamp
+  // ranges come from the firmware's `profile` message, not config.
   entry({
     key: 'brainModel', type: 'text', schema: z.string(), default: 'google/gemini-2.5-flash', tags: ['station'],
     label: 'Brain model',
@@ -175,11 +175,6 @@ export const REGISTRY: ConfigEntry[] = [
     description: 'Extended reasoning budget for brain turns. Off = lowest latency (the dock default); higher levels stream thinking before answering.',
   }),
   entry({ key: 'brainTurnTimeoutMs', type: 'number', schema: z.number().int().min(5_000).max(300_000), default: 60_000, tags: ['station'] }),
-  entry({ key: 'brainMaxHistoryMessages', type: 'number', schema: z.number().int().min(8).max(400), default: 48, tags: ['station'] }),
-  entry({
-    key: 'brainVisionGate', type: 'boolean', schema: z.boolean(), default: true, tags: ['station'],
-    description: 'Attach the camera frame only on vision-intent turns (small vision models fixate on an always-present image and ignore movement commands).',
-  }),
   entry({
     key: 'brainSkills', type: 'boolean', schema: z.boolean(), default: true, tags: ['station'],
     label: 'Skills',
@@ -196,11 +191,6 @@ export const REGISTRY: ConfigEntry[] = [
     description: 'For Google/Gemini: always use the paid-account key (GEMINI_API_KEY_PAID_ACC) instead of the free key. Off = use the free key and fall back to the paid one only when the free key hits a quota or overload (429/503). No effect if no paid key is set.',
   }),
   entry({
-    key: 'brainSessionIdleMin', type: 'number', schema: z.number().int().min(1).max(24 * 60), default: 30, tags: ['station'],
-    label: 'Session idle close (min)',
-    description: 'A brain session closes after this many minutes without a turn (then compacts to a summary). The next turn opens a fresh session.',
-  }),
-  entry({
     key: 'brainGrants', type: 'json', schema: z.record(z.string(), z.record(z.string(), z.array(z.string()))), default: {}, tags: ['station'],
     label: 'Cross-dock grants',
     description: 'Which OTHER docks each dock\'s brain may act on, by capability: { "<dock>": { "<targetDock>": ["nav", …] } }. Tool exposure is gated by this; default none.',
@@ -210,17 +200,6 @@ export const REGISTRY: ConfigEntry[] = [
     label: 'Face gestures',
     description: 'Body choreography the dock performs when set_face sets an expression. Each gesture is a list of move steps (degrees).',
   }),
-
-  // limits are owned by the body but the brain also reads them (to clamp), so
-  // both components register interest — sharing, not ownership.
-  entry({ key: 'maxSpeedDegPerSec', type: 'number', schema: z.number().int().min(10).max(360), default: 120, tags: ['body', 'brain'] }),
-  // Neck is gear-limited and ASYMMETRIC (positive = head down, 0 = straight).
-  // Calibrated on hardware: −60° (full up) … +35° (full down). Mirror of
-  // DockToolSchemas.DEGREE_LIMITS.
-  entry({ key: 'neckPitchMinDeg', type: 'number', schema: z.number().min(-90).max(0), default: -60, tags: ['body', 'brain'] }),
-  entry({ key: 'neckPitchMaxDeg', type: 'number', schema: z.number().min(0).max(90), default: 35, tags: ['body', 'brain'] }),
-  entry({ key: 'footYawLimitDeg', type: 'number', schema: z.number().min(0).max(90), default: 90, tags: ['body', 'brain'] }),
-  entry({ key: 'idleGestures', type: 'boolean', schema: z.boolean(), default: true, tags: ['body'] }),
 ];
 
 export function findEntry(key: string): ConfigEntry | undefined {

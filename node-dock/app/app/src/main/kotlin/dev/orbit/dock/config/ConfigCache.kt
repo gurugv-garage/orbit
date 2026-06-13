@@ -103,11 +103,13 @@ class ConfigCache(context: Context) {
         const val BAKED_ASSET = "config-defaults.json"
         /** The flat keys the dock app is interested in — announced to the
          *  station on connect; the station pushes only these. Since the
-         *  server-brain cutover these are phone-local UX keys only — the brain
-         *  profile (model/persona/thinking), faceGestures choreography, and the
-         *  servo limits are consumed at the STATION now. */
-        val INTEREST = listOf(
-            "idleAnimations", "gazeTracking", "ttsRate", "cameraDefaultOn",
-        )
+         *  server-brain cutover the brain profile (model/persona/thinking),
+         *  faceGestures choreography, and the servo limits are all consumed at
+         *  the STATION. The old phone-local UX keys (idleAnimations,
+         *  gazeTracking, ttsRate, cameraDefaultOn) were never actually read by
+         *  the app and have been removed from the registry — so the app
+         *  currently subscribes to NO config. Add a key here only when the app
+         *  genuinely reads its value. */
+        val INTEREST = emptyList<String>()
     }
 }

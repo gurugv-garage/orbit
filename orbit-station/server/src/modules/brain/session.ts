@@ -48,6 +48,7 @@ import type { MotionExecutor } from '../bodylink/motion.js';
 import type { FaceToolsApi } from '../perception/index.js';
 import { gesturesFromConfig } from '../bodylink/motion.js';
 import { buildSystemPrompt, isVisionIntent } from './prompt.js';
+import { MAX_HISTORY_MESSAGES, SESSION_IDLE_MIN, VISION_GATE } from './constants.js';
 import { RpcBroker } from './rpc.js';
 import { SentenceStreamer } from './sentence.js';
 import { SessionStore, type SessionMeta } from './store.js';
@@ -244,7 +245,7 @@ export class DockBrainSession {
    *  always resets it, so closing mid-turn is impossible by construction). */
   maybeIdleClose(now = Date.now()): void {
     if (!this.#meta || this.#turnActive) return;
-    const idleMin = num(this.#d.config('brainSessionIdleMin'), 30);
+    const idleMin = SESSION_IDLE_MIN;
     if (now - this.#meta.lastTurnEndedAt > idleMin * 60_000) this.endSession('idle');
   }
 
@@ -426,7 +427,7 @@ export class DockBrainSession {
       imageBase64: req.imageBase64, // face tools may use the frame even on gated turns
       streamId,
     };
-    const gate = this.#d.config('brainVisionGate') !== false;
+    const gate = VISION_GATE;
     const content: (TextContent | ImageContent)[] = [{ type: 'text', text: req.trigger.text }];
     if (!gate || isVisionIntent(req.trigger.text)) {
       const grabbed = req.imageBase64 == null && streamId != null
@@ -559,7 +560,7 @@ export class DockBrainSession {
       }
     }
     let result = repaired;
-    const cap = num(this.#d.config('brainMaxHistoryMessages'), 48);
+    const cap = MAX_HISTORY_MESSAGES;
     if (result.length > cap) {
       let boundary: number | undefined;
       for (let i = result.length - cap; i < result.length; i++) {

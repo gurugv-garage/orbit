@@ -255,14 +255,14 @@ test('session lifecycle: persists across instances, idle close opens fresh with 
     s.push({ type: 'done', reason: 'stop', message: done });
     s.end(done);
   };
-  const { session, store } = makeSession([script, script], { config: { brainSessionIdleMin: 1 } });
+  const { session, store } = makeSession([script, script]);
   await session.handleTurnRequest({ turnId: 't1', trigger: { kind: 'user', text: 'remember the cake' } });
   const sid1 = session.sessionId!;
   assert.ok(sid1);
   assert.equal(store.sessions(DOCK)[0]!.turns, 1);
 
-  // idle boundary crossed → close with summary; next turn opens fresh
-  session.maybeIdleClose(Date.now() + 2 * 60_000);
+  // idle boundary crossed (> SESSION_IDLE_MIN=30) → close with summary; next turn opens fresh
+  session.maybeIdleClose(Date.now() + 31 * 60_000);
   const closed = store.sessions(DOCK).find((s2) => s2.sessionId === sid1)!;
   assert.ok(closed.closedAt != null);
   assert.match(closed.summary ?? '', /cake/);
@@ -284,7 +284,7 @@ test('compaction: close upgrades the digest via one LLM call; the next session i
     // the compaction call (fires async on endSession)
     reply("Guru introduced himself; a cake is planned for Sia's birthday."),
     reply('Of course — the cake for Sia! '),
-  ], { config: { brainSessionIdleMin: 1 } });
+  ]);
 
   await session.handleTurnRequest({
     turnId: 't1',
