@@ -255,15 +255,33 @@ export class DockBrainSession {
   }
 
   /** Continue an old session (console "continue"): closes the open one (if
-   *  any), reopens the target, and drops the in-memory agent so the next turn
-   *  lazy-loads the reopened transcript. */
+   *  any), reopens the target, and ADOPTS it as the live session so a later
+   *  resume can close it again. */
   resume(sessionId: string): boolean {
     if (this.#meta?.sessionId === sessionId) return true; // already live
-    if (this.#meta) this.endSession('switched');
+
+    // Close whatever is open — prefer the in-memory lane, but FALL BACK to
+    // disk: resume() used to blank #meta after reopening, so a second resume
+    // had no in-memory pointer to the session it had just opened on disk and
+    // left it open → store.reopen then refused (one-open-per-dock) → 404. Now
+    // we always reconcile against disk before reopening.
+    const openOnDisk = this.#d.store.openSession(this.dock);
+    if (this.#meta) {
+      this.endSession('switched');
+    } else if (openOnDisk && openOnDisk.sessionId !== sessionId) {
+      // desync (or a fresh process): adopt the disk-open session, then close it
+      this.#meta = openOnDisk;
+      this.endSession('switched');
+    }
+
     const ok = this.#d.store.reopen(this.dock, sessionId);
     if (ok) {
-      this.#meta = undefined;
-      this.#agent = undefined; // ensureSession reloads the reopened transcript
+      // ADOPT the reopened session as live (don't blank #meta — that's what
+      // broke the second resume). Drop the agent so the next turn lazy-loads
+      // this transcript.
+      this.#meta = this.#d.store.openSession(this.dock);
+      this.#agent = undefined;
+      this.#approveAllMutations = false;
       this.#d.log?.(`[brain] ${this.dock}: resuming session ${sessionId}`);
     }
     return ok;

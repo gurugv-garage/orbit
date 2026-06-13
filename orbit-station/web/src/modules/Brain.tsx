@@ -455,15 +455,24 @@ export function Brain() {
               </div>
             )}
             {past.length > 0 && (
-              <div className="br-past">
-                <div className="br-lbl">earlier in this session</div>
+              <>
+                <div className="br-past-banner">
+                  <span className="br-lbl">earlier in this session</span>
+                  <span className="br-past-line" />
+                </div>
                 {past.map((x, i) => (
-                  <div key={i} className="br-past-x">
-                    <div className="br-past-u">❯ {x.user}</div>
-                    {x.reply && <div className="br-past-r">{x.reply}</div>}
+                  // styled as a real (static) turn so resumed history matches
+                  // the live chat look — same user/reply markup as <Turn>.
+                  <div key={`past-${i}`} className="br-turn past">
+                    <div className="br-user"><span className="br-caret">❯</span> {x.user}</div>
+                    {x.reply && <div className="br-reply">{x.reply}</div>}
                   </div>
                 ))}
-              </div>
+                <div className="br-past-banner">
+                  <span className="br-lbl">live</span>
+                  <span className="br-past-line" />
+                </div>
+              </>
             )}
             {turnList.map((t) => <Turn key={t.turnId} t={t} sel={sel?.turnId === t.turnId} onSelect={() => setSelected(t.turnId)} />)}
           </div>
@@ -947,10 +956,11 @@ const CSS = `
   border-radius: 5px; cursor: pointer; }
 .brain .br-hist-row.sel, .brain .br-hist-row:hover { background: rgba(93,184,255,.07); }
 .brain .br-hist-text { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.brain .br-past { opacity: .55; border-bottom: 1px dashed var(--line); padding: 8px 10px 10px; margin-bottom: 4px; }
-.brain .br-past-x { margin-top: 7px; }
-.brain .br-past-u { font-family: ui-monospace, Menlo, monospace; font-size: 12px; color: var(--accent); }
-.brain .br-past-r { font-size: 12px; margin: 2px 0 0 14px; color: var(--fg); }
+/* resumed history: real turn markup, slightly muted + not clickable */
+.brain .br-turn.past { cursor: default; opacity: .72; border-left-color: rgba(74,214,160,.35); }
+.brain .br-turn.past:hover { background: none; }
+.brain .br-past-banner { display: flex; align-items: center; gap: 10px; margin: 8px 2px 2px; }
+.brain .br-past-banner .br-past-line { flex: 1; height: 1px; background: var(--line); }
 .brain .br-sess { border-top: 1px solid var(--line); margin-top: 10px; }
 .brain .br-sess-row { display: flex; gap: 8px; align-items: center; font-size: 11px; padding: 4px 6px; border-radius: 5px; }
 .brain .br-sess-row:hover { background: rgba(93,184,255,.05); }

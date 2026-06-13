@@ -520,3 +520,41 @@ test('multi-step turn (tool call): each step speaks cleanly — no dropped openi
   // step 2 spoken INTACT — first word "I'll" not sliced off
   assert.ok(spoken.some((t) => t.startsWith("I'll need your permission")), `step-2 reply sliced/missing: ${JSON.stringify(spoken)}`);
 });
+
+test('resume: can switch between old sessions repeatedly (regression: 2nd resume 404)', async () => {
+  const reply = (text: string): Script => (s) => {
+    const done = assistant(text);
+    s.push({ type: 'start', partial: assistant('') });
+    s.push({ type: 'text_delta', contentIndex: 0, delta: text, partial: done });
+    s.push({ type: 'done', reason: 'stop', message: done });
+    s.end(done);
+  };
+  // build three sessions on disk (each: one turn, then closed)
+  const { session, store } = makeSession([reply('A. '), reply('B. '), reply('C. '), reply('D. ')]);
+  const ids: string[] = [];
+  for (const text of ['first', 'second', 'third']) {
+    await session.handleTurnRequest({ turnId: `t-${text}`, trigger: { kind: 'user', text } });
+    ids.push(session.sessionId!);
+    session.endSession('test-setup'); // close it so the next turn opens a fresh one
+  }
+  assert.equal(new Set(ids).size, 3, 'three distinct sessions created');
+  // all closed now
+  assert.equal(store.sessions(DOCK).filter((s) => s.closedAt == null).length, 0);
+
+  // resume each in turn — the BUG was the 2nd resume returning false (404)
+  // because the 1st left a session open on disk with no in-memory pointer.
+  assert.equal(session.resume(ids[0]!), true, 'resume #1');
+  assert.equal(session.sessionId, ids[0]);
+  assert.equal(store.sessions(DOCK).filter((s) => s.closedAt == null).length, 1, 'exactly one open after resume #1');
+
+  assert.equal(session.resume(ids[1]!), true, 'resume #2 (was 404)');
+  assert.equal(session.sessionId, ids[1]);
+  assert.equal(store.sessions(DOCK).filter((s) => s.closedAt == null).length, 1, 'still exactly one open after resume #2');
+
+  assert.equal(session.resume(ids[2]!), true, 'resume #3');
+  assert.equal(session.sessionId, ids[2]);
+  assert.equal(store.sessions(DOCK).filter((s) => s.closedAt == null).length, 1, 'exactly one open after resume #3');
+
+  // re-resuming the already-live one is a clean no-op true
+  assert.equal(session.resume(ids[2]!), true);
+});
