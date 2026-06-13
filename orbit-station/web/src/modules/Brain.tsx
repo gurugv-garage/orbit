@@ -13,7 +13,7 @@
  * = the hardware-swap rule) — hence the `web-test` default dock.
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useStationEvents } from '../lib/useStation';
 import type { EventFrame } from '../lib/protocol';
 
@@ -117,7 +117,10 @@ export function Brain() {
   const [cfgDirty, setCfgDirty] = useState<Partial<BrainConfig>>({});
   const [keyStatus, setKeyStatus] = useState<KeyStatus | null>(null);
   const [confirm, setConfirm] = useState<ConfirmReq | null>(null);
+  const [expandedStep, setExpandedStep] = useState<number | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
+  // collapse any expanded step when the selected turn changes
+  useEffect(() => { setExpandedStep(null); }, [selected]);
   const [past, setPast] = useState<PastExchange[]>([]);
   const [, bump] = useState(0); // re-render tick for ref-held turn map
 
@@ -490,20 +493,40 @@ export function Brain() {
               </div>
               <Timeline turn={sel} />
               <table className="br-steps">
-                <thead><tr><th>step</th><th>ttft</th><th>think</th><th>total</th><th>stop</th><th>in</th><th>out</th><th>cost</th></tr></thead>
+                <thead><tr><th>step</th><th>ttft</th><th>think</th><th>total</th><th>stop / tool</th><th>in</th><th>out</th><th>cost</th></tr></thead>
                 <tbody>
-                  {sel.steps.map((s) => (
-                    <tr key={s.step}>
-                      <td className="dim">{s.step}</td>
-                      <td>{fmtMs(s.ttftMs)}</td>
-                      <td className={s.thinkingMs ? '' : 'dim'}>{s.thinkingMs != null ? fmtMs(s.thinkingMs) : '—'}</td>
-                      <td>{fmtMs(s.ms)}</td>
-                      <td className="dim">{s.stopReason ?? '…'}</td>
-                      <td>{s.usage?.input ?? ''}</td>
-                      <td>{s.usage?.output ?? ''}</td>
-                      <td className="dim">{fmtCost(s.usage?.cost)}</td>
-                    </tr>
-                  ))}
+                  {sel.steps.map((s) => {
+                    const open = expandedStep === s.step;
+                    const hasErr = s.stopReason === 'error' || s.tools.some((t) => t.isError);
+                    const stopCls = s.stopReason === 'error' ? 'err' : s.stopReason === 'toolUse' ? 'tool' : 'dim';
+                    return (
+                      <Fragment key={s.step}>
+                      <tr className={`br-step-row ${open ? 'open' : ''}`}
+                        onClick={() => setExpandedStep(open ? null : s.step)}>
+                        <td className="dim">{open ? '▾' : '▸'} {s.step}</td>
+                        <td>{fmtMs(s.ttftMs)}</td>
+                        <td className={s.thinkingMs ? '' : 'dim'}>{s.thinkingMs != null ? fmtMs(s.thinkingMs) : '—'}</td>
+                        <td>{fmtMs(s.ms)}</td>
+                        <td>
+                          <span className={`br-stop ${stopCls}`}>{s.stopReason ?? '…'}</span>
+                          {s.tools.map((t, i) => (
+                            <span key={i} className={`br-tool-chip ${t.isError ? 'err' : ''}`}>{t.name}</span>
+                          ))}
+                        </td>
+                        <td>{s.usage?.input ?? ''}</td>
+                        <td>{s.usage?.output ?? ''}</td>
+                        <td className="dim">{fmtCost(s.usage?.cost)}</td>
+                      </tr>
+                      {open && (
+                        <tr className="br-step-detail-row">
+                          <td colSpan={8}>
+                            <StepDetail step={s} turnError={hasErr ? sel.error : undefined} />
+                          </td>
+                        </tr>
+                      )}
+                      </Fragment>
+                    );
+                  })}
                   {totals && (
                     <tr className="br-totals">
                       <td>Σ</td>
@@ -571,6 +594,61 @@ export function Brain() {
 }
 
 // ── pieces ───────────────────────────────────────────────────────────────────
+
+/** Expanded detail for one step: timings, each tool (name + args + result or
+ *  error), and the step/turn error text. */
+function StepDetail({ step, turnError }: { step: StepDebug; turnError?: string }) {
+  const fmtArgs = (a: unknown) => {
+    if (a == null) return '';
+    try { return typeof a === 'string' ? a : JSON.stringify(a, null, 2); } catch { return String(a); }
+  };
+  return (
+    <div className="br-step-detail">
+      <div className="br-sd-meta">
+        <span>model <b className="mono">{step.model || '—'}</b></span>
+        <span>stop <b className={`mono ${step.stopReason === 'error' ? 'err' : ''}`}>{step.stopReason ?? '—'}</b></span>
+        <span>ttft <b className="mono">{fmtMs(step.ttftMs)}</b></span>
+        {step.ttftTextMs != null && <span>first-text <b className="mono">{fmtMs(step.ttftTextMs)}</b></span>}
+        <span>total <b className="mono">{fmtMs(step.ms)}</b></span>
+        {step.usage && <span>tokens <b className="mono">{step.usage.input}→{step.usage.output}</b></span>}
+        {step.usage?.cost != null && <span>cost <b className="mono">{fmtCost(step.usage.cost)}</b></span>}
+      </div>
+
+      {step.tools.length === 0 && !turnError && (
+        <div className="br-sd-empty dim">No tools called in this step.</div>
+      )}
+
+      {step.tools.map((t, i) => (
+        <div key={i} className={`br-sd-tool ${t.isError ? 'err' : ''}`}>
+          <div className="br-sd-tool-head">
+            <span className={`br-tool-chip ${t.isError ? 'err' : ''}`}>{t.name}</span>
+            {t.ms != null && <span className="dim mono">{fmtMs(t.ms)}</span>}
+            {t.isError && <span className="br-sd-tag err">error</span>}
+          </div>
+          {t.args != null && fmtArgs(t.args).length > 0 && (
+            <div className="br-sd-block">
+              <div className="br-sd-k">args</div>
+              <pre className="br-sd-pre">{fmtArgs(t.args)}</pre>
+            </div>
+          )}
+          {t.result != null && String(t.result).length > 0 && (
+            <div className="br-sd-block">
+              <div className="br-sd-k">{t.isError ? 'error' : 'result'}</div>
+              <pre className={`br-sd-pre ${t.isError ? 'err' : ''}`}>{String(t.result)}</pre>
+            </div>
+          )}
+        </div>
+      ))}
+
+      {turnError && (
+        <div className="br-sd-block">
+          <div className="br-sd-k err">turn error</div>
+          <pre className="br-sd-pre err">{turnError}</pre>
+        </div>
+      )}
+    </div>
+  );
+}
 
 function Led({ on, pulse, label }: { on: boolean; pulse: boolean; label: string }) {
   return (
@@ -833,6 +911,37 @@ const CSS = `
   text-align: left; padding: 3px 8px 5px 0; border-bottom: 1px solid var(--line); font-weight: 500; }
 .brain .br-steps td { padding: 4px 8px 4px 0; border-bottom: 1px solid rgba(30,39,64,.5); }
 .brain .br-totals td { border-top: 1px solid var(--line); border-bottom: none; color: var(--accent); }
+/* clickable / expandable step rows */
+.brain .br-step-row { cursor: pointer; }
+.brain .br-step-row:hover { background: rgba(93,184,255,.06); }
+.brain .br-step-row.open { background: rgba(93,184,255,.09); }
+.brain .br-stop { }
+.brain .br-stop.err { color: var(--bad); font-weight: 600; }
+.brain .br-stop.tool { color: var(--accent-2); }
+.brain .br-stop.dim { color: var(--dim); }
+.brain .br-tool-chip { display: inline-block; margin-left: 6px; padding: 1px 7px; border-radius: 10px;
+  font-size: 10px; background: rgba(143,123,255,.16); color: var(--accent-2); border: 1px solid rgba(143,123,255,.35); }
+.brain .br-tool-chip.err { background: rgba(255,107,129,.16); color: var(--bad); border-color: rgba(255,107,129,.4); }
+/* step detail panel */
+.brain .br-step-detail-row td { border-bottom: 1px solid rgba(30,39,64,.5); padding: 0; }
+.brain .br-step-detail { padding: 10px 12px 12px; background: rgba(10,14,26,.5); border-left: 2px solid var(--accent-2); }
+.brain .br-sd-meta { display: flex; flex-wrap: wrap; gap: 14px; font-size: 10px; color: var(--dim); margin-bottom: 8px; }
+.brain .br-sd-meta b { color: var(--fg); font-weight: 500; }
+.brain .br-sd-meta b.err { color: var(--bad); }
+.brain .br-sd-empty { font-size: 11px; }
+.brain .br-sd-tool { margin-top: 8px; padding: 8px 10px; border-radius: 8px; background: rgba(143,123,255,.06);
+  border: 1px solid rgba(143,123,255,.22); }
+.brain .br-sd-tool.err { background: rgba(255,107,129,.06); border-color: rgba(255,107,129,.3); }
+.brain .br-sd-tool-head { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+.brain .br-sd-tag { font-size: 9px; text-transform: uppercase; letter-spacing: .1em; padding: 1px 5px; border-radius: 4px; }
+.brain .br-sd-tag.err { background: rgba(255,107,129,.18); color: var(--bad); }
+.brain .br-sd-block { margin-top: 6px; }
+.brain .br-sd-k { font-size: 9px; text-transform: uppercase; letter-spacing: .12em; color: var(--dim); margin-bottom: 3px; }
+.brain .br-sd-k.err { color: var(--bad); }
+.brain .br-sd-pre { margin: 0; padding: 7px 9px; background: var(--bg-2); border: 1px solid var(--line);
+  border-radius: 6px; font-size: 11px; color: var(--fg); white-space: pre-wrap; word-break: break-word;
+  max-height: 220px; overflow: auto; font-family: ui-monospace, Menlo, monospace; }
+.brain .br-sd-pre.err { color: var(--bad); border-color: rgba(255,107,129,.35); }
 .brain .br-hist { display: flex; flex-direction: column; gap: 1px; }
 .brain .br-hist-row { display: flex; gap: 8px; align-items: center; font-size: 11px; padding: 4px 6px;
   border-radius: 5px; cursor: pointer; }
