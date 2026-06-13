@@ -592,6 +592,19 @@ export class DockBrainSession {
         });
         break;
       case 'turn_start':
+        // Each pi "turn" is one LLM STEP (our vocab), and each step is a FRESH
+        // assistant message whose text streams from zero. The SentenceStreamer
+        // tracks an emitted-chars offset, so it MUST reset per step — otherwise
+        // step 2+ (e.g. the model reacting to a tool result on a multi-step
+        // turn) gets sliced at the previous step's offset, dropping its opening
+        // words or emitting a bare-punctuation fragment ("!"). Flush any tail
+        // from the prior step first so a step that ended without terminal
+        // punctuation still gets spoken.
+        if (this.#stepIndex >= 0) {
+          const tail = this.#streamer.flush();
+          if (tail != null) this.#speak(tail);
+        }
+        this.#streamer = new SentenceStreamer();
         this.#shippedStreamStart = false;
         this.#stepIndex++;
         this.#stepStartedAt = Date.now();

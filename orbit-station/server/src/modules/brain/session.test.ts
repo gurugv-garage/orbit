@@ -478,3 +478,45 @@ test('approve-all: first confirm latches session-wide auto-approval; later mutat
   assert.equal(confirmPrompts, 1, `expected 1 confirm prompt, got ${confirmPrompts}`);
   assert.equal(frames.filter((f) => f.kind === 'turn-status' && (f.payload as { state: string }).state === 'done').length, 2);
 });
+
+test('multi-step turn (tool call): each step speaks cleanly — no dropped opening words or bare-punctuation fragments', async () => {
+  // The streamer tracks an emitted-chars offset and is reset PER TURN; a
+  // multi-step turn (speak + tool → speak again) would otherwise slice step 2's
+  // fresh assistant message at step 1's offset (regression: a bare "!" / a
+  // reply missing its first word, seen live on a run_command turn).
+  const step1 = (s: AssistantMessageEventStream) => {
+    const m = assistant('Let me set my face. ');
+    s.push({ type: 'start', partial: assistant('') });
+    s.push({ type: 'text_delta', contentIndex: 0, delta: 'Let me set my face. ', partial: m });
+    m.content.push({ type: 'toolCall', id: 'call-1', name: 'set_face', arguments: { expression: 'happy' } });
+    m.stopReason = 'toolUse';
+    s.push({ type: 'toolcall_end', contentIndex: 0, toolCall: m.content[1] as never, partial: m });
+    s.push({ type: 'done', reason: 'toolUse', message: m });
+    s.end(m);
+  };
+  const step2 = (s: AssistantMessageEventStream) => {
+    const m = assistant("I'll need your permission on the dock! ");
+    s.push({ type: 'start', partial: assistant('') });
+    s.push({ type: 'text_delta', contentIndex: 0, delta: "I'll need your permission on the dock! ", partial: m });
+    s.push({ type: 'done', reason: 'stop', message: m });
+    s.end(m);
+  };
+  const { session, frames, bus } = makeSession([step1, step2]);
+  // phone acks the set_face tool-call so the loop proceeds to step 2
+  bus.on('agent', (m) => {
+    if (m.kind !== 'tool-call' || m.source !== 'station') return;
+    const p = m.payload as { reqId: string; toolCallId: string };
+    queueMicrotask(() => bus.publish({
+      topic: 'agent', kind: 'tool-result', source: 'phone-hw-1',
+      payload: { reqId: p.reqId, toolCallId: p.toolCallId, content: 'face set', isError: false },
+    }));
+  });
+
+  await session.handleTurnRequest({ turnId: 't1', trigger: { kind: 'user', text: 'set your face' } });
+  const spoken = frames.filter((f) => f.kind === 'speak').map((f) => (f.payload as { text: string }).text);
+
+  assert.ok(!spoken.some((t) => /^[.!?…]+$/.test(t)), `bare-punctuation frame leaked: ${JSON.stringify(spoken)}`);
+  assert.ok(spoken.includes('Let me set my face.'), `step-1 reply missing: ${JSON.stringify(spoken)}`);
+  // step 2 spoken INTACT — first word "I'll" not sliced off
+  assert.ok(spoken.some((t) => t.startsWith("I'll need your permission")), `step-2 reply sliced/missing: ${JSON.stringify(spoken)}`);
+});
