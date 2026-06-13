@@ -72,6 +72,13 @@ class RemoteBrain(
     private val _events = MutableSharedFlow<String>(replay = EVENT_LOG_REPLAY, extraBufferCapacity = 64)
     val events: SharedFlow<String> = _events.asSharedFlow()
 
+    /** A pending CONFIRM request from a mutating code/file tool (write/edit/run).
+     *  Non-null = the UI must show an approve/deny dialog; the tool is BLOCKED
+     *  server-side until [resolveConfirm] acks. Only one is ever pending (the
+     *  brain runs one tool at a time). */
+    private val _pendingConfirm = MutableStateFlow<ConfirmRequest?>(null)
+    val pendingConfirm: StateFlow<ConfirmRequest?> = _pendingConfirm.asStateFlow()
+
     // ── turn epoch ────────────────────────────────────────────────────────
     // currentTurnId gates inbound frames; lastTurnId outlives the turn so the
     // post-turn TTS tail's speech-status still lands on the right turn
@@ -279,6 +286,21 @@ class RemoteBrain(
         val name = p.str("name")
         val args = p["args"] as? JsonObject ?: buildJsonObject {}
         trace("TOOL_CALL $name $args")
+
+        // CONFIRM: a mutating code/file tool (write/edit/run) needs the user's
+        // OK. Don't ack now — park the request, show a dialog, ack on the tap
+        // (resolveConfirm). The brain's tool is blocked until then.
+        if (name == "confirm") {
+            val req = ConfirmRequest(
+                reqId = reqId, toolCallId = p.str("toolCallId"), turnId = turnId,
+                summary = args["summary"]?.jsonPrimitive?.content ?: "Allow this action?",
+                detail = args["detail"]?.jsonPrimitive?.content.orEmpty(),
+            )
+            TurnLog.toolCalled(name, args.toString())
+            _pendingConfirm.value = req
+            return
+        }
+
         // Fire-and-forget contract: dispatch NOW, ack instantly — the brain's
         // loop never waits on actuation, only on this dispatch ack.
         val (content, isError) = when (name) {
@@ -294,6 +316,20 @@ class RemoteBrain(
             link.publishCritical("agent", "tool-result", buildJsonObject {
                 put("reqId", reqId); put("toolCallId", p.str("toolCallId")); put("turnId", turnId)
                 put("content", content); put("isError", isError)
+            })
+        }
+    }
+
+    /** The user tapped Approve/Deny on a [pendingConfirm] dialog: ack the
+     *  parked confirm tool-call so the brain's tool proceeds or aborts. */
+    fun resolveConfirm(approved: Boolean) {
+        val req = _pendingConfirm.value ?: return
+        _pendingConfirm.value = null
+        trace("CONFIRM ${if (approved) "approved" else "denied"} ${req.summary}")
+        scope.launch {
+            link.publishCritical("agent", "tool-result", buildJsonObject {
+                put("reqId", req.reqId); put("toolCallId", req.toolCallId); put("turnId", req.turnId)
+                put("content", if (approved) "approved" else "denied"); put("isError", false)
             })
         }
     }
@@ -396,6 +432,16 @@ class RemoteBrain(
 /** A diagnosed turn failure: [label] is the short on-screen status; [spoken] is
  *  the (local TTS) line the dock says — specific to the actual cause. */
 data class TurnFailure(val label: String, val spoken: String)
+
+/** A parked confirm request from a mutating code/file tool — shown as an
+ *  approve/deny dialog; the user's choice acks the [reqId] tool-result. */
+data class ConfirmRequest(
+    val reqId: String,
+    val toolCallId: String,
+    val turnId: String,
+    val summary: String,
+    val detail: String,
+)
 
 /**
  * Turn the station's `failed` turn-status into a SPECIFIC, human explanation.

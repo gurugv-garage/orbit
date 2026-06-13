@@ -64,6 +64,7 @@ interface KeyStatus {
   paidFallback: { keyName: string; keySet: boolean } | null;
   alwaysPaid: boolean;
 }
+interface ConfirmReq { reqId: string; toolCallId: string; turnId: string; summary: string; detail: string }
 
 /** A condensed prior exchange from a resumed/open session's transcript. */
 interface PastExchange { user: string; reply: string }
@@ -115,6 +116,7 @@ export function Brain() {
   const [cfg, setCfg] = useState<BrainConfig | null>(null);
   const [cfgDirty, setCfgDirty] = useState<Partial<BrainConfig>>({});
   const [keyStatus, setKeyStatus] = useState<KeyStatus | null>(null);
+  const [confirm, setConfirm] = useState<ConfirmReq | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
   const [past, setPast] = useState<PastExchange[]>([]);
   const [, bump] = useState(0); // re-render tick for ref-held turn map
@@ -249,6 +251,17 @@ export function Brain() {
   const pub = (topic: string, kind: string, payload: unknown) =>
     ws.current?.send(JSON.stringify({ t: 'publish', topic, kind, payload }));
 
+  // approve/deny a parked confirm (mutating code/file tool) → ack the tool-result
+  const resolveConfirm = (approved: boolean) => {
+    const c = confirm;
+    if (!c) return;
+    setConfirm(null);
+    pub('agent', 'tool-result', {
+      reqId: c.reqId, toolCallId: c.toolCallId, turnId: c.turnId,
+      content: approved ? 'approved' : 'denied', isError: false,
+    });
+  };
+
   const disconnect = useCallback(() => {
     ws.current?.close();
     ws.current = null;
@@ -283,10 +296,20 @@ export function Brain() {
       const p = f.payload ?? {};
       if (f.kind === 'brain-status') setBrainReady(true);
       else if (f.kind === 'tool-call') {
-        pub('agent', 'tool-result', {
-          reqId: p.reqId, toolCallId: p.toolCallId, turnId: p.turnId,
-          content: `${p.name} dispatched (console fake phone)`, isError: false,
-        });
+        // confirm (mutating code/file tool) → show an approve/deny dialog and
+        // ack on the user's choice; everything else auto-acks (fake phone).
+        if (p.name === 'confirm') {
+          setConfirm({
+            reqId: p.reqId, toolCallId: p.toolCallId, turnId: p.turnId,
+            summary: String(p.args?.summary ?? 'Allow this action?'),
+            detail: String(p.args?.detail ?? ''),
+          });
+        } else {
+          pub('agent', 'tool-result', {
+            reqId: p.reqId, toolCallId: p.toolCallId, turnId: p.turnId,
+            content: `${p.name} dispatched (console fake phone)`, isError: false,
+          });
+        }
       } else if (f.kind === 'turn-status') {
         if (p.turnId !== activeTurnId.current) return;
         if (p.state === 'done' || p.state === 'failed' || p.state === 'cancelled') {
@@ -526,6 +549,20 @@ export function Brain() {
           )}
         </div>
       </div>
+
+      {/* approve/deny a mutating code/file tool (write/edit/run) */}
+      {confirm && (
+        <div className="br-confirm-overlay" onClick={() => resolveConfirm(false)}>
+          <div className="br-confirm" onClick={(e) => e.stopPropagation()}>
+            <div className="br-confirm-title">{confirm.summary}</div>
+            {confirm.detail && <pre className="br-confirm-detail">{confirm.detail}</pre>}
+            <div className="br-confirm-actions">
+              <button className="br-btn" onClick={() => resolveConfirm(false)}>Deny</button>
+              <button className="br-btn acc" onClick={() => resolveConfirm(true)}>Approve</button>
+            </div>
+          </div>
+        </div>
+      )}
     </section>
   );
 }
@@ -660,6 +697,15 @@ const CSS = `
   background: rgba(255,196,84,.18); color: #ffc454; border: 1px solid rgba(255,196,84,.35); }
 .brain .br-key-fallback { font-size: 10px; color: var(--dim); font-family: ui-monospace, Menlo, monospace; }
 .brain .br-key-fallback.bad { color: #ff9b6b; }
+.brain .br-confirm-overlay { position: fixed; inset: 0; background: rgba(0,0,0,.55); display: flex;
+  align-items: center; justify-content: center; z-index: 100; }
+.brain .br-confirm { background: var(--bg-1); border: 1px solid var(--accent); border-radius: 12px;
+  padding: 20px; max-width: 560px; width: 90%; box-shadow: 0 12px 48px rgba(0,0,0,.5); }
+.brain .br-confirm-title { font-size: 15px; font-weight: 600; color: var(--fg); margin-bottom: 12px; }
+.brain .br-confirm-detail { background: var(--bg-2); border: 1px solid var(--line); border-radius: 8px;
+  padding: 10px 12px; font-size: 12px; color: var(--fg); white-space: pre-wrap; word-break: break-word;
+  max-height: 280px; overflow: auto; margin: 0 0 16px; font-family: ui-monospace, Menlo, monospace; }
+.brain .br-confirm-actions { display: flex; gap: 10px; justify-content: flex-end; }
 .brain .br-in { background: var(--bg-2); border: 1px solid var(--line); color: var(--fg);
   border-radius: 6px; padding: 5px 9px; font-size: 12px; outline: none; }
 .brain .br-in:focus { border-color: var(--accent); box-shadow: 0 0 0 1px rgba(93,184,255,.25); }

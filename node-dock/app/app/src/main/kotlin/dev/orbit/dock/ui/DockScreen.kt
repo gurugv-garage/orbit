@@ -275,6 +275,7 @@ fun DockScreen() {
     // ready, the dock can't hear — show a brief "waking up" hint.
     val perceptionReady by dev.orbit.dock.perception.PerceptionReady.ready.collectAsState()
     val agentState by agent.state.collectAsState()
+    val pendingConfirm by agent.pendingConfirm.collectAsState()
     val wiring = remember(controller, agent) {
         PerceptionWiring(
             controller = controller,
@@ -620,7 +621,47 @@ fun DockScreen() {
                 } else null,
             )
         }
+
+        // Approve/deny dialog for a mutating code/file tool (write/edit/run).
+        // The brain's tool is blocked until the user taps; deny is the safe
+        // default (back-press / dismiss = deny).
+        pendingConfirm?.let { req ->
+            ConfirmDialog(
+                summary = req.summary,
+                detail = req.detail,
+                onApprove = { agent.resolveConfirm(true) },
+                onDeny = { agent.resolveConfirm(false) },
+            )
+        }
     }
+}
+
+@Composable
+private fun ConfirmDialog(
+    summary: String,
+    detail: String,
+    onApprove: () -> Unit,
+    onDeny: () -> Unit,
+) {
+    androidx.compose.material3.AlertDialog(
+        onDismissRequest = onDeny, // dismiss = deny (safe default)
+        title = { Text(summary) },
+        text = {
+            if (detail.isNotBlank()) {
+                Text(
+                    detail,
+                    fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
+        },
+        confirmButton = {
+            androidx.compose.material3.TextButton(onClick = onApprove) { Text("Approve") }
+        },
+        dismissButton = {
+            androidx.compose.material3.TextButton(onClick = onDeny) { Text("Deny") }
+        },
+    )
 }
 
 @Composable
