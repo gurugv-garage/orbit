@@ -81,7 +81,9 @@ npm run smoke    # manual end-to-end: fake dock + body peers (server must be up)
 Modules each own a bus topic + REST mount (`/api/<module>`): **brain** (the
 dock's LLM loop — per-dock pi agent sessions, remote tool RPC to the phone,
 persisted bounded sessions; `GET /api/brain/:dock/sessions`; test console =
-the web UI's Brain view), docks (registry — groups peers by dock name,
+the web UI's Brain view; also owns **tasks** — background jobs the brain runs
+as separate OS processes that connect back over the WS `tasks` topic, see
+[docs/TASKS_V1.md](docs/TASKS_V1.md)), docks (registry — groups peers by dock name,
 capability routing via `resolveCap`; `GET /api/docks`), observability
 (Session/Turn/Step trace ingest — vocabulary in
 [docs/AGENT-MODEL.md](docs/AGENT-MODEL.md)), config (defaults +
