@@ -63,6 +63,9 @@ export interface TurnRequest {
   context?: { state?: string; battery?: number };
   imageBase64?: string;
   imageMime?: string;
+  /** for autonomous (task) turns: drop the turn if it can't start before this
+   *  wall-clock (stale news is not spoken — docs/TASKS_V1.md §7a). */
+  expiresAt?: number;
 }
 
 export interface SessionDeps {
@@ -77,6 +80,16 @@ export interface SessionDeps {
   log?: (line: string) => void;
   /** test seam: scripted LLM transport (pi StreamFn). Default: pi-ai providers. */
   streamFn?: import('@earendil-works/pi-agent-core').StreamFn;
+  /** stop every task instance running under a parent conversational session
+   *  (the lifetime cascade — TASKS_V1 §5). Set by the brain module; the
+   *  supervisor is the source of truth for what's running. */
+  stopTasksForParent?: (dock: string, parentSessionId: string) => void;
+  /** does this conversational session have any running tasks? (idle-close guard
+   *  — TASKS_V1 §5: a task keeps its parent session alive). */
+  hasRunningTasks?: (dock: string, parentSessionId: string) => boolean;
+  /** the dock's model-facing task tools, built per-turn with the live session id
+   *  as the parent (TASKS_V1 §6). Undefined → tasks disabled / not wired. */
+  getTaskTools?: (dock: string, parentSessionId: () => string | undefined) => import('@earendil-works/pi-agent-core').AgentTool<any>[];
 }
 
 type FailCode = 'timeout' | 'llm_error' | 'busy';
@@ -105,9 +118,17 @@ export class DockBrainSession {
   #running?: Promise<void>;
   #latestReq?: TurnRequest;
 
+  // autonomous (task) turn queue — station-originated turns injected into the
+  // same lane (docs/TASKS_V1.md §7a). User turns always win: the drain loop only
+  // ever starts a task turn in a FREE lane, and a user turn supersedes a running
+  // one via the normal handleTurnRequest path.
+  #autoQueue: (TurnRequest & { expiresAt?: number })[] = [];
+  #draining = false;
+
   // ── per-turn state (reset in #runTurn) ────────────────────────────────────
   #activeTurnId?: string;
   #triggerText = '';
+  #triggerKind = 'user';
   #cancelled = false;
   #timedOut = false;
   #spokeThisTurn = false;
@@ -216,6 +237,40 @@ export class DockBrainSession {
     }
   }
 
+  /** Inject a station-originated (task) turn into this dock's lane. The turn only
+   *  ever STARTS in a free lane and is superseded by any user turn exactly like a
+   *  normal turn — users are never starved (docs/TASKS_V1.md §7a). */
+  enqueueAutonomousTurn(req: TurnRequest & { expiresAt?: number }): void {
+    if (this.#autoQueue.length >= 4) this.#autoQueue.shift(); // drop oldest, bounded
+    this.#autoQueue.push(req);
+    void this.#drainAuto();
+  }
+
+  async #drainAuto(): Promise<void> {
+    if (this.#draining) return;
+    this.#draining = true;
+    try {
+      while (this.#autoQueue.length > 0) {
+        // user priority: wait for the WHOLE current chain (incl. queued user
+        // supersede closures) to settle before taking the lane.
+        while (this.#running) { try { await this.#running; } catch { /* unwound */ } }
+        // settle gap: don't barge into a rapid user exchange.
+        const settle = num(this.#d.config('brainTaskSettleMs'), 1500);
+        if (Date.now() - this.lastTurnEndedAt < settle) { await sleep(250); continue; }
+        const req = this.#autoQueue.shift()!;
+        if (req.expiresAt != null && Date.now() > req.expiresAt) continue; // stale news dropped
+        // NO await between the while(#running) exit and assigning #running below:
+        // on the single-threaded loop a user request cannot slot into the gap.
+        const run = this.#runTurn(req);
+        this.#running = run; // ← a user turn-request can now supersede it normally
+        try { await run; } catch { /* logged in #runTurn */ }
+        finally { if (this.#running === run) this.#running = undefined; }
+      }
+    } finally {
+      this.#draining = false;
+    }
+  }
+
   /** Tap-to-stop. The phone has already silenced TTS locally; this stops
    *  generation + actuation. Idempotent; unknown turnIds are ignored. */
   cancel(turnId?: string): void {
@@ -247,9 +302,13 @@ export class DockBrainSession {
   }
 
   /** Idle-close check (clock measured from last turn END — an active turn
-   *  always resets it, so closing mid-turn is impossible by construction). */
+   *  always resets it, so closing mid-turn is impossible by construction).
+   *  A session with RUNNING TASKS is NOT idle-closed (TASKS_V1 §5): the task
+   *  keeps it alive, so a reminder/watcher set just before the user went quiet
+   *  isn't silently killed by the idle sweep. */
   maybeIdleClose(now = Date.now()): void {
     if (!this.#meta || this.#turnActive) return;
+    if (this.#d.hasRunningTasks?.(this.dock, this.#meta.sessionId)) return;
     const idleMin = SESSION_IDLE_MIN;
     if (now - this.#meta.lastTurnEndedAt > idleMin * 60_000) this.endSession('idle');
   }
@@ -294,6 +353,9 @@ export class DockBrainSession {
     if (this.#turnActive) this.cancel();
     const { sessionId } = this.#meta;
     const messages = this.#agent?.state.messages ?? this.#d.store.messages(this.dock, sessionId);
+    // stop every task running under this conversation (the lifetime cascade, §5)
+    // BEFORE closing the record. The supervisor knows what's running.
+    this.#d.stopTasksForParent?.(this.dock, sessionId);
     // close NOW with the cheap tail digest; the LLM compaction below upgrades
     // it asynchronously (close must never wait on a model).
     this.#d.store.close(this.dock, sessionId, summarize(messages));
@@ -374,6 +436,7 @@ export class DockBrainSession {
     // reset per-turn state
     this.#activeTurnId = req.turnId;
     this.#triggerText = req.trigger.text;
+    this.#triggerKind = req.trigger.kind || 'user';
     this.#cancelled = false;
     this.#timedOut = false;
     this.#spokeThisTurn = false;
@@ -412,10 +475,25 @@ export class DockBrainSession {
     // answer questions about its code AND modify itself) and mutations require
     // dock UI confirmation.
     const fileAccess = this.#d.config('brainFileAccess') === true;
+    const taskPrompt = this.#d.config('brainTaskMax') === 0 ? '' :
+      'BACKGROUND TASKS — you can run long-running background jobs as supervised '
+      + 'processes: anything that needs to keep working over time or react later. They '
+      + 'can loop on a timer, react to events, watch the camera, drive the body, call '
+      + 'tools, run multi-step jobs — whatever the request needs (reminders and '
+      + 'watchers are just two common examples, not the limit). When a request implies '
+      + 'ongoing/deferred work, FIRST call list_tasks to see existing definitions, then '
+      + 'run_task a fitting one (gather/ask for any required params) — STRONGLY PREFER '
+      + 'reusing an existing definition over writing a new one. For a one-time reminder '
+      + '("remind me in N"), reuse remind-after; for a repeating one ("every N"), reuse '
+      + 'remind-every. Only if nothing fits, CREATE one with write_task. A ONE-TIME job '
+      + 'must FINISH after it acts (do not leave it looping forever); only repeating jobs '
+      + 'keep running. NEVER refuse with "I can only run predefined tasks": browse, reuse, '
+      + 'or author. Track with get_task_status; manage with pause/resume/stop_task; answer '
+      + 'a stuck task with provide_input. Relay any "[background task …]" message naturally.';
     agent.state.systemPrompt = buildSystemPrompt({
       persona: str(this.#d.config('brainPersona')),
       memory,
-      skills: [this.#skills.promptBlock, fileAccess ? FILE_TOOLS_PROMPT : '']
+      skills: [this.#skills.promptBlock, fileAccess ? FILE_TOOLS_PROMPT : '', taskPrompt]
         .filter(Boolean).join('\n\n'),
       context: [bodyLine, req.context?.state].filter(Boolean).join(' '),
     });
@@ -433,6 +511,7 @@ export class DockBrainSession {
       ...buildGrantTools(this.dock, this.#grants(), this.#d.motion),
       ...(this.#skills.tool ? [this.#skills.tool] : []),
       ...(fileAccess ? buildFileTools({ confirm: (s, d) => this.#confirmOnDock(s, d) }) : []),
+      ...(this.#d.getTaskTools?.(this.dock, () => this.#meta?.sessionId) ?? []),
     ];
     this.#debug('turn-start', {
       text: req.trigger.text,
@@ -451,7 +530,9 @@ export class DockBrainSession {
       imageBase64: req.imageBase64, // face tools may use the frame even on gated turns
       streamId,
     };
-    const gate = VISION_GATE;
+    // vision-gate bypass for task turns: the triggering frame IS the evidence,
+    // and task text won't match the vision-intent regex (TASKS_V1 §7a).
+    const gate = VISION_GATE && this.#triggerKind === 'user';
     const content: (TextContent | ImageContent)[] = [{ type: 'text', text: req.trigger.text }];
     if (!gate || isVisionIntent(req.trigger.text)) {
       const grabbed = req.imageBase64 == null && streamId != null
@@ -463,7 +544,13 @@ export class DockBrainSession {
       }
     }
 
-    this.#sendToVoice('turn-status', { turnId: req.turnId, state: 'accepted' });
+    // autonomous:true signals the phone to ADOPT a station-originated turn it
+    // didn't initiate (RemoteBrain.kt — TASKS_V1 §7b).
+    this.#sendToVoice('turn-status', {
+      turnId: req.turnId,
+      state: 'accepted',
+      ...(this.#triggerKind !== 'user' ? { autonomous: true } : {}),
+    });
 
     const timeoutMs = num(this.#d.config('brainTurnTimeoutMs'), 60_000);
     const timer = setTimeout(() => {
@@ -606,7 +693,7 @@ export class DockBrainSession {
         // new user message, so deriving the trigger from history labeled
         // every turn with the PREVIOUS utterance (seen live on the console).
         this.#shipObs('TurnStart', {
-          trigger: { kind: 'user', text: this.#triggerText },
+          trigger: { kind: this.#triggerKind, text: this.#triggerText },
         });
         break;
       case 'turn_start':
@@ -995,4 +1082,7 @@ function num(v: unknown, fallback: number): number {
 }
 function str(v: unknown): string | undefined {
   return typeof v === 'string' && v.length > 0 ? v : undefined;
+}
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }

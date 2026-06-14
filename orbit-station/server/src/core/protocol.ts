@@ -28,8 +28,9 @@
  * can read just this to integrate.
  */
 
-/** What a connecting peer claims to be. `fake` = dev/smoke peers. */
-export type PeerRole = 'browser' | 'device' | 'fake';
+/** What a connecting peer claims to be. `fake` = dev/smoke peers;
+ *  `task` = a spawned background-task process (a WS client like any other). */
+export type PeerRole = 'browser' | 'device' | 'fake' | 'task';
 
 /** Topic namespaces, one per module. Subscriptions are exact-match on these. */
 export type Topic =
@@ -42,6 +43,7 @@ export type Topic =
   | 'media'        // WebRTC live A/V: SDP/ICE signaling for the in-process SFU
   | 'client'       // dock → station client facts (battery, on-device vad/face)
   | 'agent'        // the dock brain: transcripts/turns up, tool-calls/speak down
+  | 'tasks'        // background-task processes: attach/status/notify/ask/finish up, init/input/stop down
   | 'perception';  // processor results (identity/presence/…) → dock agent + console
 
 // ── peer → station ─────────────────────────────────────────────────────────

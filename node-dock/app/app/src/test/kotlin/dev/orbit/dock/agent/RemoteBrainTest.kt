@@ -234,6 +234,47 @@ class RemoteBrainTest {
         assertThat(r.speaker.spoken.single()).contains("lost the link")
     }
 
+    // ── autonomous (task) turn adoption (docs/TASKS_V1.md §7b) ───────────────
+
+    @Test
+    fun `autonomous accepted turn is adopted so its speak frames reach TTS`() {
+        val r = Rig()
+        // no local turn in flight; the station injects a task turn
+        r.frame("turn-status", "turnId" to "auto-1", "state" to "accepted", "autonomous" to true)
+        assertThat(r.brain.state.value).isInstanceOf(AgentState.Waiting::class.java)
+        // its speak frames now pass the turnId gate (previously dropped as stale)
+        r.frame("speak", "turnId" to "auto-1", "seq" to "0", "text" to "You picked up your phone.")
+        assertThat(r.speaker.spoken).containsExactly("You picked up your phone.")
+        // terminal done settles locally
+        r.frame("turn-status", "turnId" to "auto-1", "state" to "done")
+    }
+
+    @Test
+    fun `autonomous accepted is ignored while a local user turn is active`() {
+        val r = Rig()
+        r.brain.respond("hi")
+        await { r.link.sent("turn-request").size == 1 }
+        val localId = r.turnId()
+        // a task turn arrives mid-user-turn → ignored (station's supersede sorts it out)
+        r.frame("turn-status", "turnId" to "auto-2", "state" to "accepted", "autonomous" to true)
+        // the local turn is still the current one — a task speak does NOT play
+        r.frame("speak", "turnId" to "auto-2", "seq" to "0", "text" to "ghost task")
+        assertThat(r.speaker.spoken).isEmpty()
+        // the local turn's own speak still works
+        r.frame("speak", "turnId" to localId, "seq" to "0", "text" to "user reply")
+        assertThat(r.speaker.spoken).containsExactly("user reply")
+    }
+
+    @Test
+    fun `a non-autonomous accepted for an unknown turn is still dropped`() {
+        val r = Rig()
+        // accepted WITHOUT autonomous:true for a turn we didn't start → ignored
+        r.frame("turn-status", "turnId" to "stranger", "state" to "accepted")
+        r.frame("speak", "turnId" to "stranger", "seq" to "0", "text" to "nope")
+        assertThat(r.speaker.spoken).isEmpty()
+        assertThat(r.brain.state.value).isEqualTo(AgentState.Idle)
+    }
+
     // ── transcripts ────────────────────────────────────────────────────────
 
     @Test

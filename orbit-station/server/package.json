@@ -8,14 +8,15 @@
     "node": ">=22"
   },
   "scripts": {
-    "dev": "tsx watch src/main.ts",
+    "dev": "tsx watch --ignore './.data/**' --ignore './src/tasks/generated/**' src/main.ts",
     "start": "tsx src/main.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "tsx --test --test-force-exit src/**/*.test.ts",
+    "test": "tsx --test --test-force-exit",
     "certs": "node scripts/gen-certs.mjs",
     "smoke": "tsx src/dev/smoke-client.ts",
     "smoke:media": "tsx src/dev/fake-dock-media.ts",
-    "smoke:brain": "tsx src/dev/fake-phone.ts"
+    "smoke:brain": "tsx src/dev/fake-phone.ts",
+    "smoke:task": "tsx src/dev/smoke-task.ts"
   },
   "dependencies": {
     "@earendil-works/pi-agent-core": "^0.79.1",

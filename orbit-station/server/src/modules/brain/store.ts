@@ -33,6 +33,19 @@ export interface SessionMeta {
   /** short text summary written at close (compaction hook — phase 2 seeds
    *  the next session with it). */
   summary?: string;
+  /** 'conversation' (default — the dock's one open chat) or 'task' (a child of a
+   *  conversational session, docs/TASKS_V1.md §5). Absent ⇒ 'conversation' for
+   *  back-compat with sessions written before tasks existed. */
+  kind?: 'conversation' | 'task';
+  /** for kind:'task' — the conversational session this task runs under. The
+   *  one-open-per-dock invariant is scoped to kind:'conversation', so task
+   *  sessions never count as "the open session". */
+  parentSessionId?: string;
+}
+
+/** A conversational session is one with kind !== 'task' (absent ⇒ conversation). */
+function isConversation(s: SessionMeta): boolean {
+  return s.kind !== 'task';
 }
 
 export class SessionStore {
@@ -48,23 +61,50 @@ export class SessionStore {
     return this.#root;
   }
 
-  /** The open (not yet closed) session for a dock, if any. */
+  /** The open (not yet closed) CONVERSATIONAL session for a dock, if any. Task
+   *  sessions are excluded — they never count as "the open session" (§5). */
   openSession(dock: string): SessionMeta | undefined {
-    return this.#index(dock).find((s) => s.closedAt == null);
+    return this.#index(dock).find((s) => s.closedAt == null && isConversation(s));
   }
 
-  /** Open a fresh session (caller ensures none is open). */
+  /** Open a fresh conversational session (caller ensures none is open). */
   open(dock: string): SessionMeta {
     const meta: SessionMeta = {
       sessionId: `sess-${randomUUID().slice(0, 8)}`,
       openedAt: Date.now(),
       lastTurnEndedAt: Date.now(),
       turns: 0,
+      kind: 'conversation',
     };
     const idx = this.#index(dock);
     idx.push(meta);
     this.#writeIndex(dock, idx);
     return meta;
+  }
+
+  /** Open a TASK session nested under a conversational parent (§5). Many allowed
+   *  per parent; excluded from openSession. The instanceId IS the sessionId so
+   *  the supervisor and the store agree on one key. */
+  openTask(dock: string, parentSessionId: string, instanceId: string): SessionMeta {
+    const meta: SessionMeta = {
+      sessionId: instanceId,
+      openedAt: Date.now(),
+      lastTurnEndedAt: Date.now(),
+      turns: 0,
+      kind: 'task',
+      parentSessionId,
+    };
+    const idx = this.#index(dock);
+    idx.push(meta);
+    this.#writeIndex(dock, idx);
+    return meta;
+  }
+
+  /** The open task sessions running under a conversational parent. */
+  tasksOf(dock: string, parentSessionId: string): SessionMeta[] {
+    return this.#index(dock).filter(
+      (s) => s.kind === 'task' && s.parentSessionId === parentSessionId && s.closedAt == null,
+    );
   }
 
   /** Load the transcript of a session ([] when none persisted). */
@@ -88,14 +128,27 @@ export class SessionStore {
     }
   }
 
-  /** Close a session with a summary (idle timeout / explicit end / reset). */
-  close(dock: string, sessionId: string, summary: string): void {
+  /** Close a session with a summary (idle timeout / explicit end / reset).
+   *  Closing a CONVERSATIONAL session cascades: every open task session under it
+   *  is closed too (§5 — tasks die with their parent). Returns the instanceIds of
+   *  the task sessions it closed, so the caller can stop their processes. */
+  close(dock: string, sessionId: string, summary: string): string[] {
     const idx = this.#index(dock);
     const meta = idx.find((s) => s.sessionId === sessionId);
-    if (!meta || meta.closedAt != null) return;
+    if (!meta || meta.closedAt != null) return [];
     meta.closedAt = Date.now();
     meta.summary = summary;
+    const cascaded: string[] = [];
+    if (isConversation(meta)) {
+      for (const t of idx) {
+        if (t.kind === 'task' && t.parentSessionId === sessionId && t.closedAt == null) {
+          t.closedAt = Date.now();
+          cascaded.push(t.sessionId);
+        }
+      }
+    }
     this.#writeIndex(dock, idx);
+    return cascaded;
   }
 
   /** All sessions of a dock, newest first (console). */
@@ -133,9 +186,11 @@ export class SessionStore {
    *  `lastTurnEndedAt` bumps to now so the idle clock restarts. */
   reopen(dock: string, sessionId: string): boolean {
     const idx = this.#index(dock);
-    if (idx.some((s) => s.closedAt == null)) return false;
+    // invariant is scoped to conversational sessions; an old task session under a
+    // since-closed parent must not be re-opened directly (tasks are respawned, §5).
+    if (idx.some((s) => s.closedAt == null && isConversation(s))) return false;
     const meta = idx.find((s) => s.sessionId === sessionId);
-    if (!meta) return false;
+    if (!meta || !isConversation(meta)) return false;
     delete meta.closedAt;
     meta.lastTurnEndedAt = Date.now();
     this.#writeIndex(dock, idx);

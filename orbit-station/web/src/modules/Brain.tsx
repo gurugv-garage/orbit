@@ -88,7 +88,7 @@ interface DockProfile {
 }
 
 /** A condensed prior exchange from a resumed/open session's transcript. */
-interface PastExchange { user: string; reply: string }
+interface PastExchange { user: string; reply: string; userAt?: number; replyAt?: number }
 
 /** Map a persisted observability Session tree → the SAME TurnDebug objects the
  *  live brain-debug stream builds, so a resumed session renders with the full
@@ -155,23 +155,31 @@ interface ObsStep {
 function pastFromHistory(messages: unknown[]): PastExchange[] {
   const out: PastExchange[] = [];
   let cur: PastExchange | null = null;
-  for (const m of messages as Array<{ role?: string; content?: unknown }>) {
+  for (const m of messages as Array<{ role?: string; content?: unknown; timestamp?: number }>) {
     if (m.role === 'user') {
       const text = typeof m.content === 'string'
         ? m.content
         : ((m.content as Array<{ type?: string; text?: string }>) ?? [])
             .filter((c) => c.type === 'text').map((c) => c.text ?? '').join('');
       if (cur) out.push(cur);
-      cur = { user: text, reply: '' };
+      cur = { user: text, reply: '', userAt: m.timestamp };
     } else if (m.role === 'assistant' && cur) {
       const text = ((m.content as Array<{ type?: string; text?: string }>) ?? [])
         .filter((c) => c.type === 'text').map((c) => c.text ?? '').join('');
-      if (text) cur.reply += (cur.reply ? ' ' : '') + text;
+      if (text) { cur.reply += (cur.reply ? ' ' : '') + text; cur.replyAt ??= m.timestamp; }
     }
   }
   if (cur) out.push(cur);
   return out;
 }
+
+/** exact HH:MM:SS.mmm timestamp for the chat log. */
+const fmtTime = (ms?: number) => {
+  if (ms == null) return '';
+  const d = new Date(ms);
+  const p = (n: number, w = 2) => String(n).padStart(w, '0');
+  return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}.${p(d.getMilliseconds(), 3)}`;
+};
 
 const MODEL_PRESETS = [
   'google/gemini-2.5-flash',
@@ -201,6 +209,7 @@ export function Brain() {
   const [keyStatus, setKeyStatus] = useState<KeyStatus | null>(null);
   const [profile, setProfile] = useState<DockProfile | null>(null);
   const [showContext, setShowContext] = useState(false);
+  const [showTasks, setShowTasks] = useState(false);
   const [confirm, setConfirm] = useState<ConfirmReq | null>(null);
   const [expandedStep, setExpandedStep] = useState<number | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
@@ -561,13 +570,22 @@ export function Brain() {
             </span>
           )}
           {connected && profile && (
-            <button className={`br-btn ${showContext ? 'acc' : ''}`} style={{ marginLeft: 'auto' }}
+            <button className={`br-btn ${showTasks ? 'acc' : ''}`} style={{ marginLeft: 'auto' }}
+              onClick={() => setShowTasks((v) => !v)}>
+              {showTasks ? '▾' : '▸'} tasks
+            </button>
+          )}
+          {connected && profile && (
+            <button className={`br-btn ${showContext ? 'acc' : ''}`}
               onClick={() => setShowContext((v) => !v)}>
               {showContext ? '▾' : '▸'} dock context
             </button>
           )}
         </div>
       )}
+
+      {/* ── tasks: definitions + running instances (docs/TASKS_V1.md §8) ── */}
+      {connected && profile && showTasks && <TasksPanel dock={profile.dock} />}
 
       {/* ── dock context: this dock's full brain state in one place ── */}
       {connected && profile && showContext && (
@@ -618,8 +636,16 @@ export function Brain() {
                   // styled as a real (static) turn so resumed history matches
                   // the live chat look — same user/reply markup as <Turn>.
                   <div key={`past-${i}`} className="br-turn past">
-                    <div className="br-user"><span className="br-caret">❯</span> {x.user}</div>
-                    {x.reply && <div className="br-reply">{x.reply}</div>}
+                    <div className="br-user">
+                      <span className="br-caret">❯</span> {x.user}
+                      {x.userAt != null && <span className="br-ts mono">{fmtTime(x.userAt)}</span>}
+                    </div>
+                    {x.reply && (
+                      <div className="br-reply">
+                        {x.reply}
+                        {x.replyAt != null && <span className="br-ts mono">{fmtTime(x.replyAt)}</span>}
+                      </div>
+                    )}
                   </div>
                 ))}
                 <div className="br-past-banner">
@@ -1018,7 +1044,10 @@ function Turn({ t, sel, onSelect }: { t: TurnDebug; sel: boolean; onSelect: () =
   const live = t.state == null;
   return (
     <div className={`br-turn ${t.state ?? 'live'} ${sel ? 'sel' : ''}`} onClick={onSelect}>
-      <div className="br-user"><span className="br-caret">❯</span> {t.text}</div>
+      <div className="br-user">
+        <span className="br-caret">❯</span> {t.text}
+        <span className="br-ts mono">{fmtTime(t.startedAt)}</span>
+      </div>
       {t.thinkingText && (
         <details className="br-think">
           <summary>thinking <span className="dim">({t.thinkingText.length} chars)</span></summary>
@@ -1026,7 +1055,10 @@ function Turn({ t, sel, onSelect }: { t: TurnDebug; sel: boolean; onSelect: () =
         </details>
       )}
       {t.streamText && (
-        <div className="br-reply">{t.streamText}{live && <span className="br-cursor">▋</span>}</div>
+        <div className="br-reply">
+          {t.streamText}{live && <span className="br-cursor">▋</span>}
+          {t.speaks[0]?.at != null && <span className="br-ts mono">{fmtTime(t.speaks[0]!.at)}</span>}
+        </div>
       )}
       {t.steps.flatMap((s) => s.tools).map((tool, i) => (
         <div key={i} className={`br-tool ${tool.isError ? 'err' : ''}`}>
@@ -1104,6 +1136,170 @@ function Timeline({ turn }: { turn: TurnDebug }) {
     </div>
   );
 }
+
+// ── tasks panel (docs/TASKS_V1.md §8) ────────────────────────────────────────
+
+interface TaskParamSpec { name: string; type: string; required?: boolean; default?: unknown }
+interface TaskDefDto { name: string; description: string; params: TaskParamSpec[]; goal: string; source?: 'packaged' | 'generated' }
+interface TaskInstanceDto {
+  instanceId: string; name: string; state: string; params: Record<string, unknown>;
+  startedAt: number; lastSignal?: string; status?: string; log?: string;
+}
+
+function TasksPanel({ dock }: { dock: string }) {
+  const [defs, setDefs] = useState<TaskDefDto[]>([]);
+  const [instances, setInstances] = useState<TaskInstanceDto[]>([]);
+  const [selDef, setSelDef] = useState<TaskDefDto | null>(null);
+  const [selInst, setSelInst] = useState<string | null>(null);
+  const [paramText, setParamText] = useState('{}');
+  const [detail, setDetail] = useState<TaskInstanceDto | null>(null);
+  const [answer, setAnswer] = useState('');
+  const [msg, setMsg] = useState('');
+
+  const loadDefs = useCallback(async () => {
+    const r = await fetch('/api/brain/tasks'); if (r.ok) setDefs(await r.json());
+  }, []);
+  const loadInstances = useCallback(async () => {
+    const r = await fetch(`/api/brain/${encodeURIComponent(dock)}/instances`);
+    if (r.ok) setInstances(await r.json());
+  }, [dock]);
+  const loadDetail = useCallback(async (id: string) => {
+    const r = await fetch(`/api/brain/${encodeURIComponent(dock)}/instances/${encodeURIComponent(id)}`);
+    if (r.ok) setDetail(await r.json());
+  }, [dock]);
+
+  useEffect(() => { void loadDefs(); }, [loadDefs]);
+  useEffect(() => {
+    void loadInstances();
+    const t = setInterval(() => { void loadInstances(); if (selInst) void loadDetail(selInst); }, 1500);
+    return () => clearInterval(t);
+  }, [loadInstances, loadDetail, selInst]);
+
+  const run = async () => {
+    setMsg('');
+    let params: unknown; try { params = JSON.parse(paramText || '{}'); } catch { setMsg('params: invalid JSON'); return; }
+    const r = await fetch(`/api/brain/${encodeURIComponent(dock)}/instances`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ name: selDef!.name, params }),
+    });
+    const body = await r.json().catch(() => ({}));
+    setMsg(r.ok ? `started ${body.instanceId}` : `error: ${body.error ?? r.status}`);
+    await loadInstances();
+  };
+  const op = async (id: string, action: string) => {
+    await fetch(`/api/brain/${encodeURIComponent(dock)}/instances/${encodeURIComponent(id)}/${action}`, { method: 'POST' });
+    await loadInstances(); if (selInst === id) await loadDetail(id);
+  };
+  const sendInput = async (id: string) => {
+    await fetch(`/api/brain/${encodeURIComponent(dock)}/instances/${encodeURIComponent(id)}/input`, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ answer }),
+    });
+    setAnswer(''); await loadInstances(); await loadDetail(id);
+  };
+
+  const openDef = (d: TaskDefDto) => {
+    setSelDef(d);
+    const seed: Record<string, unknown> = {};
+    for (const p of d.params) if (p.default !== undefined) seed[p.name] = p.default;
+    setParamText(JSON.stringify(seed, null, 2));
+  };
+
+  return (
+    <div className="tk-wrap">
+      <style>{TASK_CSS}</style>
+      <div className="tk-cols">
+        {/* definitions */}
+        <div className="tk-col">
+          <div className="tk-h">DEFINITIONS <span className="dim">· packaged + generated</span></div>
+          {defs.map((d) => (
+            <div key={d.name} className={`tk-row ${selDef?.name === d.name ? 'sel' : ''}`} onClick={() => openDef(d)}>
+              <span className={`tk-src src-${d.source ?? 'packaged'}`}>{(d.source ?? 'packaged') === 'generated' ? 'gen' : 'pkg'}</span>
+              <span className="tk-name">{d.name}</span>
+              <span className="tk-desc dim">{d.description}</span>
+            </div>
+          ))}
+          {selDef && (
+            <div className="tk-detail">
+              <div className="tk-goal">{selDef.goal}</div>
+              <label className="br-lbl">params (json)</label>
+              <textarea className="tk-params mono" value={paramText} onChange={(e) => setParamText(e.target.value)} rows={Math.max(3, selDef.params.length + 1)} />
+              <div className="tk-actions">
+                <button className="br-btn acc" onClick={run}>▶ run on {dock}</button>
+                {msg && <span className="dim mono">{msg}</span>}
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* instances */}
+        <div className="tk-col">
+          <div className="tk-h">RUNNING <span className="dim">· this dock</span></div>
+          {instances.length === 0 && <div className="dim" style={{ padding: '6px 8px' }}>no tasks running</div>}
+          {instances.map((i) => (
+            <div key={i.instanceId} className={`tk-row ${selInst === i.instanceId ? 'sel' : ''}`}
+              onClick={() => { setSelInst(i.instanceId); void loadDetail(i.instanceId); }}>
+              <span className={`tk-badge st-${i.state}`}>{i.state}</span>
+              <span className="tk-name mono">{i.instanceId}</span>
+              <span className="tk-desc dim">{i.name}</span>
+            </div>
+          ))}
+          {detail && selInst && (
+            <div className="tk-detail">
+              <div className="tk-status mono">{detail.status || '(no status yet)'}</div>
+              {detail.state === 'stuck' && (
+                <div className="tk-stuck">
+                  <div className="tk-stuck-q">{detail.lastSignal}</div>
+                  <div className="tk-actions">
+                    <input className="br-in" value={answer} placeholder="your answer…" onChange={(e) => setAnswer(e.target.value)} />
+                    <button className="br-btn acc" onClick={() => sendInput(selInst)}>answer</button>
+                  </div>
+                </div>
+              )}
+              <div className="tk-actions">
+                <button className="br-btn" onClick={() => op(selInst, 'pause')}>pause</button>
+                <button className="br-btn" onClick={() => op(selInst, 'resume')}>resume</button>
+                <button className="br-btn" onClick={() => op(selInst, 'restart')}>restart</button>
+                <button className="br-btn" onClick={() => op(selInst, 'stop')}>stop</button>
+              </div>
+              <label className="br-lbl">log</label>
+              <pre className="tk-log mono">{detail.log || ''}</pre>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+const TASK_CSS = `
+.tk-wrap { background: #0a0e1a; border: 1px solid #1b2436; border-radius: 8px; padding: 8px; }
+.tk-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.tk-col { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.tk-h { font-size: 11px; letter-spacing: .08em; color: #6b7a99; padding: 2px 4px 6px; }
+.tk-row { display: flex; gap: 8px; align-items: baseline; padding: 4px 8px; border-radius: 5px; cursor: pointer; }
+.tk-row:hover { background: #121a2c; }
+.tk-row.sel { background: #16203a; outline: 1px solid #2a3a5e; }
+.tk-name { color: #cdd9f0; font-weight: 600; }
+.tk-src { font-size: 9px; padding: 1px 5px; border-radius: 3px; text-transform: uppercase; letter-spacing: .04em; flex-shrink: 0; }
+.src-packaged { background: #16263a; color: #6f9fe3; }
+.src-generated { background: #2a1f3a; color: #b98fe3; }
+.tk-desc { font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tk-detail { margin: 6px 4px; padding: 8px; background: #0c1322; border: 1px solid #1b2436; border-radius: 6px; display: flex; flex-direction: column; gap: 6px; }
+.tk-goal { font-size: 12px; color: #9fb0d0; white-space: pre-wrap; max-height: 120px; overflow: auto; }
+.tk-params { background: #060912; color: #cdd9f0; border: 1px solid #243049; border-radius: 5px; padding: 6px; resize: vertical; }
+.tk-actions { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.tk-status { font-size: 13px; color: #bfe9c8; }
+.tk-log { background: #060912; color: #7e8db0; font-size: 11px; max-height: 160px; overflow: auto; padding: 6px; border-radius: 5px; margin: 0; white-space: pre-wrap; }
+.tk-stuck { background: #1c1607; border: 1px solid #4a3a12; border-radius: 6px; padding: 6px; }
+.tk-stuck-q { color: #e6c976; font-size: 13px; margin-bottom: 4px; }
+.tk-badge { font-size: 10px; padding: 1px 6px; border-radius: 4px; text-transform: uppercase; letter-spacing: .04em; }
+.st-running { background: #0f3a24; color: #5fe39a; }
+.st-paused { background: #3a300f; color: #e3c95f; }
+.st-stuck { background: #3a1f0f; color: #e3955f; }
+.st-done { background: #16263a; color: #6f9fe3; }
+.st-errored { background: #3a1018; color: #e36f8a; }
+.st-stopped { background: #20242e; color: #8a93a5; }
+`;
 
 // ── styles ───────────────────────────────────────────────────────────────────
 
@@ -1244,6 +1440,8 @@ const CSS = `
 .brain .br-user { font-family: ui-monospace, Menlo, monospace; font-size: 13px; color: var(--accent); }
 .brain .br-caret { opacity: .6; }
 .brain .br-reply { margin: 8px 0 2px 14px; font-size: 13.5px; line-height: 1.55; white-space: pre-wrap; }
+.brain .br-ts { float: right; font-size: 10.5px; color: #5a6b8c; opacity: .7; font-weight: 400; margin-left: 8px; }
+.brain .br-ts:hover { opacity: 1; }
 .brain .br-cursor { color: var(--accent); animation: br-pulse .9s infinite; margin-left: 1px; }
 .brain .br-think { margin: 6px 0 0 14px; font-size: 11px; color: var(--dim); }
 .brain .br-think summary { cursor: pointer; letter-spacing: .04em; }

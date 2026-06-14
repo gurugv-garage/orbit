@@ -13,3 +13,7 @@ var/
 # TS incremental build cache
 *.tsbuildinfo
 .env
+
+# LLM-authored tasks (not committed; promote into packaged/ manually)
+server/src/tasks/generated/*
+!server/src/tasks/generated/.gitkeep

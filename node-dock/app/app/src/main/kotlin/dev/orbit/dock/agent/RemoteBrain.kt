@@ -256,6 +256,30 @@ class RemoteBrain(
         }
     }
 
+    /** Adopt a station-originated turn (a background task speaking): open the
+     *  local turn window so the subsequent speak/done frames pass the turnId gate
+     *  and drive TTS exactly like a user turn — minus the outbound turn-request
+     *  (the station already started it). Mirrors startTurn's local bookkeeping. */
+    private fun adoptAutonomousTurn(turnId: String) {
+        currentTurnId = turnId
+        lastTurnId = turnId
+        turnActive = true
+        spokeThisTurn = false
+        replyAcc = ""
+        turnStartMs = System.currentTimeMillis()
+        tools.beginTurn()
+        trace("ADOPT autonomous turn ${turnId.take(8)}")
+        _state.value = AgentState.Waiting(BRAIN_LABEL)
+        watchdog?.cancel()
+        watchdog = scope.launch {
+            delay(turnWatchdogMs)
+            if (turnActive && currentTurnId == turnId) {
+                Timber.e("RemoteBrain: no terminal turn-status after ${turnWatchdogMs}ms (autonomous)")
+                failLocally("brain went silent", "")
+            }
+        }
+    }
+
     private fun onSpeak(p: JsonObject) {
         if (p.str("turnId") != currentTurnId) {
             Timber.d("RemoteBrain: dropped stale speak (turn ${p.str("turnId").take(8)})")
@@ -338,6 +362,16 @@ class RemoteBrain(
 
     private fun onTurnStatus(p: JsonObject) {
         val turnId = p.str("turnId")
+        // ADOPT a station-originated (task) turn this phone didn't initiate
+        // (docs/TASKS_V1.md §7b): an `accepted` frame flagged autonomous:true is
+        // the brain speaking on its own. Without this the speak frames would be
+        // dropped by the turnId gate below. Adopt only when no LOCAL user turn is
+        // in flight — if one is, the station's supersede logic sorts it out.
+        if (p.str("state") == "accepted" && p.bool("autonomous") && turnId.isNotEmpty()) {
+            if (turnActive) return
+            adoptAutonomousTurn(turnId)
+            return
+        }
         if (turnId != currentTurnId) return
         val status = p.str("state")
         trace("turn-status $status${p.str("code").takeIf { it.isNotEmpty() }?.let { " ($it)" } ?: ""}")

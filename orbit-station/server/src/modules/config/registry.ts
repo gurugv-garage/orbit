@@ -175,6 +175,22 @@ export const REGISTRY: ConfigEntry[] = [
     description: 'Extended reasoning budget for brain turns. Off = lowest latency (the dock default); higher levels stream thinking before answering.',
   }),
   entry({ key: 'brainTurnTimeoutMs', type: 'number', schema: z.number().int().min(5_000).max(300_000), default: 60_000, tags: ['station'] }),
+  // ── tasks (docs/TASKS_V1.md) ──────────────────────────────────────────────
+  entry({
+    key: 'brainTaskMax', type: 'number', schema: z.number().int().min(0).max(10), default: 3, tags: ['station'],
+    label: 'Max tasks per dock',
+    description: 'Max concurrent task INSTANCES a dock may run. 0 disables tasks (the task tools refuse).',
+  }),
+  entry({
+    key: 'brainTaskSettleMs', type: 'number', schema: z.number().int().min(0).max(10_000), default: 1500, tags: ['station'],
+    label: 'Task settle ms',
+    description: 'Quiet gap after a turn ends before an autonomous (task) turn may take the lane — avoids barging into a rapid user exchange.',
+  }),
+  entry({
+    key: 'brainTaskRunner', type: 'text', schema: z.enum(['tmux', 'child']), default: 'tmux', tags: ['station'],
+    label: 'Task runner',
+    description: 'How task processes run: "tmux" (attachable window you can watch) or "child" (plain detached child_process, headless).',
+  }),
   entry({
     key: 'brainSkills', type: 'boolean', schema: z.boolean(), default: true, tags: ['station'],
     label: 'Skills',

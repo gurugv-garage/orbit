@@ -33,6 +33,11 @@ import { SessionStore } from './store.js';
 import { installDockSkill, listDockSkills, removeDockSkill, loadDockSkills } from './skills.js';
 import { buildSystemPrompt } from './prompt.js';
 import { FILE_TOOLS_PROMPT } from './filetools.js';
+import { TaskSupervisor, type InstanceInfo, type SignalKind } from './tasks/supervisor.js';
+import { buildTaskTools } from './tasks/tools.js';
+import { defaultTasksRoot, userTasksRoot, loadAllTaskDefs, findTaskDef } from './tasks/manager.js';
+import { validateParams } from '../../tasks/_harness/index.js';
+import { randomUUID } from 'node:crypto';
 import type { IncomingMessage } from 'node:http';
 
 const IDLE_SWEEP_MS = 60_000;
@@ -48,8 +53,44 @@ export interface BrainWiring {
 export function brainModule(w: BrainWiring): StationModule {
   const store = new SessionStore();
   const sessions = new Map<string, DockBrainSession>();
+  const tasksRoot = defaultTasksRoot();
+  const userTasks = userTasksRoot();
+  const taskRoots = [
+    { root: userTasks, source: 'generated' as const }, // generated first, then packaged
+    { root: tasksRoot, source: 'packaged' as const },
+  ];
   let bus: Bus;
   let rpc: RpcBroker;
+
+  // A task's parent signal (notify / finish / errored / stuck) → an autonomous
+  // turn in that dock's conversational session (TASKS_V1 §7a).
+  const onTaskSignal = (dock: string, info: InstanceInfo, kind: SignalKind, ev: { text: string; image?: string }) => {
+    const s = sessions.get(dock);
+    if (!s) return;
+    const label = kind === 'finish' ? 'finished' : kind === 'errored' ? 'failed' : kind === 'stuck' ? 'needs input' : 'update';
+    const text = `[background task ${info.name} (${info.instanceId}) ${label}] ${ev.text}`
+      + (kind === 'stuck' ? ` — call provide_input("${info.instanceId}", <answer>) once the user answers.` : '');
+    s.enqueueAutonomousTurn({
+      turnId: `auto-${randomUUID()}`,
+      trigger: { kind: 'task', text },
+      ...(ev.image ? { imageBase64: ev.image } : {}),
+      expiresAt: Date.now() + 120_000,
+    });
+  };
+
+  const supervisor = new TaskSupervisor({
+    root: store.root,
+    stationWsUrl: process.env.STATION_WS ?? `ws://127.0.0.1:${process.env.PORT ?? 8099}/ws`,
+    runner: () => (w.config('brainTaskRunner') === 'child' ? 'child' : 'tmux'),
+    onSignal: onTaskSignal,
+    // push a directed frame DOWN to a task peer, addressed by (dock, component).
+    sendToTask: (dock, instanceId, kind, payload) => {
+      bus.publish({
+        topic: 'tasks', kind, payload: { instanceId, ...payload },
+        source: 'station', toAddr: { dock, component: `task:${instanceId}` },
+      });
+    },
+  });
 
   function session(dock: string): DockBrainSession {
     let s = sessions.get(dock);
@@ -58,6 +99,11 @@ export function brainModule(w: BrainWiring): StationModule {
         bus, directory: w.directory, rpc, motion: w.motion, store,
         getFaces: getFaceTools, config: w.config,
         log: (line) => console.log(line),
+        stopTasksForParent: (d, parentSessionId) => { supervisor.stopForParent(d, parentSessionId); },
+        hasRunningTasks: (d, parentSessionId) => supervisor.hasRunningUnder(d, parentSessionId),
+        getTaskTools: (d, parentSessionId) => buildTaskTools({
+          dock: d, supervisor, tasksRoot, userTasksRoot: userTasks, parentSessionId, config: w.config,
+        }),
       });
       sessions.set(dock, s);
     }
@@ -121,6 +167,18 @@ export function brainModule(w: BrainWiring): StationModule {
           default:
             break;
         }
+      });
+
+      // task processes publish on the `tasks` topic; route each frame to the
+      // supervisor (scoped to the sender's dock via its hello, never the payload).
+      bus.on('tasks', (msg) => {
+        if (msg.source === 'station') return; // our own init/input/stop frames
+        const dock = dockOf(msg.source);
+        if (!dock) return;
+        const p = (msg.payload ?? {}) as Record<string, unknown>;
+        const instanceId = typeof p.instanceId === 'string' ? p.instanceId : '';
+        if (!instanceId) return;
+        supervisor.onFrame(dock, { instanceId, kind: msg.kind, payload: p });
       });
 
       // resync handshake + turn-abort on voice-component connectivity
@@ -244,6 +302,72 @@ export function brainModule(w: BrainWiring): StationModule {
       m = subPath.match(/^\/([^/]+)\/skills\/([^/]+)$/);
       if (m && req.method === 'DELETE') {
         const ok = await removeDockSkill(store.root, decodeURIComponent(m[1]!), decodeURIComponent(m[2]!));
+        json(res, ok ? 200 : 404, { ok });
+        return true;
+      }
+
+      // ── tasks (docs/TASKS_V1.md §8) ───────────────────────────────────────
+      // definitions (shared, by name)
+      if (req.method === 'GET' && subPath === '/tasks') {
+        const defs = await loadAllTaskDefs(taskRoots);
+        json(res, 200, defs.map((d) => ({ name: d.name, description: d.description, params: d.manifest.params ?? [], goal: d.goal, source: d.source })));
+        return true;
+      }
+      m = subPath.match(/^\/tasks\/([^/]+)$/);
+      if (m && req.method === 'GET') {
+        try {
+          const def = await findTaskDef(taskRoots, decodeURIComponent(m[1]!));
+          json(res, 200, { name: def.name, description: def.description, manifest: def.manifest, goal: def.goal, source: def.source });
+        } catch (err) { json(res, 404, { error: String(err) }); }
+        return true;
+      }
+      // instances (dock-scoped, by id)
+      m = subPath.match(/^\/([^/]+)\/instances$/);
+      if (m && req.method === 'GET') {
+        json(res, 200, supervisor.list(decodeURIComponent(m[1]!)));
+        return true;
+      }
+      if (m && req.method === 'POST') {
+        const dock = decodeURIComponent(m[1]!);
+        const body = JSON.parse((await readBody(req)) || '{}') as { name?: string; params?: Record<string, unknown> };
+        try {
+          const parent = store.openSession(dock)?.sessionId;
+          if (!parent) { json(res, 409, { error: 'no open session for this dock' }); return true; }
+          const def = await findTaskDef(taskRoots, body.name ?? '');
+          const v = validateParams(def.manifest, body.params ?? {});
+          if (!v.ok) { json(res, 400, { error: v.errors.join('; ') }); return true; }
+          const id = supervisor.start({ dock, name: def.name, filePath: def.filePath, params: v.values, parentSessionId: parent });
+          json(res, 200, { instanceId: id });
+        } catch (err) { json(res, 400, { error: String(err) }); }
+        return true;
+      }
+      m = subPath.match(/^\/([^/]+)\/instances\/([^/]+)$/);
+      if (m && req.method === 'GET') {
+        const id = decodeURIComponent(m[2]!);
+        const info = supervisor.get(id);
+        if (!info) { json(res, 404, { error: 'no such instance' }); return true; }
+        json(res, 200, { ...info, status: supervisor.status(id), log: supervisor.logTail(id) });
+        return true;
+      }
+      m = subPath.match(/^\/([^/]+)\/instances\/([^/]+)\/(status|logs)$/);
+      if (m && req.method === 'GET') {
+        const id = decodeURIComponent(m[2]!);
+        json(res, 200, m[3] === 'status' ? { status: supervisor.status(id) } : { log: supervisor.logTail(id) });
+        return true;
+      }
+      m = subPath.match(/^\/([^/]+)\/instances\/([^/]+)\/(pause|resume|stop|restart)$/);
+      if (m && req.method === 'POST') {
+        const id = decodeURIComponent(m[2]!);
+        const op = m[3]!;
+        const ok = op === 'restart' ? !!(await supervisor.restart(id)) : supervisor[op as 'pause' | 'resume' | 'stop'](id);
+        json(res, ok ? 200 : 404, { ok });
+        return true;
+      }
+      m = subPath.match(/^\/([^/]+)\/instances\/([^/]+)\/input$/);
+      if (m && req.method === 'POST') {
+        const id = decodeURIComponent(m[2]!);
+        const body = JSON.parse((await readBody(req)) || '{}') as { answer?: string };
+        const ok = supervisor.provideInput(id, body.answer ?? '');
         json(res, ok ? 200 : 404, { ok });
         return true;
       }
