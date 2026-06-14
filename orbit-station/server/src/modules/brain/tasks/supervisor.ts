@@ -1,6 +1,7 @@
 /**
  * TaskSupervisor — owns running task instances per dock, each a SEPARATE OS
- * PROCESS (`npx tsx task.ts`, in a tmux window when tmux is present). It:
+ * PROCESS running `task.ts` via tsx: a detached child process by default, or a
+ * tmux window when `brainTaskRunner: 'tmux'` is chosen (see TASK_RUNNER_DEFAULT). It:
  *   - mints instanceIds and spawns the process with identity in env,
  *   - tracks each instance's reported status + checkpoint (written to disk so a
  *     respawn can resume),
@@ -19,6 +20,10 @@ import { join } from 'node:path';
 
 export type InstanceState = 'running' | 'stuck' | 'done' | 'errored' | 'stopped';
 export type SignalKind = 'notify' | 'finish' | 'errored' | 'stuck';
+
+/** Terminal states are STICKY — once an instance reaches one, no late frame from a
+ *  dying process can move it (a finish racing a stop must not flip stopped→done). */
+const TERMINAL: ReadonlySet<InstanceState> = new Set(['done', 'errored', 'stopped']);
 
 export interface InstanceInfo {
   instanceId: string;
@@ -71,18 +76,41 @@ export interface SupervisorDeps {
   sendToTask: (dock: string, instanceId: string, kind: string, payload: Record<string, unknown>) => void;
   /** a task parent signal → the brain (lands as an autonomous turn). */
   onSignal: (dock: string, info: InstanceInfo, kind: SignalKind, ev: { text: string; image?: string }) => void;
-  /** how to run a task process: 'tmux' (attachable window) or 'child' (headless).
-   *  'tmux' falls back to 'child' when tmux isn't installed. Defaults to 'tmux'. */
+  /** how to run a task process: 'child' (default — dies with the station) or
+   *  'tmux' (attachable window; falls back to 'child' when tmux isn't installed).
+   *  Unset → TASK_RUNNER_DEFAULT ('child'). */
   runner?: () => 'tmux' | 'child';
+  /** TEST SEAM: override how a process is launched. Given the instance + its env,
+   *  returns a `kill` fn the supervisor calls to terminate it. When set, neither
+   *  tmux nor child_process is touched — used to drive the lifecycle state machine
+   *  deterministically without real processes. Production leaves this undefined. */
+  spawnProcess?: (instanceId: string, env: Record<string, string>) => { kill: () => void };
 }
 
 interface Entry {
   info: InstanceInfo;
   filePath: string;
+  /** the child process (child runner). undefined for tmux or after a kill. */
   child?: ChildProcess;
+  /** the tmux session name IF this instance was tmux-spawned; else undefined.
+   *  Drives #kill — we only `tmux kill-session` instances we actually launched
+   *  in tmux (child-runner instances never touch tmux). */
+  tmuxName?: string;
+  /** TEST SEAM kill handle (set when SupervisorDeps.spawnProcess is used). */
+  killFn?: () => void;
   status: string;               // last reported getStatus()/status() line
   log: string[];                // tail of process stderr/stdout + lifecycle notes
 }
+
+/**
+ * Default task runner. 'child' is deliberate: a child process dies WITH the
+ * station (its WS drops, it self-exits) — so a station restart leaves no orphans
+ * and there is nothing to rehydrate or manage. 'tmux' gives an attachable window
+ * to watch a task live, but a tmux session OUTLIVES the station: after a restart
+ * the new supervisor can't see (or kill) a long-sleeping task left behind. So tmux
+ * is opt-in (set `brainTaskRunner: 'tmux'` when you knowingly want to watch one).
+ */
+const TASK_RUNNER_DEFAULT: 'tmux' | 'child' = 'child';
 
 /** Is tmux available on this host? (cached) */
 let _tmux: boolean | undefined;
@@ -106,9 +134,16 @@ export class TaskSupervisor {
     return join(this.#dir(dock, instanceId), 'checkpoint.json');
   }
 
+  /** Mint a fresh, currently-unused instanceId (`t-` + 4 hex). */
+  #newId(): string {
+    let id = `t-${randomUUID().slice(0, 4)}`;
+    while (this.#byId.has(id)) id = `t-${randomUUID().slice(0, 4)}`;
+    return id;
+  }
+
   /** Start a new instance from a definition file. Returns its instanceId. */
   start(args: StartArgs): string {
-    const instanceId = `t-${randomUUID().slice(0, 4)}`;
+    const instanceId = this.#newId();
     const info: InstanceInfo = {
       instanceId, dock: args.dock, name: args.name, params: args.params,
       parentSessionId: args.parentSessionId, state: 'running',
@@ -143,10 +178,19 @@ export class TaskSupervisor {
       try { appendFileSync(logFile, line + '\n'); } catch { /* best effort */ }
     };
 
+    // TEST SEAM: a fake launcher drives the lifecycle without real processes.
+    if (this.d.spawnProcess) {
+      e.tmuxName = undefined;
+      e.child = undefined;
+      e.killFn = this.d.spawnProcess(instanceId, env).kill;
+      note('[spawn] (test seam)');
+      return;
+    }
+
     const cwd = serverCwd();
-    // tmux gives an inspectable, named window; fall back to a plain detached child
-    // (when the runner pref is 'child', or tmux isn't installed).
-    const useTmux = (this.d.runner?.() ?? 'tmux') === 'tmux' && hasTmux();
+    // 'child' by default (dies with the station — no orphans); 'tmux' only when
+    // explicitly chosen AND available. See TASK_RUNNER_DEFAULT.
+    const useTmux = (this.d.runner?.() ?? TASK_RUNNER_DEFAULT) === 'tmux' && hasTmux();
     const tmuxName = `orbit-task-${instanceId}`;
     if (useTmux) {
       // Run tsx inside a fresh detached tmux session, IN the server cwd (so the
@@ -159,21 +203,30 @@ export class TaskSupervisor {
         { env, stdio: 'ignore' });
       note(`[spawn] tmux ${tmuxName} (cwd ${cwd}) → npx tsx ${e.filePath}${r.status === 0 ? '' : ` [tmux failed: ${r.status}]`}`);
       // tmux returns immediately; the task's terminal state arrives via WS frames
-      // (onFrame). e.child stays undefined — stop() kills the tmux session.
+      // (onFrame). No child handle — #kill kills the tmux session by name.
       e.child = undefined;
+      e.tmuxName = tmuxName;
     } else {
-      const child: ChildProcess = spawn('npx', ['tsx', e.filePath], { env, cwd, stdio: ['ignore', 'pipe', 'pipe'] });
+      // Spawn tsx DIRECTLY (not `npx tsx`) as a DETACHED process-group leader. The
+      // `npx`→npm-exec→tsx→node chain meant a SIGKILL hit only the wrapper and the
+      // real task survived as an orphaned grandchild; spawning the workspace tsx
+      // binary directly + killing the whole group (kill(-pid)) guarantees the task
+      // actually dies on stop(). detached:true makes the child its own group leader.
+      const child: ChildProcess = spawn(process.execPath, [tsxBin(), e.filePath],
+        { env, cwd, stdio: ['ignore', 'pipe', 'pipe'], detached: true });
       child.stdout?.on('data', (b) => note(`[out] ${String(b).trimEnd()}`));
       child.stderr?.on('data', (b) => note(`[err] ${String(b).trimEnd()}`));
-      note(`[spawn] npx tsx ${e.filePath} (cwd ${cwd})`);
+      note(`[spawn] tsx ${e.filePath} (cwd ${cwd}, pid ${child.pid})`);
       e.child = child;
+      e.tmuxName = undefined;
       child.on('exit', (code) => {
         note(`[exit] code=${code ?? 'null'}`);
+        // Ignore a STALE exit: if this isn't the entry's current child (a restart
+        // already respawned), or the instance is already terminal, do nothing.
+        if (e.child !== child || TERMINAL.has(e.info.state)) return;
         // a crash before any terminal frame → errored (finish/errored frames set
         // state first when the task exits normally).
-        if (e.info.state === 'running' || e.info.state === 'stuck') {
-          e.info.state = code === 0 ? 'done' : 'errored';
-        }
+        e.info.state = code === 0 ? 'done' : 'errored';
       });
     }
   }
@@ -194,10 +247,15 @@ export class TaskSupervisor {
   }
 
   /** Route an inbound frame from a task process. The brain calls this for every
-   *  `tasks`-topic publish from a task peer. */
+   *  `tasks`-topic publish from a task peer. Frames from an unknown instance, the
+   *  wrong dock, or an ALREADY-TERMINAL instance are dropped (a finish/notify
+   *  racing a stop must not resurrect or re-signal it — terminal is sticky). */
   onFrame(dock: string, f: TaskFrame): void {
     const e = this.#byId.get(f.instanceId);
     if (!e || e.info.dock !== dock) return;
+    // a late frame from a dying/killed process is ignored once terminal — except
+    // `checkpoint`, which is just a disk write and is always safe (and harmless).
+    if (TERMINAL.has(e.info.state) && f.kind !== 'checkpoint') return;
     const p = f.payload;
     switch (f.kind) {
       case 'attach':
@@ -234,27 +292,44 @@ export class TaskSupervisor {
     }
   }
 
-  /** Hard stop: kill the process. The last checkpoint survives on disk. */
+  /** Hard stop: kill the process. The last checkpoint survives on disk. A task
+   *  that already reached a terminal state (done/errored/stopped) is a no-op —
+   *  killing is idempotent and we never relabel a `done` task as `stopped`. */
   stop(instanceId: string): boolean {
     const e = this.#byId.get(instanceId);
     if (!e) return false;
+    if (TERMINAL.has(e.info.state)) { this.#kill(e); return false; }
     this.#kill(e);
     e.info.state = 'stopped';
     return true;
   }
 
   #kill(e: Entry): void {
-    if (hasTmux()) {
-      spawnSync('tmux', ['kill-session', '-t', `orbit-task-${e.info.instanceId}`], { stdio: 'ignore' });
+    // test seam first (no real process behind it).
+    if (e.killFn) { try { e.killFn(); } catch { /* ignore */ } e.killFn = undefined; }
+    // only the runner we actually used: a tmux session (by name) OR a detached
+    // child process group. Don't shell out to tmux for a child-runner instance.
+    if (e.tmuxName) {
+      spawnSync('tmux', ['kill-session', '-t', e.tmuxName], { stdio: 'ignore' });
+      e.tmuxName = undefined;
     }
-    try { e.child?.kill('SIGKILL'); } catch { /* already gone */ }
+    if (e.child?.pid) {
+      // the child is a detached group leader — kill the whole GROUP (negative pid)
+      // so tsx's node grandchild dies too, not just the immediate process.
+      try { process.kill(-e.child.pid, 'SIGKILL'); }
+      catch { try { e.child.kill('SIGKILL'); } catch { /* already gone */ } }
+    }
     e.child = undefined;
   }
 
-  /** Resume a stopped/stuck task: respawn a fresh process from the checkpoint. */
+  /** Resume a STOPPED task: respawn a fresh process from the checkpoint. Refuses a
+   *  task that already completed/failed — resuming a `done` job would re-run it.
+   *  (A `stuck` task is resumed by provideInput, not here. A `running` one is a
+   *  no-op restart so the caller can force a fresh process.) */
   resume(instanceId: string): boolean {
     const e = this.#byId.get(instanceId);
     if (!e) return false;
+    if (e.info.state === 'done' || e.info.state === 'errored') return false;
     this.#kill(e);
     e.info.state = 'running';
     this.#spawn(instanceId);
@@ -262,32 +337,37 @@ export class TaskSupervisor {
   }
   /** Pause is just stop (a free-running process has no mid-run pause). */
   pause(instanceId: string): boolean { return this.stop(instanceId); }
-  /** Restart = stop + respawn from checkpoint. */
+  /** Restart = stop + respawn from checkpoint. Refused once terminal (done/errored). */
   restart(instanceId: string): boolean {
+    const e = this.#byId.get(instanceId);
+    if (!e || e.info.state === 'done' || e.info.state === 'errored') return false;
     this.stop(instanceId);
     return this.resume(instanceId);
   }
 
-  /** Answer a stuck task: send `input` down; it resolves the awaiting ask. */
+  /** Answer a STUCK task: send `input` down; it resolves the awaiting ask. Only a
+   *  stuck task is waiting for input — refuse otherwise (nothing to deliver to). */
   provideInput(instanceId: string, answer: string): boolean {
     const e = this.#byId.get(instanceId);
-    if (!e) return false;
+    if (!e || e.info.state !== 'stuck') return false;
     this.d.sendToTask(e.info.dock, instanceId, 'input', { answer });
-    if (e.info.state === 'stuck') e.info.state = 'running';
+    e.info.state = 'running';
     return true;
   }
 
-  /** Stop every instance under a parent conversational session (the cascade). */
+  /** Stop every STILL-RUNNING instance under a parent session (the session-end
+   *  cascade). Already-terminal instances are left as-is (a `done` task must not
+   *  be relabeled `stopped`). Returns the ids it actually stopped. */
   stopForParent(dock: string, parentSessionId: string): string[] {
     const ids: string[] = [];
     for (const e of this.#byId.values()) {
-      if (e.info.dock === dock && e.info.parentSessionId === parentSessionId) {
+      if (e.info.dock === dock && e.info.parentSessionId === parentSessionId
+          && !TERMINAL.has(e.info.state)) {
         this.stop(e.info.instanceId); ids.push(e.info.instanceId);
       }
     }
     return ids;
   }
-  stopMany(instanceIds: string[]): void { for (const id of instanceIds) this.stop(id); }
 
   get(instanceId: string): InstanceInfo | undefined { return this.#byId.get(instanceId)?.info; }
   status(instanceId: string): string { return this.#byId.get(instanceId)?.status ?? ''; }
@@ -312,6 +392,13 @@ function sanitize(dock: string): string { return dock.replace(/[^a-zA-Z0-9._-]/g
 /** The server package dir — cwd for the spawned process (workspace tsx + node_modules). */
 function serverCwd(): string {
   return new URL('../../../..', import.meta.url).pathname;
+}
+/** The tsx CLI to run a task.ts with `node <tsxBin> task.ts` — the workspace tsx,
+ *  hoisted to the orbit-station root (one level above the server package). Running
+ *  it directly (vs `npx tsx`) avoids an npm-exec wrapper process so a kill reaches
+ *  the real task. */
+function tsxBin(): string {
+  return new URL('../../../../../node_modules/tsx/dist/cli.mjs', import.meta.url).pathname;
 }
 /** Just the task identity keys (what tmux's command line needs to re-export). */
 function taskEnvOnly(env: NodeJS.ProcessEnv): Record<string, string> {

@@ -1,10 +1,10 @@
 /**
- * Manifest input-schema validation (docs/TASKS_V1.md §2, §6).
+ * Manifest input-schema validation (see docs/TASKS_V1.md).
  *
  * A definition declares `params` (key/val schema). `run_task` supplies values;
  * `validateParams` checks required presence + coarse types, applies defaults,
- * and returns the value bag the harness hands the task as `ctx.params`. The LLM
- * is expected to gather/ask for required values up front (§6); this is the
+ * and returns the value bag the supervisor hands the task as `this.params`. The
+ * LLM is expected to gather/ask for required values up front; this is the
  * server-side backstop that refuses a bad call.
  */
 import type { TaskManifest, TaskParam } from './types.js';
@@ -49,7 +49,7 @@ export function validateParams(
     values[p.name] = given;
   }
 
-  // pass through unknown keys? No — keep ctx.params to the declared schema so a
+  // pass through unknown keys? No — keep this.params to the declared schema so a
   // typo doesn't silently ride along. (The LLM addresses params by their names.)
   return { ok: errors.length === 0, values, errors };
 }

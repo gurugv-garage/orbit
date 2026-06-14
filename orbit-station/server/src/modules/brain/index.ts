@@ -81,7 +81,7 @@ export function brainModule(w: BrainWiring): StationModule {
   const supervisor = new TaskSupervisor({
     root: store.root,
     stationWsUrl: process.env.STATION_WS ?? `ws://127.0.0.1:${process.env.PORT ?? 8099}/ws`,
-    runner: () => (w.config('brainTaskRunner') === 'child' ? 'child' : 'tmux'),
+    runner: () => (w.config('brainTaskRunner') === 'tmux' ? 'tmux' : 'child'),
     onSignal: onTaskSignal,
     // push a directed frame DOWN to a task peer, addressed by (dock, component).
     sendToTask: (dock, instanceId, kind, payload) => {
@@ -341,10 +341,16 @@ export function brainModule(w: BrainWiring): StationModule {
         } catch (err) { json(res, 400, { error: String(err) }); }
         return true;
       }
+      // resolve an instance ONLY if it belongs to the dock in the path — REST is
+      // dock-scoped like the WS path, so dockA can't touch dockB's tasks by id.
+      const inDock = (pathDock: string, id: string) => {
+        const info = supervisor.get(id);
+        return info && info.dock === decodeURIComponent(pathDock) ? info : undefined;
+      };
       m = subPath.match(/^\/([^/]+)\/instances\/([^/]+)$/);
       if (m && req.method === 'GET') {
         const id = decodeURIComponent(m[2]!);
-        const info = supervisor.get(id);
+        const info = inDock(m[1]!, id);
         if (!info) { json(res, 404, { error: 'no such instance' }); return true; }
         json(res, 200, { ...info, status: supervisor.status(id), log: supervisor.logTail(id) });
         return true;
@@ -352,12 +358,14 @@ export function brainModule(w: BrainWiring): StationModule {
       m = subPath.match(/^\/([^/]+)\/instances\/([^/]+)\/(status|logs)$/);
       if (m && req.method === 'GET') {
         const id = decodeURIComponent(m[2]!);
+        if (!inDock(m[1]!, id)) { json(res, 404, { error: 'no such instance' }); return true; }
         json(res, 200, m[3] === 'status' ? { status: supervisor.status(id) } : { log: supervisor.logTail(id) });
         return true;
       }
       m = subPath.match(/^\/([^/]+)\/instances\/([^/]+)\/(pause|resume|stop|restart)$/);
       if (m && req.method === 'POST') {
         const id = decodeURIComponent(m[2]!);
+        if (!inDock(m[1]!, id)) { json(res, 404, { ok: false }); return true; }
         const op = m[3]!;
         const ok = op === 'restart' ? !!(await supervisor.restart(id)) : supervisor[op as 'pause' | 'resume' | 'stop'](id);
         json(res, ok ? 200 : 404, { ok });
@@ -366,6 +374,7 @@ export function brainModule(w: BrainWiring): StationModule {
       m = subPath.match(/^\/([^/]+)\/instances\/([^/]+)\/input$/);
       if (m && req.method === 'POST') {
         const id = decodeURIComponent(m[2]!);
+        if (!inDock(m[1]!, id)) { json(res, 404, { ok: false }); return true; }
         const body = JSON.parse((await readBody(req)) || '{}') as { answer?: string };
         const ok = supervisor.provideInput(id, body.answer ?? '');
         json(res, ok ? 200 : 404, { ok });

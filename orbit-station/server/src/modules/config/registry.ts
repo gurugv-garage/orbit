@@ -187,9 +187,9 @@ export const REGISTRY: ConfigEntry[] = [
     description: 'Quiet gap after a turn ends before an autonomous (task) turn may take the lane — avoids barging into a rapid user exchange.',
   }),
   entry({
-    key: 'brainTaskRunner', type: 'text', schema: z.enum(['tmux', 'child']), default: 'tmux', tags: ['station'],
+    key: 'brainTaskRunner', type: 'text', schema: z.enum(['tmux', 'child']), default: 'child', tags: ['station'],
     label: 'Task runner',
-    description: 'How task processes run: "tmux" (attachable window you can watch) or "child" (plain detached child_process, headless).',
+    description: 'How task processes run: "child" (default — dies with the station, no orphans) or "tmux" (attachable window to watch a task live; a tmux session outlives the station, so a restart can orphan a long-sleeping task).',
   }),
   entry({
     key: 'brainSkills', type: 'boolean', schema: z.boolean(), default: true, tags: ['station'],

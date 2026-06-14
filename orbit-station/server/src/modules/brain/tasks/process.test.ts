@@ -1,19 +1,15 @@
 /**
  * Task PROCESS integration — proves the separate-process + WebSocket model end to
- * end, with NO model and NO browser. We stand up the real Hub + Bus on a real
- * port, wire the `tasks` topic exactly as the brain does (route task frames →
- * supervisor; supervisor sends init/input down by toAddr), then SPAWN the real
- * packaged `remind-after` task as its own `tsx` process. We assert that it:
- *   connects → attaches → gets init (params) → notifies → finishes,
- * with the supervisor surfacing status + the terminal outcome via onSignal.
- *
- * This is the real wire: the task process connects back over ws://, scoped to its
- * (dock, instanceId), and all parent↔task comms flow over that socket.
+ * end with REAL processes (no model, no browser). A real Hub + Bus on a real port,
+ * the `tasks` topic wired exactly as the brain does, and actual `tsx` task
+ * processes connecting back over ws://. Covers the happy path plus the resiliency
+ * cases that only the real wire can show: a crashing task → errored; stop kills the
+ * process; askAgentInput ↔ provideInput round-trips.
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { createServer } from 'node:http';
-import { mkdtempSync } from 'node:fs';
+import { createServer, type Server } from 'node:http';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Bus } from '../../../core/bus.js';
@@ -24,28 +20,27 @@ import { defaultTasksRoot } from './manager.js';
 const DOCK = 'proc-test-bot';
 const tick = () => new Promise((r) => setTimeout(r, 20));
 
-function listen(): Promise<{ http: ReturnType<typeof createServer>; port: number }> {
-  return new Promise((resolve) => {
-    const http = createServer();
-    http.listen(0, '127.0.0.1', () => {
-      const addr = http.address();
-      const port = typeof addr === 'object' && addr ? addr.port : 0;
-      resolve({ http, port });
-    });
-  });
+interface Rig {
+  http: Server;
+  supervisor: TaskSupervisor;
+  signals: Array<{ kind: SignalKind; text: string; info: InstanceInfo }>;
+  start: (filePath: string, params?: Record<string, unknown>, name?: string) => string;
+  waitFor: (pred: () => boolean, ms?: number) => Promise<boolean>;
+  close: () => Promise<void>;
 }
 
-test('a real task process connects over WS, gets init, notifies, and finishes', async () => {
-  const { http, port } = await listen();
+async function makeRig(): Promise<Rig> {
+  const http = await new Promise<Server>((resolve) => {
+    const s = createServer();
+    s.listen(0, '127.0.0.1', () => resolve(s));
+  });
+  const port = (http.address() as { port: number }).port;
   const bus = new Bus();
   const hub = new Hub(http, bus);
-  const wsUrl = `ws://127.0.0.1:${port}/ws`;
-
-  // collect the parent signals the supervisor forwards (these become autonomous turns).
-  const signals: Array<{ kind: SignalKind; text: string; info: InstanceInfo }> = [];
+  const signals: Rig['signals'] = [];
   const supervisor = new TaskSupervisor({
     root: mkdtempSync(join(tmpdir(), 'proc-')),
-    stationWsUrl: wsUrl,
+    stationWsUrl: `ws://127.0.0.1:${port}/ws`,
     onSignal: (_dock, info, kind, ev) => signals.push({ kind, text: ev.text, info }),
     sendToTask: (dock, instanceId, kind, payload) => {
       bus.publish({
@@ -54,9 +49,7 @@ test('a real task process connects over WS, gets init, notifies, and finishes', 
       });
     },
   });
-
-  // the brain's `tasks` routing: resolve the sender's dock from its hello, hand
-  // each frame to the supervisor (tenancy from the roster, never the payload).
+  // the brain's `tasks` routing: dock from the sender's hello (never the payload).
   bus.on('tasks', (msg) => {
     if (msg.source === 'station') return;
     const dock = hub.roster().find((p) => p.id === msg.source)?.dock;
@@ -66,33 +59,144 @@ test('a real task process connects over WS, gets init, notifies, and finishes', 
     if (instanceId) supervisor.onFrame(dock, { instanceId, kind: msg.kind, payload: p });
   });
 
-  // spawn the REAL packaged remind-after with a tiny delay so the test is quick.
+  const start = (filePath: string, params: Record<string, unknown> = {}, name = 'remind-after') =>
+    supervisor.start({ dock: DOCK, name, filePath, params, parentSessionId: 'sess-proc-1' });
+  const waitFor = async (pred: () => boolean, ms = 8000) => {
+    for (let i = 0; i < ms / 20 && !pred(); i++) await tick();
+    return pred();
+  };
+  const close = () => new Promise<void>((r) => http.close(() => r()));
+  return { http, supervisor, signals, start, waitFor, close };
+}
+
+/** Write a throwaway task.ts into a temp generated dir; returns its path + cleanup. */
+function fixtureTask(body: string, status = "'x'"): { filePath: string; cleanup: () => void } {
+  const dir = mkdtempSync(join(tmpdir(), 'fixture-'));
+  const harness = join(defaultTasksRoot(), '..', '_harness', 'index.js');
+  const src = `
+import { Task, runTask, type TaskManifest } from '${harness}';
+export const manifest = { name: 'fixture', description: 'x', params: [] } satisfies TaskManifest;
+class F extends Task {
+  async run(): Promise<void> { ${body} }
+  getStatus(): string { return ${status}; }
+}
+runTask(F);
+`;
+  const filePath = join(dir, 'task.ts');
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(filePath, src);
+  return { filePath, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
+}
+
+test('a real task process connects over WS, gets init, notifies, and finishes', async () => {
+  const r = await makeRig();
   const filePath = join(defaultTasksRoot(), 'remind-after', 'task.ts');
-  const id = supervisor.start({
-    dock: DOCK, name: 'remind-after', filePath,
-    params: { message: 'take a bath', delay: '200ms' },
-    parentSessionId: 'sess-proc-1',
-  });
+  const id = r.start(filePath, { message: 'take a bath', delay: '200ms' });
 
-  // wait for the notify + finish to come back over the wire (process boot + tsx
-  // cold start can take a few seconds).
-  for (let i = 0; i < 400 && !signals.some((s) => s.kind === 'finish'); i++) await tick();
-
-  const notify = signals.find((s) => s.kind === 'notify');
-  const finish = signals.find((s) => s.kind === 'finish');
-  assert.ok(notify, 'the task notified the parent over WS');
-  assert.match(notify!.text, /take a bath/);
-  assert.ok(finish, 'the task reported finish over WS');
-  assert.equal(supervisor.get(id)?.state, 'done');
-  // its self-kept status was reported up too
-  assert.match(supervisor.status(id), /waiting 200ms|remind/i);
-  // the instance descriptor is tracked: first run, with a real start time.
-  const info = supervisor.get(id)!;
-  assert.equal(info.runCount, 1, 'first run');
-  assert.ok(info.startedAt > 0 && info.spawnedAt >= info.startedAt, 'has start/spawn times');
+  assert.ok(await r.waitFor(() => r.signals.some((s) => s.kind === 'finish')), 'finished over WS');
+  const notify = r.signals.find((s) => s.kind === 'notify');
+  assert.ok(notify && /take a bath/.test(notify.text), 'notified with the message');
+  assert.equal(r.supervisor.get(id)?.state, 'done');
+  assert.match(r.supervisor.status(id), /waiting 200ms|remind/i);
+  const info = r.supervisor.get(id)!;
+  assert.equal(info.runCount, 1);
+  assert.ok(info.startedAt > 0 && info.spawnedAt >= info.startedAt);
   assert.match(describeInstance(info), /remind-after.*message=take a bath.*started/);
 
-  supervisor.stop(id);
-  void hub;
-  await new Promise<void>((r) => http.close(() => r()));
+  r.supervisor.stop(id);
+  await r.close();
+});
+
+test('a task that THROWS in run() lands as errored over WS (not a silent zombie)', async () => {
+  const r = await makeRig();
+  const fx = fixtureTask(`throw new Error('kaboom');`);
+  const id = r.start(fx.filePath, {}, 'fixture');
+
+  assert.ok(await r.waitFor(() => r.supervisor.get(id)?.state === 'errored'), 'reached errored');
+  const err = r.signals.find((s) => s.kind === 'errored');
+  assert.ok(err && /kaboom/.test(err.text), 'the failure reason reached the parent');
+
+  fx.cleanup();
+  await r.close();
+});
+
+test('stop() kills a long-running process — no further frames arrive', async () => {
+  const r = await makeRig();
+  // a task that notifies fast forever; we stop it and assert it goes quiet.
+  const fx = fixtureTask(`while (true) { await this.notifyAgent('tick'); await this.sleep(40); }`);
+  const id = r.start(fx.filePath, {}, 'fixture');
+
+  assert.ok(await r.waitFor(() => r.signals.some((s) => s.kind === 'notify')), 'it started ticking');
+  r.supervisor.stop(id);
+  assert.equal(r.supervisor.get(id)?.state, 'stopped');
+  const countAfterStop = r.signals.length;
+  // give any in-flight/late frames a moment; the killed process must not keep ticking.
+  await new Promise((res) => setTimeout(res, 300));
+  assert.ok(r.signals.length - countAfterStop <= 1, 'at most one in-flight frame, then silence');
+
+  fx.cleanup();
+  await r.close();
+});
+
+test('askAgentInput ↔ provideInput round-trips over the real wire', async () => {
+  const r = await makeRig();
+  // ask, then notify the answer back so we can observe it, then finish.
+  const fx = fixtureTask(
+    `const ans = await this.askAgentInput('red or blue?'); await this.notifyAgent('you said ' + ans); this.finish();`,
+  );
+  const id = r.start(fx.filePath, {}, 'fixture');
+
+  assert.ok(await r.waitFor(() => r.supervisor.get(id)?.state === 'stuck'), 'parked as stuck');
+  assert.ok(r.signals.some((s) => s.kind === 'stuck' && /red or blue/.test(s.text)), 'asked the parent');
+  assert.equal(r.supervisor.provideInput(id, 'blue'), true);
+
+  assert.ok(await r.waitFor(() => r.signals.some((s) => s.kind === 'finish')), 'resumed + finished');
+  assert.ok(r.signals.some((s) => s.kind === 'notify' && /you said blue/.test(s.text)), 'got the answer');
+
+  fx.cleanup();
+  await r.close();
+});
+
+test('a superseded askAgentInput rejects the first promise (no forever-hung await)', async () => {
+  const r = await makeRig();
+  // start awaiting the first ask, then issue a second ask before answering. The
+  // first await must REJECT (not hang); the task catches it, reports, and the
+  // second ask then parks it as stuck — proving the first didn't leak.
+  const fx = fixtureTask(`
+    const first = this.askAgentInput('first?');
+    const second = this.askAgentInput('second?');   // supersedes the first
+    try { await first; this.errored('first should have rejected'); }
+    catch (e) { await this.notifyAgent('first rejected: ' + (e instanceof Error ? e.message : e)); }
+    await second; this.finish();
+  `);
+  const id = r.start(fx.filePath, {}, 'fixture');
+
+  assert.ok(await r.waitFor(() =>
+    r.signals.some((s) => s.kind === 'notify' && /first rejected: .*superseded/.test(s.text))),
+    'the first ask rejected promptly instead of hanging');
+  // and it is now parked on the SECOND ask
+  assert.ok(await r.waitFor(() => r.supervisor.get(id)?.state === 'stuck'), 'now stuck on the second ask');
+  r.supervisor.provideInput(id, 'done');
+  assert.ok(await r.waitFor(() => r.supervisor.get(id)?.state === 'done'), 'second answered → finished');
+
+  fx.cleanup();
+  await r.close();
+});
+
+test('an unhandled rejection in the body still reports errored (with a reason) to the parent', async () => {
+  const r = await makeRig();
+  // fire a rejecting promise WITHOUT awaiting it → unhandledRejection. The safety
+  // net must turn it into an `errored` signal, not a silent bare crash.
+  const fx = fixtureTask(`
+    Promise.reject(new Error('unhandled boom'));
+    await this.sleep('2s');   // give the rejection time to surface
+  `);
+  const id = r.start(fx.filePath, {}, 'fixture');
+
+  assert.ok(await r.waitFor(() => r.supervisor.get(id)?.state === 'errored'), 'reached errored, not a silent crash');
+  const err = r.signals.find((s) => s.kind === 'errored');
+  assert.ok(err && /unhandled boom/.test(err.text), 'the crash reason reached the parent');
+
+  fx.cleanup();
+  await r.close();
 });

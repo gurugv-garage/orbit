@@ -1,7 +1,7 @@
 /**
  * The Task base class — what an LLM-authored task.ts extends.
  *
- * A task is a SEPARATE OS PROCESS (spawned by the supervisor, run via `npx tsx`).
+ * A task is a SEPARATE OS PROCESS (spawned by the supervisor via `tsx`).
  * When the process boots, `runTask(MyTask)` (see ./run.ts) constructs the task and
  * calls `start()`. `start()` is OURS: it connects to the station as a WebSocket
  * client, waits until the connection is stable + the station has sent the `init`
@@ -18,7 +18,7 @@
  *   - this.askAgentInput(prompt)  ask the agent/user and AWAIT their answer
  *   - this.finish(summary)/this.errored(why)  the terminal outcome
  *   - this.checkpoint()          persist this.state (reloaded on resume)
- *   - this.sleep(ms|"5s")        abort-aware-ish wait
+ *   - this.sleep(ms|"5s")        wait (NOT interruptible — stop = kill the process)
  *
  * Read-only context (set before run()): this.params (the inputs) and
  * this.instance (what THIS instance is about — name, params, startedAt, runCount).
@@ -29,6 +29,12 @@
  */
 import { WebSocket } from 'ws';
 import { durationMs } from './types.js';
+
+/** Liveness: the station's hub pings every ~2s. If a task hears nothing at all for
+ *  this long, it assumes the station died abruptly (SIGKILL/crash — no clean WS
+ *  close) and self-exits, so no task ever outlives its station. */
+const STATION_SILENCE_MS = 10_000;
+const WATCHDOG_TICK_MS = 2_000;
 
 /** Identity the supervisor spawns the process with (env, no token — see CLAUDE.md). */
 export interface TaskIdentity {
@@ -99,8 +105,10 @@ export abstract class Task {
   #ident!: TaskIdentity;
   #ready?: () => void;          // resolves once `init` arrives
   #initReceived = false;
-  #pendingAsk?: (answer: string) => void;
+  #pendingAsk?: { resolve: (answer: string) => void; reject: (err: Error) => void };
   #done = false;
+  #lastHeard = Date.now();      // last station ping/message — the liveness clock
+  #watchdog?: ReturnType<typeof setInterval>;
 
   // ── what the LLM implements ────────────────────────────────────────────────
   /** the actual work. May loop; should reach finish()/errored(). */
@@ -116,6 +124,16 @@ export abstract class Task {
    */
   async start(ident: TaskIdentity): Promise<void> {
     this.#ident = ident;
+    // Safety net: a crash in the LLM-authored body (an unhandled rejection or a
+    // throw outside the run() await chain — e.g. an unawaited askAgentInput that
+    // got superseded) should still tell the PARENT why, not just exit silently.
+    const crash = (err: unknown) => {
+      const why = String((err as Error)?.stack ?? err);
+      if (!this.#done) this.errored(why);
+      setTimeout(() => process.exit(1), 150);   // let the errored frame flush
+    };
+    process.on('unhandledRejection', crash);
+    process.on('uncaughtException', crash);
     await this.#connect();
     // init carries params + any resume checkpoint; run() must not start before it.
     await new Promise<void>((resolve) => {
@@ -129,7 +147,8 @@ export abstract class Task {
     } catch (err) {
       if (!this.#done) this.errored(String((err as Error)?.stack ?? err));
     } finally {
-      // let the last frame flush, then exit so the process (tmux window) closes.
+      if (this.#watchdog) clearInterval(this.#watchdog);
+      // let the last frame flush, then exit so the process closes.
       await this.#sleepReal(150);
       this.#ws?.close();
     }
@@ -156,12 +175,26 @@ export abstract class Task {
         });
         resolve(); // connection is open + we've said hello; init follows asynchronously.
       });
-      ws.on('message', (raw) => this.#onMessage(raw.toString()));
+      ws.on('message', (raw) => { this.#lastHeard = Date.now(); this.#onMessage(raw.toString()); });
+      // the station pings every ~2s (hub liveness sweep); any ping/pong/message
+      // resets the liveness clock.
+      ws.on('ping', () => { this.#lastHeard = Date.now(); });
+      ws.on('pong', () => { this.#lastHeard = Date.now(); });
       ws.on('error', (e) => { if (!opened) reject(e); });
       ws.on('close', () => {
         // station went away mid-run: nothing to report to; just exit.
         if (!this.#done) process.exit(0);
       });
+      // WATCHDOG: a `sleep`ing task has an idle socket, so an ABRUPTLY-dead station
+      // (SIGKILL/crash) won't fire 'close' for a long time and the process would
+      // orphan. The hub pings every ~2s; if we hear NOTHING for STATION_SILENCE_MS
+      // the station is gone — self-exit so no task outlives its station.
+      this.#watchdog = setInterval(() => {
+        if (Date.now() - this.#lastHeard > STATION_SILENCE_MS) {
+          if (this.#watchdog) clearInterval(this.#watchdog);
+          process.exit(0);
+        }
+      }, WATCHDOG_TICK_MS);
     });
   }
 
@@ -174,6 +207,10 @@ export abstract class Task {
     if (p.instanceId && p.instanceId !== this.#ident.instanceId) return;
     switch (f.kind) {
       case 'init':
+        // Idempotent: a reconnect re-sends `attach`, which makes the station
+        // re-send `init`. Honour only the FIRST — re-applying the on-disk
+        // checkpoint would clobber in-memory progress since the last checkpoint().
+        if (this.#initReceived) break;
         this.params = p.params ?? {};
         this.state = p.state ?? {};
         this.instance = {
@@ -190,10 +227,12 @@ export abstract class Task {
         this.#initReceived = true;
         this.#ready?.();
         break;
-      case 'input':
-        this.#pendingAsk?.(String(p.answer ?? ''));
+      case 'input': {
+        const pending = this.#pendingAsk;
         this.#pendingAsk = undefined;
+        pending?.resolve(String(p.answer ?? ''));
         break;
+      }
       case 'stop':
         // hard stop is a process kill by the supervisor; this is a courtesy frame.
         process.exit(0);
@@ -205,14 +244,20 @@ export abstract class Task {
   protected status(text: string): void {
     this.#publish('status', { status: text });
   }
-  /** push an update up to the dock's agent/user (becomes an autonomous turn). */
-  protected async notifyAgent(text: string, image?: string): Promise<void> {
+  /** push an update up to the dock's agent/user (becomes an autonomous turn).
+   *  Fire-and-forget — it resolves as soon as the frame is queued on the socket,
+   *  not when the user sees it (returns a Promise only for `await` convenience). */
+  protected notifyAgent(text: string, image?: string): Promise<void> {
     this.#publish('notify', { text, ...(image ? { image } : {}) });
+    return Promise.resolve();
   }
-  /** ask the agent/user a question and AWAIT the answer (the stuck path). */
+  /** ask the agent/user a question and AWAIT the answer (the stuck path). Only one
+   *  ask can be outstanding; asking again before an answer rejects the earlier
+   *  promise (so a forgotten ask can't leak a forever-pending await). */
   protected askAgentInput(prompt: string): Promise<string> {
+    this.#pendingAsk?.reject(new Error('askAgentInput superseded by a newer ask'));
     this.#publish('ask', { prompt });
-    return new Promise((resolve) => { this.#pendingAsk = resolve; });
+    return new Promise((resolve, reject) => { this.#pendingAsk = { resolve, reject }; });
   }
   /** persist this.state so a resume (respawn) reloads it. */
   protected checkpoint(): void {
@@ -230,7 +275,8 @@ export abstract class Task {
     this.#done = true;
     this.#publish('errored', { why });
   }
-  /** abort-aware-ish sleep ("5s" | 1000). */
+  /** Wait ("5s" | 1000). NOT interruptible — a stop kills the whole process, so a
+   *  task does not need (and cannot use) an abort signal. */
   protected sleep(ms: number | string): Promise<void> {
     const n = typeof ms === 'number' ? ms : durationMs(ms);
     if (!Number.isFinite(n) || n < 0) throw new Error(`sleep got a bad duration (${JSON.stringify(ms)})`);

@@ -137,7 +137,8 @@ export function taskPromptBlock(defs: TaskDef[]): string {
 }
 
 /** Write a new (or overwrite an existing) definition's task.ts, then validate by
- *  re-importing. Rolls back on failure (mirrors installDockSkill). Returns name. */
+ *  TYPECHECK + static shape-check (never executes it — running a task connects to
+ *  the station). Rolls back on failure. Returns name. */
 export async function writeTaskDef(root: string, name: string, source: string): Promise<string> {
   if (!/^[a-z0-9-]{1,64}$/.test(name)) throw new Error(`bad task name "${name}" (kebab-case, 1–64 chars)`);
   const dir = join(root, name);
@@ -171,8 +172,8 @@ export async function writeTaskDef(root: string, name: string, source: string): 
  *  undefined if clean. Uses the project tsconfig but checks just this file. */
 export function typecheckTaskFile(filePath: string): string | undefined {
   // strictNullChecks (catches the real bugs: undefined params, wrong types, calling
-  // a missing ctx method) but NOT noImplicitAny — an LLM shouldn't have to annotate
-  // every stream callback param; that pedantry just causes fix-loops.
+  // a missing method on the Task base class) but NOT noImplicitAny — an LLM
+  // shouldn't have to annotate every callback param; that pedantry causes fix-loops.
   const r = spawnSync('npx', ['tsc', '--noEmit', '--skipLibCheck', '--module', 'nodenext',
     '--moduleResolution', 'nodenext', '--target', 'es2022',
     '--strictNullChecks', '--noImplicitThis', '--noImplicitAny', 'false', filePath],

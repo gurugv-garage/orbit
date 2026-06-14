@@ -52,6 +52,20 @@ If the laptop IP changes (new network), re-read it from the banner.
 
 **Pass:** all views render, connection indicator green, responsive at 390px.
 
+### 1a. Tasks panel (automated, Playwright)
+
+`npm run -w server e2e:console-tasks` drives the Brain console's TASKS panel in a
+real Chromium against a live station (`:8099` must be up): run a definition from
+the panel, watch a one-shot **complete** and a recurring task **fire**, **stop** /
+**restart** / **pause** / **resume** via the panel buttons, confirm bad params are
+**refused**, start a task from the **chat** (real LLM), and verify **end session**
+**cascades** — stopping every running instance. Each step asserts against the same
+REST the UI uses; screenshots → `/tmp/e2e-ct-*.png`. One-time:
+`npx playwright install chromium`. `SKIP_CHAT=1` skips the LLM step for a
+deterministic run.
+
+**Pass:** `PASS ✅ all console task operations work`; zero orphan task processes.
+
 ---
 
 ## 2. No-hardware smoke (fake dock + body)
