@@ -79,7 +79,18 @@ export class CapabilityRegistry {
     const cap = this.#byOp.get(op);
     if (!cap) return { ok: false, error: `unknown capability "${op}"` };
     if (cap.requires && !this.hasDockCap(ctx.dock, cap.requires)) {
-      return { ok: false, error: `dock "${ctx.dock}" has no "${cap.requires}" — "${op}" unavailable here` };
+      // The dock declares this capability (the op was advertised at authoring time
+      // because the dock serves it) but the component serving it is OFFLINE right
+      // now — e.g. the phone dropped its WS for a moment. This is TRANSIENT, never a
+      // statement that the dock lacks the hardware. Say so explicitly: an author LLM
+      // that reads "has no camera" concludes the dock is camera-less forever and
+      // gives up; it must instead keep retrying until the component reconnects.
+      return {
+        ok: false,
+        error: `"${cap.requires}" momentarily unavailable on dock "${ctx.dock}" — the component `
+          + `serving it (e.g. the phone for "camera") is offline RIGHT NOW, not absent. This is `
+          + `transient: retry "${op}" after a short wait; it recovers when the component reconnects.`,
+      };
     }
     try {
       return { ok: true, result: await cap.handler(ctx, args) };

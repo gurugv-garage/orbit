@@ -250,7 +250,10 @@ test('an unavailable capability rejects in the task (dock lacks the requirement)
 
   assert.ok(await r.waitFor(() => r.supervisor.get(id)?.state === 'errored'), 'errored, not moved');
   const err = r.signals.find((s) => s.kind === 'errored');
-  assert.ok(err && /no "servo"/.test(err.text), 'the unavailable-capability reason reached the parent');
+  // The reason must reach the parent AND be phrased as a transient outage ("retry"),
+  // never a permanent "has no servo" (which an author LLM reads as "give up forever").
+  assert.ok(err && /"servo" momentarily unavailable/.test(err.text) && /retry/.test(err.text)
+    && !/has no/.test(err.text), 'the unavailable-capability reason reached the parent (as transient, not absent)');
 
   fx.cleanup();
   await r.close();

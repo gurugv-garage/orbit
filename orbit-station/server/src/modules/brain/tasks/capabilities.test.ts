@@ -69,11 +69,16 @@ test('invoke refuses an unknown op', async () => {
   assert.match((out as { error: string }).error, /unknown capability/);
 });
 
-test('invoke refuses a cap the dock lacks (tenancy-gated)', async () => {
+test('invoke refuses a cap the dock lacks — as a TRANSIENT outage, not "absent"', async () => {
   const r = registry();
   const out = await r.invoke({ dock: 'mini', instanceId: 't-1' }, 'move', { steps: [] });
   assert.equal(out.ok, false);
-  assert.match((out as { error: string }).error, /no "servo"/);
+  const err = (out as { error: string }).error;
+  // must name the requirement + tell the author to retry, and must NOT phrase it as
+  // a permanent "has no X" (an author LLM reads that as "give up forever").
+  assert.match(err, /"servo" momentarily unavailable/);
+  assert.match(err, /retry/);
+  assert.doesNotMatch(err, /has no/);
 });
 
 test('invoke turns a handler throw into an error result (never throws)', async () => {
