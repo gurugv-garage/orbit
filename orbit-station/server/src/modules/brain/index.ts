@@ -67,8 +67,12 @@ export function brainModule(w: BrainWiring): StationModule {
   // A task's parent signal (notify / finish / errored / stuck) → an autonomous
   // turn in that dock's conversational session (TASKS_V1 §7a).
   const onTaskSignal = (dock: string, info: InstanceInfo, kind: SignalKind, ev: { text: string; image?: string }) => {
-    const s = sessions.get(dock);
-    if (!s) return;
+    // Use the session FACTORY, not sessions.get: after a station restart the
+    // in-memory DockBrainSession may not exist yet (it's created lazily on the
+    // first turn), but the dock has running tasks + an open session in the store.
+    // Without this the task notify was silently dropped → "the reminder didn't
+    // speak". The factory creates/returns the live session so the turn injects.
+    const s = session(dock);
     const label = kind === 'finish' ? 'finished' : kind === 'errored' ? 'failed' : kind === 'stuck' ? 'needs input' : 'update';
     const text = `[background task ${info.name} (${info.instanceId}) ${label}] ${ev.text}`
       + (kind === 'stuck' ? ` — call provide_input("${info.instanceId}", <answer>) once the user answers.` : '');
@@ -234,6 +238,12 @@ export function brainModule(w: BrainWiring): StationModule {
         if (msg.kind === 'peer-left') {
           const s = sessions.get(p.dock);
           if (!s) return;
+          // A TASK peer (component "task:<id>") leaving is NOT the dock going
+          // offline — a reminder's own task process disconnecting must NOT cancel
+          // the autonomous turn it just triggered (this silently killed every
+          // reminder: TURNEND cancelled, empty reply). Only a real dock component
+          // (phone/body) loss matters here.
+          if (p.component?.startsWith('task:')) return;
           // any component loss aborts in-flight tool RPCs for safety; voice
           // loss kills the turn itself (the conversation has no mouth).
           rpc.rejectAllForDock(p.dock, 'dock component went offline');

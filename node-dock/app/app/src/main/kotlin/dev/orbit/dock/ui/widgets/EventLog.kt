@@ -46,7 +46,7 @@ fun EventLog(
     }
 
     Column(
-        modifier = modifier.width(280.dp).fillMaxHeight().padding(6.dp),
+        modifier = modifier.width(280.dp).padding(6.dp),
         verticalArrangement = Arrangement.Bottom,
     ) {
         LazyColumn(state = listState) {

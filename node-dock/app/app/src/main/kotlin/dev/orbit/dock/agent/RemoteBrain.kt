@@ -217,7 +217,7 @@ class RemoteBrain(
                 brainReady = payload.bool("ready")
                 val sid = payload.str("sessionId")
                 if (sid.isNotEmpty()) _debugInfo.value = _debugInfo.value.copy(sessionId = sid)
-                trace("brain-status ready=$brainReady${if (sid.isNotEmpty()) " session=$sid" else ""}")
+                trace("brain-status ready=$brainReady") // session shown in the HUD, not here
             }
             "task-digest" -> onTaskDigest(payload)
             "tool-call" -> onToolCall(payload)

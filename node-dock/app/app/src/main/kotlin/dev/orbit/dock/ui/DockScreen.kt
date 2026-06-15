@@ -4,6 +4,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -510,19 +511,20 @@ fun DockScreen() {
                     .weight(1f)
                     .padding(8.dp),
             ) {
-                // Debug HUD: brain frames overlaid on the LEFT edge, so it
-                // doesn't push the face off-centre (it's ambient telemetry around
-                // the frame, not a layout column).
-                dev.orbit.dock.ui.widgets.EventLog(
-                    events = agent.events,
-                    modifier = Modifier.align(Alignment.CenterStart),
-                )
-                // Top-left debug HUD: open session id (short, quotable) + the
-                // currently-running background tasks.
-                dev.orbit.dock.ui.widgets.TaskHud(
-                    info = debugInfo,
-                    modifier = Modifier.align(Alignment.TopStart),
-                )
+                // Left-edge debug telemetry, stacked top→bottom so they don't
+                // overlap: the TaskHud (session id + running tasks) sits on top,
+                // the scrolling EventLog fills the space below it.
+                Column(
+                    modifier = Modifier
+                        .align(Alignment.CenterStart)
+                        .fillMaxHeight(),
+                ) {
+                    dev.orbit.dock.ui.widgets.TaskHud(info = debugInfo)
+                    dev.orbit.dock.ui.widgets.EventLog(
+                        events = agent.events,
+                        modifier = Modifier.weight(1f),
+                    )
+                }
                 Box(modifier = Modifier.fillMaxSize()) {
                     FaceRenderer(
                         state = state,
