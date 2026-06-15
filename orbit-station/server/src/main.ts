@@ -130,6 +130,17 @@ async function main() {
   };
   process.once('SIGINT', () => shutdown('SIGINT'));
   process.once('SIGTERM', () => shutdown('SIGTERM'));
+  process.once('SIGHUP', () => shutdown('SIGHUP'));
+  // BACKSTOP for the deep dev tree (concurrently → npm → tsx watch → us): if a
+  // kill signal never propagates all the way down, the parent's stdin pipe
+  // still closes when the parent dies — exit on that so we never orphan and
+  // hold the port. (Skipped under a real TTY / production `start`.)
+  if (!process.stdin.isTTY) {
+    const onParentGone = () => shutdown('parent-exit');
+    process.stdin.on('end', onParentGone);
+    process.stdin.on('close', onParentGone);
+    process.stdin.resume();
+  }
 }
 
 /** First non-internal IPv4 — what phones/ESP32 on the LAN dial into. */
