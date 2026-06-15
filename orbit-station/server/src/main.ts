@@ -35,7 +35,7 @@ import { stationModule } from './modules/station.js';
 // builds — docs/SERVER-BRAIN-IMPL.md §3.1). For dev convenience they load
 // from a gitignored `orbit-station/.env` (KEY=VALUE lines; real env wins).
 loadDotEnv(new URL('../../.env', import.meta.url).pathname);
-
+console.log(`orbit-station starting with Node ${process.version}`);
 const PORT = Number(process.env.PORT ?? 8099);
 const HOST = process.env.HOST ?? '0.0.0.0';
 

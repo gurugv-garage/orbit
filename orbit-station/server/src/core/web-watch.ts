@@ -25,11 +25,16 @@ let child: ChildProcess | undefined;
  *  already running. */
 export function startWebWatch(): () => void {
   if (child) return stopWebWatch;
-  // `npm exec` resolves the workspace-local vite without hardcoding a path.
+  // `npm exec` resolves the workspace-local vite without hardcoding a path — but
+  // that means our direct child is the `npm` wrapper, and SIGTERM to npm is NOT
+  // forwarded to the vite→esbuild it spawned. So `detached: true` puts the whole
+  // chain in its own process group, and stopWebWatch() signals the group (not just
+  // npm) — otherwise vite + esbuild orphan on every reload and pile up.
   child = spawn('npm', ['exec', '--', 'vite', 'build', '--watch'], {
     cwd: WEB_DIR,
     stdio: ['ignore', 'inherit', 'inherit'],
     env: process.env,
+    detached: true,
   });
   child.on('exit', (code) => {
     if (code && code !== 0) console.error(`[web-watch] vite exited with code ${code}`);
@@ -39,9 +44,18 @@ export function startWebWatch(): () => void {
   return stopWebWatch;
 }
 
-/** Kill the web-watch child if running (called from the server's shutdown). */
+/** Kill the web-watch child if running (called from the server's shutdown).
+ *  Signals the whole process group (negative pid) so vite + esbuild die with the
+ *  npm wrapper instead of orphaning. Falls back to a plain child kill if the pid
+ *  is gone or group signalling isn't supported. */
 export function stopWebWatch(): void {
   if (!child) return;
-  try { child.kill('SIGTERM'); } catch { /* gone */ }
+  const pid = child.pid;
+  try {
+    if (pid) process.kill(-pid, 'SIGTERM'); // -pid = the child's process group
+    else child.kill('SIGTERM');
+  } catch {
+    try { child.kill('SIGTERM'); } catch { /* gone */ }
+  }
   child = undefined;
 }
