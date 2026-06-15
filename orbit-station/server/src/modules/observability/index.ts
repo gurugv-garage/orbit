@@ -8,6 +8,8 @@
  * Read paths:
  *   - GET /api/observability/sessions            list (summaries)
  *   - GET /api/observability/sessions/:id        full Session/Turn/Step tree
+ *   - GET /api/observability/cost/summary        LLM spend totals + breakdown
+ *   - GET /api/observability/cost/series         per-day spend (stacked chart)
  *
  * Live: every ingested event is re-published on the bus (topic 'obs', kind
  * 'event') so the browser UI's WS subscription streams it in real time, and so
@@ -44,7 +46,12 @@ export function observabilityModule(): StationModule {
       // WS ingest: peers publishing obs events feed the store too.
       bus.on('obs', (msg) => {
         if (msg.source === 'station') return; // our own re-publish
-        if (msg.kind === 'event') store.ingest(msg.payload as AgentEventDto, msg.source);
+        if (msg.kind === 'event') {
+          const ev = msg.payload as AgentEventDto;
+          // a task self-declares its owning dock as `source` (its WS peer id is
+          // the task, not the dock — see AgentEventDto.source); honor it.
+          store.ingest(ev, ev.source ?? msg.source);
+        }
       });
     },
 
@@ -76,6 +83,25 @@ export function observabilityModule(): StationModule {
         return true;
       }
 
+      // Cost rollups (the Cost tab). Window defaults to the last 7 days.
+      // groupBy: source (dock) | kind (user vs task) | model | day.
+      if (subPath === '/cost/summary' && req.method === 'GET') {
+        const u = new URL(req.url ?? '', 'http://x');
+        const { from, to } = costWindow(u);
+        const groupBy = costGroupBy(u.searchParams.get('groupBy'));
+        json(res, 200, store.costRollup(from, to, groupBy));
+        return true;
+      }
+      if (subPath === '/cost/series' && req.method === 'GET') {
+        const u = new URL(req.url ?? '', 'http://x');
+        const { from, to } = costWindow(u);
+        const g = costGroupBy(u.searchParams.get('groupBy'));
+        // series only splits by the dimensions a stacked chart shows.
+        const groupBy = g === 'day' ? 'kind' : g;
+        json(res, 200, store.costSeries(from, to, groupBy));
+        return true;
+      }
+
       const m = subPath.match(/^\/sessions\/(.+)$/);
       if (m && req.method === 'GET') {
         const s = store.get(decodeURIComponent(m[1]!));
@@ -95,6 +121,20 @@ export function observabilityModule(): StationModule {
       return false;
     },
   };
+}
+
+import type { CostGroupBy } from './types.js';
+
+/** Parse ?from&to (epoch ms); default to the last 7 days. */
+function costWindow(u: URL): { from: number; to: number } {
+  const now = Date.now();
+  const to = Number(u.searchParams.get('to')) || now;
+  const from = Number(u.searchParams.get('from')) || to - 7 * 24 * 3600_000;
+  return { from: Math.min(from, to), to };
+}
+
+function costGroupBy(raw: string | null): CostGroupBy {
+  return raw === 'source' || raw === 'kind' || raw === 'model' || raw === 'day' ? raw : 'source';
 }
 
 import type { IncomingMessage } from 'node:http';

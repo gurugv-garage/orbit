@@ -316,10 +316,21 @@ export abstract class Task {
     if (!this.#agentInstance) {
       const { Agent } = await import('@earendil-works/pi-agent-core');
       const { taskModel, taskApiKey } = await import('./model.js');
-      this.#agentInstance = new Agent({
+      const agent = new Agent({
         initialState: { systemPrompt: 'You are a helper for a small desk robot. Be concise and answer directly.', model: taskModel(), thinkingLevel: 'off', tools: [], messages: [] },
         getApiKey: (provider: string) => taskApiKey(provider),
       } as never);
+      // Wrap prompt() so EVERY LLM call — `this.ask` AND author-driven
+      // getAgent().prompt() — ships its usage to obs, so task spend rolls up in
+      // the Cost tab under this dock. The model's own cost (pi list pricing) is
+      // on the last assistant message after prompt() resolves.
+      const origPrompt = agent.prompt.bind(agent);
+      agent.prompt = (async (...args: Parameters<Agent['prompt']>) => {
+        const r = await origPrompt(...args);
+        try { this.#shipLlmUsage(agent); } catch { /* obs must never break a task */ }
+        return r;
+      }) as Agent['prompt'];
+      this.#agentInstance = agent;
     }
     return this.#agentInstance;
   }
@@ -368,6 +379,38 @@ export abstract class Task {
   }
   #publish(kind: string, payload: Record<string, unknown>): void {
     this.#send({ t: 'publish', topic: 'tasks', kind, payload: { instanceId: this.#ident.instanceId, ...payload } });
+  }
+
+  // ── obs: report the task's OWN LLM spend ─────────────────────────────────────
+  #obsSeq = 0;
+
+  /** Ship the last assistant message's usage to obs as a minimal one-step turn,
+   *  so the task's own LLM calls appear in the Cost tab (kind=task) under its
+   *  dock. One `ask`/`prompt` = one obs turn. Best-effort; never throws. */
+  #shipLlmUsage(agent: Agent): void {
+    const msgs = agent.state.messages as Array<{ role?: string; usage?: { input?: number; output?: number; totalTokens?: number; cost?: { total?: number }; model?: string }; model?: string }>;
+    const last = msgs.at(-1);
+    const u = last?.role === 'assistant' ? last.usage : undefined;
+    if (!u) return; // no usage reported (faux model / error) — nothing to bill.
+    const ts = Date.now();
+    const sessionId = `task:${this.#ident.name}:${this.#ident.instanceId}`;
+    const turnId = `t-${(this.#obsSeq++).toString(36)}`;
+    const model = last?.model ?? '';
+    const base = { sessionId, turnId, source: this.#ident.dock };
+    // a self-contained one-step turn: Start → Step(usage) → End.
+    this.#shipObs({ ...base, kind: 'TurnStart', ts, seq: 0, data: { trigger: { kind: 'task', text: this.#ident.name } } });
+    this.#shipObs({ ...base, kind: 'StepStart', ts, seq: 1 });
+    this.#shipObs({ ...base, kind: 'StepEnd', ts, seq: 2, data: {
+      model,
+      usage: { inputTokens: u.input, outputTokens: u.output, totalTokens: u.totalTokens, cost: u.cost?.total },
+    } });
+    this.#shipObs({ ...base, kind: 'TurnEnd', ts, seq: 3 });
+  }
+
+  /** Publish one obs event on the `obs` topic (the station's ObsStore ingests it).
+   *  Shape mirrors AgentEventDto; `source` self-declares the owning dock. */
+  #shipObs(ev: Record<string, unknown>): void {
+    this.#send({ t: 'publish', topic: 'obs', kind: 'event', payload: ev });
   }
   #send(obj: unknown): void {
     try { this.#ws?.send(JSON.stringify(obj)); } catch { /* socket gone */ }

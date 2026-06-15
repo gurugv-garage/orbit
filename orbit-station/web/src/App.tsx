@@ -13,12 +13,14 @@ import { Bench } from './modules/Bench';
 import { Ota } from './modules/Ota';
 import { LiveStream } from './modules/LiveStream';
 import { Perception } from './modules/Perception';
+import { Cost } from './modules/Cost';
 
 interface ViewDef { id: string; label: string; ico: string; el: React.ReactNode; }
 
 const VIEWS: ViewDef[] = [
   { id: 'overview', label: 'Overview', ico: '◎', el: <Overview /> },
   { id: 'observability', label: 'Observability', ico: '📡', el: <Observability /> },
+  { id: 'cost', label: 'Cost', ico: '💰', el: <Cost /> },
   { id: 'brain', label: 'Brain', ico: '🗣', el: <Brain /> },
   { id: 'tasks', label: 'Tasks', ico: '⏱', el: <Tasks /> },
   { id: 'skills', label: 'Skills', ico: '🧩', el: <Skills /> },

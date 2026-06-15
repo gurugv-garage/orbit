@@ -35,6 +35,11 @@ export type AgentEventKind =
 export interface AgentEventDto {
   /** which Session (shared message history) this belongs to. host-assigned. */
   sessionId: string;
+  /** OPTIONAL self-declared source (the owning dock). A task process connects
+   *  as its own peer (peer.id = task-<instance>), so the hub would stamp the
+   *  WS source as the task, not the dock that owns it. A task sets this so its
+   *  LLM spend rolls up under the dock. When absent, ingest uses the WS source. */
+  source?: string;
   /** which Turn (one prompt() → complete response) within the session. */
   turnId: string;
   /** monotonically increasing within a turn; used to order steps/LLM-calls. */
@@ -125,6 +130,41 @@ export interface TurnRecord {
   steps: StepRecord[];
   /** llm calls = steps that emitted tool calls + 1 (per AGENT-MODEL.md). */
   llmCalls: number;
+}
+
+// ── cost aggregation (the Cost console tab) ─────────────────────────────────
+
+/** How a cost rollup is sliced. `kind` = the turn's trigger kind (user vs task);
+ *  `source` = the dock; `model` = the LLM each step ran on; `day` = UTC date. */
+export type CostGroupBy = 'source' | 'kind' | 'model' | 'day';
+
+/** Summed usage for one group (or the grand total when `group` is absent). */
+export interface CostBucket {
+  /** the group's value (dock name / 'user'|'task' / model id / 'YYYY-MM-DD').
+   *  Absent on the grand total. */
+  group?: string;
+  cost: number;
+  inputTokens: number;
+  outputTokens: number;
+  /** LLM calls = steps that carried usage. */
+  calls: number;
+}
+
+export interface CostSummary {
+  /** window actually covered (epoch ms), echoed back for the UI. */
+  from: number;
+  to: number;
+  total: CostBucket;
+  groupBy: CostGroupBy;
+  groups: CostBucket[];
+}
+
+/** A time-bucketed series: one row per day, each split by `groupBy` value. */
+export interface CostSeriesPoint {
+  /** UTC day, 'YYYY-MM-DD'. */
+  day: string;
+  /** group value → summed cost for that day. */
+  byGroup: Record<string, number>;
 }
 
 /** A Session = turns sharing one message history. */

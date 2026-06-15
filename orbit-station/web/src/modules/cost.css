@@ -1,0 +1,18 @@
+/* Cost tab — breakdown table. Card/grid/stat come from theme.css. */
+.cost-tbl { border-collapse: collapse; }
+.cost-tbl th {
+  text-align: right;
+  font-weight: 600;
+  font-size: 12px;
+  color: var(--dim);
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--line);
+}
+.cost-tbl td {
+  text-align: right;
+  padding: 7px 12px;
+  border-bottom: 1px solid var(--line);
+  font-size: 13px;
+}
+.cost-tbl tr:last-child td { border-bottom: none; }
+.cost-tbl tr:hover td { background: var(--bg-2); }

@@ -1,0 +1,151 @@
+# Cost tracking — implementation plan
+
+**Goal:** a **Cost** tab in the Orbit console showing total LLM spend with
+breakdowns by **source** (dock), **kind** (user session vs task), **model**, and
+**time** — drillable down to the existing session/turn traces.
+
+**Status:** BUILT + verified (2026-06-15). All four pieces shipped; 176 server
+tests green; browser-verified against live data ($1.59 over 2453 calls, by
+dock / user-vs-task / model + per-day chart); task LLM capture verified
+end-to-end (a real `this.ask` turn landed in obs as `kind=task`, `source=<dock>`,
+non-zero cost). Decisions locked: full obs-event model for tasks;
+by-source/kind/time dashboard; new top-level Cost tab.
+
+**As-built notes / follow-ups:**
+- Task spend rolls up under the dock via a self-declared `AgentEventDto.source`
+  (a task's WS peer id is `task-<instance>`, not the dock; obs ingest honors the
+  explicit `source` — [observability/index.ts](../orbit-station/server/src/modules/observability/index.ts)).
+  Capture is a `prompt()` wrapper in `getAgent()`
+  ([task.ts](../orbit-station/server/src/tasks/_harness/task.ts)) so BOTH
+  `this.ask` and author-driven `getAgent().prompt()` are billed.
+- **Prefixed-model-id zero-cost — NOT a live bug (investigated 2026-06-15).**
+  ~700 stored steps with `model: "google/gemini-2.5-flash"` show `cost: 0` while
+  bare `gemini-2.5-flash` prices fine. Traced: those rows are all `trigger=user`
+  (brain turns, mostly `anne-bot-app`) dated **Jun 3–12** — frozen historical
+  data from an older build that persisted the *prefixed* string as the obs model.
+  Current code does NOT reproduce it: both the brain (`resolveModel`) and the
+  task harness (`taskModel`) strip the provider prefix before `getModel()`, so pi
+  stamps the BARE id and computes real cost. Verified live: a `google/...` spec
+  through both paths yields `model=gemini-2.5-flash` + non-zero `cost.total`.
+  The historical rows are simply undercounted in the dashboard for that window;
+  no code fix needed going forward. (A rollup re-pricing fallback could correct
+  the old rows in the view, but was explicitly out of scope.)
+
+## Guiding principle
+
+pi computes the cost of **one LLM call** (token counts × its model pricing table)
+and hands it back on every `AssistantMessage.usage` (`pi-ai` `Usage`: input /
+output / cacheRead / cacheWrite tokens + a parallel `cost` block summing to
+`cost.total`). **Aggregation is ours** — pi has no tracker/accumulator and no
+notion of "spend by dock/task". So: pi = per-call numbers (already flowing); we
+own capture → persistence → aggregation → UI. This mirrors what the Brain view
+already does for a single turn ([Brain.tsx:500](../orbit-station/web/src/modules/Brain.tsx#L500)),
+just widened to "everything, grouped".
+
+## Current state (what already works)
+
+- **Brain (user sessions):** captures `m.usage.cost?.total` per step, ships it on
+  the obs `StepEnd` event ([session.ts:839](../orbit-station/server/src/modules/brain/session.ts#L839)),
+  persisted to `orbit.db` (`obs_turns.detail` holds the full `TurnRecord` JSON,
+  with `source` + `started_at` columns indexed —
+  [store.ts](../orbit-station/server/src/modules/observability/store.ts)).
+- **Tasks:** run their own pi Agent via `this.ask`/`this.getAgent`
+  ([task.ts:316-337](../orbit-station/server/src/tasks/_harness/task.ts#L316));
+  usage is on the returned message but **emitted nowhere** → invisible. This is
+  the one real capture gap.
+- **Bench:** offline eval harness, has cost; out of scope for the live dashboard.
+
+## The four pieces
+
+### 1. Task cost capture → obs events  *(the only new instrumentation)*
+
+A task process already has everything obs needs: `dock`, `sessionId`,
+`instanceId` ([TaskIdentity](../orbit-station/server/src/tasks/_harness/task.ts#L48))
+and a live WS connection that already publishes on the `tasks` topic via
+`#publish`. We add a sibling that publishes on the **`obs`** topic so task spend
+lands in the same Session→Turn→Step tree the Brain view + aggregation read.
+
+- In `task.ts`, after each `agent.prompt(...)` in `ask()` (and document the same
+  for hand-rolled `getAgent()` users), read the last assistant message's `usage`
+  and emit a minimal obs sequence: `TurnStart` (trigger `{kind:'task', text:
+  <about>}`) → `StepStart` → `StepEnd` (model + `usage:{inputTokens, outputTokens,
+  totalTokens, cost}`) → `TurnEnd`.
+  - `sessionId`: a synthetic per-instance id, e.g. `task:<name>:<instanceId>` (so
+    one task instance = one obs "session"; each `ask` = one turn/step).
+  - `source`: the **dock** (so task spend rolls up under the same dock as its
+    user sessions).
+  - Emit via a new `#shipObs(kind, data)` on the task base class that does
+    `#send({ t:'publish', topic:'obs', kind:'event', payload: <AgentEventDto> })`.
+- The obs store already ingests WS `obs` events from any peer
+  ([observability/index.ts:45](../orbit-station/server/src/modules/observability/index.ts#L45))
+  with `source = msg.source`. **One subtlety:** the task connects as role `task`;
+  confirm `msg.source` for a task peer resolves to the dock (or pass the dock
+  explicitly in the event and have ingest honor it). Verify in the hub before
+  wiring.
+- Keep it cheap: tasks that never call the LLM emit nothing. No new storage —
+  reuses the obs tables.
+
+**Tests:** extend the task harness tests
+([tasks/process.test.ts](../orbit-station/server/src/modules/brain/tasks/process.test.ts))
+— a task that calls `ask()` against a faux model produces an obs `StepEnd` with a
+non-zero cost; a task that never asks produces none.
+
+### 2. Aggregation read endpoint  *(pure query over existing data)*
+
+New routes on the observability module (it already owns the store + `orbit.db`):
+
+- `GET /api/observability/cost/summary?from&to&groupBy=source|kind|model|day`
+  → totals: `{ totalCost, totalInput, totalOutput, callCount, byGroup: [...] }`.
+- `GET /api/observability/cost/series?from&to&bucket=day&groupBy=source|kind`
+  → time series for the chart.
+- Implementation: a `ObsStore.costRollup(opts)` that iterates persisted turns
+  (memory working-set for recent; SQL `SELECT detail FROM obs_turns WHERE
+  started_at BETWEEN ...` for the window), sums `step.usage.cost` /
+  `inputTokens` / `outputTokens`, grouping by `source`, `trigger.kind`
+  (user vs task), `step.model`, or day bucket. `cost == null` → treated as 0
+  (free-tier keys still report list cost; document this).
+- **Retention caveat:** the store is bounded (200 sessions / 2000 hydrated turns)
+  and SQLite isn't pruned today, so "spend over a window" is exact within
+  retention; a true lifetime total would need an explicit roll-up table — defer
+  unless asked. Note it in the UI ("last N days").
+
+**Tests:** seed the store with known turns (mixed source/kind/model/cost) and
+assert `costRollup` group sums; an endpoint test for the route shapes.
+
+### 3. Console Cost tab
+
+- New `web/src/modules/Cost.tsx`, registered in `VIEWS`
+  ([App.tsx:18](../orbit-station/web/src/App.tsx#L18)) as
+  `{ id:'cost', label:'Cost', ico:'💰', el:<Cost /> }`.
+- Layout: a window selector (last 24h / 7d / 30d) →
+  - headline total ($) + token totals,
+  - a stacked time-series (cost per day, split by kind: user vs task),
+  - breakdown tables: **by source (dock)**, **by kind**, **by model**,
+  - each row drills to the existing Brain/Observability session views
+    (link by sessionId — task sessions open the same trace tree).
+- Reuse `fmtCost` and the cost styling already in
+  [Brain.tsx:196](../orbit-station/web/src/modules/Brain.tsx#L196). A tiny inline
+  SVG/bar chart keeps it dependency-free (matches the space-theme house style).
+
+### 4. (Optional, later) live spend ticker
+
+Since every obs event is re-published on the bus for the live UI, the Cost tab
+*could* subscribe and increment a running total in real time. Nice-to-have; the
+polled summary endpoint is enough for v1.
+
+## Build order
+
+1. **Aggregation endpoint over existing brain data** (§2) — instantly useful;
+   user-session cost is already in the store. Ship + eyeball real numbers.
+2. **Cost tab** (§3) against that endpoint — the visible win.
+3. **Task cost capture** (§1) — closes the blind spot; tasks then appear in the
+   same tab for free (kind = `task`).
+4. Optional live ticker (§4).
+
+## Out of scope (call out, don't build unless asked)
+
+- Lifetime/unbounded totals (needs a roll-up table beyond obs retention).
+- Actual invoiced cost (pi gives list pricing; volume discounts / free tiers not
+  reflected).
+- Bench cost in the dashboard (separate offline harness).
+- Budgets/alerts.

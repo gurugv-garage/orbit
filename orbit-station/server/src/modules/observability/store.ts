@@ -12,6 +12,10 @@ import type Database from 'better-sqlite3';
 import { orbitDb } from '../../core/db.js';
 import type {
   AgentEventDto,
+  CostBucket,
+  CostGroupBy,
+  CostSeriesPoint,
+  CostSummary,
   SessionRecord,
   StepRecord,
   ToolCallRecord,
@@ -27,8 +31,10 @@ export class ObsStore {
   #order: string[] = [];
   #db: Database.Database;
 
-  constructor() {
-    this.#db = orbitDb();
+  /** `db` overrides the shared orbit.db — tests pass an isolated (e.g. in-memory)
+   *  handle so they don't touch the live store. */
+  constructor(db?: Database.Database) {
+    this.#db = db ?? orbitDb();
     this.#initSchema();
     this.#hydrate();
   }
@@ -207,6 +213,65 @@ export class ObsStore {
       .slice(0, limit);
   }
 
+  // ── cost aggregation (the Cost tab) ──────────────────────────────────────
+
+  /** Turns whose start falls in [from,to], read from SQLite so the window can
+   *  reach past the in-memory working set (exact within DB retention). Each row
+   *  is the full TurnRecord JSON plus the session's source. */
+  #turnsInWindow(from: number, to: number): Array<{ turn: TurnRecord; source: string }> {
+    const rows = this.#db.prepare(
+      `SELECT detail, source FROM obs_turns WHERE started_at BETWEEN ? AND ? ORDER BY started_at`,
+    ).all(from, to) as Array<{ detail: string; source: string }>;
+    return rows.map((r) => ({ turn: JSON.parse(r.detail) as TurnRecord, source: r.source }));
+  }
+
+  /** Total LLM spend over [from,to], grouped by source/kind/model/day. Sums each
+   *  step's `usage` (cost as pi's list price; null cost counts as 0). Steps
+   *  without usage (no LLM call) are skipped. */
+  costRollup(from: number, to: number, groupBy: CostGroupBy): CostSummary {
+    const total = bucket();
+    const groups = new Map<string, CostBucket>();
+    for (const { turn, source } of this.#turnsInWindow(from, to)) {
+      const kind = turn.trigger?.kind === 'task' ? 'task' : 'user';
+      for (const step of turn.steps) {
+        const u = step.usage;
+        if (!u) continue;
+        const key = groupBy === 'source' ? source
+          : groupBy === 'kind' ? kind
+          : groupBy === 'model' ? (step.model || 'unknown')
+          : utcDay(turn.startedAt);
+        add(total, u);
+        let g = groups.get(key);
+        if (!g) { g = bucket(); g.group = key; groups.set(key, g); }
+        add(g, u);
+      }
+    }
+    return {
+      from, to, total, groupBy,
+      groups: [...groups.values()].sort((a, b) => b.cost - a.cost),
+    };
+  }
+
+  /** Per-day cost series over [from,to], each day split by groupBy value — feeds
+   *  the stacked time chart. */
+  costSeries(from: number, to: number, groupBy: 'source' | 'kind' | 'model'): CostSeriesPoint[] {
+    const days = new Map<string, Record<string, number>>();
+    for (const { turn, source } of this.#turnsInWindow(from, to)) {
+      const kind = turn.trigger?.kind === 'task' ? 'task' : 'user';
+      const day = utcDay(turn.startedAt);
+      for (const step of turn.steps) {
+        const cost = step.usage?.cost;
+        if (!cost) continue;
+        const key = groupBy === 'source' ? source : groupBy === 'kind' ? kind : (step.model || 'unknown');
+        const row = days.get(day) ?? {};
+        row[key] = (row[key] ?? 0) + cost;
+        days.set(day, row);
+      }
+    }
+    return [...days.entries()].sort(([a], [b]) => a.localeCompare(b))
+      .map(([day, byGroup]) => ({ day, byGroup }));
+  }
+
   list(): Array<Omit<SessionRecord, 'turns'> & { turns: number }> {
     return this.#order
       .map((id) => this.#sessions.get(id))
@@ -258,6 +323,24 @@ export class ObsStore {
 
 function last<T>(arr: T[]): T | undefined {
   return arr.length ? arr[arr.length - 1] : undefined;
+}
+
+/** A zeroed cost accumulator. */
+function bucket(): CostBucket {
+  return { cost: 0, inputTokens: 0, outputTokens: 0, calls: 0 };
+}
+
+/** Fold one step's usage into an accumulator. */
+function add(b: CostBucket, u: NonNullable<StepRecord['usage']>): void {
+  b.cost += u.cost ?? 0;
+  b.inputTokens += u.inputTokens ?? 0;
+  b.outputTokens += u.outputTokens ?? 0;
+  b.calls += 1;
+}
+
+/** UTC calendar day ('YYYY-MM-DD') of an epoch-ms timestamp. */
+function utcDay(ts: number): string {
+  return new Date(ts).toISOString().slice(0, 10);
 }
 
 /** Packed composite identity for the FTS row (turn ids aren't globally unique). */
