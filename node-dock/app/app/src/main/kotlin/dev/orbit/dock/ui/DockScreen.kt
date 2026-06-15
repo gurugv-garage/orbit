@@ -512,12 +512,14 @@ fun DockScreen() {
                     .padding(8.dp),
             ) {
                 // Left-edge debug telemetry, stacked top→bottom so they don't
-                // overlap: the TaskHud (session id + running tasks) sits on top,
-                // the scrolling EventLog fills the space below it.
+                // overlap: the TaskHud (session id + running tasks) sits up top
+                // (BELOW the version label — top padding clears it), the scrolling
+                // EventLog fills the space below it.
                 Column(
                     modifier = Modifier
-                        .align(Alignment.CenterStart)
-                        .fillMaxHeight(),
+                        .align(Alignment.TopStart)
+                        .fillMaxHeight()
+                        .padding(top = 34.dp), // clear the version label above
                 ) {
                     dev.orbit.dock.ui.widgets.TaskHud(info = debugInfo)
                     dev.orbit.dock.ui.widgets.EventLog(

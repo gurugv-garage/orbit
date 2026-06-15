@@ -43,6 +43,9 @@ import { randomUUID } from 'node:crypto';
 import type { IncomingMessage } from 'node:http';
 
 const IDLE_SWEEP_MS = 60_000;
+/** How often to re-push the task-digest to live docks so the app HUD self-corrects
+ *  even if a per-change push was missed (failproof running-tasks view). */
+const DIGEST_SWEEP_MS = 3_000;
 
 export interface BrainWiring {
   directory: Directory;
@@ -255,6 +258,16 @@ export function brainModule(w: BrainWiring): StationModule {
         for (const s of sessions.values()) s.maybeIdleClose();
       }, IDLE_SWEEP_MS);
       sweep.unref?.();
+
+      // FAILPROOF task-digest: re-push the running-tasks view to every live dock on
+      // a short cadence, so the app HUD self-corrects if any single push was missed
+      // (a task that started/stopped without a signal, a dropped frame, etc.). Cheap
+      // (a small directed frame per active dock; skipped when nothing's running and
+      // nothing changed is not worth tracking — just send it).
+      const digestSweep = setInterval(() => {
+        for (const dock of sessions.keys()) pushTaskDigest(dock);
+      }, DIGEST_SWEEP_MS);
+      digestSweep.unref?.();
     },
 
     async route(ctx: RouteContext) {
@@ -383,6 +396,7 @@ export function brainModule(w: BrainWiring): StationModule {
           const v = validateParams(def.manifest, body.params ?? {});
           if (!v.ok) { json(res, 400, { error: v.errors.join('; ') }); return true; }
           const id = supervisor.start({ dock, name: def.name, filePath: def.filePath, params: v.values, parentSessionId: parent });
+          pushTaskDigest(dock); // immediate HUD update on start (the sweep is the backstop)
           json(res, 200, { instanceId: id });
         } catch (err) { json(res, 400, { error: String(err) }); }
         return true;
