@@ -323,6 +323,11 @@ fun DockScreen() {
 
     LaunchedEffect(Unit) { wiring.attach(scope) }
 
+    // Rest the screen when nobody's around: dim the backlight after ~1 min with
+    // no face, no voice, and no interaction; snap back to full bright on any of
+    // them. The dock still never sleeps (FLAG_KEEP_SCREEN_ON) — it just rests dark.
+    IdleDimmer(controller = controller, idleAfterMs = 60_000L, dimBrightness = 0.03f)
+
     // Stream STT transcripts (partials + finals) to the brain so it pre-warms
     // the session while the user is still talking. Pre-warm only — the turn
     // trigger stays onUserUtterance above.
