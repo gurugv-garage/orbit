@@ -21,6 +21,13 @@ export interface TaskManifest {
   description: string;
   /** the input schema — key/vals validated at run_task. */
   params?: TaskParam[];
+  /** The LLM this task's own reasoning (this.ask / this.agent / vision sugar) runs
+   *  on, as a "provider/model" spec (e.g. "google/gemini-2.5-flash-lite"). Baked in
+   *  at authoring time: the author picks from the dock's allowed task models trading
+   *  SPEED (a tight camera-watch loop wants a fast/cheap model) against ACCURACY (a
+   *  careful judgement wants a stronger one). Omitted = the dock's default brain
+   *  model. The user changes it like any other task edit (just ask the brain). */
+  model?: string;
 }
 
 /** Parse a duration string ("5s", "10m", "1h", "500ms") or a number (ms) to ms. */

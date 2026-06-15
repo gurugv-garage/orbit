@@ -20,6 +20,10 @@ export interface AuthorSpec {
   body: string;
   /** a JS expression for getStatus()'s return value (defaults to the description). */
   status?: string;
+  /** the model this task's OWN reasoning (this.ask/this.agent/vision) runs on, as
+   *  "provider/modelId" from the dock's allowed task models. Omit for a task that
+   *  does no LLM work (it just inherits the dock default — harmless). */
+  model?: string;
 }
 
 const PARAM_TYPES = new Set(['string', 'number', 'boolean', 'duration', 'string[]']);
@@ -53,7 +57,7 @@ ${extraImports}
 export const manifest = {
   name: '${spec.name}',
   description: ${JSON.stringify(spec.description)},
-  params: ${paramsJson},
+  params: ${paramsJson},${spec.model ? `\n  model: ${JSON.stringify(spec.model)},` : ''}
 } satisfies TaskManifest;
 
 class ${className} extends Task {

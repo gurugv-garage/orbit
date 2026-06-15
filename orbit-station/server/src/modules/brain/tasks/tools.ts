@@ -82,6 +82,16 @@ export function buildTaskTools(d: TaskToolDeps): AgentTool<any>[] {
     { root: d.tasksRoot, source: 'packaged' as const },
   ];
 
+  // The models a task author may pick for a task's own reasoning (config
+  // brainTaskModels). Falls back to just the dock brain model if unset/empty.
+  const allowedTaskModels = (): string[] => {
+    const v = d.config('brainTaskModels');
+    const list = Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string' && !!x) : [];
+    if (list.length) return list;
+    const brain = d.config('brainModel');
+    return [typeof brain === 'string' && brain ? brain : 'google/gemini-2.5-flash'];
+  };
+
   const list = tool('list_tasks',
     'List available background TASK definitions you can run, AND this dock\'s currently running task instances (id, definition, state). Browse this before writing a new task — reuse an existing one when it fits.',
     { type: 'object', properties: {} },
@@ -123,7 +133,7 @@ export function buildTaskTools(d: TaskToolDeps): AgentTool<any>[] {
       const def = await findTaskDef(roots, name); // throws if unknown
       const v = validateParams(def.manifest, args?.params ?? {});
       if (!v.ok) throw new Error(`bad params for "${name}": ${v.errors.join('; ')}`);
-      const instanceId = d.supervisor.start({ dock: d.dock, name, filePath: def.filePath, params: v.values, parentSessionId: parent });
+      const instanceId = d.supervisor.start({ dock: d.dock, name, filePath: def.filePath, params: v.values, parentSessionId: parent, model: def.manifest.model });
       return txt(`started task ${instanceId} (${name}). Watch it with list_tasks / get_task_status.`);
     });
 
@@ -180,13 +190,18 @@ export function buildTaskTools(d: TaskToolDeps): AgentTool<any>[] {
         },
         body: { type: 'string', description: 'the JavaScript body of `async run() { … }` — the actual task logic, using `this`' },
         status: { type: 'string', description: 'a JS expression for getStatus() (e.g. `` `waiting ${this.params.delay}` ``); optional' },
+        model: { type: 'string', description: `OPTIONAL — the model this task's OWN reasoning (this.ask/this.agent/vision) runs on. ONLY set it if the task actually calls an LLM; omit entirely for a plain reminder/timer/watcher with no this.ask. Pick from this dock's allowed task models (${allowedTaskModels().join(', ')}) trading SPEED (a tight camera loop wants the fastest) vs ACCURACY (a careful judgement wants the strongest). Omit = the dock's default model.` },
       },
       required: ['name', 'description', 'body'],
     },
-    async (_id, args: { name?: string; description?: string; goal?: string; params?: TaskParam[]; imports?: string[]; body?: string; status?: string }) => {
+    async (_id, args: { name?: string; description?: string; goal?: string; params?: TaskParam[]; imports?: string[]; body?: string; status?: string; model?: string }) => {
       if (!args?.name || !args?.description || !args?.body) throw new Error('write_task needs name, description, body');
+      const allowed = allowedTaskModels();
+      if (args.model && !allowed.includes(args.model)) {
+        throw new Error(`model "${args.model}" is not allowed for tasks on this dock. Choose one of: ${allowed.join(', ')} (or omit model for the dock default).`);
+      }
       const source = authorTaskSource(
-        { name: args.name, description: args.description, goal: args.goal ?? args.description, params: args.params, imports: args.imports, body: args.body, status: args.status },
+        { name: args.name, description: args.description, goal: args.goal ?? args.description, params: args.params, imports: args.imports, body: args.body, status: args.status, model: args.model },
         harnessImportPath(),
       );
       // writeTaskDef typechecks + import-validates. On failure, hand the LLM the
@@ -194,9 +209,15 @@ export function buildTaskTools(d: TaskToolDeps): AgentTool<any>[] {
       // it to FIX + call write_task again — so it retries instead of giving up.
       try {
         const created = await writeTaskDef(d.userTasksRoot, args.name, source);
+        const modelNote = args.model
+          // tell the user which model it runs on (so they can ask to change it) —
+          // only when one was chosen; a no-LLM task has nothing to mention.
+          ? `\nIt reasons on the "${args.model}" model (chosen for speed/accuracy). TELL THE USER this `
+            + `and that they can ask you to switch it (allowed: ${allowed.join(', ')}).`
+          : '';
         return txt(`created + typechecked task "${created.name}". Now start it with run_task("${created.name}", { … }).\n`
           + `Its source lives at ${created.filePath} — use read_file/edit_file on that path to inspect or `
-          + `change the code later (e.g. when the user asks how it works or how often it runs).`);
+          + `change the code later (e.g. when the user asks how it works or how often it runs).${modelNote}`);
       } catch (err) {
         const diag = String((err as Error)?.message ?? err);
         return txt(`write_task FAILED — fix the body and call write_task again (do NOT give up).\n\n`

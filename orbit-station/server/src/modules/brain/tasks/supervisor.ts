@@ -61,6 +61,9 @@ export interface StartArgs {
   filePath: string;
   params: Record<string, unknown>;
   parentSessionId: string;
+  /** the model this task chose (manifest.model), injected as TASK_MODEL so the
+   *  harness's this.ask / this.agent / vision run on it. Omit = dock default. */
+  model?: string;
 }
 
 /** A frame from a task process (already unwrapped: kind + payload). */
@@ -96,6 +99,9 @@ export interface SupervisorDeps {
 interface Entry {
   info: InstanceInfo;
   filePath: string;
+  /** the task's chosen model (manifest.model), injected as TASK_MODEL on spawn so
+   *  this.ask/this.agent/vision use it. undefined = dock default (BRAIN_MODEL). */
+  model?: string;
   /** the child process (child runner). undefined for tmux or after a kill. */
   child?: ChildProcess;
   /** the tmux session name IF this instance was tmux-spawned; else undefined.
@@ -159,7 +165,7 @@ export class TaskSupervisor {
     const dir = this.#dir(args.dock, instanceId);
     mkdirSync(dir, { recursive: true });
     // seed the checkpoint with the params (the process reads it via our init frame).
-    this.#byId.set(instanceId, { info, filePath: args.filePath, status: '', log: [] });
+    this.#byId.set(instanceId, { info, filePath: args.filePath, model: args.model, status: '', log: [] });
     this.#spawn(instanceId);
     return instanceId;
   }
@@ -173,12 +179,15 @@ export class TaskSupervisor {
     const { dock, name, parentSessionId } = e.info;
     const env = {
       ...process.env,
-      ...(this.d.extraEnv?.() ?? {}), // e.g. BRAIN_MODEL for the vision helper
+      ...(this.d.extraEnv?.() ?? {}), // e.g. BRAIN_MODEL (the dock default) for the harness
       STATION_WS: this.d.stationWsUrl,
       TASK_DOCK: dock,
       TASK_INSTANCE_ID: instanceId,
       TASK_NAME: name,
       TASK_SESSION_ID: parentSessionId,
+      // the task's OWN model choice (manifest.model) wins over the dock default;
+      // only set when chosen, so LLM-free tasks just inherit BRAIN_MODEL harmlessly.
+      ...(e.model ? { TASK_MODEL: e.model } : {}),
     };
     const logFile = join(this.#dir(dock, instanceId), 'task.log');
     const note = (line: string) => {

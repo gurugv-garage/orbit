@@ -166,6 +166,15 @@ export const REGISTRY: ConfigEntry[] = [
     description: 'pi-ai model for dock brain sessions as "provider/modelId" (e.g. "google/gemini-2.5-flash", "anthropic/claude-haiku-4-5", "openai-compatible/<model>@<baseUrl>" for a LAN Ollama). Applied on the next turn.',
   }),
   entry({
+    key: 'brainTaskModels', type: 'json',
+    // a plain string[] of "provider/modelId" specs the task author may choose from.
+    schema: z.array(z.string()).min(1),
+    default: ['google/gemini-2.5-flash', 'google/gemini-2.5-flash-lite'],
+    tags: ['station'],
+    label: 'Task models (allowed)',
+    description: 'The models a task author may pick from for a task\'s OWN reasoning (this.ask/this.agent/vision), trading speed vs accuracy. The author bakes its choice into the task\'s manifest.model; a task that does no LLM work needs none and falls back to the dock brain model. First entry is the safe default.',
+  }),
+  entry({
     key: 'brainPersona', type: 'text', schema: z.string(), default: '', tags: ['station'],
     label: 'Brain persona',
     description: 'Optional extra persona text appended to the dock system prompt. Empty = the stock prompt.',

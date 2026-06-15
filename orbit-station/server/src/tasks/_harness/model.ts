@@ -9,9 +9,16 @@ import { getModel } from '@earendil-works/pi-ai';
 import type { Model } from '@earendil-works/pi-ai';
 import type { AgentMessage } from '@earendil-works/pi-agent-core';
 
-/** The task's model from env (BRAIN_MODEL, the dock's model; default gemini flash). */
+/** The task's model spec ("provider/model"). The task's OWN choice (TASK_MODEL,
+ *  baked into its manifest and injected by the supervisor) wins; else the dock's
+ *  brain model (BRAIN_MODEL); else gemini flash. */
+export function taskModelSpec(): string {
+  return process.env.TASK_MODEL || process.env.BRAIN_MODEL || 'google/gemini-2.5-flash';
+}
+
+/** The task's model from env, resolved to a pi Model. */
 export function taskModel(): Model<any> {
-  const spec = process.env.BRAIN_MODEL || 'google/gemini-2.5-flash';
+  const spec = taskModelSpec();
   const slash = spec.indexOf('/');
   const provider = slash > 0 ? spec.slice(0, slash) : 'google';
   const rest = slash > 0 ? spec.slice(slash + 1) : spec;
