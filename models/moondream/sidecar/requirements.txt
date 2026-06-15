@@ -1,0 +1,7 @@
+# md2 backend (default, prod): only needs requests (Ollama does the work).
+requests>=2.31
+
+# md3 backend (upgrade path): uncomment to run --backend md3.
+# mlx-vlm>=0.1
+# pillow>=10
+# opencv-python>=4.9   # only if you use the bench scripts

@@ -1,0 +1,14 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Benchmark scratch output (regenerated); fixtures/ ARE committed.
+moondream/bench/frames/
+*.log
+
+# Never commit model weights — pull them (Ollama / HuggingFace) per the READMEs.
+*.gguf
+*.safetensors
+*.mlx
