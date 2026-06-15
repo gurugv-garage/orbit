@@ -36,6 +36,8 @@ import { FILE_TOOLS_PROMPT } from './filetools.js';
 import { TaskSupervisor, type InstanceInfo, type SignalKind } from './tasks/supervisor.js';
 import { buildTaskTools } from './tasks/tools.js';
 import { defaultTasksRoot, userTasksRoot, loadAllTaskDefs, findTaskDef } from './tasks/manager.js';
+import { CapabilityBroker } from './tasks/capabilities.js';
+import { buildCapabilityRegistry } from './tasks/register-capabilities.js';
 import { validateParams } from '../../tasks/_harness/index.js';
 import { randomUUID } from 'node:crypto';
 import type { IncomingMessage } from 'node:http';
@@ -78,19 +80,29 @@ export function brainModule(w: BrainWiring): StationModule {
     });
   };
 
+  // push a directed frame DOWN to a task peer, addressed by (dock, component).
+  const sendToTask = (dock: string, instanceId: string, kind: string, payload: Record<string, unknown>) => {
+    bus.publish({
+      topic: 'tasks', kind, payload: { instanceId, ...payload },
+      source: 'station', toAddr: { dock, component: `task:${instanceId}` },
+    });
+  };
+
   const supervisor = new TaskSupervisor({
     root: store.root,
     stationWsUrl: process.env.STATION_WS ?? `ws://127.0.0.1:${process.env.PORT ?? 8099}/ws`,
     runner: () => (w.config('brainTaskRunner') === 'tmux' ? 'tmux' : 'child'),
     onSignal: onTaskSignal,
-    // push a directed frame DOWN to a task peer, addressed by (dock, component).
-    sendToTask: (dock, instanceId, kind, payload) => {
-      bus.publish({
-        topic: 'tasks', kind, payload: { instanceId, ...payload },
-        source: 'station', toAddr: { dock, component: `task:${instanceId}` },
-      });
-    },
+    sendToTask,
   });
+
+  // STATION CAPABILITIES a task can invoke over the wire (frame/recognize/move —
+  // things needing the station's live in-process state) — a registry of named
+  // handlers + a broker that serves `request` frames.
+  const capabilities = buildCapabilityRegistry({
+    directory: w.directory, motion: w.motion, getFaces: getFaceTools,
+  });
+  const capBroker = new CapabilityBroker(capabilities, sendToTask);
 
   function session(dock: string): DockBrainSession {
     let s = sessions.get(dock);
@@ -103,6 +115,7 @@ export function brainModule(w: BrainWiring): StationModule {
         hasRunningTasks: (d, parentSessionId) => supervisor.hasRunningUnder(d, parentSessionId),
         getTaskTools: (d, parentSessionId) => buildTaskTools({
           dock: d, supervisor, tasksRoot, userTasksRoot: userTasks, parentSessionId, config: w.config,
+          capabilityAd: capabilities.advertiseFor(d),
         }),
       });
       sessions.set(dock, s);
@@ -178,6 +191,9 @@ export function brainModule(w: BrainWiring): StationModule {
         const p = (msg.payload ?? {}) as Record<string, unknown>;
         const instanceId = typeof p.instanceId === 'string' ? p.instanceId : '';
         if (!instanceId) return;
+        // capability requests are served by the broker (dispatch + reply); all other
+        // frames (status/notify/finish/…) go to the supervisor.
+        if (msg.kind === 'request') { void capBroker.handle(dock, instanceId, p); return; }
         supervisor.onFrame(dock, { instanceId, kind: msg.kind, payload: p });
       });
 

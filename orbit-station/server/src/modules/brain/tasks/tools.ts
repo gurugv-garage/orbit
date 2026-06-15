@@ -7,6 +7,7 @@
 import type { AgentTool, AgentToolResult } from '@earendil-works/pi-agent-core';
 import { loadAllTaskDefs, findTaskDef, writeTaskDef, harnessImportPath } from './manager.js';
 import { authorTaskSource } from './scaffold.js';
+import { writeTaskDescription } from './authoring-prompt.js';
 import { validateParams } from '../../../tasks/_harness/index.js';
 import type { TaskParam } from '../../../tasks/_harness/index.js';
 import { describeInstance, type TaskSupervisor } from './supervisor.js';
@@ -22,6 +23,9 @@ export interface TaskToolDeps {
   parentSessionId: () => string | undefined;
   /** effective config (brainTaskMax). */
   config: (key: string) => unknown;
+  /** this dock's station-capability advertisement for the authoring prompt
+   *  (CapabilityRegistry.advertiseFor); '' when the dock has no extra capabilities. */
+  capabilityAd?: string;
 }
 
 function txt(text: string): AgentToolResult<unknown> {
@@ -109,35 +113,7 @@ export function buildTaskTools(d: TaskToolDeps): AgentTool<any>[] {
     });
 
   const write = tool('write_task',
-    'CREATE a new background task when no existing definition fits (check list_tasks first). '
-    + 'A task runs as its OWN process. You write the `body` of an `async run()` method on a class '
-    + 'that already extends our Task base (it handles connecting + messaging). `body` is plain '
-    + 'JavaScript that does whatever the request needs (loop on a timer, react to events, call an '
-    + 'API, multi-step jobs) using `this`:\n'
-    + '• this.params.<name> — the inputs you declared in params\n'
-    + '• await this.notifyAgent(text, image?) — push an update to the user (only when useful)\n'
-    + '• this.status(text) — set the status the user can pull anytime via get_task_status\n'
-    + '• this.finish(summary) — done;  this.errored(why) — failed\n'
-    + '• await this.sleep("5s") — wait (string duration or ms number)\n'
-    + '• const answer = await this.askAgentInput(prompt) — ask the user and AWAIT their answer\n'
-    + '• this.state.<k> = …; this.checkpoint() — optional: persist state so a resume reloads it\n'
-    + 'CRITICAL — ONE-SHOT vs RECURRING: if the job happens ONCE (e.g. "remind me in 10 minutes"), '
-    + 'do the work then call this.finish() so it STOPS — do NOT loop forever. Only loop '
-    + '(while (true) { … }) for genuinely REPEATING jobs ("every N", "keep watching"). Always reach '
-    + 'a terminal: this.finish() on completion or this.errored() on failure. (Most one-time reminders '
-    + 'are better served by the shipped remind-after task — reuse it.)\n'
-    + 'One-shot example body: `await this.sleep(this.params.delay as string); await this.notifyAgent(this.params.message as string); this.finish();`\n'
-    + 'Recurring example body: `while (true) { await this.sleep(this.params.interval as string); await this.notifyAgent(this.params.message as string); }`\n'
-    + 'Declare inputs in `params` — any value run() relies on (e.g. interval, delay) MUST be '
-    + 'required:true OR have a default; never read an undefined param. `this.params.X` is typed '
-    + '`unknown`, so CAST it (e.g. `this.params.from as number`).\n'
-    + '`status` is a JS expression for getStatus() — what the user sees when they ask how it is going '
-    + '(e.g. `` `reminding every ${this.params.interval}` ``). Defaults to the description.\n'
-    + 'NEED A NODE MODULE OR SHELL? run() cannot add its own import lines, so list any imports in '
-    + '`imports` (e.g. "import { execFile } from \'node:child_process\'"). It is a real Node process — '
-    + 'you can run shell commands, read files, call HTTP. '
-    + 'The new task is TYPECHECKED before it is saved — if write_task returns type errors, FIX the '
-    + 'body/imports and call write_task again. Then start it with run_task.',
+    writeTaskDescription(d.capabilityAd),
     {
       type: 'object',
       properties: {

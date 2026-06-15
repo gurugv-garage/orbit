@@ -15,6 +15,7 @@ import { join } from 'node:path';
 import { Bus } from '../../../core/bus.js';
 import { Hub } from '../../../core/hub.js';
 import { TaskSupervisor, describeInstance, type InstanceInfo, type SignalKind } from './supervisor.js';
+import { CapabilityRegistry, CapabilityBroker } from './capabilities.js';
 import { defaultTasksRoot } from './manager.js';
 
 const DOCK = 'proc-test-bot';
@@ -38,25 +39,39 @@ async function makeRig(): Promise<Rig> {
   const bus = new Bus();
   const hub = new Hub(http, bus);
   const signals: Rig['signals'] = [];
+  const sendToTask = (dock: string, instanceId: string, kind: string, payload: Record<string, unknown>) => {
+    bus.publish({
+      topic: 'tasks', kind, payload: { instanceId, ...payload },
+      source: 'station', toAddr: { dock, component: `task:${instanceId}` },
+    });
+  };
   const supervisor = new TaskSupervisor({
     root: mkdtempSync(join(tmpdir(), 'proc-')),
     stationWsUrl: `ws://127.0.0.1:${port}/ws`,
     onSignal: (_dock, info, kind, ev) => signals.push({ kind, text: ev.text, info }),
-    sendToTask: (dock, instanceId, kind, payload) => {
-      bus.publish({
-        topic: 'tasks', kind, payload: { instanceId, ...payload },
-        source: 'station', toAddr: { dock, component: `task:${instanceId}` },
-      });
-    },
+    sendToTask,
   });
-  // the brain's `tasks` routing: dock from the sender's hello (never the payload).
+
+  // a capability registry with FAKE handlers (DOCK has 'camera', not 'servo') so a
+  // task's this.frame()/this.move() round-trips over the real wire without a real
+  // camera or body. Mirrors index.ts's broker interception. (No ask_vlm — a task
+  // reasons about a frame with its OWN agent, not a station capability.)
+  const registry = new CapabilityRegistry((_dock, cap) => cap === 'camera')
+    .register({ op: 'frame', requires: 'camera', describe: '', when: '', handler: () => 'FAKEJPEG' })
+    .register({ op: 'move', requires: 'servo', describe: '', when: '', handler: () => ({ ok: true }) });
+  const capBroker = new CapabilityBroker(registry, sendToTask);
+
+  // the brain's `tasks` routing: dock from the sender's hello (never the payload);
+  // `request` frames go to the capability broker, everything else to the supervisor.
   bus.on('tasks', (msg) => {
     if (msg.source === 'station') return;
     const dock = hub.roster().find((p) => p.id === msg.source)?.dock;
     if (!dock) return;
     const p = (msg.payload ?? {}) as Record<string, unknown>;
     const instanceId = typeof p.instanceId === 'string' ? p.instanceId : '';
-    if (instanceId) supervisor.onFrame(dock, { instanceId, kind: msg.kind, payload: p });
+    if (!instanceId) return;
+    if (msg.kind === 'request') { void capBroker.handle(dock, instanceId, p); return; }
+    supervisor.onFrame(dock, { instanceId, kind: msg.kind, payload: p });
   });
 
   const start = (filePath: string, params: Record<string, unknown> = {}, name = 'remind-after') =>
@@ -196,6 +211,46 @@ test('an unhandled rejection in the body still reports errored (with a reason) t
   assert.ok(await r.waitFor(() => r.supervisor.get(id)?.state === 'errored'), 'reached errored, not a silent crash');
   const err = r.signals.find((s) => s.kind === 'errored');
   assert.ok(err && /unhandled boom/.test(err.text), 'the crash reason reached the parent');
+
+  fx.cleanup();
+  await r.close();
+});
+
+test('a task pulls a frame via the station capability, then reasons about it ITSELF', async () => {
+  const r = await makeRig();
+  // the task gets the station's decoded frame (a capability — it can't open a 2nd
+  // WebRTC consumer), then does its OWN processing on the pixels (here: trivial,
+  // standing in for "run my own pi Agent"), reports, finishes.
+  const fx = fixtureTask(`
+    const img = await this.frame();
+    const verdict = img && img.length > 0 ? 'got ' + img.length + ' bytes of pixels' : 'no camera';
+    await this.notifyAgent('frame check: ' + verdict);
+    this.finish();
+  `);
+  const id = r.start(fx.filePath, {}, 'fixture');
+
+  assert.ok(await r.waitFor(() => r.signals.some((s) => s.kind === 'finish')), 'finished');
+  const note = r.signals.find((s) => s.kind === 'notify');
+  assert.ok(note, 'reported back');
+  assert.match(note!.text, /got 8 bytes of pixels/, 'this.frame() returned the station\'s frame to the task');
+  assert.equal(r.supervisor.get(id)?.state, 'done');
+
+  fx.cleanup();
+  await r.close();
+});
+
+test('an unavailable capability rejects in the task (dock lacks the requirement)', async () => {
+  const r = await makeRig();
+  // DOCK has 'camera' but not 'servo' → this.move() must reject, surfacing errored.
+  const fx = fixtureTask(`
+    try { await this.move([{ part: 'neck', degrees: 10 }]); this.finish('moved?!'); }
+    catch (e) { this.errored('move failed: ' + (e instanceof Error ? e.message : e)); }
+  `);
+  const id = r.start(fx.filePath, {}, 'fixture');
+
+  assert.ok(await r.waitFor(() => r.supervisor.get(id)?.state === 'errored'), 'errored, not moved');
+  const err = r.signals.find((s) => s.kind === 'errored');
+  assert.ok(err && /no "servo"/.test(err.text), 'the unavailable-capability reason reached the parent');
 
   fx.cleanup();
   await r.close();

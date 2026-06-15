@@ -23,9 +23,15 @@
  * Read-only context (set before run()): this.params (the inputs) and
  * this.instance (what THIS instance is about — name, params, startedAt, runCount).
  *
- * There is NO askVlm/frame/move here — a task is a real Node process; if it needs
- * the camera or body it sends its own WS message. We don't curate a capability
- * menu.
+ * STATION CAPABILITIES — `await this.request(op, args)` asks the station to run a
+ * registered handler for things that need the station's LIVE IN-PROCESS STATE: the
+ * decoded camera frame (this.frame()), who's present (recognize), the body
+ * (this.move()). A task runs in the SAME ENVIRONMENT as the station (same machine,
+ * same .env, same node_modules), so for anything else — running an LLM to reason
+ * about a frame, importing a module, calling HTTP — it just does it ITSELF (e.g.
+ * `import { Agent } from '@earendil-works/pi-agent-core'` and run your own vision
+ * loop; the provider key is in process.env). Which `op`s a dock exposes is
+ * advertised at authoring time.
  */
 import { WebSocket } from 'ws';
 import { durationMs } from './types.js';
@@ -106,6 +112,9 @@ export abstract class Task {
   #ready?: () => void;          // resolves once `init` arrives
   #initReceived = false;
   #pendingAsk?: { resolve: (answer: string) => void; reject: (err: Error) => void };
+  /** in-flight this.request() calls, keyed by reqId → its promise resolvers. */
+  #pendingReq = new Map<string, { resolve: (v: unknown) => void; reject: (e: Error) => void; timer: ReturnType<typeof setTimeout> }>();
+  #reqSeq = 0;
   #done = false;
   #lastHeard = Date.now();      // last station ping/message — the liveness clock
   #watchdog?: ReturnType<typeof setInterval>;
@@ -148,6 +157,8 @@ export abstract class Task {
       if (!this.#done) this.errored(String((err as Error)?.stack ?? err));
     } finally {
       if (this.#watchdog) clearInterval(this.#watchdog);
+      for (const pend of this.#pendingReq.values()) { clearTimeout(pend.timer); pend.reject(new Error('task ending')); }
+      this.#pendingReq.clear();
       // let the last frame flush, then exit so the process closes.
       await this.#sleepReal(150);
       this.#ws?.close();
@@ -233,6 +244,17 @@ export abstract class Task {
         pending?.resolve(String(p.answer ?? ''));
         break;
       }
+      case 'response': {
+        // a station capability replied; resolve/reject the matching this.request().
+        const reqId = String(p.reqId ?? '');
+        const pend = this.#pendingReq.get(reqId);
+        if (!pend) break;
+        this.#pendingReq.delete(reqId);
+        clearTimeout(pend.timer);
+        if (p.ok) pend.resolve(p.result);
+        else pend.reject(new Error(String(p.error ?? 'capability failed')));
+        break;
+      }
       case 'stop':
         // hard stop is a process kill by the supervisor; this is a courtesy frame.
         process.exit(0);
@@ -259,6 +281,28 @@ export abstract class Task {
     this.#publish('ask', { prompt });
     return new Promise((resolve, reject) => { this.#pendingAsk = { resolve, reject }; });
   }
+  /** Ask the STATION to run a registered capability and await the result. The op
+   *  must be one the dock exposes (advertised at authoring time); an unknown or
+   *  unavailable op rejects. Rejects after `timeoutMs` so a task never hangs on a
+   *  missing handler. Typed sugar (this.frame/move) wraps common ops. */
+  protected request<T = unknown>(op: string, args: Record<string, unknown> = {}, timeoutMs = 20_000): Promise<T> {
+    const reqId = `q${++this.#reqSeq}`;
+    this.#publish('request', { reqId, op, args });
+    return new Promise<T>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.#pendingReq.delete(reqId);
+        reject(new Error(`station capability "${op}" timed out after ${timeoutMs}ms`));
+      }, timeoutMs);
+      timer.unref?.();
+      this.#pendingReq.set(reqId, { resolve: resolve as (v: unknown) => void, reject, timer });
+    });
+  }
+  /** the dock's latest camera frame as a base64 JPEG (or undefined if none). To
+   *  REASON about it, run your own pi Agent — the model key is in process.env. */
+  protected frame(): Promise<string | undefined> { return this.request('frame'); }
+  /** drive the dock body with move steps (fire-and-forget on the station side). */
+  protected move(steps: unknown[]): Promise<void> { return this.request('move', { steps }); }
+
   /** persist this.state so a resume (respawn) reloads it. */
   protected checkpoint(): void {
     this.#publish('checkpoint', { state: this.state });
