@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="orbit">
+  <!-- orbit: a glowing planet with a tilted orbit ring + satellite -->
+  <defs>
+    <radialGradient id="planet" cx="42%" cy="38%" r="70%">
+      <stop offset="0%" stop-color="#8fd0ff"/>
+      <stop offset="55%" stop-color="#5db8ff"/>
+      <stop offset="100%" stop-color="#2f7fd1"/>
+    </radialGradient>
+  </defs>
+  <circle cx="32" cy="32" r="13" fill="url(#planet)"/>
+  <ellipse cx="32" cy="32" rx="26" ry="9.5" fill="none" stroke="#8f7bff" stroke-width="2.5"
+           transform="rotate(-22 32 32)"/>
+  <circle cx="9.5" cy="38" r="3.2" fill="#4ad6a0" transform="rotate(-22 32 32)"/>
+</svg>
