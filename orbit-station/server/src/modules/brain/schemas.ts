@@ -207,10 +207,27 @@ export const recordVideoSchema = {
 export const sendToSlackSchema = {
   type: 'object',
   properties: {
-    text: { type: 'string', description: 'the message text (Slack mrkdwn: *bold*, _italic_, `code`, <url|label>)' },
+    text: { type: 'string', description: 'the message text (Slack mrkdwn: *bold*, _italic_, `code`, <url|label>). To @mention a person, either include their @handle as <@handle> OR list them in `mention` and reference them naturally.' },
     channel: { type: 'string', description: 'a Slack channel id (Cxxxx) or #name; omit to use the default channel' },
+    mention: { type: 'array', items: { type: 'string' }, description: 'optional names/handles/emails to @mention; each is resolved to a Slack mention and prepended to the message' },
   },
   required: ['text'],
+} as const;
+
+export const dmSlackUserSchema = {
+  type: 'object',
+  properties: {
+    user: { type: 'string', description: 'who to DM — a person\'s name, @handle, or email (resolved to a Slack user)' },
+    text: { type: 'string', description: 'the direct-message text (Slack mrkdwn supported)' },
+  },
+  required: ['user', 'text'],
+} as const;
+
+export const listSlackMembersSchema = {
+  type: 'object',
+  properties: {
+    channel: { type: 'string', description: 'a Slack channel id (Cxxxx) or #name; omit to use the default channel' },
+  },
 } as const;
 
 // Descriptions live next to the schemas so the model-facing surface is one place.
@@ -226,9 +243,18 @@ export const RECORD_VIDEO_DESC =
   "it's sent automatically (to Slack if a channel/default is set, else shown on the dock), so just confirm " +
   "you've started recording and that you'll share it when it's done.";
 export const SEND_TO_SLACK_DESC =
-  'Send a message to Slack. Use when the user asks you to post / send / message something to Slack. ' +
+  'Send a message to a Slack CHANNEL. Use when the user asks you to post / send / message something to Slack. ' +
   'Supports Slack formatting (mrkdwn): *bold*, _italic_, `code`, <https://url|link text>, and emoji. ' +
-  'Give the channel id or #name, or omit it to use the configured default channel.';
+  'Give the channel id or #name, or omit it to use the configured default channel. ' +
+  'To @mention people, pass their names/handles in `mention` (resolved automatically). ' +
+  'For a PRIVATE message to one person, use dm_slack_user instead.';
+export const DM_SLACK_USER_DESC =
+  'Send a DIRECT (private) message to one person on Slack. Use when the user asks you to DM / privately ' +
+  'message someone. Identify them by name, @handle, or email — it resolves to the right Slack user. ' +
+  'For a public channel post, use send_to_slack instead.';
+export const LIST_SLACK_MEMBERS_DESC =
+  'List the people in a Slack channel (their names). Use when asked who is in a channel, or before ' +
+  'mentioning/DMing someone to find the right person. Defaults to the configured channel if none is given.';
 export const SET_FACE_DESC =
   "Set the dock's facial expression to match the mood of what you're saying. " +
   'The body also acts out the mood automatically — a sleepy face droops the head, excited does a happy ' +

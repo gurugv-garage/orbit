@@ -158,39 +158,12 @@ export class SlackSocket {
     }
   }
 
-  /** Classify a Slack `event` into a SlackEvent we care about, or drop it. */
+  /** Classify a Slack `event` and, if it's human input we care about, emit it. */
   #handleEvent(event: any): void {
-    if (!event || typeof event !== 'object') return;
-    // We only handle human messages + mentions. Everything else is dropped here.
-    const isMessage = event.type === 'message';
-    const isMention = event.type === 'app_mention';
-    if (!isMessage && !isMention) return;
-
-    // Drop bot/system noise: the bot's own messages, edits/deletes/joins
-    // (subtype present), and messages with no user.
-    if (event.subtype) return;
-    if (event.bot_id) return;
-    const user = String(event.user ?? '');
-    if (!user || (this.#opts.botUserId && user === this.#opts.botUserId)) return;
-
-    const channel = String(event.channel ?? '');
-    const text = String(event.text ?? '');
-    const ts = String(event.ts ?? '');
-    const threadTs = event.thread_ts ? String(event.thread_ts) : undefined;
-
-    // Classify: app_mention is always a mention; a 'message' in a DM channel
-    // (channel_type 'im') is a dm; anything else is a plain channel message.
-    const kind: SlackEvent['kind'] = isMention
-      ? 'mention'
-      : event.channel_type === 'im'
-        ? 'dm'
-        : 'message';
-
-    try {
-      this.#opts.onEvent({ kind, channel, user, text, ts, threadTs, raw: event as Record<string, unknown> });
-    } catch (err) {
-      this.#log(`onEvent threw: ${String(err)}`);
-    }
+    const ev = classifyEvent(event, this.#opts.botUserId);
+    if (!ev) return;
+    try { this.#opts.onEvent(ev); }
+    catch (err) { this.#log(`onEvent threw: ${String(err)}`); }
   }
 
   #scheduleReconnect(): void {
@@ -206,6 +179,41 @@ export class SlackSocket {
   }
 
   #log(line: string): void { this.#opts.log?.(`[slack-socket] ${line}`); }
+}
+
+/**
+ * Pure classifier: turn a raw Slack `event` into the SlackEvent we care about,
+ * or `null` to drop it. Exported so it can be unit-tested without a socket.
+ *
+ * Drops: non-message/non-mention events, edits/joins/deletes (any `subtype`),
+ * and — crucially — the bot's OWN messages (by `bot_id` or matching user id), so
+ * the dock never reacts to what it itself just posted.
+ */
+export function classifyEvent(event: any, botUserId?: string): SlackEvent | null {
+  if (!event || typeof event !== 'object') return null;
+  const isMessage = event.type === 'message';
+  const isMention = event.type === 'app_mention';
+  if (!isMessage && !isMention) return null;
+  if (event.subtype) return null;          // edits/joins/deletes/system
+  if (event.bot_id) return null;           // any bot's message (incl. ours)
+  const user = String(event.user ?? '');
+  if (!user || (botUserId && user === botUserId)) return null; // our own / userless
+
+  const kind: SlackEvent['kind'] = isMention
+    ? 'mention'
+    : event.channel_type === 'im'
+      ? 'dm'
+      : 'message';
+
+  return {
+    kind,
+    channel: String(event.channel ?? ''),
+    user,
+    text: String(event.text ?? ''),
+    ts: String(event.ts ?? ''),
+    threadTs: event.thread_ts ? String(event.thread_ts) : undefined,
+    raw: event as Record<string, unknown>,
+  };
 }
 
 /** Read the app-level (xapp-) token from env, or undefined. Distinct from the

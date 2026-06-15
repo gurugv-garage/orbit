@@ -53,12 +53,25 @@ function token(): string {
   return t;
 }
 
-/** A Web API call returns `{ ok: boolean, error?, ... }`; throw on `ok:false`. */
-async function call(method: string, body: unknown): Promise<Record<string, unknown>> {
+/**
+ * A Web API call → `{ ok, error?, ... }`; throws on `ok:false`.
+ *
+ * Slack's POST methods are FORM-encoded — many read methods (conversations.*,
+ * users.*) reject a JSON body with `invalid_arguments`. So we form-encode every
+ * field, JSON-stringifying any array/object value (blocks, files), which Slack
+ * accepts. (A flat JSON body works for chat.postMessage but not universally, so
+ * form is the single safe encoding for all of them.)
+ */
+async function call(method: string, body: Record<string, unknown>): Promise<Record<string, unknown>> {
+  const form = new URLSearchParams();
+  for (const [k, v] of Object.entries(body)) {
+    if (v == null) continue;
+    form.set(k, typeof v === 'object' ? JSON.stringify(v) : String(v));
+  }
   const res = await fetch(`${API}/${method}`, {
     method: 'POST',
-    headers: { 'content-type': 'application/json; charset=utf-8', authorization: `Bearer ${token()}` },
-    body: JSON.stringify(body),
+    headers: { 'content-type': 'application/x-www-form-urlencoded; charset=utf-8', authorization: `Bearer ${token()}` },
+    body: form.toString(),
   });
   const data = (await res.json()) as Record<string, unknown>;
   if (!data.ok) throw new Error(`slack ${method} failed: ${String(data.error ?? res.status)}`);
@@ -171,4 +184,107 @@ export async function uploadFile(opts: UploadFileOpts): Promise<{ fileId: string
     ...(opts.initialComment ? { initial_comment: opts.initialComment } : {}),
   });
   return { fileId: d1.file_id };
+}
+
+// ── people: resolve / list members / DM ──────────────────────────────────────
+
+export interface SlackUser {
+  id: string;
+  /** the @handle (users.list `name`). */
+  handle: string;
+  /** the chosen display name, else real name, else handle. */
+  display: string;
+  isBot: boolean;
+}
+
+/** id → user, and lowercased handle/display/email → user. Built from users.list,
+ *  cached for the process; refreshed on a miss so new people resolve. */
+const userById = new Map<string, SlackUser>();
+const userByKey = new Map<string, SlackUser>(); // handle/display/email (lowercased)
+let usersLoaded = false;
+
+function indexUser(m: any): SlackUser {
+  const p = m.profile ?? {};
+  const display = String(p.display_name || p.real_name || m.name || m.id);
+  const u: SlackUser = { id: String(m.id), handle: String(m.name ?? ''), display, isBot: !!m.is_bot };
+  userById.set(u.id, u);
+  for (const k of [u.handle, display, p.email].filter(Boolean)) userByKey.set(String(k).toLowerCase(), u);
+  return u;
+}
+
+/** Load (or refresh) the workspace user directory via users.list (paged). */
+async function loadUsers(): Promise<void> {
+  let cursor: string | undefined;
+  do {
+    const d = await call('users.list', { limit: 200, ...(cursor ? { cursor } : {}) });
+    for (const m of (d.members as any[] | undefined) ?? []) {
+      if (!m?.deleted) indexUser(m);
+    }
+    cursor = (d.response_metadata as { next_cursor?: string } | undefined)?.next_cursor || undefined;
+  } while (cursor);
+  usersLoaded = true;
+}
+
+/**
+ * Resolve a person to a Slack user. Accepts a user id (`U…`), an @handle, a
+ * display/real name, or an email — case-insensitive. Returns undefined if no
+ * match. Loads the directory on first use; on a miss, refreshes once (a newly
+ * added person resolves without a restart).
+ */
+export async function resolveUser(nameOrIdOrEmail: string): Promise<SlackUser | undefined> {
+  const q = nameOrIdOrEmail.trim();
+  if (!q) return undefined;
+  if (/^U[A-Z0-9]{6,}$/.test(q)) {
+    if (userById.has(q)) return userById.get(q);
+    // an id we haven't indexed — fetch it directly.
+    try { const d = await call('users.info', { user: q }); return indexUser(d.user); } catch { return undefined; }
+  }
+  const key = q.replace(/^@/, '').toLowerCase();
+  if (!usersLoaded) await loadUsers();
+  if (userByKey.has(key)) return userByKey.get(key);
+  await loadUsers(); // refresh once in case they were added since we cached
+  return userByKey.get(key);
+}
+
+/** The user IDs in a channel (conversations.members, paged). Channel may be a
+ *  `#name` or an id. */
+export async function listChannelMembers(channel: string): Promise<SlackUser[]> {
+  const channelId = await resolveChannelId(resolveChannel(channel));
+  const ids: string[] = [];
+  let cursor: string | undefined;
+  do {
+    const d = await call('conversations.members', { channel: channelId, limit: 200, ...(cursor ? { cursor } : {}) });
+    for (const id of (d.members as string[] | undefined) ?? []) ids.push(id);
+    cursor = (d.response_metadata as { next_cursor?: string } | undefined)?.next_cursor || undefined;
+  } while (cursor);
+  // Prime the directory once so each id resolves from cache (not N× users.info).
+  if (!usersLoaded) await loadUsers();
+  const out: SlackUser[] = [];
+  for (const id of ids) { const u = await resolveUser(id); if (u) out.push(u); }
+  return out;
+}
+
+/** Open (or reuse) a DM with a user and post a message there. `user` may be an
+ *  id, @handle, name, or email. Returns the DM channel id + message ts. */
+export async function dmUser(user: string, text: string, opts: { blocks?: unknown[] } = {}): Promise<{ channel: string; ts: string }> {
+  const u = await resolveUser(user);
+  if (!u) throw new Error(`no Slack user matched "${user}"`);
+  const open = await call('conversations.open', { users: u.id });
+  const channel = String((open.channel as { id?: string } | undefined)?.id ?? '');
+  if (!channel) throw new Error('could not open a DM channel');
+  return postMessage({ channel, text, ...(opts.blocks ? { blocks: opts.blocks } : {}) });
+}
+
+/** A Slack mention token for a resolved user (`<@U123>`), for embedding in text. */
+export function mentionOf(user: SlackUser): string {
+  return `<@${user.id}>`;
+}
+
+/** TEST ONLY: clear the per-process user/channel caches so each test starts
+ *  fresh (the directory is otherwise cached for the process lifetime). */
+export function __resetCachesForTests(): void {
+  userById.clear();
+  userByKey.clear();
+  channelIdCache.clear();
+  usersLoaded = false;
 }

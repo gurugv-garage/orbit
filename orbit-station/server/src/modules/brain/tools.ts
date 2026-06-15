@@ -103,9 +103,37 @@ export function buildGrantTools(
 export function buildSlackTools(): AgentTool<any>[] {
   if (!slack.slackEnabled()) return [];
   return [
-    tool('send_to_slack', S.SEND_TO_SLACK_DESC, S.sendToSlackSchema, async (_id, args: { text: string; channel?: string }) => {
-      const { channel } = await slack.postMessage({ text: args.text ?? '', channel: args.channel });
-      return textResult(`Sent to Slack (${channel}).`);
+    tool('send_to_slack', S.SEND_TO_SLACK_DESC, S.sendToSlackSchema, async (_id, args: { text: string; channel?: string; mention?: string[] }) => {
+      let text = args.text ?? '';
+      // Resolve any requested @mentions to Slack tokens and prepend them.
+      const mentions: string[] = [];
+      for (const who of args.mention ?? []) {
+        const u = await slack.resolveUser(who);
+        if (u) mentions.push(slack.mentionOf(u));
+        else return textResult(`Couldn't find a Slack user matching "${who}" — message not sent.`);
+      }
+      if (mentions.length) text = `${mentions.join(' ')} ${text}`;
+      const { channel } = await slack.postMessage({ text, channel: args.channel });
+      return textResult(`Sent to Slack (${channel})${mentions.length ? `, mentioning ${mentions.length}` : ''}.`);
+    }),
+
+    tool('dm_slack_user', S.DM_SLACK_USER_DESC, S.dmSlackUserSchema, async (_id, args: { user: string; text: string }) => {
+      const u = await slack.resolveUser(args.user ?? '');
+      if (!u) return textResult(`Couldn't find a Slack user matching "${args.user}".`);
+      if (u.isBot) return textResult(`"${u.display}" is a bot — you can't DM a bot on Slack.`);
+      await slack.dmUser(u.id, args.text ?? '');
+      return textResult(`Sent a DM to ${u.display}.`);
+    }),
+
+    tool('list_slack_members', S.LIST_SLACK_MEMBERS_DESC, S.listSlackMembersSchema, async (_id, args: { channel?: string }) => {
+      const members = await slack.listChannelMembers(args.channel ?? '');
+      const people = members.filter((m) => !m.isBot).map((m) => m.display);
+      const bots = members.filter((m) => m.isBot).length;
+      return textResult(
+        people.length
+          ? `${people.length} people in the channel: ${people.join(', ')}${bots ? ` (+${bots} bot${bots > 1 ? 's' : ''})` : ''}.`
+          : 'No people found in that channel.',
+      );
     }),
   ];
 }

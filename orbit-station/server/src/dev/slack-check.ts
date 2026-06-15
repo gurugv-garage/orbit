@@ -16,7 +16,7 @@
  * you can run it before adding every scope and see exactly what's still pending.
  */
 import { readFileSync } from 'node:fs';
-import { postMessage, uploadFile, slackToken, slackDefaultChannel } from '../integrations/slack.js';
+import { postMessage, uploadFile, slackToken, slackDefaultChannel, listChannelMembers, resolveUser } from '../integrations/slack.js';
 import { SlackSocket, slackAppToken } from '../integrations/slack-socket.js';
 
 // Load orbit-station/.env the same way the station does (real env wins), so this
@@ -174,7 +174,26 @@ async function main(): Promise<void> {
     });
   });
 
-  // 11) inbound: Socket Mode connects (needs SLACK_APP_TOKEN; SKIP if unset)
+  // 11) list the channel's members (conversations.members + users.list)
+  let aMemberName = '';
+  await check('list channel members', async () => {
+    try {
+      const members = await listChannelMembers(channel!);
+      const people = members.filter((m) => !m.isBot);
+      aMemberName = people[0]?.display ?? '';
+      return `${people.length} people${members.length - people.length ? ` (+${members.length - people.length} bot)` : ''}`;
+    } catch (e) { if (e instanceof SkipError) return `skip:${e.message}`; throw e; }
+  });
+
+  // 12) resolve a person by name (users.list directory)
+  await check('resolve a user by name', async () => {
+    if (!aMemberName) return 'skip:no human member to resolve';
+    const u = await resolveUser(aMemberName);
+    if (!u) throw new Error(`could not resolve "${aMemberName}" back to a user`);
+    return `${aMemberName} → ${u.id}`;
+  });
+
+  // 13) inbound: Socket Mode connects (needs SLACK_APP_TOKEN; SKIP if unset)
   await check('Socket Mode connect (inbound)', async () => {
     const appToken = slackAppToken();
     if (!appToken) return 'skip:SLACK_APP_TOKEN not set (inbound off — see docs/SLACK.md)';
