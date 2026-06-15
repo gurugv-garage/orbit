@@ -20,6 +20,16 @@ import type { MoveStep } from './schemas.js';
 import type { RpcBroker } from './rpc.js';
 import { SafeCompute } from './safe-compute.js';
 import * as S from './schemas.js';
+import * as slack from '../../integrations/slack.js';
+
+/** Capture a live clip, then hand the finished file to a watcher. The session
+ *  provides this; record_video kicks it off and returns immediately. */
+export interface RecordVideoDeps {
+  /** record `seconds` of the dock's live stream → a clip on disk. */
+  record(streamId: string, seconds: number): Promise<{ path: string; dockId: string }>;
+  /** called (off the turn) when a clip is ready — uploads / notifies. */
+  onClipReady(info: { path: string; caption?: string; slackChannel?: string }): void;
+}
 
 /** Per-turn context the tools read at execution time (set by the session). */
 export interface ToolTurnContext {
@@ -37,6 +47,8 @@ export interface ToolDeps {
   getFaces: () => FaceToolsApi | undefined;
   getGestures: () => Record<string, MoveStep[]>;
   getTurnContext: () => ToolTurnContext;
+  /** live video recording (record_video). Undefined → the tool isn't offered. */
+  recordVideo?: RecordVideoDeps;
 }
 
 const compute = new SafeCompute();
@@ -81,6 +93,21 @@ export function buildGrantTools(
     ));
   }
   return out;
+}
+
+/**
+ * The `send_to_slack` tool — only offered when Slack is configured
+ * (`SLACK_BOT_TOKEN`), so the model never claims an ability it can't perform.
+ * The session appends this conditionally (like cross-dock grant tools).
+ */
+export function buildSlackTools(): AgentTool<any>[] {
+  if (!slack.slackEnabled()) return [];
+  return [
+    tool('send_to_slack', S.SEND_TO_SLACK_DESC, S.sendToSlackSchema, async (_id, args: { text: string; channel?: string }) => {
+      const { channel } = await slack.postMessage({ text: args.text ?? '', channel: args.channel });
+      return textResult(`Sent to Slack (${channel}).`);
+    }),
+  ];
 }
 
 export function buildDockTools(deps: ToolDeps): AgentTool<any>[] {
@@ -129,6 +156,44 @@ export function buildDockTools(deps: ToolDeps): AgentTool<any>[] {
 
     tool('compute', S.COMPUTE_DESC, S.computeSchema, async (_toolCallId, args: { expression: string }) => {
       return textResult(compute.eval(args.expression ?? ''));
+    }),
+
+    tool('take_photo', S.TAKE_PHOTO_DESC, S.takePhotoSchema, async (_id, args: { caption?: string; slackChannel?: string }) => {
+      // The same live frame source the vision tools use (turn-attached photo first).
+      const ctx = deps.getTurnContext();
+      const jpegB64 = ctx.imageBase64 ?? (ctx.streamId ? deps.getFaces()?.frame(ctx.streamId) : undefined);
+      if (!jpegB64) throw new Error('no camera frame available right now — the stream may be down');
+      const channel = args.slackChannel ?? slack.slackDefaultChannel();
+      if (slack.slackEnabled() && channel) {
+        await slack.uploadFile({
+          channel, bytes: Buffer.from(jpegB64, 'base64'), filename: `photo-${Date.now()}.jpg`,
+          title: args.caption, initialComment: args.caption,
+        });
+        return textResult(`Photo sent to Slack${args.caption ? `: ${args.caption}` : ''}.`);
+      }
+      // No Slack target → return the image so the brain sees + narrates it on the dock.
+      return {
+        content: [
+          { type: 'text', text: args.caption ? `Photo taken: ${args.caption}` : 'Photo taken.' },
+          { type: 'image', data: jpegB64, mimeType: 'image/jpeg' },
+        ],
+        details: undefined,
+      } as AgentToolResult<unknown>;
+    }),
+
+    tool('record_video', S.RECORD_VIDEO_DESC, S.recordVideoSchema, async (_id, args: { seconds?: number; caption?: string; slackChannel?: string }) => {
+      const rec = deps.recordVideo;
+      if (!rec) throw new Error('video recording is not available right now');
+      const ctx = deps.getTurnContext();
+      if (!ctx.streamId) throw new Error('the dock is not streaming video right now');
+      const seconds = Math.max(1, Math.min(30, Math.floor(args.seconds ?? 5)));
+      // Kick off + return immediately; the watcher uploads/notifies when ready.
+      rec.record(ctx.streamId, seconds).then(
+        ({ path }) => rec.onClipReady({ path, caption: args.caption, slackChannel: args.slackChannel }),
+        (err) => console.error(`[brain] ${deps.dock}: record_video failed`, err),
+      );
+      const dest = (slack.slackEnabled() && (args.slackChannel ?? slack.slackDefaultChannel())) ? ' and send it to Slack' : '';
+      return textResult(`Recording ${seconds}s of video now — I'll share it${dest} when it's ready.`);
     }),
 
     tool('remember_face', S.REMEMBER_FACE_DESC, S.rememberFaceSchema, async (_id, args: { name: string }) => {

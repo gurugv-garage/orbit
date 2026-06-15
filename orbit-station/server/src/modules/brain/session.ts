@@ -54,8 +54,10 @@ import { SentenceStreamer } from './sentence.js';
 import { SessionStore, type SessionMeta } from './store.js';
 import { loadDockSkills, type DockSkills } from './skills.js';
 import { buildFileTools, FILE_TOOLS_PROMPT } from './filetools.js';
-import { buildDockTools, buildGrantTools, type ToolTurnContext } from './tools.js';
+import { buildDockTools, buildGrantTools, buildSlackTools, type ToolTurnContext } from './tools.js';
 import type { MoveStep } from './schemas.js';
+import type { VideoRecorderApi } from '../perception/record/recorder.js';
+import * as slack from '../../integrations/slack.js';
 
 /** How long an autonomous (task) turn waits before running, so back-to-back
  *  same-instance signals (notify+finish) coalesce into one turn. Tiny vs. the
@@ -80,6 +82,8 @@ export interface SessionDeps {
   motion: MotionExecutor;
   store: SessionStore;
   getFaces: () => FaceToolsApi | undefined;
+  /** live video recorder (record_video tool). Undefined → tool not offered. */
+  recordVideo?: VideoRecorderApi;
   /** effective config value by key (shared ConfigStore). */
   config: (key: string) => unknown;
   log?: (line: string) => void;
@@ -167,6 +171,36 @@ export class DockBrainSession {
       getFaces: deps.getFaces,
       getGestures: () => gesturesFromConfig(deps.config('faceGestures')) as Record<string, MoveStep[]>,
       getTurnContext: () => this.#turnCtx,
+      recordVideo: deps.recordVideo
+        ? {
+            record: (streamId, seconds) => deps.recordVideo!.record(streamId, seconds),
+            onClipReady: (info) => { void this.#onClipReady(info); },
+          }
+        : undefined,
+    });
+  }
+
+  /** A record_video clip finished: upload it to Slack (if asked / configured) and
+   *  surface it back on the dock as an autonomous follow-up turn. Off the turn that
+   *  started it — record_video returned immediately. Best-effort. */
+  async #onClipReady(info: { path: string; caption?: string; slackChannel?: string }): Promise<void> {
+    const channel = info.slackChannel ?? slack.slackDefaultChannel();
+    let slackNote = '';
+    if (slack.slackEnabled() && channel) {
+      try {
+        await slack.uploadFile({
+          channel, filePath: info.path, title: info.caption, initialComment: info.caption,
+        });
+        slackNote = ` and sent it to Slack`;
+      } catch (err) {
+        this.#d.log?.(`[brain] ${this.dock}: clip Slack upload failed: ${String(err)}`);
+        slackNote = ` but couldn't send it to Slack`;
+      }
+    }
+    this.enqueueAutonomousTurn({
+      turnId: `auto-${randomUUID()}`,
+      trigger: { kind: 'task', text: `[your video clip is ready${slackNote}${info.caption ? `: ${info.caption}` : ''}] Tell the user the recording is done.` },
+      expiresAt: Date.now() + 120_000,
     });
   }
 
@@ -538,6 +572,7 @@ export class DockBrainSession {
     agent.state.tools = [
       ...this.#baseTools,
       ...buildGrantTools(this.dock, this.#grants(), this.#d.motion),
+      ...buildSlackTools(), // send_to_slack — only when SLACK_BOT_TOKEN is set
       ...(this.#skills.tool ? [this.#skills.tool] : []),
       ...(fileAccess ? buildFileTools({ confirm: (s, d) => this.#confirmOnDock(s, d) }) : []),
       ...(this.#d.getTaskTools?.(this.dock, () => this.#meta?.sessionId) ?? []),

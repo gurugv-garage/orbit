@@ -78,3 +78,41 @@ npm run smoke
 
 Testing across emulator / physical device / firmware / browser:
 see [TESTING.md](TESTING.md).
+
+## Configuration (`orbit-station/.env`)
+
+Secrets + integration keys live in a gitignored `orbit-station/.env` (KEY=VALUE
+lines; a real environment variable wins over the file). Read at boot by
+[server/src/main.ts](server/src/main.ts).
+
+| Key | What |
+|---|---|
+| `GEMINI_API_KEY` | Google Gemini key (the default brain model). |
+| `GEMINI_API_KEY_PAID_ACC` | optional paid-tier Gemini key (the always-paid / quota-fallback path). |
+| `OPENROUTER_API_KEY` | OpenRouter key (for `openrouter/*` brain models). |
+| `SLACK_BOT_TOKEN` | Slack **bot** token (`xoxb-…`). Enables the brain's `send_to_slack` tool and Slack delivery for `take_photo` / `record_video`. Unset → those Slack paths are simply off (the `send_to_slack` tool isn't even offered). |
+| `SLACK_DEFAULT_CHANNEL` | optional channel id (`Cxxxx`) or `#name` used when a tool call doesn't name one. |
+| `SLACK_APP_TOKEN` | optional Slack **app-level** token (`xapp-…`) for **inbound** Socket Mode — the dock *hearing* Slack. Unset → outbound still works; only inbound is off. (Ingest only for now; auto-responding is parked.) |
+
+### Slack
+
+The dock can post to Slack with three tools: `send_to_slack` (rich text /
+Block Kit), `take_photo` (uploads the photo), and `record_video` (uploads the
+clip when it's ready). All use the bot token above.
+
+**Full token setup — [docs/SLACK.md](../docs/SLACK.md).** In short:
+
+1. Create a Slack app at <https://api.slack.com/apps> → *From scratch*.
+2. **OAuth & Permissions → Bot Token Scopes**: add `chat:write` (post messages)
+   and `files:write` (upload photos/videos). Add `chat:write.public` if you want
+   to post to public channels the bot hasn't been invited to.
+3. **Install to Workspace** → copy the **Bot User OAuth Token** (`xoxb-…`).
+4. Put it in `orbit-station/.env`:
+   ```
+   SLACK_BOT_TOKEN=xoxb-xxxxxxxx
+   SLACK_DEFAULT_CHANNEL=#orbit      # optional
+   ```
+5. **Invite the bot to the channel** in Slack: `/invite @YourApp` (required
+   unless you added `chat:write.public`).
+6. Restart the station (the `.env` is read at boot). Now ask the dock to "post
+   hello to Slack" / "take a photo and send it to Slack".

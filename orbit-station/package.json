@@ -13,6 +13,7 @@
     "dev:server": "npm -w server run dev",
     "dev:web": "npm -w web run dev",
     "smoke": "npm -w server run smoke",
+    "slack:check": "npm -w server run slack:check",
     "build": "npm -w web run build",
     "start": "npm -w server run start",
     "typecheck": "npm -w server run typecheck && npm -w web run typecheck",

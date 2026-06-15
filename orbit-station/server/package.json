@@ -17,6 +17,7 @@
     "smoke:media": "tsx src/dev/fake-dock-media.ts",
     "smoke:brain": "tsx src/dev/fake-phone.ts",
     "smoke:task": "tsx src/dev/smoke-task.ts",
+    "slack:check": "tsx src/dev/slack-check.ts",
     "e2e:console-tasks": "node src/dev/e2e-console-tasks.mjs"
   },
   "dependencies": {

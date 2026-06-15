@@ -107,7 +107,9 @@ the media tap; the SFU + Live Wall are the first piece of it.
 - **Never commit `local.properties`** (SDK path, station URL, signing
   passwords — gitignored) or **`orbit-station/.env`** (LLM provider keys).
   Templates: `local.properties.template`; `.env` keys are read by
-  `server/src/main.ts` (GEMINI_API_KEY, OPENROUTER_API_KEY, …).
+  `server/src/main.ts` (GEMINI_API_KEY, OPENROUTER_API_KEY, SLACK_BOT_TOKEN +
+  SLACK_DEFAULT_CHANNEL for the Slack tools — see
+  [docs/SLACK.md](docs/SLACK.md), …).
 - Benchmark snapshots (`bench/results/<name>.json`) ARE committed as durable
   history; the transient `latest.json` mirror + `*.log` are not. (The bench
   harness code was deleted in the server-brain cutover; results + cases stay.)

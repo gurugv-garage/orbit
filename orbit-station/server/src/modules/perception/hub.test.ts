@@ -155,6 +155,17 @@ test('runtime register: a processor added AFTER a stream is active starts on it'
   assert.deepEqual(late.log.started, ['dock-1'], 'late processor catches the active stream');
 });
 
+test('runtime register: a late processor also RECEIVES RTP from the live track', () => {
+  const { hub } = hubWith();
+  const t = fakeTrack();
+  hub.onTrack('dock-1', 'video', t.track); // stream live BEFORE the processor exists
+  const late = stub({ id: 'late', mediaKinds: ['video'] });
+  hub.register(late.p);
+  t.fireRtp({ seq: 1 });
+  t.fireRtp({ seq: 2 });
+  assert.equal(late.log.rtp.length, 2, 'late processor gets RTP from the already-live track');
+});
+
 test('unregister: removing a processor ends its streams and stops delivery', () => {
   const { hub } = hubWith();
   const p = stub({ id: 'p', mediaKinds: ['video'] });

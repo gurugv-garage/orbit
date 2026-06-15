@@ -10,6 +10,7 @@
 
 import { networkInterfaces } from 'node:os';
 import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { Bus } from './core/bus.js';
 import { Hub } from './core/hub.js';
 import { createServer } from './core/http.js';
@@ -23,7 +24,9 @@ import { MotionExecutor } from './modules/bodylink/motion.js';
 import { mediaModule } from './modules/media/index.js';
 import { ProcessingHub } from './modules/perception/hub.js';
 import { perceptionModule } from './modules/perception/index.js';
+import { buildVideoRecorder } from './modules/perception/record/recorder.js';
 import { mindModule } from './modules/mind/index.js';
+import { slackModule } from './modules/slack/index.js';
 import { benchModule } from './modules/bench/index.js';
 import { docksModule } from './modules/docks/index.js';
 import { Directory } from './modules/docks/directory.js';
@@ -74,6 +77,7 @@ async function main() {
     configModule(configStore),
     mediaModule(() => processingHub),   // WebRTC SFU; tap = the processing hub (or MEDIA_SINK fallback).
     mindModule(),
+    slackModule(),                       // inbound Slack via Socket Mode (ingest only for now)
     benchModule(),
   ];
 
@@ -85,6 +89,9 @@ async function main() {
   const motion = new MotionExecutor(bus, directory);
   processingHub = new ProcessingHub(bus, (streamId) =>
     hub.roster().find((p) => p.id === streamId)?.dock ?? streamId);
+  // record_video: capture a dock's live SFU stream to a WebM clip (under data/recordings/).
+  const recordingsDir = fileURLToPath(new URL('../data/recordings', import.meta.url));
+  const videoRecorder = buildVideoRecorder(processingHub, recordingsDir);
 
   modules.push(perceptionModule(() => processingHub!));
   modules.push(docksModule(directory, () => hub));
@@ -92,6 +99,7 @@ async function main() {
   modules.push(brainModule({
     directory, motion, getHub: () => hub,
     config: (key) => configStore.get(key)?.value,
+    recordVideo: videoRecorder,
   }));
   modules.push(otaModule(() => hub));   // OTA: version-compare against live roster
   // station meta module needs the registry + hub; add it last.

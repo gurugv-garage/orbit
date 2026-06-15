@@ -37,6 +37,9 @@ const CLIENT_TOPIC = 'client' as const;
 const channelForBusMsg = (m: BusMessage): string | null =>
   m.topic === CLIENT_TOPIC ? `${CLIENT_TOPIC}.${m.kind}` : null;
 
+/** map key for a live track (so a late processor can re-subscribe to its RTP). */
+const trackKey = (streamId: string, kind: MediaKind): string => `${streamId}|${kind}`;
+
 interface Registered {
   p: StreamProcessor;
   /** live ctx per active stream this processor has started on. */
@@ -49,6 +52,9 @@ export class ProcessingHub implements MediaTap {
   #procs: Registered[] = [];
   /** active producer streamIds → their media kinds seen (for late registration). */
   #active = new Map<string, Set<MediaKind>>();
+  /** live tracks per "streamId|kind", so a processor registered AFTER a stream
+   *  went live can still subscribe to its RTP (not just onStreamStart). */
+  #tracks = new Map<string, MediaStreamTrack>();
 
   constructor(bus: Bus, resolveDock: (streamId: string) => string) {
     this.#bus = bus;
@@ -70,6 +76,12 @@ export class ProcessingHub implements MediaTap {
         if (p.mediaKinds.length) continue;
       }
       this.#startOn(reg, streamId);
+      // Subscribe a LATE processor to each live track it wants — onTrack already
+      // fired for this stream, so without this it would get onStreamStart but no
+      // onRtp (it would never see any media).
+      for (const kind of kinds) {
+        if (reg.p.mediaKinds.includes(kind)) this.#subscribeRtp(reg, streamId, kind);
+      }
     }
     return () => {
       const i = this.#procs.indexOf(reg);
@@ -84,22 +96,32 @@ export class ProcessingHub implements MediaTap {
     const kinds = this.#active.get(streamId) ?? new Set<MediaKind>();
     kinds.add(kind);
     this.#active.set(streamId, kinds);
+    this.#tracks.set(trackKey(streamId, kind), track); // for late registration
 
     for (const reg of this.#procs) {
       if (!wantsSource(reg.p, streamId)) continue;
       if (!reg.p.mediaKinds.includes(kind)) continue;
       this.#startOn(reg, streamId); // idempotent (ctx cached)
-      track.onReceiveRtp.subscribe((rtp: RtpPacket) => {
-        // The subscription outlives unregister; gate on the processor still being
-        // registered + active on this stream so a removed processor stops receiving.
-        if (!this.#procs.includes(reg) || !reg.ctx.has(streamId)) return;
-        this.#safe(() => reg.p.onRtp?.(streamId, kind, rtp));
-      });
+      this.#subscribeRtp(reg, streamId, kind);
     }
   }
 
+  /** Wire one processor's onRtp to a live track. Safe to call once per
+   *  (reg, stream, kind) — subscriptions self-gate on the processor still being
+   *  registered + active on the stream, so a removed/late processor is correct. */
+  #subscribeRtp(reg: Registered, streamId: string, kind: MediaKind): void {
+    const track = this.#tracks.get(trackKey(streamId, kind));
+    if (!track) return;
+    track.onReceiveRtp.subscribe((rtp: RtpPacket) => {
+      if (!this.#procs.includes(reg) || !reg.ctx.has(streamId)) return;
+      this.#safe(() => reg.p.onRtp?.(streamId, kind, rtp));
+    });
+  }
+
   onProducerGone(streamId: string): void {
+    const kinds = this.#active.get(streamId);
     this.#active.delete(streamId);
+    if (kinds) for (const kind of kinds) this.#tracks.delete(trackKey(streamId, kind));
     for (const reg of this.#procs) {
       if (reg.ctx.delete(streamId)) this.#safe(() => reg.p.onStreamEnd(streamId));
     }

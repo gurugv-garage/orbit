@@ -28,6 +28,7 @@ import type { RouteContext, StationModule } from '../../core/module.js';
 import type { Directory } from '../docks/directory.js';
 import type { MotionExecutor } from '../bodylink/motion.js';
 import { getFaceTools } from '../perception/index.js';
+import type { VideoRecorderApi } from '../perception/record/recorder.js';
 import { RpcBroker } from './rpc.js';
 import { DockBrainSession, type TurnRequest, keyStatusFor } from './session.js';
 import { SessionStore } from './store.js';
@@ -54,6 +55,8 @@ export interface BrainWiring {
   getHub: () => Hub;
   /** effective config value by key (the shared ConfigStore). */
   config: (key: string) => unknown;
+  /** live video recorder (record_video tool). Optional — undefined disables it. */
+  recordVideo?: VideoRecorderApi;
 }
 
 export function brainModule(w: BrainWiring): StationModule {
@@ -144,7 +147,7 @@ export function brainModule(w: BrainWiring): StationModule {
     if (!s) {
       s = new DockBrainSession(dock, {
         bus, directory: w.directory, rpc, motion: w.motion, store,
-        getFaces: getFaceTools, config: w.config,
+        getFaces: getFaceTools, recordVideo: w.recordVideo, config: w.config,
         log: (line) => console.log(line),
         stopTasksForParent: (d, parentSessionId) => { supervisor.stopForParent(d, parentSessionId); },
         hasRunningTasks: (d, parentSessionId) => supervisor.hasRunningUnder(d, parentSessionId),

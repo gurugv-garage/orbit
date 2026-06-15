@@ -143,7 +143,7 @@ export class FrameGrabber {
 }
 
 /** Parse width/height from a VP8 keyframe's uncompressed data chunk. */
-function vp8KeyframeSize(buf: Buffer): { w: number; h: number } | null {
+export function vp8KeyframeSize(buf: Buffer): { w: number; h: number } | null {
   // VP8 keyframe: 3-byte frame tag, then start code 0x9d 0x01 0x2a, then 2+2 bytes
   // of (width|hscale) (height|vscale), 14-bit dims little-endian.
   if (buf.length < 10) return null;
@@ -154,7 +154,7 @@ function vp8KeyframeSize(buf: Buffer): { w: number; h: number } | null {
 }
 
 /** 32-byte IVF file header for a VP8 stream of w×h. */
-function ivfHeader(w: number, h: number): Buffer {
+export function ivfHeader(w: number, h: number): Buffer {
   const b = Buffer.alloc(32);
   b.write('DKIF', 0, 'ascii');
   b.writeUInt16LE(0, 4);          // version
@@ -170,7 +170,7 @@ function ivfHeader(w: number, h: number): Buffer {
 }
 
 /** 12-byte IVF frame header (size + monotonic timestamp). */
-function ivfFrameHeader(size: number, index: number): Buffer {
+export function ivfFrameHeader(size: number, index: number): Buffer {
   const b = Buffer.alloc(12);
   b.writeUInt32LE(size, 0);
   b.writeUInt32LE(index, 4); // 64-bit ts; low word is enough at our rate

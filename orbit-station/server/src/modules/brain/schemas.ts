@@ -187,7 +187,48 @@ export const forgetFaceSchema = {
   required: ['name'],
 } as const;
 
+export const takePhotoSchema = {
+  type: 'object',
+  properties: {
+    caption: { type: 'string', description: 'an optional caption to show / post with the photo' },
+    slackChannel: { type: 'string', description: 'a Slack channel id (Cxxxx) or #name to send the photo to; omit to just show it on the dock (or use the default channel)' },
+  },
+} as const;
+
+export const recordVideoSchema = {
+  type: 'object',
+  properties: {
+    seconds: { type: 'number', description: 'how many seconds to record (1–30; default 5)' },
+    caption: { type: 'string', description: 'an optional caption to post with the clip' },
+    slackChannel: { type: 'string', description: 'a Slack channel id (Cxxxx) or #name to send the clip to (or use the default channel)' },
+  },
+} as const;
+
+export const sendToSlackSchema = {
+  type: 'object',
+  properties: {
+    text: { type: 'string', description: 'the message text (Slack mrkdwn: *bold*, _italic_, `code`, <url|label>)' },
+    channel: { type: 'string', description: 'a Slack channel id (Cxxxx) or #name; omit to use the default channel' },
+  },
+  required: ['text'],
+} as const;
+
 // Descriptions live next to the schemas so the model-facing surface is one place.
+export const TAKE_PHOTO_DESC =
+  'Take a photo with your camera RIGHT NOW (a still of what you currently see). ' +
+  'Use when the user asks you to take/snap a picture or photo, or to capture / show what you see. ' +
+  'With a Slack channel (or a configured default) it posts the photo there; otherwise it shows it on the dock. ' +
+  'This is immediate — it returns the moment the photo is captured.';
+export const RECORD_VIDEO_DESC =
+  'Record a SHORT video clip from your camera for a few seconds (1–30s, default 5). ' +
+  'Use when the user asks you to record / take a video or capture a clip of what you see. ' +
+  "This KICKS OFF the recording and returns immediately — you don't wait for it. When the clip is ready " +
+  "it's sent automatically (to Slack if a channel/default is set, else shown on the dock), so just confirm " +
+  "you've started recording and that you'll share it when it's done.";
+export const SEND_TO_SLACK_DESC =
+  'Send a message to Slack. Use when the user asks you to post / send / message something to Slack. ' +
+  'Supports Slack formatting (mrkdwn): *bold*, _italic_, `code`, <https://url|link text>, and emoji. ' +
+  'Give the channel id or #name, or omit it to use the configured default channel.';
 export const SET_FACE_DESC =
   "Set the dock's facial expression to match the mood of what you're saying. " +
   'The body also acts out the mood automatically — a sleepy face droops the head, excited does a happy ' +

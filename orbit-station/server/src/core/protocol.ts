@@ -44,7 +44,8 @@ export type Topic =
   | 'client'       // dock → station client facts (battery, on-device vad/face)
   | 'agent'        // the dock brain: transcripts/turns up, tool-calls/speak down
   | 'tasks'        // background-task processes: attach/status/notify/ask/finish up, init/input/stop down
-  | 'perception';  // processor results (identity/presence/…) → dock agent + console
+  | 'perception'   // processor results (identity/presence/…) → dock agent + console
+  | 'slack';       // inbound Slack (Socket Mode) events: message/mention/dm (ingest only for now)
 
 // ── peer → station ─────────────────────────────────────────────────────────
 
