@@ -38,6 +38,16 @@ interface PeerEvt {
 export function docksModule(directory: Directory, getHub: () => Hub): StationModule {
   let bus: Bus;
 
+  /** Drop persisted test/web/sim cruft, announcing each removal to consoles.
+   *  Ephemeral peers are never persisted going forward (Directory.noteSeen), so
+   *  this just clears anything older builds left behind + any test dock whose
+   *  real trace is gone. */
+  function pruneEphemeral(): void {
+    for (const name of directory.pruneEphemeral()) {
+      bus.publish({ topic: 'station', kind: 'dock-removed', payload: { name }, source: 'station' });
+    }
+  }
+
   /** Publish the composed view: console broadcast + directed sibling presence. */
   function announce(dock: string): void {
     const info = directory.dockInfo(dock);
@@ -74,7 +84,15 @@ export function docksModule(directory: Directory, getHub: () => Hub): StationMod
             const live = getHub().roster().find((r) => r.id === p.id && r.dock === p.dock);
             if (live) directory.noteSeen(live);
           }
-          announce(p.dock);
+          // An EPHEMERAL dock (test/web/sim — never persisted) that just lost its
+          // last live peer no longer exists in the directory: tell consoles to drop
+          // the card instead of leaving a ghost. Real (persisted) docks still
+          // announce, so they render offline.
+          if (!directory.dockExists(p.dock)) {
+            bus.publish({ topic: 'station', kind: 'dock-removed', payload: { name: p.dock }, source: 'station' });
+          } else {
+            announce(p.dock);
+          }
         }
       });
 
@@ -84,6 +102,9 @@ export function docksModule(directory: Directory, getHub: () => Hub): StationMod
         }
       }, PRESENCE_RESEND_MS);
       timer.unref?.();
+
+      // one-time on boot: clear test/web/sim docks older builds persisted.
+      pruneEphemeral();
     },
 
     async route(ctx: RouteContext) {

@@ -5,6 +5,7 @@ import { ErrorBoundary } from './components/ErrorBoundary';
 import { Overview } from './modules/Overview';
 import { Observability } from './modules/Observability';
 import { Brain } from './modules/Brain';
+import { Tasks } from './modules/Tasks';
 import { Skills } from './modules/Skills';
 import { Config } from './modules/Config';
 import { BodyLink } from './modules/BodyLink';
@@ -19,6 +20,7 @@ const VIEWS: ViewDef[] = [
   { id: 'overview', label: 'Overview', ico: '◎', el: <Overview /> },
   { id: 'observability', label: 'Observability', ico: '📡', el: <Observability /> },
   { id: 'brain', label: 'Brain', ico: '🗣', el: <Brain /> },
+  { id: 'tasks', label: 'Tasks', ico: '⏱', el: <Tasks /> },
   { id: 'skills', label: 'Skills', ico: '🧩', el: <Skills /> },
   { id: 'config', label: 'Config', ico: '⚙', el: <Config /> },
   { id: 'bodylink', label: 'Body', ico: '🦾', el: <BodyLink /> },

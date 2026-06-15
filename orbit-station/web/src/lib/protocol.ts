@@ -61,3 +61,20 @@ export interface DockInfo {
   manifest: string[];
   components: DockComponent[];
 }
+
+// background tasks (docs/TASKS_V1.md) — a running instance of a task definition.
+// Mirror of server/.../tasks/supervisor.ts InstanceInfo.
+export type TaskState = 'running' | 'stuck' | 'done' | 'errored' | 'stopped';
+export interface TaskInstance {
+  instanceId: string;
+  dock: string;
+  name: string;                 // definition name
+  params: Record<string, unknown>;
+  parentSessionId: string;
+  state: TaskState;
+  startedAt: number;            // epoch ms first started (survives respawns)
+  runCount: number;
+  spawnedAt: number;            // epoch ms of the current process's spawn
+  lastSignal?: string;
+  filePath: string;
+}

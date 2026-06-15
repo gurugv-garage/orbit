@@ -23,6 +23,7 @@
 import type { Bus } from '../../core/bus.js';
 import { json } from '../../core/http.js';
 import type { Hub } from '../../core/hub.js';
+import { readFileSync } from 'node:fs';
 import type { RouteContext, StationModule } from '../../core/module.js';
 import type { Directory } from '../docks/directory.js';
 import type { MotionExecutor } from '../bodylink/motion.js';
@@ -428,6 +429,18 @@ export function brainModule(w: BrainWiring): StationModule {
         const id = decodeURIComponent(m[2]!);
         if (!inDock(m[1]!, id)) { json(res, 404, { error: 'no such instance' }); return true; }
         json(res, 200, m[3] === 'status' ? { status: supervisor.status(id) } : { log: supervisor.logTail(id) });
+        return true;
+      }
+      // the task's OWN source (read-only) — so the console can inspect how a
+      // running instance actually works. Path comes from the supervisor's record
+      // of THIS instance (never the request), so it can't read arbitrary files.
+      m = subPath.match(/^\/([^/]+)\/instances\/([^/]+)\/source$/);
+      if (m && req.method === 'GET') {
+        const id = decodeURIComponent(m[2]!);
+        const info = inDock(m[1]!, id);
+        if (!info) { json(res, 404, { error: 'no such instance' }); return true; }
+        try { json(res, 200, { filePath: info.filePath, source: readFileSync(info.filePath, 'utf8') }); }
+        catch (err) { json(res, 404, { error: String(err) }); }
         return true;
       }
       m = subPath.match(/^\/([^/]+)\/instances\/([^/]+)\/(pause|resume|stop|restart)$/);
