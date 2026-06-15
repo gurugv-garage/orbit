@@ -6,14 +6,14 @@
  * a Socket Mode connection (when `SLACK_APP_TOKEN` is set) and receives messages
  * from every channel the bot can read.
  *
- * SCOPE (v1 — ingest only; RESPONDING IS PARKED until sending is stable):
+ * SCOPE (v1 — the REAL respond-in-session logic is still parked):
  *   - It keeps a rolling feed + publishes every classified event on the `slack`
  *     bus topic, so the console/mind can see Slack is flowing.
  *   - Plain CHANNEL messages are recorded but otherwise IGNORED (we don't act,
  *     don't even wake the brain) — matches "hears any channel, processes none yet".
- *   - @MENTIONS and DMs are flagged (`forSession: true`) as the things we WILL
- *     route into the dock's live session later. For now we only mark + log them;
- *     the actual respond mechanics come in a follow-up once outbound is stable.
+ *   - @MENTIONS and DMs get an immediate CANNED reply ("feature coming soon"),
+ *     so the inbound→outbound loop is closed end to end. Routing them into the
+ *     dock's live conversational session (a real answer) comes in a follow-up.
  *
  *   GET /api/slack/status   token presence + socket state + counts
  *   GET /api/slack/feed     the rolling recent-events feed (newest first)
@@ -25,10 +25,14 @@
 import type { Bus } from '../../core/bus.js';
 import { json } from '../../core/http.js';
 import type { RouteContext, StationModule } from '../../core/module.js';
-import { slackEnabled, whoAmI } from '../../integrations/slack.js';
+import { slackEnabled, whoAmI, postMessage } from '../../integrations/slack.js';
 import { SlackSocket, slackAppToken, type SlackEvent } from '../../integrations/slack-socket.js';
 
 const FEED_MAX = 100;
+
+/** Placeholder reply sent when someone @mentions or DMs orbit, until the real
+ *  respond-in-session logic lands. */
+const CANNED_REPLY = 'Feature coming soon — will talk to you soon! 🛰️';
 
 interface FeedItem {
   ts: number;
@@ -62,14 +66,32 @@ export function slackModule(): StationModule {
       source: 'station',
     });
 
-    // RESPONDING IS PARKED. We only LOG intent here — no brain turn yet.
-    //  - channel message: ignored on purpose (the dock hears it, does nothing).
-    //  - mention / dm: this is where we'll route into the dock's live session
-    //    once outbound is stable. Left as a marker so the wiring point is obvious.
+    // RESPONDING: routing into the dock's live session is still PARKED. For now,
+    // a @mention or DM gets an immediate CANNED reply so the loop is closed end
+    // to end (someone pings orbit → orbit answers). Plain channel messages stay
+    // ignored. The real "respond in session" logic replaces this block later.
     if (forSession) {
-      console.log(`[slack] ${ev.kind} from ${ev.user} in ${ev.channel}: ${ev.text.slice(0, 120)} (respond: parked)`);
+      console.log(`[slack] ${ev.kind} from ${ev.user} in ${ev.channel}: ${ev.text.slice(0, 120)} → canned reply`);
+      void autoReply(ev);
     }
   };
+
+  /** Post the canned placeholder back where the message came from: into a DM
+   *  channel as-is; in a channel, @mention the person and reply in-thread if the
+   *  mention was threaded. Best-effort — a failure just logs. */
+  async function autoReply(ev: SlackEvent): Promise<void> {
+    try {
+      const text = ev.kind === 'dm' ? CANNED_REPLY : `<@${ev.user}> ${CANNED_REPLY}`;
+      await postMessage({
+        channel: ev.channel,
+        text,
+        // keep a channel reply in the same thread; in a DM there are no threads.
+        ...(ev.kind !== 'dm' ? { threadTs: ev.threadTs ?? ev.ts } : {}),
+      });
+    } catch (err) {
+      console.log(`[slack] auto-reply failed: ${String(err)}`);
+    }
+  }
 
   return {
     name: 'slack',
@@ -103,7 +125,7 @@ export function slackModule(): StationModule {
       });
       socketState = 'connecting';
       socket.start();
-      console.log('[slack] Socket Mode starting (inbound ingest; responding parked)');
+      console.log('[slack] Socket Mode starting (inbound; mentions/DMs get a canned reply)');
     },
 
     route(ctx: RouteContext) {
@@ -116,7 +138,7 @@ export function slackModule(): StationModule {
           connected: socket?.connected ?? false,
           botUserId: botUserId || null,
           counts,
-          note: 'inbound ingest only — channel msgs ignored; mentions/DMs flagged but responding is parked',
+          note: 'channel msgs ignored; mentions/DMs get a canned reply (real session routing parked)',
         });
         return true;
       }
