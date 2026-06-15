@@ -374,11 +374,23 @@ fun DockScreen() {
     // Retry a few times: the ADM can lag perceptionReady by a beat, and start()
     // is idempotent + bails (logs) if the factory isn't up yet. Tearing down on
     // dispose; the shared factory/ADM stay owned by WebRtcAudio.
+    // Remember whether we'd already brought the stream up under a PRIOR station
+    // session. A station restart flips stationConnected false→true: the SFU we
+    // offered to is gone (producers:[]), so isStreaming()==true is STALE — we must
+    // re-offer, not bail. First connect: plain start(). Reconnect after we'd already
+    // streamed: restart() (tear down the dead PC + send a fresh producer-offer).
+    val hadStreamed = remember { mutableStateOf(false) }
     LaunchedEffect(stationConnected, perceptionReady) {
         if (stationConnected && perceptionReady) {
+            if (hadStreamed.value && mediaStreamer.isStreaming()) {
+                // reconnect to a fresh station/SFU — our previous offer is dead.
+                mediaStreamer.restart()
+                return@LaunchedEffect
+            }
             repeat(10) {
-                if (mediaStreamer.isStreaming()) return@LaunchedEffect
+                if (mediaStreamer.isStreaming()) { hadStreamed.value = true; return@LaunchedEffect }
                 mediaStreamer.start()
+                if (mediaStreamer.isStreaming()) hadStreamed.value = true
                 kotlinx.coroutines.delay(500)
             }
         }

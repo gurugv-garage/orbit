@@ -64,10 +64,13 @@ class MediaStreamer(
     /** True once the PeerConnection + tracks are up. */
     fun isStreaming(): Boolean = started
 
-    /** Tear down + rebuild the PeerConnection (after an ICE failure). */
+    /** Tear down + rebuild the PeerConnection, then re-offer. Used both internally
+     *  (ICE failure) and externally (the STATION reconnected, so the SFU restarted
+     *  and dropped our producer — our old offer is dead and must be re-sent, even
+     *  though `started` is still true from the previous session). */
     @Synchronized
-    private fun restart() {
-        Timber.i("MediaStreamer: restarting after ICE drop")
+    fun restart() {
+        Timber.i("MediaStreamer: restart() — tearing down + re-offering")
         stop()
         start()
     }
