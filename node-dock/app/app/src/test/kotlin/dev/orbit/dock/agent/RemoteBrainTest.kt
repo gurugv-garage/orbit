@@ -183,6 +183,22 @@ class RemoteBrainTest {
     }
 
     @Test
+    fun `a turn left in ToolCalling settles to Idle on done (status pill not stuck)`() {
+        // the stop_task bug: a turn ended while showing ToolCalling and the pill
+        // stayed stuck on the tool name (done only reset when the turn hadn't
+        // spoken). Now done reconciles any transient working state to Idle.
+        val r = Rig()
+        r.brain.respond("stop the task")
+        await { r.link.sent("turn-request").size == 1 }
+        val id = r.turnId()
+        r.frame("turn-status", "turnId" to id, "state" to "acting", "detail" to "stop_task")
+        assertThat(r.brain.state.value).isInstanceOf(AgentState.ToolCalling::class.java)
+        // turn ends while still showing the tool → must settle to Idle
+        r.frame("turn-status", "turnId" to id, "state" to "done")
+        assertThat(r.brain.state.value).isEqualTo(AgentState.Idle)
+    }
+
+    @Test
     fun `failed timeout speaks the canned timeout line`() {
         val r = Rig()
         r.brain.respond("hmm")

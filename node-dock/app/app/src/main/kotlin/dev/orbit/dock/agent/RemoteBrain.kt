@@ -123,13 +123,39 @@ class RemoteBrain(
 
     init {
         // A dropped link mid-turn = the turn is dead and no turn-status will
-        // ever say so — fail it locally, visibly.
+        // ever say so — fail it locally, visibly. On RECONNECT, reconcile the
+        // status so a pill left mid-turn (ToolCalling/Thinking/Waiting) doesn't
+        // stay stuck.
         scope.launch {
             link.connected.collect { up ->
                 if (!up && turnActive) {
                     failLocally("station link lost", "I lost the link to my brain mid-thought — ask me again?")
+                } else if (up) {
+                    reconcileIdleState()
                 }
             }
+        }
+        // FOOLPROOF self-heal: the status pill must never show a "working" state
+        // (Waiting/Thinking/ToolCalling) when no turn is actually active. Any missed
+        // terminal frame (dropped packet, reconnect, an autonomous turn that didn't
+        // close cleanly) would otherwise wedge the pill. This sweep forces Idle a
+        // short grace period after the turn goes inactive.
+        scope.launch {
+            while (true) {
+                delay(STATE_HEAL_MS)
+                if (!turnActive) reconcileIdleState()
+            }
+        }
+    }
+
+    /** If no turn is active but the pill still shows a transient working state,
+     *  return it to Idle. The invariant: working states require turnActive. Safe to
+     *  call any time; leaves Idle/Speaking/Failed untouched. */
+    private fun reconcileIdleState() {
+        if (turnActive) return
+        val st = _state.value
+        if (st is AgentState.Waiting || st is AgentState.Thinking || st is AgentState.ToolCalling) {
+            _state.value = AgentState.Idle
         }
     }
 
@@ -427,7 +453,12 @@ class RemoteBrain(
             "acting" -> setToolCalling(actingLabel(p.str("detail")))
             "done" -> {
                 endTurnLocally()
-                if (!spokeThisTurn && _state.value !is AgentState.Failed) _state.value = AgentState.Idle
+                // Clear any transient working state (Waiting/Thinking/ToolCalling)
+                // back to Idle — previously this only reset when the turn did NOT
+                // speak, so a tool-then-speak turn (e.g. stop_task → "I've stopped
+                // the task") left the pill stuck on the tool name. Speaking clears
+                // on speech-end; Failed is left alone.
+                reconcileIdleState()
             }
             "failed" -> {
                 val code = p.str("code")
@@ -508,6 +539,9 @@ class RemoteBrain(
         /** Local silence ceiling — longer than the station's own 60s turn
          *  timeout, so it only fires when the station truly vanished. */
         const val TURN_WATCHDOG_MS = 75_000L
+        /** How often the status self-heals to Idle when no turn is active — short
+         *  enough that a wedged pill clears in ~a second, not noticeable otherwise. */
+        const val STATE_HEAL_MS = 1_000L
         fun newUtteranceId() = "u-" + java.util.UUID.randomUUID().toString().take(8)
     }
 }
