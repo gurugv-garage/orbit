@@ -270,6 +270,7 @@ export class Sfu {
     };
     pli(); // ask immediately so the first usable keyframe comes fast
     p.pli = setInterval(pli, KEYFRAME_REQUEST_MS);
+    p.pli.unref?.(); // never block process exit on a keyframe poll
   }
 
   #closeProducer(streamId: string): void {

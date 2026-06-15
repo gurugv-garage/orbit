@@ -137,6 +137,18 @@ export class Hub {
     });
   }
 
+  /** Graceful shutdown: stop the ping timer, terminate every peer socket, and
+   *  close the WS server — so the process can exit on SIGINT/SIGTERM instead of
+   *  hanging on open connections (the "Process didn't exit in 5s" loop). */
+  close(): void {
+    clearInterval(this.#pingTimer);
+    for (const peer of this.#peers.values()) {
+      try { peer.ws.terminate(); } catch { /* already gone */ }
+    }
+    this.#peers.clear();
+    try { this.#wss.close(); } catch { /* already closing */ }
+  }
+
   /** Snapshot of connected peers (that have said hello) for the console / API. */
   roster(): RosterEntry[] {
     return [...this.#peers.values()].filter((p) => p.announced).map((p) => ({

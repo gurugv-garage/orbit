@@ -113,6 +113,23 @@ async function main() {
     console.log(`  modules: ${modules.map((m) => m.name).join(', ')}`);
     if (!secure) console.log(`  (http — run \`npm run certs\` for https)\n`);
   });
+
+  // GRACEFUL SHUTDOWN: on Ctrl-C / SIGTERM (and `tsx watch` reloads) close the WS
+  // hub + HTTP server so the process actually EXITS, instead of hanging on open
+  // sockets (the "Process didn't exit in 5s. Force killing…" loop). A hard-exit
+  // fallback guards against any straggling handle.
+  let shuttingDown = false;
+  const shutdown = (sig: string) => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    console.log(`\n  ${sig} — shutting down…`);
+    const hardExit = setTimeout(() => process.exit(0), 2_000);
+    hardExit.unref();
+    try { hub.close(); } catch { /* */ }
+    server.close(() => { clearTimeout(hardExit); process.exit(0); });
+  };
+  process.once('SIGINT', () => shutdown('SIGINT'));
+  process.once('SIGTERM', () => shutdown('SIGTERM'));
 }
 
 /** First non-internal IPv4 — what phones/ESP32 on the LAN dial into. */
