@@ -46,7 +46,9 @@ export function buildCapabilityRegistry(d: CapabilityDeps): CapabilityRegistry {
 
   reg.register({
     op: 'frame', requires: 'camera',
-    describe: 'await this.frame() → the dock\'s latest camera JPEG (base64), or undefined if none',
+    describe: 'await this.frame() → the dock\'s latest camera JPEG (base64). undefined means the camera '
+      + 'stream is momentarily DOWN (NOT that the dock lacks a camera — this op only exists because it '
+      + 'has one); just keep retrying, the stream usually comes back',
     when: 'when you need the pixels of what the camera sees right now (then reason about them yourself — run your own pi Agent for vision, the model key is in the environment)',
     handler: (ctx) => currentFrame(d, ctx.dock),
   });
