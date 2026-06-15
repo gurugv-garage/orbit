@@ -13,6 +13,7 @@ import { readFileSync } from 'node:fs';
 import { Bus } from './core/bus.js';
 import { Hub } from './core/hub.js';
 import { createServer } from './core/http.js';
+import { startWebWatch, stopWebWatch } from './core/web-watch.js';
 import type { StationModule } from './core/module.js';
 import { observabilityModule } from './modules/observability/index.js';
 import { configModule } from './modules/config/index.js';
@@ -112,6 +113,9 @@ async function main() {
     }
     console.log(`  modules: ${modules.map((m) => m.name).join(', ')}`);
     if (!secure) console.log(`  (http — run \`npm run certs\` for https)\n`);
+    // Dev: own the web build watcher as a child (the `dev` script sets the flag),
+    // so there's no `concurrently` sibling to orphan. Production `start` never sets it.
+    if (process.env.STATION_WEB_WATCH === '1') startWebWatch();
   });
 
   // GRACEFUL SHUTDOWN: on Ctrl-C / SIGTERM (and `tsx watch` reloads) close the WS
@@ -125,16 +129,17 @@ async function main() {
     console.log(`\n  ${sig} — shutting down…`);
     const hardExit = setTimeout(() => process.exit(0), 2_000);
     hardExit.unref();
+    try { stopWebWatch(); } catch { /* */ }
     try { hub.close(); } catch { /* */ }
     server.close(() => { clearTimeout(hardExit); process.exit(0); });
   };
   process.once('SIGINT', () => shutdown('SIGINT'));
   process.once('SIGTERM', () => shutdown('SIGTERM'));
   process.once('SIGHUP', () => shutdown('SIGHUP'));
-  // BACKSTOP for the deep dev tree (concurrently → npm → tsx watch → us): if a
-  // kill signal never propagates all the way down, the parent's stdin pipe
-  // still closes when the parent dies — exit on that so we never orphan and
-  // hold the port. (Skipped under a real TTY / production `start`.)
+  // BACKSTOP for the dev tree (tsx watch → us): if a kill signal never propagates
+  // down, the parent's stdin pipe still closes when the parent dies — exit on that
+  // so we never orphan and hold the port. (Skipped under a real TTY / production
+  // `start`.) The web watcher is our own child now, so it dies with us via stopWebWatch.
   if (!process.stdin.isTTY) {
     const onParentGone = () => shutdown('parent-exit');
     process.stdin.on('end', onParentGone);

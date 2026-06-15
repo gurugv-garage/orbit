@@ -8,7 +8,7 @@
   "workspaces": ["server", "web"],
   "scripts": {
     "predev": "node scripts/free-port.mjs",
-    "dev": "concurrently -k --kill-signal SIGTERM -n web,server -c magenta,cyan \"npm -w web run watch\" \"npm -w server run dev\"",
+    "dev": "STATION_WEB_WATCH=1 npm -w server run dev",
     "dev:split": "concurrently -k --kill-signal SIGTERM -n server,web -c cyan,magenta \"npm:dev:server\" \"npm:dev:web\"",
     "dev:server": "npm -w server run dev",
     "dev:web": "npm -w web run dev",
