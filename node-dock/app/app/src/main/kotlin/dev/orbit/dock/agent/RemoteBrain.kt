@@ -15,6 +15,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
@@ -79,6 +80,12 @@ class RemoteBrain(
     private val _pendingConfirm = MutableStateFlow<ConfirmRequest?>(null)
     val pendingConfirm: StateFlow<ConfirmRequest?> = _pendingConfirm.asStateFlow()
 
+    /** DEBUG surface: the open session id + currently-running background tasks,
+     *  pushed by the station (brain-status carries the session id, task-digest the
+     *  tasks). Shown on the left so the session id is easy to read/quote. */
+    private val _debugInfo = MutableStateFlow(DebugInfo())
+    val debugInfo: StateFlow<DebugInfo> = _debugInfo.asStateFlow()
+
     // ── turn epoch ────────────────────────────────────────────────────────
     // currentTurnId gates inbound frames; lastTurnId outlives the turn so the
     // post-turn TTS tail's speech-status still lands on the right turn
@@ -86,6 +93,10 @@ class RemoteBrain(
     @Volatile private var currentTurnId = ""
     @Volatile private var lastTurnId = ""
     @Volatile private var turnActive = false
+    // true only while a turn the USER started locally is in flight. A station turn
+    // (autonomous/task) must NOT be vetoed by a stale `turnActive` — only by a real
+    // local user turn — or its speak frames get dropped (see onTurnStatus adopt).
+    @Volatile private var localUserTurn = false
     @Volatile private var spokeThisTurn = false
     @Volatile private var turnStartMs = 0L
     // The reply so far, for the live subtitle (sentences arrive pre-split; the
@@ -204,8 +215,11 @@ class RemoteBrain(
         when (kind) {
             "brain-status" -> {
                 brainReady = payload.bool("ready")
-                trace("brain-status ready=$brainReady")
+                val sid = payload.str("sessionId")
+                if (sid.isNotEmpty()) _debugInfo.value = _debugInfo.value.copy(sessionId = sid)
+                trace("brain-status ready=$brainReady${if (sid.isNotEmpty()) " session=$sid" else ""}")
             }
+            "task-digest" -> onTaskDigest(payload)
             "tool-call" -> onToolCall(payload)
             "speak" -> onSpeak(payload)
             "turn-status" -> onTurnStatus(payload)
@@ -221,6 +235,7 @@ class RemoteBrain(
         currentTurnId = turnId
         lastTurnId = turnId
         turnActive = true
+        localUserTurn = true
         spokeThisTurn = false
         replyAcc = ""
         turnStartMs = System.currentTimeMillis()
@@ -264,11 +279,12 @@ class RemoteBrain(
         currentTurnId = turnId
         lastTurnId = turnId
         turnActive = true
+        localUserTurn = false
         spokeThisTurn = false
         replyAcc = ""
         turnStartMs = System.currentTimeMillis()
         tools.beginTurn()
-        trace("ADOPT autonomous turn ${turnId.take(8)}")
+        trace("🔔 task update (turn ${turnId.take(8)})")
         _state.value = AgentState.Waiting(BRAIN_LABEL)
         watchdog?.cancel()
         watchdog = scope.launch {
@@ -295,6 +311,23 @@ class RemoteBrain(
         replyAcc = if (replyAcc.isEmpty()) text else "$replyAcc $text"
         tools.onLiveText(replyAcc)
         tools.speakSentence(text)
+    }
+
+    /** Station's running-tasks digest → the debug surface (left side) + an event
+     *  log line, so background task activity is visible on the device. */
+    private fun onTaskDigest(p: JsonObject) {
+        val sid = p.str("sessionId").ifEmpty { _debugInfo.value.sessionId }
+        val arr = (p["tasks"] as? JsonArray) ?: JsonArray(emptyList())
+        val tasks = arr.mapNotNull { it as? JsonObject }.map {
+            TaskInfo(
+                instanceId = it.str("instanceId"),
+                name = it.str("name"),
+                state = it.str("state"),
+                lastSignal = it.str("lastSignal"),
+            )
+        }
+        _debugInfo.value = DebugInfo(sessionId = sid, tasks = tasks)
+        trace("tasks: ${if (tasks.isEmpty()) "none" else tasks.joinToString { "${it.name}(${it.instanceId})=${it.state}" }}")
     }
 
     private fun onToolCall(p: JsonObject) {
@@ -368,7 +401,12 @@ class RemoteBrain(
         // dropped by the turnId gate below. Adopt only when no LOCAL user turn is
         // in flight — if one is, the station's supersede logic sorts it out.
         if (p.str("state") == "accepted" && p.bool("autonomous") && turnId.isNotEmpty()) {
-            if (turnActive) return
+            // Adopt UNLESS the user has a real turn of their own in flight (the
+            // station's supersede logic handles that case). A stale `turnActive`
+            // left by a turn that never got its terminal status (e.g. the model
+            // hung) must NOT veto an autonomous turn — otherwise its speak frames
+            // are dropped by the turnId gate and the reminder is never spoken.
+            if (localUserTurn && turnActive) return
             adoptAutonomousTurn(turnId)
             return
         }
@@ -412,6 +450,7 @@ class RemoteBrain(
     private fun endTurnLocally() {
         if (!turnActive && currentTurnId.isEmpty()) return
         turnActive = false
+        localUserTurn = false
         currentTurnId = ""
         watchdog?.cancel()
         watchdog = null
@@ -477,6 +516,20 @@ data class ConfirmRequest(
     val turnId: String,
     val summary: String,
     val detail: String,
+)
+
+/** A running background task, as the station reports it in a task-digest. */
+data class TaskInfo(
+    val instanceId: String,
+    val name: String,
+    val state: String,
+    val lastSignal: String = "",
+)
+
+/** The device's debug surface: the open session id + currently-running tasks. */
+data class DebugInfo(
+    val sessionId: String = "",
+    val tasks: List<TaskInfo> = emptyList(),
 )
 
 /**

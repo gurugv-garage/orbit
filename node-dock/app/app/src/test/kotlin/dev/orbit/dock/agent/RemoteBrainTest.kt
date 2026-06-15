@@ -266,6 +266,23 @@ class RemoteBrainTest {
     }
 
     @Test
+    fun `a new autonomous turn is adopted even when a prior turn left turnActive stale`() {
+        val r = Rig()
+        // a first autonomous turn arrives but NEVER gets its terminal `done` (e.g.
+        // the model hung) — turnActive stays true, currentTurnId stuck on auto-A.
+        r.frame("turn-status", "turnId" to "auto-A", "state" to "accepted", "autonomous" to true)
+        r.frame("speak", "turnId" to "auto-A", "seq" to "0", "text" to "first reminder")
+        assertThat(r.speaker.spoken).containsExactly("first reminder")
+        // (no `done` for auto-A — turnActive remains true)
+
+        // a SECOND reminder fires. Previously this was refused (`if (turnActive) return`)
+        // and its speak dropped as stale. Now it must adopt + speak.
+        r.frame("turn-status", "turnId" to "auto-B", "state" to "accepted", "autonomous" to true)
+        r.frame("speak", "turnId" to "auto-B", "seq" to "0", "text" to "second reminder")
+        assertThat(r.speaker.spoken).containsExactly("first reminder", "second reminder")
+    }
+
+    @Test
     fun `a non-autonomous accepted for an unknown turn is still dropped`() {
         val r = Rig()
         // accepted WITHOUT autonomous:true for a turn we didn't start → ignored

@@ -21,7 +21,6 @@
 
 import { mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { randomUUID } from 'node:crypto';
 import type { AgentMessage } from '@earendil-works/pi-agent-core';
 
 export interface SessionMeta {
@@ -57,16 +56,29 @@ export class SessionStore {
 
   /** Open a fresh conversational session (caller ensures none is open). */
   open(dock: string): SessionMeta {
+    const idx = this.#index(dock);
     const meta: SessionMeta = {
-      sessionId: `sess-${randomUUID().slice(0, 8)}`,
+      sessionId: this.#newSessionId(idx),
       openedAt: Date.now(),
       lastTurnEndedAt: Date.now(),
       turns: 0,
     };
-    const idx = this.#index(dock);
     idx.push(meta);
     this.#writeIndex(dock, idx);
     return meta;
+  }
+
+  /** A short, easy-to-read session id: `s-` + 4 alphanumeric chars (no `sess-`
+   *  uuid). Short enough to remember/type for debugging; collision-checked against
+   *  this dock's existing sessions (36^4 ≈ 1.7M space — retries are vanishingly
+   *  rare). */
+  #newSessionId(existing: SessionMeta[]): string {
+    const taken = new Set(existing.map((s) => s.sessionId));
+    const ALPHABET = 'abcdefghijklmnopqrstuvwxyz0123456789';
+    const mint = () => `s-${Array.from({ length: 4 }, () => ALPHABET[(Math.random() * 36) | 0]).join('')}`;
+    let id = mint();
+    while (taken.has(id)) id = mint();
+    return id;
   }
 
   /** Load the transcript of a session ([] when none persisted). */

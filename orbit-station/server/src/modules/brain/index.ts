@@ -77,7 +77,11 @@ export function brainModule(w: BrainWiring): StationModule {
       trigger: { kind: 'task', text },
       ...(ev.image ? { imageBase64: ev.image } : {}),
       expiresAt: Date.now() + 120_000,
+      // coalesce back-to-back signals from the SAME instance (notify+finish) into
+      // one turn — keeps both messages, avoids the 2nd superseding the 1st's TTS.
+      coalesceKey: info.instanceId,
     });
+    pushTaskDigest(dock); // refresh the app's running-tasks view on every change
   };
 
   // push a directed frame DOWN to a task peer, addressed by (dock, component).
@@ -103,6 +107,21 @@ export function brainModule(w: BrainWiring): StationModule {
     directory: w.directory, motion: w.motion, getFaces: getFaceTools,
   });
   const capBroker = new CapabilityBroker(capabilities, sendToTask);
+
+  // Push a compact TASK DIGEST to a dock's phone (debug surface): the open
+  // sessionId + the running task instances. Sent on hello and whenever tasks
+  // change (onTaskSignal), so the app can show "what's running" + the session id.
+  const pushTaskDigest = (dock: string) => {
+    const sessionId = store.openSession(dock)?.sessionId ?? null;
+    const tasks = supervisor.list(dock)
+      .filter((i) => i.state === 'running' || i.state === 'stuck')
+      .map((i) => ({ instanceId: i.instanceId, name: i.name, state: i.state, lastSignal: i.lastSignal ?? null }));
+    bus.publish({
+      topic: 'agent', kind: 'task-digest',
+      payload: { sessionId, tasks },
+      source: 'station', toAddr: { dock, component: 'phone' },
+    });
+  };
 
   function session(dock: string): DockBrainSession {
     let s = sessions.get(dock);
@@ -158,9 +177,10 @@ export function brainModule(w: BrainWiring): StationModule {
             // topic AFTER subscribing, and this reply can't miss.
             bus.publish({
               topic: 'agent', kind: 'brain-status',
-              payload: { ready: true, activeTurnId: null },
+              payload: { ready: true, activeTurnId: null, sessionId: store.openSession(dock)?.sessionId ?? null },
               source: 'station', to: msg.source,
             });
+            pushTaskDigest(dock); // seed the app's running-tasks view on connect
             break;
           case 'transcript':
             if (p?.isFinal !== true) session(dock).preWarm();

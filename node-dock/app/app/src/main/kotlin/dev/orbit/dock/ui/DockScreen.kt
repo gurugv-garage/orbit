@@ -276,6 +276,7 @@ fun DockScreen() {
     val perceptionReady by dev.orbit.dock.perception.PerceptionReady.ready.collectAsState()
     val agentState by agent.state.collectAsState()
     val pendingConfirm by agent.pendingConfirm.collectAsState()
+    val debugInfo by agent.debugInfo.collectAsState()
     val wiring = remember(controller, agent) {
         PerceptionWiring(
             controller = controller,
@@ -515,6 +516,12 @@ fun DockScreen() {
                 dev.orbit.dock.ui.widgets.EventLog(
                     events = agent.events,
                     modifier = Modifier.align(Alignment.CenterStart),
+                )
+                // Top-left debug HUD: open session id (short, quotable) + the
+                // currently-running background tasks.
+                dev.orbit.dock.ui.widgets.TaskHud(
+                    info = debugInfo,
+                    modifier = Modifier.align(Alignment.TopStart),
                 )
                 Box(modifier = Modifier.fillMaxSize()) {
                     FaceRenderer(

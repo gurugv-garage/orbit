@@ -57,6 +57,11 @@ import { buildFileTools, FILE_TOOLS_PROMPT } from './filetools.js';
 import { buildDockTools, buildGrantTools, type ToolTurnContext } from './tools.js';
 import type { MoveStep } from './schemas.js';
 
+/** How long an autonomous (task) turn waits before running, so back-to-back
+ *  same-instance signals (notify+finish) coalesce into one turn. Tiny vs. the
+ *  settle gap + the model turn; imperceptible for delivery. */
+const COALESCE_WINDOW_MS = 60;
+
 export interface TurnRequest {
   turnId: string;
   trigger: { kind: string; text: string };
@@ -122,7 +127,8 @@ export class DockBrainSession {
   // same lane (docs/TASKS_V1.md §7a). User turns always win: the drain loop only
   // ever starts a task turn in a FREE lane, and a user turn supersedes a running
   // one via the normal handleTurnRequest path.
-  #autoQueue: (TurnRequest & { expiresAt?: number })[] = [];
+  #autoQueue: (TurnRequest & { expiresAt?: number; coalesceKey?: string })[] = [];
+  #autoDrainTimer: ReturnType<typeof setTimeout> | undefined;
   #draining = false;
 
   // ── per-turn state (reset in #runTurn) ────────────────────────────────────
@@ -240,10 +246,33 @@ export class DockBrainSession {
   /** Inject a station-originated (task) turn into this dock's lane. The turn only
    *  ever STARTS in a free lane and is superseded by any user turn exactly like a
    *  normal turn — users are never starved (docs/TASKS_V1.md §7a). */
-  enqueueAutonomousTurn(req: TurnRequest & { expiresAt?: number }): void {
+  enqueueAutonomousTurn(req: TurnRequest & { expiresAt?: number; coalesceKey?: string }): void {
+    // COALESCE: a task often emits a notify then a finish ~0ms apart (the reminder,
+    // then "reminded"). Two back-to-back autonomous turns make the 2nd supersede the
+    // 1st before TTS plays, AND read as redundant. If a not-yet-run turn with the
+    // same coalesceKey (the instanceId) is still queued, MERGE the new text into it
+    // — keeping BOTH messages (finish may carry critical info) in one turn.
+    if (req.coalesceKey) {
+      const pending = this.#autoQueue.find((q) => q.coalesceKey === req.coalesceKey);
+      if (pending) {
+        const a = pending.trigger.text.trim();
+        const b = req.trigger.text.trim();
+        if (b && !a.includes(b)) pending.trigger.text = a ? `${a}\n${b}` : b;
+        if (req.imageBase64 && !pending.imageBase64) pending.imageBase64 = req.imageBase64;
+        if (req.expiresAt) pending.expiresAt = req.expiresAt;
+        return; // the deferred drain (scheduled when `pending` was enqueued) runs it
+      }
+    }
     if (this.#autoQueue.length >= 4) this.#autoQueue.shift(); // drop oldest, bounded
     this.#autoQueue.push(req);
-    void this.#drainAuto();
+    // Defer the drain a short COALESCING WINDOW so a notify immediately followed by
+    // a finish (same instance, ~ms apart) both land in the queue and merge above,
+    // rather than the notify starting before the finish arrives. Negligible delay
+    // for delivery; the gap is dwarfed by the settle gap + the model turn itself.
+    if (this.#autoDrainTimer == null) {
+      this.#autoDrainTimer = setTimeout(() => { this.#autoDrainTimer = undefined; void this.#drainAuto(); }, COALESCE_WINDOW_MS);
+      this.#autoDrainTimer.unref?.();
+    }
   }
 
   async #drainAuto(): Promise<void> {

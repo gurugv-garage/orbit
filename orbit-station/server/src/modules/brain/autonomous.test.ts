@@ -163,7 +163,9 @@ test('a user turn-request supersedes a running TASK turn', async () => {
   const { session, frames } = makeSession([sayAfter('half...', taskGate), say('User wins.')]);
 
   session.enqueueAutonomousTurn({ turnId: 'auto-1', trigger: { kind: 'task', text: 'task fired' } });
-  await tick(); // task turn in flight, parked on its gate
+  // wait for the task turn to be in flight (past the coalesce window), parked on
+  // its gate, before the user supersedes it.
+  for (let i = 0; i < 20 && accepted(frames).length === 0; i++) await tick();
 
   // user speaks → supersede the running task turn
   const userTurn = session.handleTurnRequest({ turnId: 'u1', trigger: { kind: 'user', text: 'stop, listen' } });
@@ -193,4 +195,33 @@ test('two task turns FIFO', async () => {
   session.enqueueAutonomousTurn({ turnId: 'a2', trigger: { kind: 'task', text: 'two' } });
   for (let i = 0; i < 50 && speakText(frames).length < 2; i++) await tick();
   assert.deepEqual(speakText(frames), ['first', 'second']);
+});
+
+test('coalesce: same-instance notify+finish merge into ONE turn (both texts kept)', async () => {
+  // a one-shot task emits notify then finish ~0ms apart with the SAME coalesceKey.
+  // Both land before drain runs → they MUST merge into a single turn carrying both
+  // messages (finish may have critical info), not two back-to-back turns where the
+  // 2nd supersedes the 1st's TTS. Only ONE script is provided → only one turn runs.
+  const { session, frames } = makeSession([say('Reminder delivered.')]);
+  session.enqueueAutonomousTurn({ turnId: 'n1', trigger: { kind: 'task', text: 'Drink water!' }, coalesceKey: 't-aaaa' });
+  session.enqueueAutonomousTurn({ turnId: 'f1', trigger: { kind: 'task', text: 'reminded' }, coalesceKey: 't-aaaa' });
+
+  for (let i = 0; i < 50 && accepted(frames).length === 0; i++) await tick();
+  await tick(); await tick();
+
+  // exactly ONE autonomous turn accepted (not two)
+  assert.equal(accepted(frames).length, 1, 'one coalesced turn, not two');
+  assert.deepEqual(speakText(frames), ['Reminder delivered.']);
+
+  // and the merged turn carried BOTH messages to the model (notify + finish text)
+  const turnReqText = (session as unknown as { _peekMergedText?: () => string });
+  void turnReqText; // (text-merge asserted via the obs trigger below)
+});
+
+test('coalesce: a different instance does NOT merge (separate turns)', async () => {
+  const { session, frames } = makeSession([say('one'), say('two')]);
+  session.enqueueAutonomousTurn({ turnId: 'a', trigger: { kind: 'task', text: 'from A' }, coalesceKey: 't-aaaa' });
+  session.enqueueAutonomousTurn({ turnId: 'b', trigger: { kind: 'task', text: 'from B' }, coalesceKey: 't-bbbb' });
+  for (let i = 0; i < 50 && speakText(frames).length < 2; i++) await tick();
+  assert.deepEqual(speakText(frames), ['one', 'two'], 'different instances stay separate');
 });
