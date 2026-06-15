@@ -56,21 +56,26 @@ test('slackDefaultChannel reads the env (trimmed, optional)', () => {
 });
 
 test('postMessage posts to chat.postMessage with the channel + text', async () => {
-  stubFetch(() => ({ ok: true, channel: 'C123', ts: '1.2' }));
+  stubFetch((url) => {
+    if (url.includes('conversations.list')) return { ok: true, channels: [{ id: 'C123', name: 'general', is_member: true }] };
+    return { ok: true, channel: 'C123', ts: '1.2' };
+  });
   const r = await postMessage({ channel: '#general', text: 'hi *there*' });
-  assert.equal(calls.length, 1);
-  assert.match(calls[0]!.url, /chat\.postMessage$/);
-  const body = bodyOf(calls[0]!);
-  assert.equal(body.channel, '#general');
+  const post = calls.find((c) => c.url.includes('chat.postMessage'))!;
+  const body = bodyOf(post);
+  assert.equal(body.channel, 'C123', '#general resolved to its id');
   assert.equal(body.text, 'hi *there*');
   assert.deepEqual(r, { channel: 'C123', ts: '1.2' });
 });
 
 test('postMessage falls back to the default channel', async () => {
-  process.env.SLACK_DEFAULT_CHANNEL = 'C999';
-  stubFetch(() => ({ ok: true, channel: 'C999', ts: '1' }));
+  process.env.SLACK_DEFAULT_CHANNEL = 'C0DEF9999'; // a default id, verified usable
+  stubFetch((url) => {
+    if (url.includes('conversations.info')) return { ok: true, channel: { id: 'C0DEF9999', is_member: true } };
+    return { ok: true, channel: 'C0DEF9999', ts: '1' };
+  });
   await postMessage({ text: 'hello' });
-  assert.equal(bodyOf(calls[0]!).channel, 'C999');
+  assert.equal(bodyOf(calls.find((c) => c.url.includes('chat.postMessage'))!).channel, 'C0DEF9999');
 });
 
 test('postMessage with no channel and no default throws', async () => {
@@ -83,8 +88,9 @@ test('postMessage throws on Slack ok:false', async () => {
   await assert.rejects(() => postMessage({ channel: '#x', text: 'y' }), /channel_not_found/);
 });
 
-test('uploadFile runs the 3-step external upload flow (channel id passes through)', async () => {
+test('uploadFile runs the 3-step external upload flow (a usable channel id is used as-is)', async () => {
   stubFetch((url) => {
+    if (url.includes('conversations.info')) return { ok: true, channel: { id: 'C0AB12CD3', is_member: true } };
     if (url.includes('files.getUploadURLExternal')) {
       return { ok: true, upload_url: 'https://files.slack/upload/abc', file_id: 'F1' };
     }
@@ -94,20 +100,34 @@ test('uploadFile runs the 3-step external upload flow (channel id passes through
   });
   const r = await uploadFile({ channel: 'C0AB12CD3', bytes: Buffer.from('jpegbytes'), filename: 'p.jpg', title: 'cap' });
   assert.deepEqual(r, { fileId: 'F1' });
-  // 1) reserve URL (with filename + length), 2) PUT bytes, 3) complete.
-  assert.match(calls[0]!.url, /files\.getUploadURLExternal\?filename=p\.jpg&length=9$/);
-  assert.equal(calls[1]!.url, 'https://files.slack/upload/abc');
-  assert.match(calls[2]!.url, /files\.completeUploadExternal$/);
-  const complete = bodyOf(calls[2]!);
-  assert.equal(complete.channel_id, 'C0AB12CD3', 'an id is used as-is (no lookup)');
+  const reserve = calls.find((c) => c.url.includes('files.getUploadURLExternal'))!;
+  assert.match(reserve.url, /\?filename=p\.jpg&length=9$/);
+  const complete = bodyOf(calls.find((c) => c.url.includes('files.completeUploadExternal'))!);
+  assert.equal(complete.channel_id, 'C0AB12CD3', 'a verified id is used as-is');
   assert.deepEqual(complete.files, [{ id: 'F1', title: 'cap' }]);
-  assert.ok(!calls.some((c) => c.url.includes('conversations.list')), 'no name lookup for an id');
+  assert.ok(!calls.some((c) => c.url.includes('conversations.list')), 'no name lookup for a usable id');
+});
+
+test('uploadFile HEALS a stale channel id to the default channel', async () => {
+  process.env.SLACK_DEFAULT_CHANNEL = '#orbit';
+  stubFetch((url) => {
+    // the passed id is dead → conversations.info fails …
+    if (url.includes('conversations.info')) return { ok: false, error: 'channel_not_found' };
+    // … so we fall back to the default #orbit, which resolves to the live id.
+    if (url.includes('conversations.list')) return { ok: true, channels: [{ id: 'C0LIVE99', name: 'orbit', is_member: true }] };
+    if (url.includes('files.getUploadURLExternal')) return { ok: true, upload_url: 'https://files.slack/upload/h', file_id: 'F9' };
+    if (url.includes('files.completeUploadExternal')) return { ok: true };
+    return { ok: true };
+  });
+  await uploadFile({ channel: 'C0DEADBEEF', bytes: Buffer.from('x'), filename: 'p.jpg' });
+  assert.equal(bodyOf(calls.find((c) => c.url.includes('files.completeUploadExternal'))!).channel_id, 'C0LIVE99',
+    'stale id healed to the live default channel');
 });
 
 test('uploadFile resolves a #name to a channel id (completeUploadExternal needs the id)', async () => {
   stubFetch((url) => {
     if (url.includes('conversations.list')) {
-      return { ok: true, channels: [{ id: 'C0ORBIT01', name: 'orbit' }] };
+      return { ok: true, channels: [{ id: 'C0ORBIT01', name: 'orbit', is_member: true }] };
     }
     if (url.includes('files.getUploadURLExternal')) {
       return { ok: true, upload_url: 'https://files.slack/upload/xyz', file_id: 'F2' };
@@ -117,6 +137,26 @@ test('uploadFile resolves a #name to a channel id (completeUploadExternal needs 
   });
   await uploadFile({ channel: '#orbit', bytes: Buffer.from('x'), filename: 'p.jpg' });
   assert.equal(bodyOf(calls.at(-1)!).channel_id, 'C0ORBIT01', '#orbit resolved to its id');
+});
+
+test('resolveChannelId prefers the channel the bot is a MEMBER of among same-named duplicates', async () => {
+  // Mirrors the real bug: an old #orbit (left/stale) + the current one the bot
+  // joined. The file API only accepts the one the bot is in.
+  stubFetch((url) => {
+    if (url.includes('conversations.list')) {
+      return { ok: true, channels: [
+        { id: 'C_STALE', name: 'orbit', is_member: false, is_archived: false },
+        { id: 'C_REAL', name: 'orbit', is_member: true, is_archived: false },
+      ] };
+    }
+    if (url.includes('files.getUploadURLExternal')) {
+      return { ok: true, upload_url: 'https://files.slack/upload/m', file_id: 'F3' };
+    }
+    if (url.includes('files.completeUploadExternal')) return { ok: true };
+    return { ok: true };
+  });
+  await uploadFile({ channel: '#orbit', bytes: Buffer.from('x'), filename: 'p.jpg' });
+  assert.equal(bodyOf(calls.at(-1)!).channel_id, 'C_REAL', 'picked the member channel, not the stale one');
 });
 
 // ── people: resolve / DM / members ───────────────────────────────────────────

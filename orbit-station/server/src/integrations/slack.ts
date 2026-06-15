@@ -80,31 +80,72 @@ async function call(method: string, body: Record<string, unknown>): Promise<Reco
 
 const channelIdCache = new Map<string, string>();
 
+interface ListedChannel { id?: string; name?: string; is_member?: boolean; is_archived?: boolean }
+
 /**
  * Resolve a `#name` (or bare `name`) to a channel ID, since some APIs
- * (files.completeUploadExternal) require the ID, not the name. A value that's
- * already an ID (`C…`/`G…`/`D…`) passes through. Cached per process.
+ * (files.completeUploadExternal) require the ID, not the name. A value already
+ * an ID (`C…`/`G…`/`D…`) is VERIFIED (see below) rather than blindly trusted.
+ *
+ * IMPORTANT: a workspace can have MULTIPLE channels with the same name (an old
+ * one archived/left, a new one re-created) — picking the wrong one gives the
+ * file API `channel_not_found`. So among same-named matches we PREFER the
+ * channel the bot is actually a MEMBER of (and not archived).
+ *
+ * We also VERIFY a passed-in ID: the model sometimes reuses a STALE channel id
+ * it saw earlier (a dead duplicate), which uploads reject. If an id isn't a live
+ * channel the bot can reach, we fall back to the configured default channel.
+ * Cached per process once resolved.
  */
 async function resolveChannelId(channel: string): Promise<string> {
-  if (/^[CGD][A-Z0-9]{6,}$/.test(channel)) return channel; // already an id
-  const name = channel.replace(/^#/, '');
+  if (/^[CGD][A-Z0-9]{6,}$/.test(channel)) {
+    // A DM channel (Dxxxx) is always taken as-is (not listable). For a C/G id,
+    // confirm it's a live channel the bot can use; else fall back to the default.
+    if (channel.startsWith('D')) return channel;
+    if (await channelIsUsable(channel)) return channel;
+    const fallback = slackDefaultChannel();
+    if (fallback && fallback.replace(/^#/, '') && !/^[CGD][A-Z0-9]{6,}$/.test(fallback)) {
+      return resolveChannelByName(fallback.replace(/^#/, ''), channel);
+    }
+    return channel; // no usable fallback — let the caller surface the error
+  }
+  return resolveChannelByName(channel.replace(/^#/, ''), channel);
+}
+
+/** Is this channel id one the bot can post/upload to (exists, not archived, member)? */
+async function channelIsUsable(id: string): Promise<boolean> {
+  try {
+    const d = await call('conversations.info', { channel: id });
+    const c = d.channel as ListedChannel | undefined;
+    return !!c && !c.is_archived && c.is_member !== false;
+  } catch { return false; }
+}
+
+/** Resolve a bare channel name → id, preferring the channel the bot is in. */
+async function resolveChannelByName(name: string, original: string): Promise<string> {
   const cached = channelIdCache.get(name);
   if (cached) return cached;
-  // page through the channels the bot can see until we find the name.
+
+  const matches: ListedChannel[] = [];
   let cursor: string | undefined;
   do {
     const d = await call('conversations.list', {
       limit: 1000, exclude_archived: true,
       types: 'public_channel,private_channel', ...(cursor ? { cursor } : {}),
     });
-    for (const c of (d.channels as Array<{ id?: string; name?: string }> | undefined) ?? []) {
-      if (c.name && c.id) channelIdCache.set(c.name, c.id);
+    for (const c of (d.channels as ListedChannel[] | undefined) ?? []) {
+      if (c.name === name && c.id) matches.push(c);
     }
     cursor = (d.response_metadata as { next_cursor?: string } | undefined)?.next_cursor || undefined;
-  } while (cursor && !channelIdCache.has(name));
-  const id = channelIdCache.get(name);
-  if (!id) throw new Error(`slack channel "${channel}" not found (is the bot in it?)`);
-  return id;
+  } while (cursor);
+
+  // Prefer a channel the bot is a member of; else any non-archived; else any.
+  const pick = matches.find((c) => c.is_member && !c.is_archived)
+    ?? matches.find((c) => !c.is_archived)
+    ?? matches[0];
+  if (!pick?.id) throw new Error(`slack channel "${original}" not found (is the bot in it?)`);
+  channelIdCache.set(name, pick.id);
+  return pick.id;
 }
 
 /** Who the bot is, per auth.test (used to drop the bot's own inbound messages,
@@ -125,9 +166,11 @@ export interface PostMessageOpts {
   threadTs?: string;
 }
 
-/** Post a (possibly rich) message. Returns the channel + ts of the message. */
+/** Post a (possibly rich) message. Returns the channel + ts of the message.
+ *  The channel is resolved/verified (a stale id heals to the default channel),
+ *  so the same robustness as uploads applies to plain messages. */
 export async function postMessage(opts: PostMessageOpts): Promise<{ channel: string; ts: string }> {
-  const channel = resolveChannel(opts.channel);
+  const channel = await resolveChannelId(resolveChannel(opts.channel));
   const data = await call('chat.postMessage', {
     channel, text: opts.text,
     ...(opts.blocks ? { blocks: opts.blocks } : {}),

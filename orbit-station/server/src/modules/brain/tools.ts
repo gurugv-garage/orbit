@@ -53,6 +53,16 @@ export interface ToolDeps {
 
 const compute = new SafeCompute();
 
+/** How to refer to the Slack channel in a tool result — what the USER said (a
+ *  #name or the default), never a resolved id. Echoing a raw channel id taught
+ *  the model to reuse a stale id in later calls (→ channel_not_found on upload). */
+function channelLabel(channel?: string): string {
+  const c = channel?.trim() || slack.slackDefaultChannel();
+  if (!c) return 'Slack';
+  // a raw id (Cxxxx) → just say "Slack" rather than echo the id back.
+  return /^[CGD][A-Z0-9]{6,}$/.test(c) ? 'Slack' : c;
+}
+
 function textResult(text: string): AgentToolResult<unknown> {
   return { content: [{ type: 'text', text }], details: undefined };
 }
@@ -113,8 +123,10 @@ export function buildSlackTools(): AgentTool<any>[] {
         else return textResult(`Couldn't find a Slack user matching "${who}" — message not sent.`);
       }
       if (mentions.length) text = `${mentions.join(' ')} ${text}`;
-      const { channel } = await slack.postMessage({ text, channel: args.channel });
-      return textResult(`Sent to Slack (${channel})${mentions.length ? `, mentioning ${mentions.length}` : ''}.`);
+      await slack.postMessage({ text, channel: args.channel });
+      // Report the channel AS THE USER REFERRED TO IT — never the resolved id, so
+      // the model doesn't learn + reuse a volatile channel id from our reply.
+      return textResult(`Sent to ${channelLabel(args.channel)}${mentions.length ? `, mentioning ${mentions.length}` : ''}.`);
     }),
 
     tool('dm_slack_user', S.DM_SLACK_USER_DESC, S.dmSlackUserSchema, async (_id, args: { user: string; text: string }) => {
