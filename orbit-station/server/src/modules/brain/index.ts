@@ -103,6 +103,14 @@ export function brainModule(w: BrainWiring): StationModule {
     root: store.root,
     stationWsUrl: process.env.STATION_WS ?? `ws://127.0.0.1:${process.env.PORT ?? 8099}/ws`,
     runner: () => (w.config('brainTaskRunner') === 'tmux' ? 'tmux' : 'child'),
+    // give every task the dock's model (for the harness vision helper) + the keys
+    // already inherited from process.env (.env). No token — local processes.
+    extraEnv: () => {
+      const m = w.config('brainModel');
+      const env: Record<string, string> = {};
+      if (typeof m === 'string' && m) env.BRAIN_MODEL = m;
+      return env;
+    },
     onSignal: onTaskSignal,
     sendToTask,
   });

@@ -28,12 +28,15 @@
  * decoded camera frame (this.frame()), who's present (recognize), the body
  * (this.move()). A task runs in the SAME ENVIRONMENT as the station (same machine,
  * same .env, same node_modules), so for anything else — running an LLM to reason
- * about a frame, importing a module, calling HTTP — it just does it ITSELF (e.g.
- * `import { Agent } from '@earendil-works/pi-agent-core'` and run your own vision
- * loop; the provider key is in process.env). Which `op`s a dock exposes is
- * advertised at authoring time.
+ * about a frame, importing a module, calling HTTP — it just does it ITSELF. For the
+ * LLM, the base class exposes `this.agent` (a ready-to-use pi Agent: the dock's
+ * model + the env key, already wired) and `this.ask(content)` (one-shot →
+ * the text answer). Vision sugar `askVision`/`isTrueInImage` wrap that for the
+ * common image case. Which station `op`s a dock exposes is advertised at authoring
+ * time.
  */
 import { WebSocket } from 'ws';
+import type { Agent, AgentMessage } from '@earendil-works/pi-agent-core';
 import { durationMs } from './types.js';
 
 /** Liveness: the station's hub pings every ~2s. If a task hears nothing at all for
@@ -118,6 +121,7 @@ export abstract class Task {
   #done = false;
   #lastHeard = Date.now();      // last station ping/message — the liveness clock
   #watchdog?: ReturnType<typeof setInterval>;
+  #agentInstance?: Agent;
 
   // ── what the LLM implements ────────────────────────────────────────────────
   /** the actual work. May loop; should reach finish()/errored(). */
@@ -302,6 +306,34 @@ export abstract class Task {
   protected frame(): Promise<string | undefined> { return this.request('frame'); }
   /** drive the dock body with move steps (fire-and-forget on the station side). */
   protected move(steps: unknown[]): Promise<void> { return this.request('move', { steps }); }
+
+  /** THE TASK'S OWN LLM — a ready-to-use pi Agent (the dock's model + the provider
+   *  key from env, already wired). The CORE reasoning primitive: vision,
+   *  classification, summarization, multi-step, tool use — drive it directly. Built
+   *  lazily on first use (pi is imported only when you actually use the LLM). For
+   *  the common "ask once, get text" case prefer `this.ask(...)`. */
+  protected async getAgent(): Promise<Agent> {
+    if (!this.#agentInstance) {
+      const { Agent } = await import('@earendil-works/pi-agent-core');
+      const { taskModel, taskApiKey } = await import('./model.js');
+      this.#agentInstance = new Agent({
+        initialState: { systemPrompt: 'You are a helper for a small desk robot. Be concise and answer directly.', model: taskModel(), thinkingLevel: 'off', tools: [], messages: [] },
+        getApiKey: (provider: string) => taskApiKey(provider),
+      } as never);
+    }
+    return this.#agentInstance;
+  }
+  /** One-shot over the task's own agent: send `content` (text and/or images),
+   *  return the assistant's TEXT reply. The common shape — most reasoning is "ask
+   *  once, read the answer". For multi-turn/tools use `await this.getAgent()`.
+   *  `content` items: {type:'text',text} / {type:'image',data:<base64 jpeg>,
+   *  mimeType:'image/jpeg'} (an image is exactly what this.frame() returns). */
+  protected async ask(content: Array<{ type: 'text'; text: string } | { type: 'image'; data: string; mimeType?: string }>): Promise<string> {
+    const agent = await this.getAgent();
+    const { assistantText } = await import('./model.js');
+    await agent.prompt([{ role: 'user', content, timestamp: Date.now() } as AgentMessage]);
+    return assistantText(agent.state.messages) || '(no answer)';
+  }
 
   /** persist this.state so a resume (respawn) reloads it. */
   protected checkpoint(): void {

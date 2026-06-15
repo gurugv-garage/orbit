@@ -80,6 +80,9 @@ export interface SupervisorDeps {
    *  'tmux' (attachable window; falls back to 'child' when tmux isn't installed).
    *  Unset → TASK_RUNNER_DEFAULT ('child'). */
   runner?: () => 'tmux' | 'child';
+  /** extra env vars injected into every spawned task (e.g. BRAIN_MODEL for the
+   *  vision helper). Read at spawn time so config changes apply to new tasks. */
+  extraEnv?: () => Record<string, string>;
   /** TEST SEAM: override how a process is launched. Given the instance + its env,
    *  returns a `kill` fn the supervisor calls to terminate it. When set, neither
    *  tmux nor child_process is touched — used to drive the lifecycle state machine
@@ -166,6 +169,7 @@ export class TaskSupervisor {
     const { dock, name, parentSessionId } = e.info;
     const env = {
       ...process.env,
+      ...(this.d.extraEnv?.() ?? {}), // e.g. BRAIN_MODEL for the vision helper
       STATION_WS: this.d.stationWsUrl,
       TASK_DOCK: dock,
       TASK_INSTANCE_ID: instanceId,
