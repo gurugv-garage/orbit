@@ -211,6 +211,17 @@ class DockTools(
         return "ok"
     }
 
+    /** Switch the dock's whole face appearance + voice (e.g. "be a cat" / Vader).
+     *  Persistence + re-voicing happen via FaceController.onFaceStyleChanged. */
+    fun setFaceStyle(style: String): String {
+        Timber.i("tool.setFaceStyle: $style")
+        onToolCall("setFaceStyle")
+        TurnLog.toolCalled("setFaceStyle", style)
+        val ok = face.setFaceStyle(style.trim().lowercase())
+        onToolCall(null)
+        return if (ok) "ok" else "unknown style: $style"
+    }
+
     fun silence(): String {
         Timber.i("tool.silence")
         onToolCall("silence")

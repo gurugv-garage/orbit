@@ -400,6 +400,11 @@ class RemoteBrain(
                 val r = tools.setFace(expr)
                 r to r.startsWith("unknown")
             }
+            "set_face_style" -> {
+                val style = args["style"]?.jsonPrimitive?.content.orEmpty()
+                val r = tools.setFaceStyle(style)
+                r to r.startsWith("unknown")
+            }
             else -> "unknown tool on phone: $name" to true
         }
         TurnLog.toolCalled(name, args.toString())

@@ -166,4 +166,54 @@ class FaceControllerTest {
         assertThat(c.state.value).isEqualTo(FaceState.Idle)
         assertThat(c.speaker.value).isEqualTo(Speaker.Silent)
     }
+
+    // ── face style ───────────────────────────────────────────────────────
+
+    @Test
+    fun defaultFaceIsAurora() {
+        val c = FaceController()
+        assertThat(c.faceId.value).isEqualTo(FaceRegistry.default.id)
+        assertThat(c.faceId.value).isEqualTo("aurora")
+    }
+
+    @Test
+    fun setFaceStyleSwitchesAndFiresCallback() {
+        val c = FaceController()
+        val seen = mutableListOf<String>()
+        c.onFaceStyleChanged = { seen.add(it) }
+
+        assertThat(c.setFaceStyle("vader")).isTrue()
+        assertThat(c.faceId.value).isEqualTo("vader")
+        assertThat(seen).containsExactly("vader")
+    }
+
+    @Test
+    fun unknownFaceStyleIsRejected() {
+        val c = FaceController()
+        assertThat(c.setFaceStyle("godzilla")).isFalse()
+        assertThat(c.faceId.value).isEqualTo("aurora")
+    }
+
+    @Test
+    fun liveChoiceWinsOverConfigDefault() {
+        val c = FaceController()
+        c.setFaceStyle("puppy")              // live override this session
+        c.applyFaceStyleDefault("robot")     // a config push arrives
+        assertThat(c.faceId.value).isEqualTo("puppy")
+    }
+
+    @Test
+    fun configDefaultAppliesWhenNoLiveChoice() {
+        val c = FaceController()
+        c.applyFaceStyleDefault("owl")
+        assertThat(c.faceId.value).isEqualTo("owl")
+    }
+
+    @Test
+    fun restoredChoiceIsStickyOverDefault() {
+        val c = FaceController()
+        c.restoreFaceStyle("ghost")
+        c.applyFaceStyleDefault("robot")
+        assertThat(c.faceId.value).isEqualTo("ghost")
+    }
 }

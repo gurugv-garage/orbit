@@ -216,6 +216,14 @@ export const REGISTRY: ConfigEntry[] = [
     label: 'Face gestures',
     description: 'Body choreography the dock performs when set_face sets an expression. Each gesture is a list of move steps (degrees).',
   }),
+  entry({
+    key: 'faceStyle', type: 'text',
+    // Keep in sync with FACE_STYLES (modules/brain/schemas.ts) + the dock's FaceRegistry.
+    schema: z.enum(['aurora', 'puppy', 'vader', 'robot', 'ghost', 'owl', 'dragon']),
+    default: 'aurora', tags: ['brain'],
+    label: 'Face style',
+    description: 'Which dock face appearance + voice to show (aurora/puppy/vader/robot/ghost/owl/dragon). The brain can also switch it live with set_face_style; that live choice wins until the app restarts.',
+  }),
 ];
 
 export function findEntry(key: string): ConfigEntry | undefined {

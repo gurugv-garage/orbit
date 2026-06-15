@@ -72,7 +72,9 @@ import dev.orbit.dock.ui.face.FaceExpression
 @Composable
 fun DevPanel(controller: FaceController, modifier: Modifier = Modifier) {
     var expanded by rememberSaveable { mutableStateOf(true) }
-    var tab by rememberSaveable { mutableStateOf(DevTab.TEXT) }
+    // Default to the FACE picker — switching the dock's face is a first-class
+    // thing you reach for; the other tabs are a ⟳ tap away.
+    var tab by rememberSaveable { mutableStateOf(DevTab.FACE) }
 
     Column(
         modifier = modifier
@@ -94,6 +96,7 @@ fun DevPanel(controller: FaceController, modifier: Modifier = Modifier) {
                     when (tab) {
                         DevTab.TEXT -> TextTab()
                         DevTab.EMOTION -> EmotionTab(controller)
+                        DevTab.FACE -> FaceTab(controller)
                         DevTab.STATE -> StateTab(controller)
                         DevTab.LLM -> LlmTab()
                         DevTab.DEBUG -> DebugTab()
@@ -107,6 +110,7 @@ fun DevPanel(controller: FaceController, modifier: Modifier = Modifier) {
 private enum class DevTab(val label: String) {
     TEXT("text"),
     EMOTION("emotion"),
+    FACE("face"),
     STATE("state"),
     LLM("llm"),
     DEBUG("debug");
@@ -222,6 +226,29 @@ private fun EmotionTab(controller: FaceController) {
             )
         }
         Chip(label = "wink!", onClick = { controller.wink() }, accent = true)
+    }
+}
+
+// ── FACE ──────────────────────────────────────────────────────────────
+
+@Composable
+private fun FaceTab(controller: FaceController) {
+    val scroll = rememberScrollState()
+    val current by controller.faceId.collectAsState()
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .horizontalScroll(scroll),
+        horizontalArrangement = Arrangement.spacedBy(5.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        for (face in dev.orbit.dock.ui.face.FaceRegistry.faces) {
+            Chip(
+                label = face.label.lowercase(),
+                selected = face.id == current,
+                onClick = { controller.setFaceStyle(face.id) },
+            )
+        }
     }
 }
 

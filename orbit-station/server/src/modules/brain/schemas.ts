@@ -14,6 +14,15 @@ export const FACES = [
 ] as const;
 
 /**
+ * The dock's selectable face appearances ("skins"). Each is a distinct look AND
+ * voice on the phone. Keep in sync with FaceRegistry on the dock app
+ * (node-dock/.../ui/face/FaceRegistry.kt) and the `faceStyle` config enum.
+ */
+export const FACE_STYLES = [
+  'aurora', 'puppy', 'vader', 'robot', 'ghost', 'owl', 'dragon',
+] as const;
+
+/**
  * The degree↔µs scale is FIXED and universal for every part:
  *   -90° = 500µs, 0° = 1500µs, +90° = 2500µs  (1° ≈ 11.11µs).
  * A given degree is the same physical servo angle everywhere.
@@ -58,6 +67,18 @@ export const setFaceSchema = {
     },
   },
   required: ['expression'],
+} as const;
+
+export const setFaceStyleSchema = {
+  type: 'object',
+  properties: {
+    style: {
+      type: 'string',
+      description: 'which face appearance + voice to wear',
+      enum: [...FACE_STYLES],
+    },
+  },
+  required: ['style'],
 } as const;
 
 /**
@@ -172,6 +193,12 @@ export const SET_FACE_DESC =
   'The body also acts out the mood automatically — a sleepy face droops the head, excited does a happy ' +
   "wiggle, love a dreamy tilt, surprised a snap-back, etc. — so you usually DON'T need a separate `move` " +
   'for emotion; use `move` only for deliberate, literal motions (nod yes, look left, point).';
+export const SET_FACE_STYLE_DESC =
+  "Change the dock's WHOLE face appearance and voice — its persona skin, not just its mood. " +
+  'Use ONLY when the user asks you to become / look like / sound like something (e.g. "be a puppy", ' +
+  '"turn into Darth Vader", "go back to normal"). aurora = the default friendly face; puppy = a cute dog; ' +
+  'vader = Darth Vader (low, slow voice); robot, ghost, owl, dragon. This persists until changed. ' +
+  'For ordinary moods within the current face, use `set_face`, not this.';
 export const MOVE_DESC =
   'Move the body. Give an ordered list of steps; each step moves its joint(s) to an ' +
   'absolute angle in DEGREES over a duration, with an optional pause after. ' +

@@ -110,6 +110,19 @@ export function buildDockTools(deps: ToolDeps): AgentTool<any>[] {
       return textResult(ack.content || `face set to ${args.expression}`);
     }),
 
+    tool('set_face_style', S.SET_FACE_STYLE_DESC, S.setFaceStyleSchema, async (toolCallId, args: { style: string }) => {
+      if (!S.FACE_STYLES.includes(args.style as never)) {
+        throw new Error(`unknown face style "${args.style}"`);
+      }
+      // Appearance + voice only — no body gesture. Phone owns the screen.
+      const ack = await deps.rpc.call({
+        dock: deps.dock, cap: 'face', turnId: deps.getTurnContext().turnId,
+        toolCallId, name: 'set_face_style', args,
+      });
+      if (ack.isError) throw new Error(ack.content);
+      return textResult(ack.content || `face style set to ${args.style}`);
+    }),
+
     tool('move', S.MOVE_DESC, S.moveSchema, async (_toolCallId, args: { steps: MoveStep[] }) => {
       return textResult(deps.motion.runSteps(deps.dock, args.steps ?? []));
     }),

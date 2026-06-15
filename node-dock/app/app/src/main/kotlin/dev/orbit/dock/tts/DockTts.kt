@@ -6,6 +6,7 @@ import android.os.Bundle
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
 import dev.orbit.dock.ui.face.FaceController
+import dev.orbit.dock.ui.face.VoiceProfile
 import timber.log.Timber
 import java.util.Locale
 import java.util.UUID
@@ -33,6 +34,11 @@ class DockTts(
 
     private val ready = AtomicBoolean(false)
     private val pending = mutableListOf<String>()
+    // The active per-face voice. Buffered until the engine is ready, then
+    // (re-)applied whenever the face changes. setPitch/setSpeechRate affect
+    // SUBSEQUENTLY queued utterances, so a mid-stream face swap takes effect
+    // from the next sentence — the desired behaviour.
+    @Volatile private var voice: VoiceProfile = VoiceProfile()
     private val activeUtterances = mutableSetOf<String>()
     // Rising/falling edges of the public "speaking" signal. Turn-aware so the
     // gap between streamed sentences never reads as "stopped speaking" — that
@@ -47,9 +53,9 @@ class DockTts(
             if (result == TextToSpeech.LANG_MISSING_DATA || result == TextToSpeech.LANG_NOT_SUPPORTED) {
                 Timber.w("TTS lang not supported (result=$result) — using default")
             }
-            // Slight character: speak slightly faster than default to feel responsive
-            tts?.setSpeechRate(1.0f)
-            tts?.setPitch(1.05f)
+            // Apply the active face's voice (pitch/rate/engine voice). Defaults
+            // reproduce the historical 1.0 rate / 1.05 pitch.
+            applyVoiceLocked()
             // Keep TTS on the normal media/assistant output so it's clearly
             // audible on the speaker. The platform AEC on the VOICE_COMMUNICATION
             // *capture* path cancels against the device's speaker output mix, so
@@ -171,6 +177,29 @@ class DockTts(
             tts.shutdown()
         } catch (_: Throwable) {
         }
+    }
+
+    /**
+     * Set the voice for subsequent speech (called when the active face changes).
+     * Safe to call before the engine is ready — the profile is stored and
+     * applied on init.
+     */
+    fun applyVoice(profile: VoiceProfile) {
+        voice = profile
+        if (ready.get()) applyVoiceLocked()
+    }
+
+    private fun applyVoiceLocked() {
+        val v = voice
+        runCatching {
+            tts.setSpeechRate(v.rate)
+            tts.setPitch(v.pitch)
+            if (v.voiceName != null) {
+                val match = tts.voices?.firstOrNull { it.name == v.voiceName }
+                if (match != null) tts.voice = match
+                else Timber.w("TTS voice '${v.voiceName}' not found — keeping default")
+            }
+        }.onFailure { Timber.w(it, "applyVoice failed") }
     }
 
     private fun flushPending() {

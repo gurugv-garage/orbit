@@ -75,6 +75,14 @@ object DebugTestReceiver {
                         val r = dev.orbit.dock.agent.ToolsTestController.tools?.setFace(expr)
                         Timber.i("DEBUG setFace result: $r")
                     }
+                    "${PREFIX}SETFACESTYLE" -> {
+                        // Switch the whole face appearance + voice (skips the LLM):
+                        //   adb ... SETFACESTYLE -e style vader
+                        val style = intent.getStringExtra("style").orEmpty()
+                        Timber.i("DEBUG setFaceStyle: \"$style\"")
+                        val r = dev.orbit.dock.agent.ToolsTestController.tools?.setFaceStyle(style)
+                        Timber.i("DEBUG setFaceStyle result: $r")
+                    }
                     "${PREFIX}DUMPFRAME" -> {
                         // Write the exact frame the dock would attach to a turn,
                         // so it can be pulled + eyeballed:
@@ -130,6 +138,7 @@ object DebugTestReceiver {
             addAction("${PREFIX}SPEAKING")
             addAction("${PREFIX}BARGE")
             addAction("${PREFIX}SETFACE")
+            addAction("${PREFIX}SETFACESTYLE")
             addAction("${PREFIX}EXIT")
             addAction("${PREFIX}FACE")
             addAction("${PREFIX}DUMPFRAME")

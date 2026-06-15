@@ -67,6 +67,18 @@ class FaceController(
     private val _privacy = MutableStateFlow(false)
     val privacy: StateFlow<Boolean> = _privacy.asStateFlow()
 
+    // Which face skin is showing. Drives FaceRegistry.byId in DockScreen + the
+    // active voice profile. A live setFaceStyle (brain tool / dev picker) wins
+    // over the pushed `faceStyle` config default until the next config push or
+    // app restart — applyFaceStyleDefault yields to a sticky live choice.
+    private val _faceId = MutableStateFlow(FaceRegistry.default.id)
+    val faceId: StateFlow<String> = _faceId.asStateFlow()
+    private var faceStyleSetLive = false
+
+    /** Side-effect invoked whenever the active face changes (persist + re-voice).
+     *  Set by the app; null in tests. */
+    var onFaceStyleChanged: ((String) -> Unit)? = null
+
     // ── intents ──────────────────────────────────────────────────────
 
     fun wake() {
@@ -151,6 +163,45 @@ class FaceController(
         winkJob = scope.launch {
             delay(holdMs)
             _expression.value = prev
+        }
+    }
+
+    /**
+     * Switch the active face skin (brain `set_face_style` tool / dev picker).
+     * Returns false (no-op) for an unknown id. This is a LIVE choice and sticks
+     * over the config default until app restart.
+     */
+    fun setFaceStyle(id: String): Boolean {
+        if (!FaceRegistry.isKnown(id)) return false
+        faceStyleSetLive = true
+        if (_faceId.value != id) {
+            _faceId.value = id
+            onFaceStyleChanged?.invoke(id)
+        }
+        return true
+    }
+
+    /**
+     * Apply the station-pushed `faceStyle` default. Ignored once a live
+     * [setFaceStyle] has set the face this session, so a user/brain override
+     * isn't clobbered by a stale config push.
+     */
+    fun applyFaceStyleDefault(id: String) {
+        if (faceStyleSetLive) return
+        if (!FaceRegistry.isKnown(id)) return
+        if (_faceId.value != id) {
+            _faceId.value = id
+            onFaceStyleChanged?.invoke(id)
+        }
+    }
+
+    /** Restore a persisted face id at startup (counts as the live baseline so a
+     *  later default push doesn't override the user's last choice). */
+    fun restoreFaceStyle(id: String?) {
+        if (id != null && FaceRegistry.isKnown(id)) {
+            faceStyleSetLive = true
+            _faceId.value = id
+            onFaceStyleChanged?.invoke(id)
         }
     }
 

@@ -37,7 +37,6 @@ import dev.orbit.dock.service.PerceptionService
 import dev.orbit.dock.tts.DockTts
 import dev.orbit.dock.ui.devbar.DevBarHost
 import dev.orbit.dock.ui.face.FaceController
-import dev.orbit.dock.ui.face.FaceRenderer
 import dev.orbit.dock.ui.face.FaceState
 import dev.orbit.dock.ui.face.PerceptionWiring
 import dev.orbit.dock.ui.perm.rememberPermissions
@@ -302,6 +301,26 @@ fun DockScreen() {
         onDispose { tts.shutdown() }
     }
 
+    // Face skin wiring: a face change (brain tool / dev picker / config / restore)
+    // re-points the renderer (faceId flow) AND re-voices the TTS, then persists.
+    LaunchedEffect(controller, tts, configCache) {
+        controller.onFaceStyleChanged = { id ->
+            tts.applyVoice(dev.orbit.dock.ui.face.FaceRegistry.byId(id).voice)
+            dev.orbit.dock.ui.face.FaceStylePrefs.set(ctx, id)
+        }
+        // Restore the last local choice (sticky over a config default).
+        controller.restoreFaceStyle(dev.orbit.dock.ui.face.FaceStylePrefs.get(ctx))
+        // Apply whatever faceStyle the station already had cached (default if no
+        // local override), and keep following pushes.
+        configCache.string("faceStyle", "").takeIf { it.isNotBlank() }
+            ?.let { controller.applyFaceStyleDefault(it) }
+        configCache.onChange { key ->
+            if (key == "faceStyle") {
+                controller.applyFaceStyleDefault(configCache.string("faceStyle", ""))
+            }
+        }
+    }
+
     LaunchedEffect(Unit) { wiring.attach(scope) }
 
     // Stream STT transcripts (partials + finals) to the brain so it pre-warms
@@ -369,6 +388,8 @@ fun DockScreen() {
     val state by controller.state.collectAsState()
     val gaze by controller.gaze.collectAsState()
     val expression by controller.expression.collectAsState()
+    val faceId by controller.faceId.collectAsState()
+    val activeFace = dev.orbit.dock.ui.face.FaceRegistry.byId(faceId)
     val speaker by controller.speaker.collectAsState()
     val privacy by controller.privacy.collectAsState()
     val micMuted by controller.micMuted.collectAsState()
@@ -465,7 +486,9 @@ fun DockScreen() {
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(MaterialTheme.colorScheme.background)
+            // Per-face background tint (drawn behind the face AND the left-edge
+            // telemetry overlay). Falls back to the theme bg for the default face.
+            .background(activeFace.palette.background)
             .pointerInput(Unit) {
                 detectTapGestures(
                     onTap = {
@@ -528,7 +551,8 @@ fun DockScreen() {
                     )
                 }
                 Box(modifier = Modifier.fillMaxSize()) {
-                    FaceRenderer(
+                    activeFace.Render(
+                        modifier = Modifier,
                         state = state,
                         gaze = gaze,
                         expression = expression,
@@ -536,6 +560,8 @@ fun DockScreen() {
                         // Camera off → eyes close (we've gone blind, but
                         // the mic/mouth/everything else stays alive).
                         eyesClosed = camMuted && !privacy,
+                        compactFraction = 1f,
+                        staticForScreenshot = false,
                     )
                     // Who the station last recognized (lags a new face by ~1-2s).
                     seenName?.let { who ->

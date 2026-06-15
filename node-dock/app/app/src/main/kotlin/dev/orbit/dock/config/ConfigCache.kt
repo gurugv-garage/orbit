@@ -109,7 +109,10 @@ class ConfigCache(context: Context) {
          *  gazeTracking, ttsRate, cameraDefaultOn) were never actually read by
          *  the app and have been removed from the registry — so the app
          *  currently subscribes to NO config. Add a key here only when the app
-         *  genuinely reads its value. */
-        val INTEREST = emptyList<String>()
+         *  genuinely reads its value.
+         *
+         *  faceStyle: the default dock face appearance + voice; consumed by
+         *  FaceController.applyFaceStyleDefault (a live override still wins). */
+        val INTEREST = listOf("faceStyle")
     }
 }
