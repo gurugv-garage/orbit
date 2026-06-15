@@ -139,7 +139,7 @@ export function taskPromptBlock(defs: TaskDef[]): string {
 /** Write a new (or overwrite an existing) definition's task.ts, then validate by
  *  TYPECHECK + static shape-check (never executes it — running a task connects to
  *  the station). Rolls back on failure. Returns name. */
-export async function writeTaskDef(root: string, name: string, source: string): Promise<string> {
+export async function writeTaskDef(root: string, name: string, source: string): Promise<{ name: string; filePath: string }> {
   if (!/^[a-z0-9-]{1,64}$/.test(name)) throw new Error(`bad task name "${name}" (kebab-case, 1–64 chars)`);
   const dir = join(root, name);
   const filePath = join(dir, 'task.ts');
@@ -161,7 +161,7 @@ export async function writeTaskDef(root: string, name: string, source: string): 
     if (diags) throw new Error(`task "${name}" has type errors:\n${diags}`);
     // 2) shape-check (static): valid manifest + `class extends Task` + runTask(…).
     const def = await loadTaskDef(root, name);
-    return def.name;
+    return { name: def.name, filePath: def.filePath };
   } catch (err) {
     rollback();
     throw err;

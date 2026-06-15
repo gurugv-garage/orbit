@@ -89,7 +89,11 @@ export function buildTaskTools(d: TaskToolDeps): AgentTool<any>[] {
       const defs = await loadAllTaskDefs(roots);
       const instances = d.supervisor.list(d.dock);
       const defLines = defs.length
-        ? defs.map((t) => `- ${t.name} [${t.source ?? 'packaged'}]: ${t.description}`).join('\n')
+        // surface the source PATH so you can read_file/edit_file a task's code when
+        // the user asks how it works (or wants it changed) — otherwise you'd have no
+        // path to read and would be stuck guessing.
+        ? defs.map((t) => `- ${t.name} [${t.source ?? 'packaged'}]: ${t.description}`
+            + (t.filePath ? `\n    code: ${t.filePath}` : '')).join('\n')
         : '(no task definitions yet)';
       const instLines = instances.length
         ? instances.map((i) => `- ${i.instanceId} [${i.name}] ${i.state.toUpperCase()}${i.lastSignal ? ` — ${i.lastSignal}` : ''}`).join('\n')
@@ -135,6 +139,7 @@ export function buildTaskTools(d: TaskToolDeps): AgentTool<any>[] {
       const ageMin = Math.round((Date.now() - info.startedAt) / 60_000);
       return txt(`${info.instanceId} [${info.name}] ${info.state.toUpperCase()}\n`
         + `about: ${describeInstance(info)}\n`
+        + `code: ${info.filePath} (read_file/edit_file this to inspect or change how it works)\n`
         + `started: ${started} (${ageMin}m ago)${info.runCount > 1 ? `, run #${info.runCount}` : ''}\n`
         + `${md || '(no status yet)'}\n\nrecent log:\n${log}`);
     });
@@ -189,7 +194,9 @@ export function buildTaskTools(d: TaskToolDeps): AgentTool<any>[] {
       // it to FIX + call write_task again — so it retries instead of giving up.
       try {
         const created = await writeTaskDef(d.userTasksRoot, args.name, source);
-        return txt(`created + typechecked task "${created}". Now start it with run_task("${created}", { … }).`);
+        return txt(`created + typechecked task "${created.name}". Now start it with run_task("${created.name}", { … }).\n`
+          + `Its source lives at ${created.filePath} — use read_file/edit_file on that path to inspect or `
+          + `change the code later (e.g. when the user asks how it works or how often it runs).`);
       } catch (err) {
         const diag = String((err as Error)?.message ?? err);
         return txt(`write_task FAILED — fix the body and call write_task again (do NOT give up).\n\n`

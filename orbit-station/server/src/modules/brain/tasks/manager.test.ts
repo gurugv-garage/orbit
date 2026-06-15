@@ -61,9 +61,10 @@ test('extractGoal pulls the leading doc-comment', () => {
 
 test('writeTaskDef validates by typecheck+shape and rolls back a broken file', async () => {
   const root = mkdtempSync(join(tmpdir(), 'taskdefs-'));
-  const name = await writeTaskDef(root, 'tmp-good', validTask('tmp-good'));
-  assert.equal(name, 'tmp-good');
-  assert.ok(existsSync(join(root, 'tmp-good', 'task.ts')));
+  const created = await writeTaskDef(root, 'tmp-good', validTask('tmp-good'));
+  assert.equal(created.name, 'tmp-good');
+  assert.equal(created.filePath, join(root, 'tmp-good', 'task.ts'));
+  assert.ok(existsSync(created.filePath));
 
   // a broken one (no manifest / no class) throws and leaves nothing behind
   const bad = `export const x = 42;`;
@@ -142,6 +143,6 @@ test('writeTaskDef ACCEPTS a task that imports node:child_process and runs a she
     body: `const out = execSync('echo hi').toString(); this.status(out); this.finish();`,
   }, '../../_harness/index.js');
   const created = await writeTaskDef(root, 'tc-shell', src);
-  assert.equal(created, 'tc-shell');
+  assert.equal(created.name, 'tc-shell');
   rmSync(join(root, 'tc-shell'), { recursive: true, force: true });
 });

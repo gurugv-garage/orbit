@@ -39,6 +39,9 @@ export interface InstanceInfo {
   /** epoch ms of the CURRENT process's spawn (differs from startedAt after resume). */
   spawnedAt: number;
   lastSignal?: string;
+  /** absolute path to this instance's task.ts source — so the brain can read_file/
+   *  edit_file the actual code when the user asks how the task works. */
+  filePath: string;
 }
 
 /** A one-line human description of what an instance is about (for init.about,
@@ -151,6 +154,7 @@ export class TaskSupervisor {
       instanceId, dock: args.dock, name: args.name, params: args.params,
       parentSessionId: args.parentSessionId, state: 'running',
       startedAt: Date.now(), runCount: 0, spawnedAt: Date.now(),
+      filePath: args.filePath,
     };
     const dir = this.#dir(args.dock, instanceId);
     mkdirSync(dir, { recursive: true });
