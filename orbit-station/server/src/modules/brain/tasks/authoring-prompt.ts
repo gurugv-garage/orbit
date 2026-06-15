@@ -60,10 +60,13 @@ const AUTHORING_RULES =
   + '`unknown`, so CAST it (e.g. `this.params.from as number`).\n'
   + '`status` is a JS expression for getStatus() — what the user sees when they ask how it is going '
   + '(e.g. `` `reminding every ${this.params.interval}` ``). Defaults to the description.\n'
-  + 'IMPORTS: run() cannot add its own import lines — list any npm/node modules you use in `imports` '
-  + '(e.g. "import { Agent } from \'@earendil-works/pi-agent-core\'", "import { execFile } from \'node:child_process\'").\n'
-  + 'The new task is TYPECHECKED before it is saved — if write_task returns type errors, FIX the '
-  + 'body/imports and call write_task again. Then start it with run_task.';
+  + 'IMPORTS — CRITICAL: NEVER write an `import` line inside `body` (it is a function body; an import '
+  + 'there is a TypeScript error). Put EVERY module you need in the `imports` array argument, then just '
+  + 'use it in `body`. e.g. imports: ["import { Agent } from \'@earendil-works/pi-agent-core\'", '
+  + '"import { execFile } from \'node:child_process\'"], and body references Agent/execFile directly.\n'
+  + 'The new task is TYPECHECKED before it is saved — if write_task returns type errors, READ the fix '
+  + 'hint, correct the body/imports, and call write_task AGAIN (do not give up — retry until it saves). '
+  + 'Then start it with run_task.';
 
 /**
  * The full `write_task` description for a dock. `capabilityAd` is the dock's

@@ -31,6 +31,41 @@ export interface TaskToolDeps {
 function txt(text: string): AgentToolResult<unknown> {
   return { content: [{ type: 'text', text }], details: undefined };
 }
+
+/** Translate the COMMON write_task failures into a specific, actionable fix the
+ *  authoring LLM can apply on the next attempt — so it retries correctly instead
+ *  of repeating the same mistake or giving up. */
+function authoringFixHints(diag: string): string {
+  const hints: string[] = [];
+  if (/TS1232|import declaration can only be used at the top level|'import' .*top level/i.test(diag)) {
+    hints.push('FIX: do NOT put `import` lines inside `body` — that is invalid. List every module '
+      + 'you need in the `imports` array argument instead (e.g. imports: ["import { execFile } from '
+      + '\'node:child_process\'"]), then reference them in `body`.');
+  }
+  if (/Cannot find name '(\w+)'/i.test(diag)) {
+    const m = diag.match(/Cannot find name '(\w+)'/i);
+    hints.push(`FIX: "${m?.[1]}" is undefined — if it's a module, add it to \`imports\`; if it's a `
+      + `typo for a Task method, the available ones are this.status / this.notifyAgent / `
+      + `this.askAgentInput / this.finish / this.errored / this.sleep / this.checkpoint / `
+      + `this.frame / this.move (camera/body only if this dock has them).`);
+  }
+  if (/Property '(\w+)' does not exist on type 'Task'|does not exist on type/i.test(diag)) {
+    hints.push('FIX: you called a method that does not exist on the Task base. Use only: this.status, '
+      + 'this.notifyAgent, this.askAgentInput, this.finish, this.errored, this.sleep, this.checkpoint, '
+      + 'this.params, this.state (and this.frame/this.move if advertised). For anything else, write '
+      + 'plain code or import a module via `imports`.');
+  }
+  if (/'(\w+)' is of type 'unknown'|is possibly 'undefined'|not assignable to/i.test(diag)) {
+    hints.push('FIX: `this.params.X` is typed `unknown` — CAST it before use '
+      + '(e.g. `this.params.delay as string`, `this.params.count as number`).');
+  }
+  if (hints.length === 0) {
+    hints.push('FIX: address the TypeScript error above in `body`/`imports` and call write_task again. '
+      + 'Remember: imports go in the `imports` array, params are `unknown` (cast them), and the work '
+      + 'goes in `body` using `this.*` methods.');
+  }
+  return hints.join('\n');
+}
 function tool(name: string, description: string, parameters: object,
   execute: (id: string, args: any) => Promise<AgentToolResult<unknown>>): AgentTool<any> {
   return { name, label: name, description, parameters: parameters as never, execute };
@@ -149,10 +184,18 @@ export function buildTaskTools(d: TaskToolDeps): AgentTool<any>[] {
         { name: args.name, description: args.description, goal: args.goal ?? args.description, params: args.params, imports: args.imports, body: args.body, status: args.status },
         harnessImportPath(),
       );
-      // writeTaskDef typechecks + import-validates; on failure it throws the
-      // diagnostics, which pi turns into an error tool result the LLM can fix.
-      const created = await writeTaskDef(d.userTasksRoot, args.name, source);
-      return txt(`created + typechecked task "${created}". Now start it with run_task("${created}", { … }).`);
+      // writeTaskDef typechecks + import-validates. On failure, hand the LLM the
+      // diagnostics AS ACTIONABLE FEEDBACK (translate the common mistakes) and tell
+      // it to FIX + call write_task again — so it retries instead of giving up.
+      try {
+        const created = await writeTaskDef(d.userTasksRoot, args.name, source);
+        return txt(`created + typechecked task "${created}". Now start it with run_task("${created}", { … }).`);
+      } catch (err) {
+        const diag = String((err as Error)?.message ?? err);
+        return txt(`write_task FAILED — fix the body and call write_task again (do NOT give up).\n\n`
+          + `${diag}\n\n`
+          + `${authoringFixHints(diag)}`);
+      }
     });
 
   const lifecycle = (toolName: string, verb: 'pause' | 'resume' | 'stop') => tool(toolName,

@@ -327,8 +327,16 @@ class RemoteBrain(
             )
         }
         _debugInfo.value = DebugInfo(sessionId = sid, tasks = tasks)
-        trace("tasks: ${if (tasks.isEmpty()) "none" else tasks.joinToString { "${it.name}(${it.instanceId})=${it.state}" }}")
+        // The digest re-arrives every few seconds (failproof refresh); only LOG to
+        // the event feed when the task set actually CHANGES, so the periodic sweep
+        // doesn't spam "tasks: none" forever. The HUD (above) still updates silently.
+        val summary = if (tasks.isEmpty()) "none" else tasks.joinToString { "${it.name}(${it.instanceId})=${it.state}" }
+        if (summary != lastTaskSummary) {
+            lastTaskSummary = summary
+            trace("tasks: $summary")
+        }
     }
+    @Volatile private var lastTaskSummary: String = "—"
 
     private fun onToolCall(p: JsonObject) {
         val reqId = p.str("reqId")
