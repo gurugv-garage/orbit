@@ -16,9 +16,11 @@ import { useStationClient, useStationEvents } from '../lib/useStation';
 import { api } from '../lib/station';
 
 interface Observation {
-  ts: number; dockId: string; modality: 'vision' | 'speech';
+  ts: number; dockId: string; modality: 'vision' | 'speech' | 'action';
   text: string; meta?: { present?: boolean }; source: string;
 }
+
+const ICON: Record<Observation['modality'], string> = { vision: '👁', speech: '🎙', action: '🎬' };
 
 const STREAM_ID = 'console-perception'; // this console's producer peer id
 
@@ -37,6 +39,7 @@ export function PerceptionStudio() {
   const [autoScroll, setAutoScroll] = useState(true);
   const [showVision, setShowVision] = useState(true);
   const [showSpeech, setShowSpeech] = useState(true);
+  const [showAction, setShowAction] = useState(true);
   const [visionModel, setVisionModel] = useState<'moondream' | 'md3'>('moondream');
   const [resolution, setResolution] = useState<320 | 512>(320);
   const feedRef = useRef<HTMLDivElement>(null);
@@ -137,7 +140,7 @@ export function PerceptionStudio() {
   // Auto-scroll the feed to newest when enabled; new obs / filter changes trigger it.
   useEffect(() => {
     if (autoScroll && feedRef.current) feedRef.current.scrollTop = feedRef.current.scrollHeight;
-  }, [obs, autoScroll, showVision, showSpeech]);
+  }, [obs, autoScroll, showVision, showSpeech, showAction]);
 
   // Manual scroll: leaving the bottom turns auto-scroll OFF; returning to the
   // bottom turns it back ON (so you can scroll up to read, then snap back).
@@ -172,10 +175,11 @@ export function PerceptionStudio() {
   // follow what's happening without reading the scrolling log.
   const latestVision = [...obs].reverse().find((o) => o.modality === 'vision');
   const latestSpeech = [...obs].reverse().find((o) => o.modality === 'speech');
+  const latestAction = [...obs].reverse().find((o) => o.modality === 'action');
 
-  // Log filtered by the modality toggles (both on by default).
-  const filtered = obs.filter((o) =>
-    (o.modality === 'vision' ? showVision : showSpeech));
+  // Log filtered by the modality toggles (all on by default).
+  const show = { vision: showVision, speech: showSpeech, action: showAction };
+  const filtered = obs.filter((o) => show[o.modality]);
 
   const clearObs = useCallback(async () => {
     setObs([]); // clear UI immediately
@@ -242,6 +246,14 @@ export function PerceptionStudio() {
               {latestVision ? latestVision.text : 'waiting for video…'}
             </div>
           </div>
+          <div>
+            <div className="side-section-label">🎬 Latest action (temporal)</div>
+            <div style={{ marginTop: 4, padding: '10px 12px', minHeight: 40, background: '#0b0e16',
+              border: '1px solid #2a2233', borderRadius: 8, fontSize: 14, lineHeight: 1.45,
+              color: latestAction ? '#e9c9ff' : '#566' }}>
+              {latestAction ? latestAction.text : 'watching for actions over time…'}
+            </div>
+          </div>
         </div>
       </div>
 
@@ -257,6 +269,10 @@ export function PerceptionStudio() {
             <label style={{ display: 'flex', alignItems: 'center', gap: 5, cursor: 'pointer' }}>
               <input type="checkbox" checked={showSpeech} onChange={(e) => setShowSpeech(e.target.checked)} />
               🎙 mic
+            </label>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 5, cursor: 'pointer' }}>
+              <input type="checkbox" checked={showAction} onChange={(e) => setShowAction(e.target.checked)} />
+              🎬 action
             </label>
             <label style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}>
               <input type="checkbox" checked={autoScroll} onChange={(e) => setAutoScroll(e.target.checked)} />
@@ -274,13 +290,13 @@ export function PerceptionStudio() {
           {filtered.length === 0
             ? <div className="empty">No observations yet. Start the stream — vision runs every ~1s, speech every ~2s.</div>
             : filtered.map((o, i) => {
-              const speech = o.modality === 'speech';
+              const color = o.modality === 'speech' ? '#9ecbff'
+                : o.modality === 'action' ? '#e9c9ff' : '#cfe';
               const dim = o.text.startsWith('(') ? 0.4 : 1; // "(nothing notable)" muted
               return (
-                <div key={i} style={{ display: 'flex', gap: 8, opacity: dim,
-                  color: speech ? '#9ecbff' : '#cfe' }}>
+                <div key={i} style={{ display: 'flex', gap: 8, opacity: dim, color }}>
                   <span style={{ opacity: 0.4, fontVariantNumeric: 'tabular-nums' }}>{new Date(o.ts).toLocaleTimeString()}</span>
-                  <span style={{ width: 18 }}>{speech ? '🎙' : '👁'}</span>
+                  <span style={{ width: 18 }}>{ICON[o.modality]}</span>
                   <span style={{ flex: 1 }}>{o.text}</span>
                 </div>
               );

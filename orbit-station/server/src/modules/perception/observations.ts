@@ -15,8 +15,8 @@ import type { PerceptionResult } from './result.js';
 export interface Observation {
   ts: number;
   dockId: string;
-  /** 'vision' | 'speech' — the sensor modality. */
-  modality: 'vision' | 'speech';
+  /** the sensor modality. */
+  modality: 'vision' | 'speech' | 'action';
   /** the human-readable fact (scene description or transcript text). */
   text: string;
   /** modality-specific extras, e.g. { present } for vision. */
@@ -34,7 +34,7 @@ export class Observations {
     bus.on('perception', (m) => {
       // Only the undirected station copies, and only the sensor kinds we log.
       if (m.source !== 'station' || m.to != null) return;
-      if (m.kind !== 'scene' && m.kind !== 'transcript') return;
+      if (m.kind !== 'scene' && m.kind !== 'transcript' && m.kind !== 'action') return;
       this.#add(m.payload as PerceptionResult);
     });
   }
@@ -42,12 +42,17 @@ export class Observations {
   #add(r: PerceptionResult): void {
     if (!r || typeof r.dockId !== 'string') return;
     const p = r.payload as any;
-    const obs: Observation =
-      r.kind === 'scene'
-        ? { ts: r.ts, dockId: r.dockId, modality: 'vision',
-            text: String(p?.description ?? ''), meta: { present: p?.present }, source: r.source }
-        : { ts: r.ts, dockId: r.dockId, modality: 'speech',
-            text: String(p?.text ?? ''), source: r.source };
+    let obs: Observation;
+    if (r.kind === 'scene') {
+      obs = { ts: r.ts, dockId: r.dockId, modality: 'vision',
+        text: String(p?.description ?? ''), meta: { present: p?.present }, source: r.source };
+    } else if (r.kind === 'action') {
+      obs = { ts: r.ts, dockId: r.dockId, modality: 'action',
+        text: String(p?.description ?? ''), source: r.source };
+    } else {
+      obs = { ts: r.ts, dockId: r.dockId, modality: 'speech',
+        text: String(p?.text ?? ''), source: r.source };
+    }
     if (!obs.text) return;
 
     const list = this.#byDock.get(r.dockId) ?? [];

@@ -25,6 +25,7 @@ import { presenceProcessor } from './processors/presence.js';
 import { faceRecognitionProcessor } from './processors/face-recognition.js';
 import { visionWatchProcessor } from './processors/vision-watch.js';
 import { sttWatchProcessor } from './processors/stt-watch.js';
+import { temporalWatchProcessor } from './processors/temporal-watch.js';
 import { setVisionExtra, getVisionExtra, visionBase } from './vision-instruction.js';
 import { setVisionConfig, getVisionConfig } from './vision-config.js';
 import { Gallery } from './face/gallery.js';
@@ -112,8 +113,12 @@ export function perceptionModule(getHub: () => ProcessingHub): StationModule {
       // Always-on processors. More land here as phases progress (audio, …).
       hub.register(presenceProcessor());
       hub.register(face);
-      hub.register(visionWatchProcessor()); // moondream per-frame scene (Ollama)
-      hub.register(sttWatchProcessor());    // whisper rolling transcript (sidecar)
+      hub.register(sttWatchProcessor());      // whisper utterance transcript (sidecar)
+      hub.register(temporalWatchProcessor()); // qwen multi-frame: scene + action (sidecar)
+      // NB: per-frame vision-watch (moondream/md3) is intentionally NOT registered —
+      // qwen temporal covers both scene and action in one pass, so we run ONE vision
+      // model (~3GB) instead of stacking moondream+md3+qwen (~10GB → swap). Re-enable
+      // visionWatchProcessor() if you want a fast 1Hz per-frame pass alongside.
 
       // In-process face API for the server brain (docs/SERVER-BRAIN-IMPL.md §3.1):
       // the same operations the WS request/result flow below serves, exposed as

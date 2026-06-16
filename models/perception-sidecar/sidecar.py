@@ -93,11 +93,31 @@ class Vision:
         return ans
 
 
-def make_handler(stt: Stt, vision_holder: dict):
+class Temporal:
+    """Qwen2.5-VL (MLX) multi-frame temporal reasoner. Loaded lazily (~3 GB GPU)."""
+    def __init__(self):
+        import sys, os
+        sys.path.insert(0, os.path.dirname(__file__))
+        from qwen_video import QwenVideo, DEFAULT_PROMPT  # noqa: WPS433
+        self._q = MLX.submit(QwenVideo).result()  # load on the MLX thread
+        self._default_prompt = DEFAULT_PROMPT
+        self.model = self._q.model_id
+
+    def describe(self, frames_b64, prompt=None) -> str:
+        p = prompt or self._default_prompt
+        return MLX.submit(lambda: self._q.describe(frames_b64, p)).result()
+
+
+def make_handler(stt: Stt, vision_holder: dict, temporal_holder: dict):
     def get_vision() -> Vision:
         if vision_holder.get("v") is None:
             vision_holder["v"] = Vision()
         return vision_holder["v"]
+
+    def get_temporal() -> Temporal:
+        if temporal_holder.get("t") is None:
+            temporal_holder["t"] = Temporal()
+        return temporal_holder["t"]
 
     class H(BaseHTTPRequestHandler):
         def log_message(self, *a):
@@ -114,8 +134,10 @@ def make_handler(stt: Stt, vision_holder: dict):
         def do_GET(self):
             if self.path == "/health":
                 v = vision_holder.get("v")
+                t = temporal_holder.get("t")
                 self._send(200, {"ok": True, "stt_model": stt.model if stt else None,
-                                 "vision_model": v.model if v else None})
+                                 "vision_model": v.model if v else None,
+                                 "temporal_model": t.model if t else None})
             else:
                 self._send(404, {"error": "not found"})
 
@@ -169,6 +191,22 @@ def make_handler(stt: Stt, vision_holder: dict):
                 })
                 return
 
+            # Temporal: N ordered frames → an action description (qwen2.5-VL video).
+            if self.path == "/temporal":
+                frames = req.get("frames") or []
+                if len(frames) < 2:
+                    self._send(400, {"error": "need >=2 frames"})
+                    return
+                t0 = time.perf_counter()
+                try:
+                    answer = get_temporal().describe(frames, req.get("prompt"))
+                except Exception as e:
+                    self._send(500, {"error": str(e)})
+                    return
+                self._send(200, {"response": answer, "frames": len(frames),
+                                 "latency_ms": (time.perf_counter() - t0) * 1e3})
+                return
+
             self._send(404, {"error": "not found"})
 
     return H
@@ -180,9 +218,11 @@ def main():
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--model", default="mlx-community/whisper-small.en-mlx")
     ap.add_argument("--vision", action="store_true", help="preload md3 vision at boot")
+    ap.add_argument("--temporal", action="store_true", help="preload qwen temporal at boot")
     ap.add_argument("--no-stt", action="store_true",
-                    help="vision-only: don't load whisper. Run STT and md3 in SEPARATE "
-                         "processes — two MLX models in one process can crash Metal.")
+                    help="vision-only: don't load whisper. Run STT and the MLX vision "
+                         "models in SEPARATE processes — two MLX models in one process "
+                         "can crash Metal.")
     a = ap.parse_args()
     stt = None
     if not a.no_stt:
@@ -196,8 +236,14 @@ def main():
         tv = time.perf_counter()
         vision_holder["v"] = Vision()
         print(f"  ready in {time.perf_counter()-tv:.1f}s")
-    srv = ThreadingHTTPServer((a.host, a.port), make_handler(stt, vision_holder))
-    print(f"perception-sidecar on http://{a.host}:{a.port}  (POST /transcribe, /infer, GET /health)")
+    temporal_holder: dict = {"t": None}
+    if a.temporal:
+        print("loading qwen temporal …")
+        tt = time.perf_counter()
+        temporal_holder["t"] = Temporal()
+        print(f"  ready in {time.perf_counter()-tt:.1f}s")
+    srv = ThreadingHTTPServer((a.host, a.port), make_handler(stt, vision_holder, temporal_holder))
+    print(f"perception-sidecar on http://{a.host}:{a.port}  (POST /transcribe, /api/generate, /temporal, GET /health)")
     try:
         srv.serve_forever()
     except KeyboardInterrupt:
