@@ -6,11 +6,15 @@ findings that justified each choice. Kept separate from `orbit-station` so model
 work (Python, MLX, model weights) doesn't entangle the Node control plane; the
 station talks to these via a small local HTTP **sidecar**.
 
+**[BENCHMARKS.md](BENCHMARKS.md) — footprint & performance of every model we
+tested (vision, temporal, STT, identity), organized by scenario. Start here.**
+
 ## Layout
 
 | Folder | What |
 |---|---|
-| [moondream/](moondream/) | The monitoring **VLM** — "watch a frame, answer a natural-language instruction." Prod backend: **moondream2 via Ollama**; upgrade path: **moondream3 via MLX**. See its [README](moondream/README.md) and [FINDINGS.md](moondream/FINDINGS.md). |
+| [moondream/](moondream/) | The per-frame **VLM** — "watch a frame, answer a natural-language instruction." moondream2 (Ollama) / moondream3 (MLX). See [README](moondream/README.md) + [FINDINGS.md](moondream/FINDINGS.md). |
+| [perception-sidecar/](perception-sidecar/) | The local HTTP service the station calls: **Whisper STT** + **Qwen2.5-VL temporal** (multi-frame action) + optional md3 vision. `bench/` has the STT WER harness. |
 
 ## How orbit uses these
 
