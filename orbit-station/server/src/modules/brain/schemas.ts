@@ -158,6 +158,11 @@ export const computeSchema = {
   required: ['expression'],
 } as const;
 
+export const getDateTimeSchema = {
+  type: 'object',
+  properties: {},
+} as const;
+
 export const rememberFaceSchema = {
   type: 'object',
   properties: {
@@ -281,6 +286,10 @@ export const COMPUTE_DESC =
   'Evaluate a SAFE arithmetic or random-number expression and get the result back ' +
   '(e.g. math, or "random(1,10)", or "random(1,10) > 5"). Use this whenever you\'d otherwise want to ' +
   '"run code" for a number or a calculation — you have NO general code execution, only this.';
+export const GET_DATE_TIME_DESC =
+  'Get the current date and time (local timezone of where you run). Call this whenever you ' +
+  'need to know "now" — what time it is, today\'s date/day of week, or to reason about an ' +
+  '"at TIME" / "in N minutes" request before scheduling a reminder. Takes no arguments.';
 export const REMEMBER_FACE_DESC =
   'Remember the person you can currently see in your camera, by name. ' +
   'Call this when someone tells you who they are ("I\'m guru", "remember me as Alice", "this is my friend Bob"). ' +

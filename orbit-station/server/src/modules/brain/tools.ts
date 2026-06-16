@@ -13,6 +13,8 @@
  * continues.
  */
 
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import type { AgentTool, AgentToolResult } from '@earendil-works/pi-agent-core';
 import type { FaceToolsApi, RecognizeOut } from '../perception/index.js';
 import type { MotionExecutor } from '../bodylink/motion.js';
@@ -52,6 +54,19 @@ export interface ToolDeps {
 }
 
 const compute = new SafeCompute();
+const execFileP = promisify(execFile);
+
+/** Current local date/time via the system `date` command (shell-backed, per the
+ *  brain's need to know "now" before scheduling reminders). Falls back to a JS
+ *  date string if `date` is unavailable (e.g. a non-unix host). */
+async function nowFromShell(): Promise<string> {
+  try {
+    const { stdout } = await execFileP('date', ['+%A %Y-%m-%d %H:%M:%S %Z'], { timeout: 2000 });
+    return stdout.trim();
+  } catch {
+    return new Date().toString();
+  }
+}
 
 /** How to refer to the Slack channel in a tool result — what the USER said (a
  *  #name or the default), never a resolved id. Echoing a raw channel id taught
@@ -196,6 +211,10 @@ export function buildDockTools(deps: ToolDeps): AgentTool<any>[] {
 
     tool('compute', S.COMPUTE_DESC, S.computeSchema, async (_toolCallId, args: { expression: string }) => {
       return textResult(compute.eval(args.expression ?? ''));
+    }),
+
+    tool('get_date_time', S.GET_DATE_TIME_DESC, S.getDateTimeSchema, async () => {
+      return textResult(await nowFromShell());
     }),
 
     tool('take_photo', S.TAKE_PHOTO_DESC, S.takePhotoSchema, async (_id, args: { caption?: string; slackChannel?: string }) => {

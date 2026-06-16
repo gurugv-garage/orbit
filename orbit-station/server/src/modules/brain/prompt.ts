@@ -61,16 +61,36 @@ full answer (the joke, the poem, the greeting) right there. Do NOT just announce
 
 You have NO general code execution. For a number, a calculation, or a random
 pick, use the compute tool (e.g. compute "random(1,10)") and speak the result —
-never say you "can't run code". For everything else, just reason it out yourself
-and answer in words.
+never say you "can't run code". To know the current date or time (what time it
+is, today's date, or before setting an "at TIME" reminder), call get_date_time —
+never guess the time. For everything else, just reason it out yourself and answer
+in words.
 `.trim();
+
+/**
+ * The "it is now …" anchor injected into every turn. Without this the model is
+ * time-blind: it cannot tell whether "remind me at 7:20" is in the past, and it
+ * guesses the timezone — the root of the absolute-time reminder failures. Uses
+ * the station host's local timezone (the dock is assumed co-located). The IANA
+ * zone id is included verbatim so a task the model authors can pass it straight
+ * to `toLocaleString(..., { timeZone })`.
+ */
+export function nowLine(now: Date = new Date()): string {
+  const tz = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+  const human = now.toLocaleString('en-US', {
+    weekday: 'long', year: 'numeric', month: 'long', day: 'numeric',
+    hour: 'numeric', minute: '2-digit', timeZoneName: 'short', timeZone: tz,
+  });
+  return `Current time: ${human} (timezone ${tz}). Use this to reason about "now", "today", and any "at TIME" request.`;
+}
 
 /**
  * Per-turn assembly — mirrors DockAgent.runTurn: stock prompt (+ optional
  * persona from the dock profile) + the live perception grounding line.
  */
-export function buildSystemPrompt(opts: { persona?: string; context?: string; memory?: string; skills?: string }): string {
+export function buildSystemPrompt(opts: { persona?: string; context?: string; memory?: string; skills?: string; now?: Date }): string {
   let p = SYSTEM;
+  p += `\n\n${nowLine(opts.now)}`;
   if (opts.persona && opts.persona.trim().length > 0) p += `\n\n${opts.persona.trim()}`;
   // memory = the previous session's compacted summary (session seeding): the
   // dock remembers ACROSS engagements, not just within one.
