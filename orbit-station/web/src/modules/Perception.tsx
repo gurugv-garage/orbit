@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { api } from '../lib/station';
 import { useStationEvents } from '../lib/useStation';
+import { PerceptionStudio } from './PerceptionStudio';
 
 interface DockWorldState {
   dockId: string;
@@ -64,6 +65,13 @@ export function Perception() {
     <section>
       <h2 className="title">Perception</h2>
       <p className="subtitle">What the station's stream processors understand about each dock.</p>
+
+      {/* Always-on perception PoC: publish this laptop's A/V, steer the vision
+          instruction, and watch the rolling observations stream. */}
+      <div style={{ marginBottom: 24 }}>
+        <div className="side-section-label" style={{ marginBottom: 8 }}>Live perception studio</div>
+        <PerceptionStudio />
+      </div>
 
       {/* Known faces — everyone the dock has been told to remember. */}
       <div style={{ marginBottom: 20 }}>

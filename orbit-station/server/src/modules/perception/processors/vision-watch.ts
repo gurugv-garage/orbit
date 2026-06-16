@@ -22,18 +22,12 @@ import type { MediaKind } from '../../media/tap.js';
 import type { RtpPacket } from 'werift';
 import type { StreamContext, StreamProcessor } from '../processor.js';
 import { FrameGrabber } from '../face/frame-grabber.js';
-
-/** Where the moondream sidecar listens (models/moondream/sidecar). */
-const SIDECAR_URL = process.env.MOONDREAM_SIDECAR_URL ?? 'http://127.0.0.1:8077';
+import { visionInstruction } from '../vision-instruction.js';
+import { visionBackend } from '../vision-config.js';
 
 /** Min gap between inferences per stream — moondream is ~1 s/frame, the dock
  *  streams ~1 Hz, so "as fast as possible" ≈ once a second. */
 const INTERVAL_MS = Number(process.env.VISION_WATCH_INTERVAL_MS ?? 1000);
-
-/** The always-on instruction. Open question (not closed/JSON) on purpose. */
-const INSTRUCTION =
-  process.env.VISION_WATCH_PROMPT ??
-  'What person is in the image, and what are they doing? Describe briefly.';
 
 interface StreamState {
   ctx: StreamContext;
@@ -41,8 +35,14 @@ interface StreamState {
   busy: boolean;
   lastInfer: number;
   lastPresent: boolean | null;
+  emptyStreak: number; // consecutive empty moondream responses
   timer: ReturnType<typeof setInterval> | null;
 }
+
+/** Only surface "(nothing notable)" after this many CONSECUTIVE empty responses —
+ *  moondream flakes empty on the occasional good frame, so a single empty must not
+ *  spam the feed when a person is plainly there. */
+const EMPTY_STREAK_TO_REPORT = 5;
 
 /** Derive presence from moondream's prose (negation dominates) — same logic as
  *  models/moondream/ts/moondream.ts polarity(). */
@@ -58,17 +58,25 @@ export function presentFromText(text: string): boolean | null {
 
 async function infer(jpeg: Buffer): Promise<string | null> {
   try {
-    const r = await fetch(`${SIDECAR_URL}/infer`, {
+    const backend = visionBackend(); // moondream(Ollama) or md3(sidecar), live-switchable
+    const r = await fetch(`${backend.url}/api/generate`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ image_b64: jpeg.toString('base64'), instruction: INSTRUCTION }),
+      body: JSON.stringify({
+        model: backend.model,
+        prompt: visionInstruction(), // steerable: base + console/task extra
+        images: [jpeg.toString('base64')],
+        stream: false,
+        keep_alive: '30m',
+        options: { temperature: 0 },
+      }),
       signal: AbortSignal.timeout(30_000),
     });
     if (!r.ok) return null;
-    const data = (await r.json()) as { answer?: string };
-    return (data.answer ?? '').trim() || null;
+    const data = (await r.json()) as { response?: string };
+    return (data.response ?? '').trim() || null;
   } catch {
-    return null; // sidecar down / timeout → stay silent (tier-1 is best-effort)
+    return null; // Ollama down / timeout → stay silent (tier-1 is best-effort)
   }
 }
 
@@ -86,7 +94,18 @@ export function visionWatchProcessor(): StreamProcessor {
     s.lastInfer = Date.now();
     try {
       const answer = await infer(jpeg);
-      if (!answer) return;
+      // moondream flakes empty on the occasional good frame; don't spam "(nothing
+      // notable)" on every empty. Only report it after a sustained empty streak
+      // (genuinely nothing in view), and only once per streak.
+      if (!answer) {
+        s.emptyStreak++;
+        if (s.emptyStreak === EMPTY_STREAK_TO_REPORT) {
+          s.ctx.emit({ kind: 'scene', source: 'vision-watch',
+            payload: { description: '(nothing notable in view)', present: false }, confidence: 0.2 });
+        }
+        return;
+      }
+      s.emptyStreak = 0;
       const present = presentFromText(answer);
       // Tier-1 fact: always emit the scene description; include derived present.
       s.ctx.emit({
@@ -115,7 +134,7 @@ export function visionWatchProcessor(): StreamProcessor {
       const grabber = new FrameGrabber();
       grabber.start();
       const state: StreamState = {
-        ctx, grabber, busy: false, lastInfer: 0, lastPresent: null, timer: null,
+        ctx, grabber, busy: false, lastInfer: 0, lastPresent: null, emptyStreak: 0, timer: null,
       };
       // Drive inference on a timer (decoupled from RTP arrival rate).
       state.timer = setInterval(() => void tick(ctx.streamId), Math.min(INTERVAL_MS, 500));

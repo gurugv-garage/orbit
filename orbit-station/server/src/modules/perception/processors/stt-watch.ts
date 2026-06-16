@@ -1,0 +1,218 @@
+/**
+ * SttWatchProcessor — always-on server-side speech-to-text (perception pyramid
+ * tier-1 audio sensor, docs/PERCEPTION-PYRAMID.md), with VAD ENDPOINTING.
+ *
+ * Per producer it depacketizes the WebRTC Opus audio RTP, decodes it in-process to
+ * 16 kHz mono PCM (opusscript), and runs a voice-activity detector over 30 ms
+ * frames. Instead of blindly transcribing fixed rolling windows (which caused
+ * overlap-repeats and Whisper silence-hallucinations), it detects UTTERANCES:
+ *
+ *   silence … → [speech starts] → buffer while voiced → [≥ENDPOINT_MS silence]
+ *             → transcribe the WHOLE utterance ONCE → emit one clean `transcript`.
+ *
+ * This is the right shape for streaming STT: one final transcript per thing the
+ * person says, no windowing artifacts, and Whisper never sees pure silence (so it
+ * can't hallucinate "Thank you"/"I'm sorry" loops). A max-utterance cap flushes a
+ * very long monologue so we don't buffer forever.
+ *
+ * Decode mirrors the video FrameGrabber: werift depacketizes RTP, opusscript turns
+ * each Opus packet into 48 kHz PCM, we decimate to 16 kHz.
+ */
+
+import OpusScript from 'opusscript';
+import { dePacketizeRtpPackets } from 'werift';
+import type { RtpPacket } from 'werift';
+import type { MediaKind } from '../../media/tap.js';
+import type { StreamContext, StreamProcessor } from '../processor.js';
+
+const SIDECAR_URL = process.env.PERCEPTION_SIDECAR_URL ?? 'http://127.0.0.1:8078';
+const OPUS_RATE = 48_000; // WebRTC Opus is 48 kHz
+const SAMPLE_RATE = 16_000; // whisper wants 16 kHz
+const FRAME_MS = 30;
+const FRAME_SAMPLES = (SAMPLE_RATE * FRAME_MS) / 1000;
+
+/** Per-frame RMS at/above this counts as "voiced" (above comfort-noise hum). */
+const SILENCE_RMS = Number(process.env.STT_SILENCE_RMS ?? 0.02);
+/** Silence this long after speech ends the utterance (endpoint). 1.3 s so natural
+ *  mid-sentence pauses ("What time is the … meeting?") don't split a thought; the
+ *  cost is ~0.6 s longer to commit after you actually stop. */
+const ENDPOINT_MS = Number(process.env.STT_ENDPOINT_MS ?? 1300);
+/** Ignore "utterances" shorter than this (clicks, stray noise). */
+const MIN_UTTERANCE_MS = Number(process.env.STT_MIN_UTTERANCE_MS ?? 350);
+/** Force-flush a monologue this long even without an endpoint. */
+const MAX_UTTERANCE_MS = Number(process.env.STT_MAX_UTTERANCE_MS ?? 15_000);
+/** Keep this much leading silence/onset before the first voiced frame (so we don't
+ *  clip the first phoneme). */
+const PREROLL_MS = 200;
+
+// --------------------------------------------------------------------------- //
+// Whisper silence-hallucination backstop (the VAD should pre-empt these).
+// --------------------------------------------------------------------------- //
+const HALLUCINATION_PHRASES = new Set([
+  'you', 'thank you', 'thanks for watching', 'thank you for watching',
+  "i'm sorry", 'bye', 'bye.', '.', 'so', 'okay', 'the end',
+]);
+
+function isHallucination(text: string): boolean {
+  const norm = text.toLowerCase().replace(/\s+/g, ' ').trim();
+  if (HALLUCINATION_PHRASES.has(norm.replace(/[.!]+$/, ''))) return true;
+  const words = norm.split(/\s+/).filter(Boolean);
+  if (words.length < 4) return false;
+  const counts = new Map<string, number>();
+  for (const w of words) counts.set(w, (counts.get(w) ?? 0) + 1);
+  if (Math.max(...counts.values()) / words.length > 0.5) return true;
+  const clauses = norm.split(/[.!?]+/).map((c) => c.trim()).filter(Boolean);
+  if (clauses.length >= 3) {
+    const cc = new Map<string, number>();
+    for (const c of clauses) cc.set(c, (cc.get(c) ?? 0) + 1);
+    if (Math.max(...cc.values()) / clauses.length > 0.5) return true;
+  }
+  return false;
+}
+
+// --------------------------------------------------------------------------- //
+// Utterance detector — decodes Opus → PCM frames → VAD endpointing. Calls
+// onUtterance(pcm) with a complete utterance's PCM when speech ends.
+// --------------------------------------------------------------------------- //
+class UtteranceDetector {
+  #dec: OpusScript | null = null;
+  #started = false;
+  #pending: Int16Array[] = []; // decoded 16 kHz frames not yet VAD-processed
+  #carry = new Int16Array(0);  // leftover samples < one frame
+  #preroll: Int16Array[] = []; // recent silence frames (so onset isn't clipped)
+  #utter: Int16Array[] = [];   // frames of the in-progress utterance
+  #inSpeech = false;
+  #silenceMs = 0;
+  #utterMs = 0;
+  #onUtterance: (pcm: Int16Array) => void;
+
+  constructor(onUtterance: (pcm: Int16Array) => void) {
+    this.#onUtterance = onUtterance;
+  }
+
+  start(): void {
+    if (this.#started) return;
+    this.#started = true;
+    this.#dec = new OpusScript(OPUS_RATE, 1, OpusScript.Application.AUDIO);
+  }
+
+  feed(rtp: RtpPacket): void {
+    if (!this.#started || !this.#dec) return;
+    try {
+      const frame = dePacketizeRtpPackets('opus', [rtp]);
+      const data = frame?.data;
+      if (!data?.length) return;
+      const decoded = this.#dec.decode(data);
+      const pcm48 = new Int16Array(decoded.buffer, decoded.byteOffset, Math.floor(decoded.length / 2));
+      const out = new Int16Array(Math.floor(pcm48.length / 3)); // 48k → 16k
+      for (let i = 0; i < out.length; i++) out[i] = pcm48[i * 3]!;
+      this.#process(out);
+    } catch { /* skip bad packet */ }
+  }
+
+  /** Append decoded PCM, slice into 30 ms frames, run VAD per frame. */
+  #process(add: Int16Array): void {
+    const buf = new Int16Array(this.#carry.length + add.length);
+    buf.set(this.#carry); buf.set(add, this.#carry.length);
+    let off = 0;
+    for (; off + FRAME_SAMPLES <= buf.length; off += FRAME_SAMPLES) {
+      this.#vadFrame(buf.subarray(off, off + FRAME_SAMPLES));
+    }
+    this.#carry = buf.slice(off);
+  }
+
+  #vadFrame(frame: Int16Array): void {
+    let sum = 0;
+    for (let i = 0; i < frame.length; i++) { const v = frame[i]! / 32768; sum += v * v; }
+    const voiced = Math.sqrt(sum / frame.length) >= SILENCE_RMS;
+
+    if (this.#inSpeech) {
+      this.#utter.push(frame);
+      this.#utterMs += FRAME_MS;
+      this.#silenceMs = voiced ? 0 : this.#silenceMs + FRAME_MS;
+      if (this.#silenceMs >= ENDPOINT_MS || this.#utterMs >= MAX_UTTERANCE_MS) this.#endUtterance();
+    } else if (voiced) {
+      // speech onset — start an utterance, prepend the preroll.
+      this.#inSpeech = true;
+      this.#silenceMs = 0; this.#utterMs = 0;
+      this.#utter = [...this.#preroll, frame];
+      this.#preroll = [];
+    } else {
+      // keep a short trailing preroll of silence frames.
+      this.#preroll.push(frame);
+      const max = PREROLL_MS / FRAME_MS;
+      if (this.#preroll.length > max) this.#preroll.shift();
+    }
+  }
+
+  #endUtterance(): void {
+    const frames = this.#utter;
+    const ms = this.#utterMs - this.#silenceMs; // voiced span
+    this.#inSpeech = false; this.#utter = []; this.#silenceMs = 0; this.#utterMs = 0;
+    if (ms < MIN_UTTERANCE_MS) return; // too short → noise
+    let n = 0; for (const f of frames) n += f.length;
+    const pcm = new Int16Array(n);
+    let o = 0; for (const f of frames) { pcm.set(f, o); o += f.length; }
+    this.#onUtterance(pcm);
+  }
+
+  stop(): void {
+    this.#started = false;
+    try { this.#dec?.delete(); } catch { /* */ }
+    this.#dec = null;
+    this.#pending = []; this.#utter = []; this.#preroll = []; this.#carry = new Int16Array(0);
+  }
+}
+
+async function transcribe(pcm: Int16Array): Promise<string | null> {
+  try {
+    const buf = Buffer.from(pcm.buffer, pcm.byteOffset, pcm.byteLength);
+    const r = await fetch(`${SIDECAR_URL}/transcribe`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ pcm_b64: buf.toString('base64'), sample_rate: SAMPLE_RATE }),
+      signal: AbortSignal.timeout(30_000),
+    });
+    if (!r.ok) return null;
+    return ((await r.json()) as { text?: string }).text?.trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+interface StreamState {
+  ctx: StreamContext;
+  detector: UtteranceDetector;
+}
+
+export function sttWatchProcessor(): StreamProcessor {
+  const streams = new Map<string, StreamState>();
+
+  return {
+    id: 'stt-watch',
+    sources: '*',
+    mediaKinds: ['audio'],
+    channels: [],
+
+    onStreamStart(ctx: StreamContext) {
+      const detector = new UtteranceDetector((pcm) => {
+        // Each completed utterance → one transcription → one `transcript` result.
+        void (async () => {
+          const text = await transcribe(pcm);
+          if (!text || isHallucination(text)) return;
+          ctx.emit({ kind: 'transcript', source: 'stt-watch', payload: { text, isFinal: true }, confidence: 0.8 });
+        })();
+      });
+      detector.start();
+      streams.set(ctx.streamId, { ctx, detector });
+    },
+
+    onRtp(streamId: string, _kind: MediaKind, rtp: RtpPacket) {
+      streams.get(streamId)?.detector.feed(rtp);
+    },
+
+    onStreamEnd(streamId: string) {
+      streams.get(streamId)?.detector.stop();
+      streams.delete(streamId);
+    },
+  };
+}

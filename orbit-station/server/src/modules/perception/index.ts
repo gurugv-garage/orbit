@@ -20,8 +20,13 @@ import type { RouteContext, StationModule } from '../../core/module.js';
 import { fileURLToPath } from 'node:url';
 import type { ProcessingHub } from './hub.js';
 import { PerceptionState } from './state.js';
+import { Observations } from './observations.js';
 import { presenceProcessor } from './processors/presence.js';
 import { faceRecognitionProcessor } from './processors/face-recognition.js';
+import { visionWatchProcessor } from './processors/vision-watch.js';
+import { sttWatchProcessor } from './processors/stt-watch.js';
+import { setVisionExtra, getVisionExtra, visionBase } from './vision-instruction.js';
+import { setVisionConfig, getVisionConfig } from './vision-config.js';
 import { Gallery } from './face/gallery.js';
 import { describeFace, describeAllFaces, type DetectedFace } from './face/recognizer.js';
 
@@ -83,6 +88,7 @@ export function getFaceTools(): FaceToolsApi | undefined {
 
 export function perceptionModule(getHub: () => ProcessingHub): StationModule {
   let state: PerceptionState;
+  let observations: Observations;
   let bus: Bus;
   const gallery = new Gallery(GALLERY_PATH);
   const face = faceRecognitionProcessor(gallery);
@@ -101,10 +107,13 @@ export function perceptionModule(getHub: () => ProcessingHub): StationModule {
     init(b: Bus) {
       bus = b;
       state = new PerceptionState(bus);
+      observations = new Observations(bus); // rolling tier-1 log (vision + stt)
       const hub = getHub();
       // Always-on processors. More land here as phases progress (audio, …).
       hub.register(presenceProcessor());
       hub.register(face);
+      hub.register(visionWatchProcessor()); // moondream per-frame scene (Ollama)
+      hub.register(sttWatchProcessor());    // whisper rolling transcript (sidecar)
 
       // In-process face API for the server brain (docs/SERVER-BRAIN-IMPL.md §3.1):
       // the same operations the WS request/result flow below serves, exposed as
@@ -265,6 +274,52 @@ export function perceptionModule(getHub: () => ProcessingHub): StationModule {
 
       if (req.method === 'GET' && subPath === '/') {
         json(res, 200, state.all());
+        return true;
+      }
+      // Rolling tier-1 observations (vision + stt). GET /observations[?dock=] →
+      // newest-last array. GET /observations/stream → SSE live feed.
+      if (req.method === 'GET' && subPath === '/observations') {
+        const dock = new URL(req.url ?? '', 'http://x').searchParams.get('dock') ?? undefined;
+        json(res, 200, observations.list(dock));
+        return true;
+      }
+      // Clear the rolling observation buffer (console "Clear" button).
+      if (req.method === 'POST' && subPath === '/observations/clear') {
+        observations.clear();
+        json(res, 200, { ok: true });
+        return true;
+      }
+      if (req.method === 'GET' && subPath === '/observations/stream') {
+        res.writeHead(200, {
+          'content-type': 'text/event-stream',
+          'cache-control': 'no-cache',
+          connection: 'keep-alive',
+        });
+        res.write(': connected\n\n');
+        const unsub = observations.subscribe((o) => res.write(`data: ${JSON.stringify(o)}\n\n`));
+        req.on('close', unsub);
+        return true;
+      }
+      // Steer the vision instruction. GET → {base, extra}; POST {extra} sets it.
+      if (req.method === 'GET' && subPath === '/instruction') {
+        json(res, 200, { base: visionBase(), extra: getVisionExtra() });
+        return true;
+      }
+      if (req.method === 'POST' && subPath === '/instruction') {
+        const body = JSON.parse(await readBody(req)) as { extra?: string };
+        setVisionExtra(body.extra ?? '');
+        json(res, 200, { base: visionBase(), extra: getVisionExtra() });
+        return true;
+      }
+      // Vision backend (moondream ↔ md3), live-switchable.
+      if (req.method === 'GET' && subPath === '/vision-config') {
+        json(res, 200, getVisionConfig());
+        return true;
+      }
+      if (req.method === 'POST' && subPath === '/vision-config') {
+        const body = JSON.parse(await readBody(req)) as { model?: 'moondream' | 'md3' };
+        setVisionConfig(body);
+        json(res, 200, getVisionConfig());
         return true;
       }
       // DEBUG: dump the current decoded frame the face processor sees, to inspect
