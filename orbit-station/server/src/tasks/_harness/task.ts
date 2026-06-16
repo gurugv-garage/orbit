@@ -307,6 +307,39 @@ export abstract class Task {
   /** drive the dock body with move steps (fire-and-forget on the station side). */
   protected move(steps: unknown[]): Promise<void> { return this.request('move', { steps }); }
 
+  // ── Slack (a SELF action — NOT a station capability) ─────────────────────────
+  // A task runs in the station's environment (same .env, node_modules), so it
+  // talks to Slack DIRECTLY — no WS round-trip. These wrap the station's slack
+  // helper (bot token from the env) so a task needn't know its import path/API.
+  // All throw on failure (bad token / channel / scope). `channel` is a #name or
+  // id; omit it to use SLACK_DEFAULT_CHANNEL.
+
+  /** Post a message to a Slack channel (mrkdwn supported). */
+  protected async sendToSlack(text: string, channel?: string): Promise<void> {
+    const slack = await import('../../integrations/slack.js');
+    await slack.postMessage({ text, channel });
+  }
+  /** Take/Use a camera frame and post it to Slack as a photo. Pass a base64 JPEG
+   *  (e.g. from `await this.frame()`); omit to grab the current frame here.
+   *  Throws if there's no frame to send. */
+  protected async sendPhotoToSlack(opts: { channel?: string; caption?: string; jpegBase64?: string } = {}): Promise<void> {
+    const jpeg = opts.jpegBase64 ?? (await this.frame());
+    if (!jpeg) throw new Error('no camera frame to send (the dock is not streaming)');
+    const slack = await import('../../integrations/slack.js');
+    await slack.uploadFile({
+      channel: opts.channel,
+      bytes: Buffer.from(jpeg, 'base64'),
+      filename: `photo-${Date.now()}.jpg`,
+      title: opts.caption,
+      initialComment: opts.caption,
+    });
+  }
+  /** Direct-message a person on Slack (by name, @handle, or email). */
+  protected async dmOnSlack(user: string, text: string): Promise<void> {
+    const slack = await import('../../integrations/slack.js');
+    await slack.dmUser(user, text);
+  }
+
   /** THE TASK'S OWN LLM — a ready-to-use pi Agent (the dock's model + the provider
    *  key from env, already wired). The CORE reasoning primitive: vision,
    *  classification, summarization, multi-step, tool use — drive it directly. Built
