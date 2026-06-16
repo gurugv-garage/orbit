@@ -16,12 +16,19 @@ excluded — first call adds 5–15 s while weights load).
 
 | Scenario | Chosen model | Footprint | Latency | Why |
 |---|---|---|---|---|
-| Scene + action (temporal) | **Qwen2.5-VL-3B (MLX)** | ~3 GB | ~6 s / 5-frame | one VLM does scene AND action; real temporal reasoning |
-| Speech → text | **Whisper small.en (MLX)** | ~1 GB | ~0.1–0.7 s / utterance | best accuracy/size; VAD-endpointed |
+| Scene + action (temporal) | **Qwen2.5-VL-3B · MLX 4-bit** | ~3 GB | ~6 s / 5-frame | one VLM does scene AND action; real temporal reasoning |
+| Speech → text | **Whisper small.en · MLX (quantized)** | ~1 GB | ~0.1–0.7 s / utterance | best accuracy/size; VAD-endpointed |
 | Who (identity) | **face-api (TF.js)** | ~0.15 GB | ~tens of ms | embedding match; a VLM can't do identity |
 
 Total always-on ≈ **~4 GB**. (We started at ~10 GB stacking moondream+md3+qwen and
 hit 7 GB of swap — see "Overhead" below.)
+
+> **All footprints here are for QUANTIZED models** (the MLX builds are 4-bit; the
+> Ollama builds are 4-bit GGUF unless noted). Full-precision (bf16/fp16) versions
+> are ~2× larger — e.g. Qwen2.5-VL-3B is ~3 GB at 4-bit but ~6–7 GB at bf16. The
+> numbers below assume the 4-bit/quantized weights we actually run. Quantization
+> trades a small accuracy hit for ~½ the memory; 8-bit is the middle option if
+> accuracy ever matters more than RAM.
 
 ---
 
@@ -32,9 +39,9 @@ matters a lot here.
 
 | Model | Footprint | Latency @512px | Accuracy (320px) | Accuracy (512px) | Notes |
 |---|---|---|---|---|---|
-| **moondream2** (Ollama, phi2) | 1.3 GB | ~1.0 s | poor — hallucinates ("gym", "clock") | core right, invents background | Plain VQA. Returns EMPTY on closed/yes-no/JSON prompts. Deterministic. |
-| **moondream3-preview** (MLX 4-bit) | 5.4 GB (peak 6.5) | ~1.5 s | accurate, no hallucination | accurate + reads fine detail (goatee, expression, stripes) | Best per-frame accuracy; native query/detect/point skills. BSL-1.1 license. |
-| **Qwen2.5-VL-3B** (MLX) | ~3 GB GPU (~3.7 GB process RSS) | ~5.6 s | accurate, no person-hallucination | accurate | Slower per-frame, but also does temporal (see scenario 2). |
+| **moondream2** (Ollama, phi2, 4-bit GGUF / Q4_0) | 1.3 GB | ~1.0 s | poor — hallucinates ("gym", "clock") | core right, invents background | Plain VQA. Returns EMPTY on closed/yes-no/JSON prompts. Deterministic. |
+| **moondream3-preview** (MLX **4-bit**) | 5.4 GB (peak 6.5) | ~1.5 s | accurate, no hallucination | accurate + reads fine detail (goatee, expression, stripes) | Best per-frame accuracy; native query/detect/point skills. BSL-1.1 license. |
+| **Qwen2.5-VL-3B** (MLX **4-bit**) | ~3 GB GPU (~3.7 GB process RSS) | ~5.6 s | accurate, no person-hallucination | accurate | Slower per-frame, but also does temporal (see scenario 2). |
 
 **Key findings (per-frame):**
 - **moondream2 hallucinates below 512px** — the dock's 320×240 is part of the
@@ -59,9 +66,9 @@ reasons across frames; single-image models can't.
 | Model · path | Footprint | Latency (4–5 frames) | Motion accuracy | Notes |
 |---|---|---|---|---|
 | moondream/md3 frame-GRID (2×2) | (as per-frame) | ~1.5 s | crude — reads it's a sequence, weak on motion | hack: stitch frames into one image. md3 reliable about *no* motion. |
-| **Qwen2.5-VL-3B · Ollama** (separate images) | 3.2 GB | **~37 s** | ❌ WRONG ("circle stationary") | Ollama gives no temporal encoding — frames seen as unrelated. |
-| **Qwen2.5-VL-3B · MLX** (video path) | ~3 GB | **~3–6 s** | ✅ correct ("circle moves right, bar grows") | **The unlock.** Native temporal position encoding. ~12× faster than Ollama too. |
-| **Qwen2.5-VL-7B · Ollama** | 6.0 GB | ~25 s | ✅ correct | Size compensates for Ollama's weak path; heavier. |
+| **Qwen2.5-VL-3B · Ollama** (4-bit GGUF, separate images) | 3.2 GB | **~37 s** | ❌ WRONG ("circle stationary") | Ollama gives no temporal encoding — frames seen as unrelated. |
+| **Qwen2.5-VL-3B · MLX 4-bit** (video path) | ~3 GB | **~3–6 s** | ✅ correct ("circle moves right, bar grows") | **The unlock.** Native temporal position encoding. ~12× faster than Ollama too. |
+| **Qwen2.5-VL-7B · Ollama** (4-bit GGUF) | 6.0 GB | ~25 s | ✅ correct | Size compensates for Ollama's weak path; heavier. |
 
 **Key finding:** *how you feed the frames matters as much as model size.* The same
 3B model is WRONG via Ollama and CORRECT via MLX, because MLX encodes frame
@@ -85,8 +92,8 @@ standard datasets, plus latency.
 
 | Model | Footprint | Disk | Latency (per utterance) | WER LibriSpeech (clean) | WER Earnings-22 (hard) | Notes |
 |---|---|---|---|---|---|---|
-| **Whisper base.en** (MLX) | ~0.5 GB | 137 MB | ~0.08 s warm | low (clean English) | 41.0% | 68× real-time. |
-| **Whisper small.en** (MLX) | ~1 GB | 459 MB | ~0.1–0.7 s | lower | 37.5% | 8× real-time. **Chosen** — better on accents/jargon, still far faster than RT. |
+| **Whisper base.en** (MLX, quantized) | ~0.5 GB | 137 MB | ~0.08 s warm | low (clean English) | 41.0% | 68× real-time. |
+| **Whisper small.en** (MLX, quantized) | ~1 GB | 459 MB | ~0.1–0.7 s | lower | 37.5% | 8× real-time. **Chosen** — better on accents/jargon, still far faster than RT. |
 
 **Key findings (STT):**
 - Whisper isn't bad, it was **mis-fed** — it hallucinates on silence ("Thank you",
