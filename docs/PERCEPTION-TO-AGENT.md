@@ -8,8 +8,11 @@
 > the pure `ThoughtRouter` gate, the `listening`/`speaking` state accessor, the
 > `POST /api/brain/:dock/think` test-poke). Phase 2 = grounding (the last summary +
 > raw-since stream injected every turn, via `buildGrounding()` + the
-> `PerceptionGroundingApi` facade). All unit-tested. Phases 3–5 (pull tools, memory store,
-> the real attention gate) remain design. This doc pins the decisions + the seams.
+> `PerceptionGroundingApi` facade). All unit-tested. **Next: a console test surface (2c)**
+> to make Phases 1–2 visible/exercisable before stacking more. Then Phases 3–5 (pull
+> tools, memory store, the real attention gate), each followed by its own console surface;
+> APP changes (always-on mic, echo/barge-in) are pinned separately and deferred. This doc
+> pins the decisions + the seams.
 
 ## Where we are today (the gap)
 
@@ -427,10 +430,50 @@ gating — apply to task comms too; keep them unified, don't fork.)
 2. **Grounding (Decision 3.1)** — ✅ **DONE.** PUSH the last summary (with staleness) +
    the raw stream since it into every turn's prompt. Pure `buildGrounding()` +
    `PerceptionGroundingApi` facade + `lastSummary` cache; unit-tested. No per-turn Gemini.
-3. **Pull tools (Decision 3.2)** — `force_get_current`, then `recall_memory`/`inspect_memory`.
+2c. **CONSOLE: thoughts + grounding test surface** — make Phases 1–2 *visible and
+   exercisable* in the browser (today they're curl-only). In the **Brain console**: a
+   **"think" box** (free text + a kind tag) that POSTs `/api/brain/:dock/think` so you
+   can fire a self-thought and watch it route (the obs stream already renders the turn,
+   now tagged `trigger.kind:'self'`); a **state pill** showing `state()`
+   (idle/listening/speaking/thinking) and a **listening toggle** that calls a small
+   debug seam (`setListening`) so the defer path is clickable, not just unit-tested; and
+   a **grounding preview** panel showing the exact block the next turn would inject
+   (already in `/profile` — surface it). *Why here, not later:* you can't trust Phase 3's
+   tools until you can SEE Phase 1–2 behaving on a real dock. Small, server-only deps.
+3. **Pull tools (Decision 3.2)** — `force_get_current` first (it's also the first real
+   PRODUCER of summaries → makes grounding's cache live), then `recall_memory`/
+   `inspect_memory`. New brain tools via the `tools.ts` pattern; a `MemoryApi` facade.
+3c. **CONSOLE: tool-call visibility** — the obs turn-inspector already shows tool calls;
+   add a perception/memory-tool **filter/affordance** so a `force_get_current` or
+   `recall_memory` call (args + result) is legible in the Brain console, and a button to
+   fire a turn that *should* trigger each tool (for manual verification before the gate
+   exists). Reuses the existing `ToolExecutionStart/End` obs events.
 4. **Memory store (Decision 4)** — persistence + retention tiers; back the tools with it.
+4c. **CONSOLE: memory inspector** — a **Memory panel** (likely in PerceptionStudio or a
+   new tab): list/search memories (type/subject/time), open one to see its **lineage**
+   (what it was derived from) + confidence, and manually add/revise/forget — the human
+   view of Decision 4's store. This is also how we'll *debug* what the agent recalls.
 5. **Proactive gate (Decision 1, later)** — cheap rules → LLM judge that auto-raises
-   thoughts instead of the button.
+   thoughts instead of the console button. The console button (2c) stays as the manual
+   override + test path.
+
+### APP (node-dock) changes — only where genuinely required
+Most of this is **server-side and needs NO app change** (the phone already adopts
+station-originated autonomous turns — that's how tasks speak; a self-thought rides the
+same `autonomous:true` turn-status). App work is pinned to two specific needs, deferred
+until the server + console prove out:
+- **A1 — the always-on-mic shift (the big one, blocks the real `listening`/attention
+  gate).** Today the Android recognizer owns the mic and sends finalized utterances, so
+  the station has no live user-speech signal. Moving the mic into the WebRTC/perception
+  path is what makes `listening`, segmentation (2b), and the attention gate (Decision 1)
+  REAL. This is its own design pass (see Open questions) and a substantial app change —
+  do it when the server-side gate is otherwise ready to consume the signal.
+- **A2 — echo cancellation + voice barge-in (2c.1/2c.2), couples to A1.** `noiseSuppression`
+  + `autoGainControl` on the app's `getUserMedia`, and voice-activity-during-`speaking` →
+  interrupt. Ships WITH A1 (barge-in needs the always-on mic + working AEC).
+Anything a self-thought/grounding/tool needs to *display* differently on the dock face
+(e.g. a "thinking to itself" affordance) is a small, optional polish — pin it only if a
+phase surfaces a concrete need; the default is the existing autonomous-turn UX.
 
 ## Decided
 - **Push** grounding (mirrors tasks); thoughts + tasks share one mechanism.
