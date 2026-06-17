@@ -1,22 +1,25 @@
 /**
- * Steerable vision instruction — the prompt the always-on vision processor
- * (vision-watch) sends moondream each frame. A built-in BASE plus a live-settable
- * EXTRA the console (and later a task) can append/modify on the running stream.
+ * Steerable vision instruction — the prompt the vision-snapshot processor sends
+ * qwen for each window. A built-in BASE plus a live-settable EXTRA the console
+ * (and later a task) can append/modify on the running stream.
  *
- * Shared singleton so the REST endpoint (POST /api/perception/instruction) and
- * the processor read/write the same value without a bus round-trip. Per the
- * perception pyramid (docs/PERCEPTION-PYRAMID.md) the vision instruction "could
- * borrow instructions from an ongoing task"; this is the slot that gets steered.
+ * Shared singleton so the REST endpoint (POST /api/perception/instruction) and the
+ * processor read/write the same value without a bus round-trip.
  */
 
-// moondream2 on a 320x240 frame WILL pad with invented details no matter the
-// prompt (it's the accuracy gap vs md3 — see models/moondream/FINDINGS.md). Long
-// "do not guess / say if unclear" prompts make it emit EMPTY (it can't follow
-// meta-instructions); "describe what you see" maximizes confabulation. Tested on
-// the fixtures, a plain "What is in this image?" is the most grounded short
-// prompt that still answers — it gets the core facts right and pads least.
-// For higher fidelity, point VISION_WATCH_MODEL at an md3 sidecar.
-const BASE = 'What is in this image? Mention any person and their posture.';
+// qwen follows instructions (unlike moondream), so the BASE actively suppresses
+// hallucination: describe only what's clearly visible, do NOT guess gender /
+// identity / details. Identity (names) is supplied separately by face recognition
+// and fused in by the processor — qwen must NOT invent it.
+// Sweet spot (tested): captures the actual ACTION + any held object — the "who did
+// what" signal — without the fabricated rooms/people/clothing the loose prompt
+// produced. Too-strict prompts collapse to "the person is present" (useless).
+const BASE =
+  'In one short sentence, describe what the person is doing — their action and ' +
+  'posture — and any object they are clearly holding or using (e.g. "typing on a ' +
+  'laptop", "drinking from a cup", "standing and looking at the screen"). ' +
+  'Use "they"/"the person"; do not guess gender, age, or name. State only what is ' +
+  'clearly visible — do NOT describe the background or invent details or other people.';
 
 let extra = '';
 

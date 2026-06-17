@@ -7,6 +7,10 @@
 > Status: **design + tier-1 prototype.** Tiers 2–3 are specified here, not yet
 > built. Builds on the existing perception module
 > (`orbit-station/server/src/modules/perception/`) — this is not a rewrite.
+>
+> The **as-built** tier-1 pipeline (the four snapshot streams + summarizer) and the
+> reasoning behind each component:
+> [docs/PERCEPTION-PIPELINE.md](PERCEPTION-PIPELINE.md).
 
 ## The shift
 

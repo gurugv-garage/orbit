@@ -24,6 +24,7 @@ import { dePacketizeRtpPackets } from 'werift';
 import type { RtpPacket } from 'werift';
 import type { MediaKind } from '../../media/tap.js';
 import type { StreamContext, StreamProcessor } from '../processor.js';
+import { makeSnapshot, type SnapshotStore } from '../snapshots.js';
 
 const SIDECAR_URL = process.env.PERCEPTION_SIDECAR_URL ?? 'http://127.0.0.1:8078';
 const OPUS_RATE = 48_000; // WebRTC Opus is 48 kHz
@@ -74,19 +75,31 @@ function isHallucination(text: string): boolean {
 // Utterance detector — decodes Opus → PCM frames → VAD endpointing. Calls
 // onUtterance(pcm) with a complete utterance's PCM when speech ends.
 // --------------------------------------------------------------------------- //
+/** Concatenate a list of equal-typed Int16 frames into one contiguous buffer. */
+function concatFrames(frames: Int16Array[]): Int16Array {
+  let n = 0; for (const f of frames) n += f.length;
+  const pcm = new Int16Array(n);
+  let o = 0; for (const f of frames) { pcm.set(f, o); o += f.length; }
+  return pcm;
+}
+
 class UtteranceDetector {
   #dec: OpusScript | null = null;
   #started = false;
-  #pending: Int16Array[] = []; // decoded 16 kHz frames not yet VAD-processed
   #carry = new Int16Array(0);  // leftover samples < one frame
   #preroll: Int16Array[] = []; // recent silence frames (so onset isn't clipped)
   #utter: Int16Array[] = [];   // frames of the in-progress utterance
   #inSpeech = false;
   #silenceMs = 0;
   #utterMs = 0;
-  #onUtterance: (pcm: Int16Array) => void;
+  #onUtterance: (pcm: Int16Array, startedAt: Date, endedAt: Date) => void | Promise<void>;
+  #startedAt: Date | null = null;
 
-  constructor(onUtterance: (pcm: Int16Array) => void) {
+  // Same as onUtterance but awaitable — used by flushNow so the caller knows the
+  // transcript is persisted. Set alongside the constructor callback.
+  commit?: (pcm: Int16Array, startedAt: Date, endedAt: Date) => Promise<void>;
+
+  constructor(onUtterance: (pcm: Int16Array, startedAt: Date, endedAt: Date) => void | Promise<void>) {
     this.#onUtterance = onUtterance;
   }
 
@@ -135,6 +148,7 @@ class UtteranceDetector {
       // speech onset — start an utterance, prepend the preroll.
       this.#inSpeech = true;
       this.#silenceMs = 0; this.#utterMs = 0;
+      this.#startedAt = new Date();
       this.#utter = [...this.#preroll, frame];
       this.#preroll = [];
     } else {
@@ -150,21 +164,43 @@ class UtteranceDetector {
     const ms = this.#utterMs - this.#silenceMs; // voiced span
     this.#inSpeech = false; this.#utter = []; this.#silenceMs = 0; this.#utterMs = 0;
     if (ms < MIN_UTTERANCE_MS) return; // too short → noise
-    let n = 0; for (const f of frames) n += f.length;
-    const pcm = new Int16Array(n);
-    let o = 0; for (const f of frames) { pcm.set(f, o); o += f.length; }
-    this.#onUtterance(pcm);
+    this.#onUtterance(concatFrames(frames), this.#startedAt ?? new Date(), new Date());
+    this.#startedAt = null;
+  }
+
+  /** Force-commit an in-progress utterance NOW (don't wait for the silence
+   *  endpoint). Used by the Summarize flush so the thing you're mid-saying lands
+   *  in the store before we summarize. No-op if not currently in speech. Awaits
+   *  the commit (via `commit`) so the caller knows the transcript is persisted. */
+  async flushNow(): Promise<void> {
+    if (!this.#inSpeech) return;
+    const frames = this.#utter;
+    const ms = this.#utterMs - this.#silenceMs;
+    this.#inSpeech = false; this.#utter = []; this.#silenceMs = 0; this.#utterMs = 0;
+    if (ms < MIN_UTTERANCE_MS) return;
+    const started = this.#startedAt ?? new Date();
+    this.#startedAt = null;
+    await (this.commit ?? this.#onUtterance)(concatFrames(frames), started, new Date());
   }
 
   stop(): void {
     this.#started = false;
     try { this.#dec?.delete(); } catch { /* */ }
     this.#dec = null;
-    this.#pending = []; this.#utter = []; this.#preroll = []; this.#carry = new Int16Array(0);
+    this.#utter = []; this.#preroll = []; this.#carry = new Int16Array(0);
   }
 }
 
-async function transcribe(pcm: Int16Array): Promise<string | null> {
+/** Whisper output + its own confidence tells (null when the sidecar is old/quiet). */
+interface Transcription {
+  text: string;
+  avgLogprob: number | null;      // mean token log-prob; very negative = unsure
+  noSpeechProb: number | null;    // P(silence/noise); high = likely hallucination
+  compressionRatio: number | null; // gzip ratio; high = repetitive loop
+  inferMs: number | null;         // sidecar-reported transcription latency
+}
+
+async function transcribe(pcm: Int16Array): Promise<Transcription | null> {
   try {
     const buf = Buffer.from(pcm.buffer, pcm.byteOffset, pcm.byteLength);
     const r = await fetch(`${SIDECAR_URL}/transcribe`, {
@@ -173,10 +209,39 @@ async function transcribe(pcm: Int16Array): Promise<string | null> {
       signal: AbortSignal.timeout(30_000),
     });
     if (!r.ok) return null;
-    return ((await r.json()) as { text?: string }).text?.trim() || null;
+    const j = (await r.json()) as {
+      text?: string; avg_logprob?: number | null; no_speech_prob?: number | null;
+      compression_ratio?: number | null; latency_ms?: number;
+    };
+    const text = j.text?.trim();
+    if (!text) return null;
+    return {
+      text,
+      avgLogprob: j.avg_logprob ?? null,
+      noSpeechProb: j.no_speech_prob ?? null,
+      compressionRatio: j.compression_ratio ?? null,
+      inferMs: j.latency_ms != null ? Math.round(j.latency_ms) : null,
+    };
   } catch {
     return null;
   }
+}
+
+// Confidence gates on Whisper's OWN metrics — the real hallucination tells, far
+// better than a phrase blacklist. Defaults are conservative (only flag clearly bad
+// transcripts); all env-tunable from the perception playground.
+const LOGPROB_MIN = Number(process.env.STT_LOGPROB_MIN ?? -1.0);   // below → unsure
+const NOSPEECH_MAX = Number(process.env.STT_NOSPEECH_MAX ?? 0.5);  // above → likely noise
+const COMPRESSION_MAX = Number(process.env.STT_COMPRESSION_MAX ?? 2.4); // above → repetitive loop
+
+/** Decide lowConfidence from Whisper metrics first, falling back to text heuristics
+ *  (so it still works against an older sidecar that returns only text). We TAG, not
+ *  drop — a flagged "oh!" / gasp can still be signal; the summarizer LLM decides. */
+function isLowConfidence(t: Transcription): boolean {
+  if (t.avgLogprob != null && t.avgLogprob < LOGPROB_MIN) return true;
+  if (t.noSpeechProb != null && t.noSpeechProb > NOSPEECH_MAX) return true;
+  if (t.compressionRatio != null && t.compressionRatio > COMPRESSION_MAX) return true;
+  return isHallucination(t.text) || t.text.replace(/[^a-z0-9]/gi, '').length < 3;
 }
 
 interface StreamState {
@@ -184,24 +249,49 @@ interface StreamState {
   detector: UtteranceDetector;
 }
 
-export function sttWatchProcessor(): StreamProcessor {
+export function sttWatchProcessor(store: SnapshotStore): StreamProcessor & {
+  /** Force-commit any in-progress utterance on EVERY stream now, awaiting the
+   *  transcription. Used by the Summarize flush so a mid-sentence is captured. */
+  flushAll(): Promise<void>;
+} {
   const streams = new Map<string, StreamState>();
 
   return {
+    flushAll: async () => { await Promise.all([...streams.values()].map((s) => s.detector.flushNow())); },
     id: 'stt-watch',
     sources: '*',
     mediaKinds: ['audio'],
     channels: [],
 
     onStreamStart(ctx: StreamContext) {
-      const detector = new UtteranceDetector((pcm) => {
-        // Each completed utterance → one transcription → one `transcript` result.
-        void (async () => {
-          const text = await transcribe(pcm);
-          if (!text || isHallucination(text)) return;
-          ctx.emit({ kind: 'transcript', source: 'stt-watch', payload: { text, isFinal: true }, confidence: 0.8 });
-        })();
-      });
+      // Each completed (or force-flushed) utterance → one transcription → snapshot.
+      // Returns a Promise so flushNow() can await the commit before summarizing.
+      const commit = async (pcm: Int16Array, startedAt: Date, endedAt: Date): Promise<void> => {
+        const tr = await transcribe(pcm);
+        if (!tr) return;
+        // Don't DROP shaky transcripts — a gasp / "oh!" / cut-off word can be
+        // signal. TAG them lowConfidence (from Whisper's own logprob/no-speech/
+        // compression metrics, falling back to text heuristics) and let the
+        // summarizer LLM decide noise vs signal.
+        const lowConfidence = isLowConfidence(tr);
+        store.add(makeSnapshot({
+          dockId: ctx.dockId,
+          source: { id: ctx.streamId, kind: 'speech', device: 'dock-webrtc', host: 'station' },
+          model: { name: 'whisper-small.en-mlx', endpoint: SIDECAR_URL },
+          from: startedAt, to: endedAt,
+          payload: {
+            text: tr.text, lowConfidence,
+            // keep the raw metrics on the record for the playground to inspect/tune
+            avgLogprob: tr.avgLogprob, noSpeechProb: tr.noSpeechProb, compressionRatio: tr.compressionRatio,
+            inferMs: tr.inferMs,
+          },
+        }));
+        // confidence rides along so downstream sees Whisper's certainty, not a constant
+        const conf = tr.avgLogprob != null ? Math.max(0, Math.min(1, 1 + tr.avgLogprob)) : 0.8;
+        ctx.emit({ kind: 'transcript', source: 'stt-watch', payload: { text: tr.text, isFinal: true }, confidence: conf });
+      };
+      const detector = new UtteranceDetector((pcm, startedAt, endedAt) => { void commit(pcm, startedAt, endedAt); });
+      detector.commit = commit; // flushNow awaits this; the live path stays fire-and-forget
       detector.start();
       streams.set(ctx.streamId, { ctx, detector });
     },

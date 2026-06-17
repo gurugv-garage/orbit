@@ -49,7 +49,7 @@ class Stt:
         except Exception:
             pass
 
-    def transcribe(self, pcm_i16: np.ndarray, sample_rate: int) -> str:
+    def transcribe(self, pcm_i16: np.ndarray, sample_rate: int) -> dict:
         # mlx-whisper wants float32 mono @ 16k. PCM int16 -> float32 [-1,1].
         audio = pcm_i16.astype(np.float32) / 32768.0
         if sample_rate != 16000:
@@ -67,7 +67,27 @@ class Stt:
             logprob_threshold=-1.0,
             temperature=0.0,
         )).result()
-        return (r.get("text") or "").strip()
+        text = (r.get("text") or "").strip()
+        # Surface Whisper's own confidence tells so the TS pipeline can flag shaky
+        # transcripts on REAL signals (not just a phrase blacklist):
+        #   avg_logprob       — mean token log-prob; very negative = unsure/garbled.
+        #   no_speech_prob    — P(this was silence/noise); high = likely hallucination.
+        #   compression_ratio — gzip ratio of text; high = repetitive loop ("you you …").
+        # Aggregate across segments (duration-weighted for logprob; max for the rest,
+        # since one bad segment is enough to distrust the line).
+        segs = r.get("segments") or []
+        avg_logprob = no_speech = comp = None
+        if segs:
+            tot = sum(max(1e-3, (s.get("end", 0) - s.get("start", 0))) for s in segs)
+            avg_logprob = sum(s.get("avg_logprob", 0.0) * max(1e-3, (s.get("end", 0) - s.get("start", 0))) for s in segs) / tot
+            no_speech = max(s.get("no_speech_prob", 0.0) for s in segs)
+            comp = max(s.get("compression_ratio", 0.0) for s in segs)
+        return {
+            "text": text,
+            "avg_logprob": avg_logprob,
+            "no_speech_prob": no_speech,
+            "compression_ratio": comp,
+        }
 
 
 class Vision:
@@ -161,11 +181,12 @@ def make_handler(stt: Stt, vision_holder: dict, temporal_holder: dict):
                     return
                 t0 = time.perf_counter()
                 try:
-                    text = stt.transcribe(pcm, sr)
+                    out = stt.transcribe(pcm, sr)
                 except Exception as e:
                     self._send(500, {"error": str(e)})
                     return
-                self._send(200, {"text": text, "latency_ms": (time.perf_counter() - t0) * 1e3})
+                out["latency_ms"] = (time.perf_counter() - t0) * 1e3
+                self._send(200, out)
                 return
 
             # Ollama-compatible vision: same shape as Ollama's /api/generate, so the

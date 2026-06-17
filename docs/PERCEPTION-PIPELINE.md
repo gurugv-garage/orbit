@@ -1,0 +1,381 @@
+# Perception pipeline — as-built, with the decisions behind it
+
+> What the perception pipeline actually is today, component by component, and
+> **why each piece is what it is** — the alternatives we weighed, the numbers that
+> settled it, and the tradeoff we accepted. This is the decision record; the raw
+> model measurements live in [models/BENCHMARKS.md](../models/BENCHMARKS.md) and the
+> future tiered-escalation plan in [PERCEPTION-PYRAMID.md](PERCEPTION-PYRAMID.md).
+>
+> Status: **built and running** (the snapshot pipeline + console). The pyramid's
+> tier-2/3 escalation is still design.
+
+Code: `orbit-station/server/src/modules/perception/`. Console (the playground):
+`http://localhost:8099/#perception`.
+
+---
+
+## 1. The shape: one stream in, four parallel "snapshot" streams out
+
+The browser/dock publishes **one** WebRTC stream (mic + cam) to the station SFU.
+Processors **tap** that stream in-process (no second capture path) and each emits
+**snapshot records** — a single shared, self-describing envelope — into an
+in-memory ring. A Gemini summarizer fuses a time-window of records on demand.
+
+```
+                         ┌── 👁 VISION    (qwen2.5-VL-3B, MLX sidecar)  what's happening
+  browser cam+mic        │   🎙 SPEECH    (whisper small.en, MLX sidecar) what's said
+  ──WebRTC──▶ station ───┤   👤 IDENTITY  (face-api, in-process)         who's present + where
+              SFU  tap   │   😮 EMOTION   (face-api expression, in-proc)  soft expression hint
+                         │   🤖 BODYMOTION(robot proprioception)          is the CAMERA moving
+                         └──────────────────────────────┬───────────────
+                                                         ▼
+                              SnapshotStore (ring)  ──▶  Gemini summarizer  ──▶ narrative
+                                                         (gemini-2.5-flash)
+```
+
+**Why this shape (vs. one big model that does everything):**
+
+| Decision | Alternative | Why this | What we gave up |
+|---|---|---|---|
+| **4 separate single-purpose streams** | one multimodal model ingesting A/V + identity | Each task has a *different best tool* (a VLM can't say "Guru"; identity needs enroll-then-match; STT ≠ vision). Separable = independently tunable, swappable, debuggable. | A later **fusion** step (the summarizer) is now required to recombine them. |
+| **Shared snapshot envelope** (IST `from/to/duration`, `source`, `model`, `payload`) | per-stream ad-hoc formats | One timeline, one viewer, one summarizer input; new sensors plug in free. | Slightly more boilerplate per record. |
+| **Tap the existing WebRTC stream** | a second/standalone capture for perception | One capture path = the model sees exactly what the dock sees; no drift, no extra camera handle. | Bound to whatever the publisher sends (resolution, codec). |
+| **In-memory ring (bounded)** | persist every record to a DB | Perception is "what's current," not an archive; cheap, fast, no schema. | History beyond the ring is lost (we added **takes** to freeze slices on demand — see §7). |
+
+Why **separate identity from vision text** specifically: an early version
+string-replaced "a person" → "Guru" inside the vision sentence. Fragile, and it
+breaks the moment there are two people. Identity is its own stream with bounding
+boxes, so the summarizer fuses *who* + *what* spatially ("Guru on the left …")
+without text surgery.
+
+**Extensibility — the envelope is built to grow.** Every stream goes through one
+factory (`makeSnapshot`) producing one `SnapshotRecord`. The contract:
+`source.kind` is the only discriminator; `payload` is `{ text: string } &
+Record<string, unknown>` — a mandatory human-readable `text` (what the summarizer
+stitches) plus any free stream-specific extras with **zero schema change** (vision
+adds `frames/latencyMs`, speech `lowConfidence/no_speech_prob`, identity
+`faces/box`, emotion `score/all`, bodymotion `state/flow`). Adding a stream =
+add one `kind` literal + a processor that calls `makeSnapshot`. The store, time
+filters, takes, and console feed are all **kind-agnostic**, so a new stream works
+automatically. The only per-kind logic is in the summarizer's stitcher, which has a
+**generic fallthrough** (`HH:MM:SS KIND <text>`) — a new stream is never dropped;
+it just gets richer treatment if you add a case (as identity/bodymotion did with
+span-collapsing). Graceful default + opt-in richness, not rigidity. (bodymotion,
+§5b, was added this way as the 5th stream — proof the seam holds.)
+
+---
+
+## 2. 👁 Vision — Qwen2.5-VL-3B (MLX 4-bit), latency-bound windows
+
+**What:** a Python/MLX **sidecar** (`models/perception-sidecar`, `/temporal` on
+:8080) loads Qwen2.5-VL-3B once and answers `{frames, prompt} → description`. The
+TS processor samples **5 frames at ~700 ms** apart, posts them, commits the result,
+and immediately starts the next window (the window length = inference time, no
+fixed clock).
+
+**Alternatives and why not:**
+
+| Option | Result | Verdict |
+|---|---|---|
+| moondream2 (Ollama, 1.3 GB) | hallucinates below 512px ("gym", "clock"); **empty** on closed/JSON prompts; no temporal | describer, not a reasoner — dropped |
+| moondream3-preview (MLX, 5.4 GB) | best *per-frame* accuracy | 4× the RAM; per-frame only — kept available, not default |
+| Qwen2.5-VL-3B via **Ollama** | **~37 s** and **WRONG** on motion ("circle stationary") | Ollama gives no temporal encoding |
+| **Qwen2.5-VL-3B via MLX** ✅ | **~3–6 s** and **correct** ("circle moves right") | **chosen** — one model does scene *and* action |
+
+**The win, numerically:** the *same* 3B model is wrong-and-37s via Ollama but
+correct-and-~5s via MLX — **~12× faster and actually correct** — because MLX
+encodes frame order/time. One temporal VLM replaces a per-frame model *and* a
+separate motion model, keeping always-on memory at ~3 GB instead of stacking.
+
+**The biggest accuracy lever is resolution, not the prompt** (measured): at 320px
+it fabricates objects ("comb"); at **512px** it's accurate; 768px gives no gain and
+sometimes hurts. Production default = **512px**. The prompt is action-focused and
+explicitly forbids inventing background/people (a real bug: for a while the prompt
+wasn't even being sent to the sidecar, so all tuning was a no-op — fixed).
+
+**Tradeoffs accepted:** ~5 s latency per window (it's a 3B VLM on a laptop), and it
+**still fabricates** on thin/ambiguous frames — which is why the summarizer is told
+to be skeptical, and why **resolution is pinned at 512**.
+
+---
+
+## 3. 🎙 Speech — Whisper small.en (MLX), VAD-endpointed
+
+**What:** the STT processor depacketizes WebRTC Opus → 16 kHz PCM in-process, runs
+a **voice-activity detector** over 30 ms frames, and on an utterance boundary
+(≥1.3 s trailing silence) sends the *whole utterance once* to the whisper sidecar
+(:8078 `/transcribe`). One clean transcript per thing said.
+
+**Why small.en (vs base.en):** measured by WER — small.en is meaningfully better on
+hard speech (Earnings-22 37.5% vs 41.0%) and still **8× real-time**. base.en is
+faster but worse on accents/jargon. Size (~1 GB) is acceptable.
+
+**The key insight — Whisper wasn't bad, it was *mis-fed*.** Transcribing fixed
+rolling windows made it hallucinate on silence ("Thank you" / "I'm sorry" loops)
+and repeat overlaps. **VAD endpointing** (transcribe a detected utterance, never
+pure silence) fixed both. We then went further on robustness:
+
+- We surface Whisper's **own confidence metrics** (`avg_logprob`, `no_speech_prob`,
+  `compression_ratio`) and flag `lowConfidence` on them — far better than a phrase
+  blacklist. **Validated:** 2 s of silence → Whisper emits "You" with
+  `no_speech_prob 0.86` → correctly flagged regardless of the word it invents.
+- We **tag, never drop** shaky transcripts — a gasp / "oh!" can be signal; the
+  summarizer decides noise vs. signal.
+
+**Tradeoffs accepted:** the 1.3 s endpoint adds ~0.6 s before a final commit (so
+natural mid-sentence pauses don't split a thought); and WER is still nonzero on
+hard audio — hence `lowConfidence` tagging rather than trusting every word.
+
+---
+
+## 4. 👤 Identity — face-api (TF.js), enroll-then-match, debounced
+
+**What:** face-api (`@vladmandic/face-api`) runs **in-process** (no sidecar — it's
+TF.js, ~tens of ms) on ~1 fps decoded frames. **`detectAllFaces`** → for *every*
+face: a 128-d descriptor matched against an enrolled gallery → `{name | null, box,
+…}`. Presence is **hysteresis-debounced** (CONFIRM 2 / DROP 2 samples) so the
+~2 s flicker doesn't enter/leave people spuriously.
+
+**Why face-api (vs. asking the VLM "who is this"):** a VLM can describe "a man" but
+**cannot** say "Guru" — identity is enroll-then-match against a known gallery, a
+fundamentally different operation. face-api is tiny (~0.15 GB), fast, and its
+embedding match is exactly the right tool.
+
+**Why debounce in the processor (not the summarizer):** the raw stream flickers
+("Guru" → "no one" → "Guru" every 2 s). Collapsing it at the *source* means the
+live feed, the summary, and the dock brain all get clean presence — one fix,
+everywhere. The summarizer is *also* told to treat brief gaps as continuity (belt
+and suspenders).
+
+**Multi-person:** first-class throughout — `detectAllFaces`, per-face recognition,
+**independent** per-person presence tracking, sorted left→right by position. "Guru
+on the left, unknown on the right" is structurally supported.
+
+**Tradeoffs accepted / known weak spots:** recognition gives **false names**
+(a look-alike or partial face can match an enrolled person) — worse with more/
+off-angle faces. Thresholds trade false-accepts vs. misses; this is the main
+quality gap, not a structural one.
+
+---
+
+## 5. 😮 Emotion — face-api expression, **hedged** (descriptive, not forced)
+
+**What:** the expression net is part of face-api's **same single pass** as
+detection/landmarks/recognition (it reuses the aligned face crop — ~330 KB net,
+near-zero extra cost; there is **no** separate "identify then emote" round-trip).
+It outputs a 7-way distribution (neutral/happy/sad/angry/…).
+
+**Why it's gated, not argmax:** raw `argmax` **force-fits** — measured: a calm
+desk face reads `angry 0.73`. So we (a) emit only when the top emotion is
+**strong AND clearly ahead of 2nd place** (`score ≥ 0.45`, `margin ≥ 0.25`),
+(b) **phrase by confidence** — "looked X" only when strong (`≥ 0.7`), else
+"seemed a little X", and (c) **stay silent** when ambiguous or neutral-dominant.
+The full distribution rides on the record for inspection. **Validated:** the
+neutral frame now emits *nothing*; the 0.73 misread becomes a hedged "seemed a
+little angry" instead of an asserted "looked angry."
+
+**Why keep it at all:** it's effectively free (rides the recognition pass) and the
+*occasional* strong, clear read is real signal. The honest answer is it adds
+**modest** value — so it's wired to whisper, not shout.
+
+**Tradeoffs accepted:** face-api expression is weak at webcam distance / acted
+expressions; we accept "miss some, get some." The name is **never** from this net
+(it's from §4 recognition) — a point worth stating because the two are emitted
+together.
+
+---
+
+## 5b. 🤖 Body-motion — egocentric awareness (the camera moves)
+
+**The problem:** every other stream silently assumes a **fixed** camera — "if the
+view changed, the world changed." But the camera sits on a **robot** that pans,
+tilts, and drives. So a view change has two possible causes the pipeline otherwise
+can't tell apart:
+
+| Observation | Fixed-cam reading | Truth on a robot |
+|---|---|---|
+| person leaves frame | "they left" | the **robot panned away** — they're still there |
+| new face appears | "someone arrived" | the **robot turned toward them** |
+| scene changes entirely | "the room changed" | the **robot drove elsewhere** |
+
+Mis-reading ego-motion as world-motion corrupts identity presence, "meaningful
+movement," and vision (motion blur → fabrication). The fix is **one cheap signal —
+"is the camera moving, and how"** — that the other streams and the summarizer read.
+
+**What:** a `bodymotion` snapshot stream fed by **robot proprioception** — nothing
+is estimated from the video. The robot *commands* its own motion, so it simply
+*knows* when it moved; there is no reason to infer it from pixels. (An earlier draft
+diffed decoded frames / read VP8 P-frame sizes to guess motion — an extra decode per
+stream to approximate a fact the body already has for free. Dropped.)
+
+**The contract (station → this stream).** The station feeds discrete **motion
+commands** as the robot issues them — there is *no* "stationary command"; absence of
+commands IS stationary. `MotionCommand`:
+
+```
+{ mode: string,          // 'pan' | 'tilt' | 'drive' | …  (OPEN string, not an enum)
+  direction?: string,    // 'left' | 'right' | 'up' | 'forward' | …
+  durationMs: number,    // how long the move takes (sub-second typical)
+  amount?: number,       // optional magnitude (deg / m) in the robot's units
+  label?: string,        // optional human phrase ("scanning the room"); else synthesized
+  at?: number }          // optional start epoch ms (default: now)
+```
+
+`mode`/`direction` are deliberately **open strings**: the body may morph and what a
+motion means can be reconfigured, so the station sends whatever its current config
+means and we don't hard-code a taxonomy. Wired via `pushCommand(streamId, cmd)`;
+inject mocks for testing with `POST /api/perception/bodymotion`.
+
+**The settle tail (why a command isn't just one instant).** A command is a
+sub-second blip, but consumers reason over ~2 s windows (identity samples every 2 s).
+If `current()` reported "moving" only during the literal command, a 400 ms pan that
+ends *between* identity samples would be missed and the panned-past person wrongly
+dropped. So a command marks the camera unsettled for `durationMs` **+ a settle tail**
+(`BODYMOTION_SETTLE_TAIL_MS`, default 600 ms) — covering the motion-blur and the next
+sample or two. Overlapping/bursty commands (a search sweep) extend one continuous
+unsettled span. `current()` returns 'moving' for that whole span.
+
+**Who consumes it:**
+- **Identity** — reads `current(streamId)` (live in-memory, not the window). While the
+  camera is unsettled, a face leaving the frame does **not** count toward "left".
+- **Summarizer** — told explicitly: appearances/disappearances/scene-changes that
+  coincide with camera motion are the **robot looking around**, not world events.
+
+**Validated:** feeding a `camera moving` reading mid-window (then `stationary`),
+a summary of "person present" → "camera moving" → "no one in view" correctly reads
+*"the robot panned away from the person"* — **not** "the person left."
+
+**Status:** coarse for now (`stationary`/`moving` + the command detail); the `mode`/
+`direction`/`amount` ride on the record for richer future use. First piece of making
+the perception **egocentric** rather than world-fixed.
+
+### State vs event streams — and windowed look-back (a design note)
+
+A subtlety the windowing must respect, surfaced by bodymotion:
+
+- **EVENT** streams (vision, speech, emotion) — each record is a self-contained thing
+  that *happened*. Filtering to records that **overlap** the summarize window is correct.
+- **STATE** streams (identity, bodymotion) — each record means "the value *changed* to
+  X and **holds** until the next change". Overlap-filtering **drops the current value**
+  if it last changed *before* the window (e.g. summarize "last 60 s" after the robot
+  panned away 5 min ago → the window contains no bodymotion record and loses that the
+  camera is pointed away; same for a person who's been sitting still).
+
+The primitive (reusable): `SnapshotStore.stateAt(kind, iso)` = "the value of state
+stream `kind` AS OF `iso`" — the last record at/before that time. Because a state
+record holds until the next change, this answers the value at *any* T regardless of
+when it last changed — the general "what's the state now / at time T" look-back any
+future processor needs.
+
+Fix (live, scoped to the real break — the summarizer): `inWindowWithState` builds on
+`stateAt` — for each `STATE_KINDS` stream it guarantees the window's **opening** value
+is present (carries in `stateAt(from)` whenever no record of that kind starts at the
+window's start). This covers both "last changed before the window" *and* the boundary
+case "the window's first record of that kind starts partway through" (the opening
+stretch would otherwise be blind). Event streams are untouched. Consumers that read
+**live** state (identity → `bodymotion.current()`) bypass the window and were never
+affected.
+
+---
+
+## 6. Fusion — Gemini summarizer (gemini-2.5-flash), on demand
+
+**What:** on a Summarize request, the server **stitches** the window's records into
+one chronological, role-tagged transcript (collapsing identity flicker into spans,
+attaching `[likely <name>]` active-speaker guesses and `[low-confidence]` tags) and
+sends it to Gemini, returning the summary **plus the exact prompt + window used**.
+
+**Why Gemini (vs. a local LLM for fusion):** fusion is a **text** task (VLMs can't
+do it — moondream hallucinates an image from text). It runs **rarely** (on demand,
+not per frame), so a remote call's latency/cost amortizes — exactly the pyramid
+principle. A small local LLM (gemma) is the planned tier-2 for the *always-on*
+fuse; Gemini is the high-quality on-demand path and the playground's reference.
+
+**Why text-only by default (keyframes optional):** once the vision *text* is good
+(§2 at 512px), images are mostly redundant — keyframes are a toggle for A/B testing,
+not the default.
+
+**The prompt is the product here.** It's framed as "the robot's situational
+awareness," told to lead with what matters, infer the throughline (connect
+speech+action+emotion, not recite events), surface the actionable, compress
+steady-state, and **read past the noise** (treat low-confidence/flicker/emotion as
+soft). Sharpening it from "narrate who did what" → "be relevant" is the difference
+between a flat play-by-play and *"Guru is debugging and sounds frustrated; asked for
+a reminder to push at 5 PM."*
+
+**Tradeoffs accepted:** it's only as good as its inputs — given a fabricated vision
+line or a misattributed name, it will narrate them eloquently. Mitigation is the
+skeptical prompt + fixing the inputs upstream, not the summarizer.
+
+---
+
+## 7. The console = the playground (where the tuning happens)
+
+Not a benchmark yet — explicitly an **iterate-and-review** surface:
+
+- **Window pinning + flush:** Summarize pins the exact `[from,to]` at click,
+  **flushes the in-flight tail first** (a fresh one-shot vision capture + force-ends
+  any open utterance, both awaited) so "right now" isn't missed, then summarizes
+  that frozen window. The log shows **exactly** what the LLM got (no clock drift),
+  with the window's timestamps. A phased progress indicator covers the wait.
+- **Takes (A/B replay):** freeze a window (records + keyframes) to disk as a named,
+  immutable bundle; re-summarize the *same fixed input* with a different prompt/
+  model/keyframes. This is what makes "old vs new" comparisons real.
+- **Per-record provenance:** every row shows the **model used**, its **inference
+  latency**, and **confidence** (and for speech, Whisper's lp/ns/cr metrics).
+
+---
+
+## 8. The hard-won lessons (the radars)
+
+- **Don't stack models.** moondream + md3 + qwen + whisper = ~10 GB → **7 GB swap**,
+  thrashing. qwen-temporal + whisper + face-api = **~4 GB**, no swap. One temporal
+  VLM instead of per-frame + motion models is the saving.
+- **MLX/Metal is not thread-safe.** Two MLX models in one process — or concurrent
+  requests to one — **segfault**. Fixes that hold: one MLX model **per process**,
+  and **one worker thread** per process (a lock is *not* enough — the Metal context
+  binds to the calling thread).
+- **How you feed a model can matter more than its size** (Qwen: wrong via Ollama,
+  right via MLX — same weights).
+- **Resolution > prompt** for vision hallucination.
+- **Whisper wasn't bad, it was mis-fed** — VAD endpointing + its own confidence
+  metrics, not a bigger model.
+- **Force-fitting is the enemy** — both the emotion argmax and an over-eager
+  summarizer fabricate. The fix is the same everywhere: **gate on real confidence,
+  hedge the wording, stay silent when unsure.**
+- **The camera moves — perception must be egocentric.** A fixed-camera assumption
+  silently turns "the robot panned away" into "the person left." The cheap fix is a
+  body-motion signal (robot proprioception) the other streams and the summarizer
+  subtract out. Cheaper than making every model 3D-aware.
+- **Decode once, share frames.** Vision and identity both need decoded frames; each
+  used to run its own ffmpeg (two VP8 decodes per dock). Identity owns the one grabber;
+  vision reads its `currentFrame()` — half the decode cost. Enabled by a hub
+  "lifecycle-only" path (`mediaKinds: []`): a processor can get stream start/stop
+  without subscribing to media, so it isn't falsely coupled to a video track
+  (bodymotion uses this too — ego-motion shouldn't require the stream to have video).
+
+---
+
+## Component summary
+
+| Stream | Component | Where | Footprint | Latency | Confidence signal | Main limitation |
+|---|---|---|---|---|---|---|
+| 👁 vision | Qwen2.5-VL-3B (MLX 4-bit) | sidecar :8080 | ~3 GB | ~3–6 s/window | (emit conf) | fabricates on thin frames; res-sensitive |
+| 🎙 speech | Whisper small.en (MLX) | sidecar :8078 | ~1 GB | ~0.1–0.7 s/utt | logprob / no_speech / compression | WER on hard audio |
+| 👤 identity | face-api (TF.js) | in-process | ~0.15 GB | ~tens of ms | match distance | **false names** |
+| 😮 emotion | face-api expression | in-process | (shared) | (shared) | score + margin (gated) | weak at distance; hedged |
+| 🤖 bodymotion | robot proprioception | in-process (no media) | ~0 | on command | — | coarse (stationary/moving); dormant until robot wired |
+| 🧠 fusion | gemini-2.5-flash | remote, on demand | — | ~5–15 s | — | only as good as inputs |
+
+**Always-on local footprint ≈ ~4 GB.** Fusion is remote + on-demand.
+
+---
+
+## See also
+
+- [models/BENCHMARKS.md](../models/BENCHMARKS.md) — the measured model numbers
+  (footprint, latency, WER, accuracy) and how to reproduce them.
+- [PERCEPTION-PYRAMID.md](PERCEPTION-PYRAMID.md) — the tiered always-on escalation
+  this pipeline is the tier-1 of (when/whether to respond).
+- [MEDIA-PROCESSING.md](MEDIA-PROCESSING.md) — the SFU + processing-tap plumbing the
+  processors hang off.

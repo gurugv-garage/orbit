@@ -18,12 +18,13 @@ const MODELS_DIR = `${require('node:path').dirname(require.resolve('@vladmandic/
 
 let loaded = false;
 
-/** Load the bundled detector + landmark + recognition nets once. */
+/** Load the bundled detector + landmark + recognition + EXPRESSION nets once. */
 export async function loadFaceModels(): Promise<void> {
   if (loaded) return;
   await faceapi.nets.ssdMobilenetv1.loadFromDisk(MODELS_DIR);
   await faceapi.nets.faceLandmark68Net.loadFromDisk(MODELS_DIR);
   await faceapi.nets.faceRecognitionNet.loadFromDisk(MODELS_DIR);
+  await faceapi.nets.faceExpressionNet.loadFromDisk(MODELS_DIR); // emotions (bundled)
   loaded = true;
 }
 
@@ -61,7 +62,23 @@ export interface DetectedFace {
   /** normalized box center, 0..1 (x: 0=left,1=right; y: 0=top,1=bottom). */
   cx: number;
   cy: number;
+  /** normalized bounding box, 0..1 (x,y = top-left; w,h = size). */
+  box: { x: number; y: number; w: number; h: number };
   score: number;
+  /** top expression + full distribution (neutral/happy/sad/angry/surprised/…). */
+  expression?: { top: string; score: number; all: Record<string, number> };
+  /** mouth openness 0..1 (inner-lip gap / face height) — for active-speaker. */
+  mouthOpen?: number;
+}
+
+/** Mouth openness from the 68-pt landmarks: inner-lip vertical gap, normalized by
+ *  face height. ~0 = closed, higher = open/speaking. */
+function mouthOpenness(landmarks: faceapi.FaceLandmarks68, faceH: number): number {
+  const m = landmarks.getMouth(); // 20 points; inner lip = indices 13..19
+  // inner top lip ~ pt 14 (index 13), inner bottom ~ pt 18 (index 17)
+  const top = m[13], bottom = m[17];
+  if (!top || !bottom || !faceH) return 0;
+  return Math.min(1, Math.abs(bottom.y - top.y) / faceH);
 }
 
 /**
@@ -82,16 +99,23 @@ export async function describeAllFaces(input: tf.Tensor3D | Buffer): Promise<Det
         new faceapi.SsdMobilenetv1Options({ minConfidence: 0.2 }),
       )
       .withFaceLandmarks()
+      .withFaceExpressions()
       .withFaceDescriptors();
     const [, , w, h] = [0, 0, (tensor as tf.Tensor3D).shape[1], (tensor as tf.Tensor3D).shape[0]];
     return dets
       .map((d) => {
         const b = d.detection.box;
+        const W = w || 1, H = h || 1;
+        const exprAll = d.expressions as unknown as Record<string, number>;
+        const top = Object.entries(exprAll).reduce((a, c) => (c[1] > a[1] ? c : a), ['neutral', 0]);
         return {
           descriptor: Array.from(d.descriptor),
-          cx: (b.x + b.width / 2) / (w || 1),
-          cy: (b.y + b.height / 2) / (h || 1),
+          cx: (b.x + b.width / 2) / W,
+          cy: (b.y + b.height / 2) / H,
+          box: { x: b.x / W, y: b.y / H, w: b.width / W, h: b.height / H },
           score: d.detection.score,
+          expression: { top: top[0], score: top[1], all: exprAll },
+          mouthOpen: mouthOpenness(d.landmarks, b.height),
         };
       })
       .sort((a, b) => a.cx - b.cx);

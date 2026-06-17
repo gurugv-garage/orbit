@@ -94,7 +94,15 @@ self-update for the ESP32 body + Android app — [docs/OTA.md](docs/OTA.md);
 targets hello-v2 `kind`), media (in-process
 WebRTC **SFU** — the dock streams live A/V here and the console's "Live Wall"
 fans it out to viewers; a **processing tap** lets STT/vision/recording observe
-each stream in-process or via a sidecar — [docs/MEDIA-PROCESSING.md](docs/MEDIA-PROCESSING.md)).
+each stream in-process or via a sidecar — [docs/MEDIA-PROCESSING.md](docs/MEDIA-PROCESSING.md)),
+**perception** (the on-device understanding pipeline built on the media tap: five
+shared-format snapshot streams — 👁 vision (qwen2.5-VL via MLX sidecar), 🎙 speech
+(whisper), 👤 identity + 😮 emotion (face-api), 🤖 bodymotion (robot proprioception/
+ego-motion) — fused on demand by a Gemini summarizer; the **Perception Studio** console
+(`/#perception`) is the iterate-and-review playground with takes (A/B replay) —
+[docs/PERCEPTION-PIPELINE.md](docs/PERCEPTION-PIPELINE.md) for the as-built design +
+decisions, [docs/PERCEPTION-PYRAMID.md](docs/PERCEPTION-PYRAMID.md) for the tiered
+escalation plan, [models/BENCHMARKS.md](models/BENCHMARKS.md) for the model numbers).
 See [orbit-station/README.md](orbit-station/README.md) and
 [orbit-station/TESTING.md](orbit-station/TESTING.md). The heavier real-time STT/
 TTS **media brain** from plan.md §5 can still live as a separate sidecar fed by

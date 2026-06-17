@@ -1,5 +1,9 @@
 # Perception model benchmarks — footprint & performance
 
+> These are the **measurements**; the as-built pipeline and the per-component
+> decisions they drove are in
+> [docs/PERCEPTION-PIPELINE.md](../docs/PERCEPTION-PIPELINE.md).
+
 The single reference for every model we evaluated for orbit's perception pipeline,
 organized **by scenario** (what you're trying to do). All numbers measured on an
 Apple-Silicon MacBook at the dock's stream resolution unless noted. "Footprint" =

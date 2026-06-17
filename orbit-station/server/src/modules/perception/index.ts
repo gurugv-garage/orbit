@@ -20,14 +20,16 @@ import type { RouteContext, StationModule } from '../../core/module.js';
 import { fileURLToPath } from 'node:url';
 import type { ProcessingHub } from './hub.js';
 import { PerceptionState } from './state.js';
-import { Observations } from './observations.js';
 import { presenceProcessor } from './processors/presence.js';
 import { faceRecognitionProcessor } from './processors/face-recognition.js';
-import { visionWatchProcessor } from './processors/vision-watch.js';
+import { visionSnapshotProcessor } from './processors/vision-snapshot.js';
+import { identitySnapshotProcessor } from './processors/identity-snapshot.js';
 import { sttWatchProcessor } from './processors/stt-watch.js';
-import { temporalWatchProcessor } from './processors/temporal-watch.js';
+import { bodyMotionWatchProcessor, type MotionCommand } from './processors/bodymotion-watch.js';
+import { SnapshotStore, isoIst, sampleEvenly } from './snapshots.js';
+import { TakeStore } from './takes.js';
+import { summarize } from './summarizer.js';
 import { setVisionExtra, getVisionExtra, visionBase } from './vision-instruction.js';
-import { setVisionConfig, getVisionConfig } from './vision-config.js';
 import { Gallery } from './face/gallery.js';
 import { describeFace, describeAllFaces, type DetectedFace } from './face/recognizer.js';
 
@@ -87,12 +89,18 @@ export function getFaceTools(): FaceToolsApi | undefined {
   return faceToolsRef.current;
 }
 
+
 export function perceptionModule(getHub: () => ProcessingHub): StationModule {
   let state: PerceptionState;
-  let observations: Observations;
+  const snapshots = new SnapshotStore(); // WebRTC vision+speech snapshot records
+  const takes = new TakeStore();         // frozen snapshot bundles for A/B replay
   let bus: Bus;
   const gallery = new Gallery(GALLERY_PATH);
   const face = faceRecognitionProcessor(gallery);
+  const stt = sttWatchProcessor(snapshots);        // 🎙 speech (exposes flushAll)
+  // Vision reuses the face processor's decoded frame (ONE ffmpeg per dock, not two).
+  const vision = visionSnapshotProcessor(snapshots, (sid) => face.currentFrame(sid)); // 👁 vision (captureNow)
+  const bodymotion = bodyMotionWatchProcessor(snapshots); // 🤖 ego-motion (setMotion seam)
 
   /** Publish a result directed to its dock + an undirected copy (state/console). */
   function fanResult(r: PerceptionResult): void {
@@ -108,17 +116,21 @@ export function perceptionModule(getHub: () => ProcessingHub): StationModule {
     init(b: Bus) {
       bus = b;
       state = new PerceptionState(bus);
-      observations = new Observations(bus); // rolling tier-1 log (vision + stt)
       const hub = getHub();
       // Always-on processors. More land here as phases progress (audio, …).
+      // ONE WebRTC perception pipeline. The browser publishes mic+cam to the SFU;
+      // these processors tap that stream. Vision = qwen (scene+action, one model,
+      // latency-bound windows); speech = whisper utterances. Both emit shared-format
+      // snapshot records (IST from/to/duration + source) into the SnapshotStore.
       hub.register(presenceProcessor());
       hub.register(face);
-      hub.register(sttWatchProcessor());      // whisper utterance transcript (sidecar)
-      hub.register(temporalWatchProcessor()); // qwen multi-frame: scene + action (sidecar)
-      // NB: per-frame vision-watch (moondream/md3) is intentionally NOT registered —
-      // qwen temporal covers both scene and action in one pass, so we run ONE vision
-      // model (~3GB) instead of stacking moondream+md3+qwen (~10GB → swap). Re-enable
-      // visionWatchProcessor() if you want a fast 1Hz per-frame pass alongside.
+      // THREE snapshot streams, same format, kept separate (LLM merge later):
+      hub.register(stt);    // 🎙 speech (whisper)
+      hub.register(vision); // 👁 vision (qwen, no identity)
+      hub.register(bodymotion); // 🤖 ego-motion (robot proprioception; station feeds commands)
+      hub.register(identitySnapshotProcessor(snapshots, // 👤 identity (face-api + boxes)
+        (sid) => face.recognizeAllCurrent(sid),
+        (sid) => bodymotion.current(sid))); // ego-aware: don't drop people mid-move
 
       // In-process face API for the server brain (docs/SERVER-BRAIN-IMPL.md §3.1):
       // the same operations the WS request/result flow below serves, exposed as
@@ -281,28 +293,117 @@ export function perceptionModule(getHub: () => ProcessingHub): StationModule {
         json(res, 200, state.all());
         return true;
       }
-      // Rolling tier-1 observations (vision + stt). GET /observations[?dock=] →
-      // newest-last array. GET /observations/stream → SSE live feed.
-      if (req.method === 'GET' && subPath === '/observations') {
-        const dock = new URL(req.url ?? '', 'http://x').searchParams.get('dock') ?? undefined;
-        json(res, 200, observations.list(dock));
+      // Snapshot records (WebRTC vision + speech), shared format, ordered by start.
+      // GET /snapshots[?limit=N]; POST /snapshots/clear wipes the ring.
+      if (req.method === 'GET' && subPath === '/snapshots') {
+        const limit = Number(new URL(req.url ?? '', 'http://x').searchParams.get('limit') ?? 300);
+        json(res, 200, snapshots.list(limit));
         return true;
       }
-      // Clear the rolling observation buffer (console "Clear" button).
-      if (req.method === 'POST' && subPath === '/observations/clear') {
-        observations.clear();
+      if (req.method === 'POST' && subPath === '/snapshots/clear') {
+        snapshots.clear();
         json(res, 200, { ok: true });
         return true;
       }
-      if (req.method === 'GET' && subPath === '/observations/stream') {
-        res.writeHead(200, {
-          'content-type': 'text/event-stream',
-          'cache-control': 'no-cache',
-          connection: 'keep-alive',
+      // Flush in-flight perception so a Summarize right after captures the NOW:
+      // force-commit any open utterance + take a fresh one-shot vision analysis,
+      // awaiting both so they're in the store before the (separate) summarize call.
+      // POST /snapshots/flush {streamId?} → {ok, vision:bool}
+      if (req.method === 'POST' && subPath === '/snapshots/flush') {
+        const body = await parseBody<{ streamId?: string }>(req);
+        await stt.flushAll(); // every audio stream's open utterance
+        let visionCommitted = false;
+        if (body.streamId) visionCommitted = await vision.captureNow(body.streamId);
+        json(res, 200, { ok: true, vision: visionCommitted });
+        return true;
+      }
+      // Inject a robot MOTION COMMAND (the station's contract; or a mock for testing).
+      // POST /bodymotion {streamId, mode, direction?, durationMs, amount?, label?}
+      // → records a 'camera moving' snapshot + marks the camera unsettled for
+      //   durationMs + settle tail (so identity won't drop people mid-move).
+      if (req.method === 'POST' && subPath === '/bodymotion') {
+        const body = await parseBody<{ streamId?: string } & MotionCommand>(req);
+        if (!body.streamId || !body.mode || body.durationMs == null) {
+          json(res, 400, { error: 'bodymotion needs streamId, mode, durationMs' });
+          return true;
+        }
+        const ok = bodymotion.pushCommand(body.streamId, {
+          mode: body.mode, direction: body.direction, durationMs: body.durationMs,
+          amount: body.amount, label: body.label, at: body.at,
         });
-        res.write(': connected\n\n');
-        const unsub = observations.subscribe((o) => res.write(`data: ${JSON.stringify(o)}\n\n`));
-        req.on('close', unsub);
+        json(res, ok ? 200 : 404, { ok, reason: ok ? undefined : 'stream not found' });
+        return true;
+      }
+      // Summarize the last `windowMs` of snapshots via Gemini. Optional keyframes.
+      // POST /snapshots/summarize {windowMs, withKeyframes?, maxKeyframes?}
+      // → {summary, model, counts, prompt:{system,transcript}, withKeyframes, error?}
+      if (req.method === 'POST' && subPath === '/snapshots/summarize') {
+        const body = await parseBody<
+          { windowMs?: number; fromIso?: string; toIso?: string;
+            withKeyframes?: boolean; maxKeyframes?: number; model?: string }>(req);
+        // Prefer EXPLICIT bounds (the client pins the window at click time so the
+        // log and the LLM input agree exactly). Fall back to windowMs = [now-w, now]
+        // for older callers. inWindowWithState = overlap + carried-in state streams.
+        const toIso = body.toIso ?? isoIst(new Date());
+        const fromIso = body.fromIso ?? isoIst(new Date(Date.now() - (body.windowMs ?? 60_000)));
+        // inWindowWithState carries forward the last identity/bodymotion BEFORE the
+        // window, so the summary knows the camera/presence state it ENTERED with
+        // (a pan or a person that last changed before the window isn't lost).
+        const recs = snapshots.inWindowWithState(fromIso, toIso);
+        const keyframes = body.withKeyframes
+          ? snapshots.keyframesInWindow(fromIso, toIso, body.maxKeyframes ?? 6) : undefined;
+        const result = await summarize(recs, { keyframes, model: body.model });
+        // Echo the exact window used so the console can pin its log to it.
+        json(res, 200, { ...result, window: { from: fromIso, to: toIso } });
+        return true;
+      }
+      // --- TAKES: freeze a window to disk for apples-to-apples A/B replay ------
+      // Save the current window (or all) as a named, immutable take.
+      // POST /takes/save {name, windowMs?}  (omit windowMs → save everything)
+      if (req.method === 'POST' && subPath === '/takes/save') {
+        const body = await parseBody<{ name?: string; windowMs?: number }>(req);
+        const name = body.name?.trim();
+        if (!name) { json(res, 400, { error: 'take needs a name' }); return true; }
+        const recs = body.windowMs
+          ? snapshots.since(isoIst(new Date(Date.now() - body.windowMs)))
+          : snapshots.list();
+        const kf = body.windowMs
+          ? snapshots.keyframesAllSince(isoIst(new Date(Date.now() - body.windowMs)))
+          : snapshots.keyframesAllSince('');
+        if (recs.length === 0) { json(res, 400, { error: 'nothing to save in this window' }); return true; }
+        json(res, 200, takes.save(name, recs, kf));
+        return true;
+      }
+      // List saved takes (metadata only).  GET /takes
+      if (req.method === 'GET' && subPath === '/takes') {
+        json(res, 200, takes.list());
+        return true;
+      }
+      // Summarize a SAVED take — same fixed input, varied prompt/model/keyframes.
+      // POST /takes/summarize {name, withKeyframes?, maxKeyframes?, model?}
+      if (req.method === 'POST' && subPath === '/takes/summarize') {
+        const body = await parseBody<
+          { name?: string; withKeyframes?: boolean; maxKeyframes?: number; model?: string }>(req);
+        const take = body.name ? takes.load(body.name) : null;
+        if (!take) { json(res, 404, { error: 'no such take' }); return true; }
+        const keyframes = body.withKeyframes
+          ? sampleEvenly(take.keyframes, body.maxKeyframes ?? 6) : undefined;
+        json(res, 200, { ...await summarize(take.records, { keyframes, model: body.model }),
+          take: take.name, window: take.range });
+        return true;
+      }
+      // Load a take's records into the view (so the log shows the frozen data).
+      // GET /takes/load?name=…
+      if (req.method === 'GET' && subPath === '/takes/load') {
+        const name = new URL(req.url ?? '', 'http://x').searchParams.get('name') ?? '';
+        const take = takes.load(name);
+        if (!take) { json(res, 404, { error: 'no such take' }); return true; }
+        json(res, 200, { name: take.name, range: take.range, counts: take.counts, records: take.records });
+        return true;
+      }
+      if (req.method === 'POST' && subPath === '/takes/delete') {
+        const body = await parseBody<{ name?: string }>(req);
+        json(res, 200, { deleted: body.name ? takes.delete(body.name) : false });
         return true;
       }
       // Steer the vision instruction. GET → {base, extra}; POST {extra} sets it.
@@ -311,20 +412,9 @@ export function perceptionModule(getHub: () => ProcessingHub): StationModule {
         return true;
       }
       if (req.method === 'POST' && subPath === '/instruction') {
-        const body = JSON.parse(await readBody(req)) as { extra?: string };
+        const body = await parseBody<{ extra?: string }>(req);
         setVisionExtra(body.extra ?? '');
         json(res, 200, { base: visionBase(), extra: getVisionExtra() });
-        return true;
-      }
-      // Vision backend (moondream ↔ md3), live-switchable.
-      if (req.method === 'GET' && subPath === '/vision-config') {
-        json(res, 200, getVisionConfig());
-        return true;
-      }
-      if (req.method === 'POST' && subPath === '/vision-config') {
-        const body = JSON.parse(await readBody(req)) as { model?: 'moondream' | 'md3' };
-        setVisionConfig(body);
-        json(res, 200, getVisionConfig());
         return true;
       }
       // DEBUG: dump the current decoded frame the face processor sees, to inspect
@@ -347,7 +437,7 @@ export function perceptionModule(getHub: () => ProcessingHub): StationModule {
       // Delete one enrolled capture (fingerprint+photo): { name, index }.
       // Removing the last one removes the person.
       if (req.method === 'POST' && subPath === '/gallery/sample/remove') {
-        const body = JSON.parse(await readBody(req)) as { name?: string; index?: number };
+        const body = await parseBody<{ name?: string; index?: number }>(req);
         const removed = body.name != null && typeof body.index === 'number'
           ? gallery.removeSample(body.name, body.index) : false;
         json(res, 200, { removed });
@@ -355,7 +445,7 @@ export function perceptionModule(getHub: () => ProcessingHub): StationModule {
       }
       // Enroll the face currently on screen for a dock: { streamId, name }.
       if (req.method === 'POST' && subPath === '/enroll') {
-        const body = JSON.parse(await readBody(req)) as { streamId?: string; name?: string };
+        const body = await parseBody<{ streamId?: string; name?: string }>(req);
         if (!body.streamId || !body.name) {
           json(res, 400, { error: 'enroll needs streamId + name' });
           return true;
@@ -365,7 +455,7 @@ export function perceptionModule(getHub: () => ProcessingHub): StationModule {
         return true;
       }
       if (req.method === 'POST' && subPath === '/gallery/remove') {
-        const body = JSON.parse(await readBody(req)) as { name?: string };
+        const body = await parseBody<{ name?: string }>(req);
         const removed = body.name ? gallery.remove(body.name) : false;
         json(res, 200, { removed });
         return true;
@@ -378,7 +468,7 @@ export function perceptionModule(getHub: () => ProcessingHub): StationModule {
       // Worker/sidecar processors POST results here; we fold + fan them like any
       // in-process result (directed to the dock + broadcast for the console/state).
       if (req.method === 'POST' && subPath === '/result') {
-        const body = JSON.parse(await readBody(req)) as Partial<PerceptionResult>;
+        const body = await parseBody<PerceptionResult>(req);
         if (!body.kind || !body.dockId || !body.streamId) {
           json(res, 400, { error: 'result needs kind, dockId, streamId' });
           return true;
@@ -405,4 +495,14 @@ function readBody(req: IncomingMessage): Promise<string> {
     req.on('end', () => resolve(data));
     req.on('error', reject);
   });
+}
+
+/** Read + JSON-parse a request body, tolerating an empty OR malformed body by
+ *  returning {}. route() isn't wrapped in a try/catch upstream, so a raw
+ *  JSON.parse throw would reject the request promise and HANG the client (no
+ *  response). Every route validates required fields, so {} is handled gracefully. */
+async function parseBody<T>(req: IncomingMessage): Promise<Partial<T>> {
+  const raw = await readBody(req);
+  if (!raw) return {};
+  try { return JSON.parse(raw) as Partial<T>; } catch { return {}; }
 }

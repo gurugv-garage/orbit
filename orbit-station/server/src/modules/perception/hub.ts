@@ -100,9 +100,14 @@ export class ProcessingHub implements MediaTap {
 
     for (const reg of this.#procs) {
       if (!wantsSource(reg.p, streamId)) continue;
-      if (!reg.p.mediaKinds.includes(kind)) continue;
+      // LIFECYCLE-ONLY processors (mediaKinds: []) want onStreamStart/End but no
+      // media — e.g. bodymotion (proprioception) or a processor that reads frames
+      // from ANOTHER processor's grabber (vision). Start them on the FIRST track of
+      // any kind; don't subscribe RTP. Media processors start only on a kind they want.
+      const mediaLess = reg.p.mediaKinds.length === 0;
+      if (!mediaLess && !reg.p.mediaKinds.includes(kind)) continue;
       this.#startOn(reg, streamId); // idempotent (ctx cached)
-      this.#subscribeRtp(reg, streamId, kind);
+      if (!mediaLess) this.#subscribeRtp(reg, streamId, kind);
     }
   }
 

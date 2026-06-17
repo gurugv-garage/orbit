@@ -73,6 +73,23 @@ test('media: one track fans RTP to all matching processors', () => {
   assert.deepEqual(c.log.started, [], 'and is not started on a video-only stream');
 });
 
+test('lifecycle-only (mediaKinds:[]): started on first track of ANY kind, no RTP', () => {
+  const { hub } = hubWith();
+  // bodymotion / vision pattern: wants stream lifecycle but consumes no media.
+  const m = stub({ id: 'medialess', mediaKinds: [] });
+  hub.register(m.p);
+
+  const t = fakeTrack();
+  hub.onTrack('dock-1', 'video', t.track); // a video-only stream
+  t.fireRtp({ seq: 1 });
+
+  assert.deepEqual(m.log.started, ['dock-1'], 'started on the first track despite wanting no media');
+  assert.equal(m.log.rtp.length, 0, 'and receives NO RTP');
+  // a second track of another kind on the same stream must not re-start it.
+  hub.onTrack('dock-1', 'audio', fakeTrack().track);
+  assert.deepEqual(m.log.started, ['dock-1'], 'onStreamStart is idempotent per stream');
+});
+
 test('source filtering: a processor only sees its declared sources', () => {
   const { hub } = hubWith();
   const only1 = stub({ id: 'only1', sources: ['dock-1'], mediaKinds: ['video'] });
