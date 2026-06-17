@@ -216,8 +216,11 @@ export async function uploadFile(opts: UploadFileOpts): Promise<{ fileId: string
     throw new Error(`slack files.getUploadURLExternal failed: ${String(d1.error ?? r1.status)}`);
   }
 
-  // 2) PUT the raw bytes to the one-time URL.
-  const put = await fetch(d1.upload_url, { method: 'POST', body: bytes });
+  // 2) PUT the raw bytes to the one-time URL. Pass a Uint8Array view (not the
+  //  Buffer directly): under nodenext/es2022 the fetch BodyInit overload rejects
+  //  Buffer, though it's a Uint8Array subclass at runtime. (The task-authoring
+  //  typecheck compiles this with those flags, so a raw Buffer fails there.)
+  const put = await fetch(d1.upload_url, { method: 'POST', body: new Uint8Array(bytes) });
   if (!put.ok) throw new Error(`slack upload PUT failed: ${put.status}`);
 
   // 3) complete the upload, sharing it into the channel.
