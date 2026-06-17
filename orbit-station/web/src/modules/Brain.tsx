@@ -100,6 +100,9 @@ interface MemoryItem {
 interface MemoryView { count: number; subjects: string[]; memories: MemoryItem[] }
 interface MemoryDetail { memory: MemoryItem; lineage: { sourceKind: string; sourceId: string }[] }
 
+/** 5c proactive attention gate (docs/PERCEPTION-TO-AGENT.md Phase 5). */
+interface GateDecision { ts: number; dockId: string; raised: boolean; detail: string }
+
 /** A condensed prior exchange from a resumed/open session's transcript. */
 interface PastExchange { user: string; reply: string; userAt?: number; replyAt?: number }
 
@@ -231,6 +234,9 @@ export function Brain() {
   const [memData, setMemData] = useState<MemoryView | null>(null);
   const [memQuery, setMemQuery] = useState('');
   const [memSel, setMemSel] = useState<MemoryDetail | null>(null);
+  // 5c proactive gate: enabled state + recent decisions log.
+  const [gate, setGate] = useState<{ enabled: boolean; recent: GateDecision[] } | null>(null);
+  const [showGate, setShowGate] = useState(false);
   const [confirm, setConfirm] = useState<ConfirmReq | null>(null);
   const [expandedStep, setExpandedStep] = useState<number | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
@@ -559,6 +565,22 @@ export function Brain() {
     await loadMemory(memQuery);
   };
 
+  // 5c: read the proactive-gate state + recent decisions; toggle it on/off.
+  const loadGate = async () => {
+    try {
+      const r = await fetch('/api/perception/gate');
+      if (r.ok) setGate(await r.json() as { enabled: boolean; recent: GateDecision[] });
+    } catch { /* station down */ }
+  };
+  const toggleGate = async () => {
+    const next = !(gate?.enabled ?? false);
+    await fetch('/api/perception/gate', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ enabled: next }),
+    });
+    await loadGate();
+  };
+
   const endSession = async () => {
     const d = dockRef.current.trim() || 'web-test';
     await fetch(`/api/brain/${encodeURIComponent(d)}/session/end`, { method: 'POST' });
@@ -700,6 +722,9 @@ export function Brain() {
           <button className={`br-btn ${showMemory ? 'acc' : ''}`} onClick={() => { const n = !showMemory; setShowMemory(n); if (n) void loadMemory(); }}>
             {showMemory ? '▾' : '▸'} memory
           </button>
+          <button className={`br-btn ${showGate ? 'acc' : ''}`} onClick={() => { const n = !showGate; setShowGate(n); if (n) void loadGate(); }}>
+            {showGate ? '▾' : '▸'} proactivity
+          </button>
         </div>
       )}
       {/* grounding preview — the exact perception block the NEXT turn would inject. */}
@@ -751,6 +776,31 @@ export function Brain() {
                 <button className="br-btn" style={{ marginTop: 10 }} onClick={() => void forgetMemory(memSel.memory.id)}>forget this</button>
               </div>
             )}
+          </div>
+        </div>
+      )}
+
+      {/* 5c: proactive attention gate — toggle + recent decisions (Phase 5). */}
+      {connected && showGate && (
+        <div className="br-gate">
+          <div className="br-gate-bar">
+            <button className={`br-btn ${gate?.enabled ? 'acc glow' : ''}`} onClick={toggleGate}>
+              {gate?.enabled ? '● proactivity ON' : '○ proactivity off'}
+            </button>
+            <span className="dim" style={{ fontSize: 11 }}>
+              the robot raises its own thoughts (arrivals, strong emotions) — auto-fires self-thoughts
+            </span>
+            <button className="br-btn" style={{ marginLeft: 'auto' }} onClick={() => void loadGate()}>refresh</button>
+          </div>
+          <div className="br-gate-log">
+            {(gate?.recent ?? []).length === 0 && <div className="dim" style={{ padding: 8, fontSize: 11 }}>no gate decisions yet {gate?.enabled ? '— waiting for a perception event' : '(enable proactivity first)'}</div>}
+            {(gate?.recent ?? []).map((d, i) => (
+              <div key={i} className={`br-gate-row ${d.raised ? 'raised' : ''}`}>
+                <span className="br-gate-time mono">{new Date(d.ts).toLocaleTimeString()}</span>
+                <span className={`br-gate-verb ${d.raised ? 'on' : ''}`}>{d.raised ? 'RAISED' : 'quiet'}</span>
+                <span className="br-gate-detail">{d.detail}</span>
+              </div>
+            ))}
           </div>
         </div>
       )}
@@ -1532,6 +1582,16 @@ const CSS = `
 .brain .br-mem-detail-h { font-size: 9px; text-transform: uppercase; letter-spacing: .14em; color: var(--accent); margin-bottom: 6px; }
 .brain .br-mem-claim-lg { font-size: 12px; color: var(--fg); margin-bottom: 8px; }
 .brain .br-mem-lin { font-size: 11px; color: var(--accent-2, #7ec699); margin: 2px 0; }
+/* 5c proactive gate */
+.brain .br-gate { margin: 0 0 10px; border: 1px solid var(--line); border-radius: 8px; background: rgba(10,14,26,.4); overflow: hidden; }
+.brain .br-gate-bar { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+.brain .br-gate-log { max-height: 200px; overflow: auto; }
+.brain .br-gate-row { display: flex; align-items: center; gap: 10px; padding: 5px 10px; border-bottom: 1px solid rgba(255,255,255,.04); font-size: 11px; }
+.brain .br-gate-row.raised { background: rgba(126,198,153,.07); }
+.brain .br-gate-time { color: var(--dim); flex-shrink: 0; }
+.brain .br-gate-verb { font-size: 9px; text-transform: uppercase; letter-spacing: .08em; padding: 1px 6px; border-radius: 4px; border: 1px solid var(--line); color: var(--dim); flex-shrink: 0; }
+.brain .br-gate-verb.on { color: #7ec699; border-color: rgba(126,198,153,.45); background: rgba(126,198,153,.1); }
+.brain .br-gate-detail { color: var(--fg); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* dock context panel */
 .brain .br-ctx { margin: 0 0 10px; padding: 12px; border: 1px solid var(--line); border-radius: 10px; background: rgba(10,14,26,.4); }
 .brain .br-ctx-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 10px; }

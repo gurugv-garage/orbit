@@ -27,7 +27,7 @@ import { readFileSync } from 'node:fs';
 import type { RouteContext, StationModule } from '../../core/module.js';
 import type { Directory } from '../docks/directory.js';
 import type { MotionExecutor } from '../bodylink/motion.js';
-import { getFaceTools, getPerceptionGrounding, getMemoryApi } from '../perception/index.js';
+import { getFaceTools, getPerceptionGrounding, getMemoryApi, getGateApi } from '../perception/index.js';
 import type { VideoRecorderApi } from '../perception/record/recorder.js';
 import { RpcBroker } from './rpc.js';
 import { DockBrainSession, type TurnRequest, keyStatusFor } from './session.js';
@@ -176,6 +176,19 @@ export function brainModule(w: BrainWiring): StationModule {
     init(b) {
       bus = b;
       rpc = new RpcBroker(bus, w.directory);
+
+      // PROACTIVE GATE (docs/PERCEPTION-TO-AGENT.md Phase 5): a raised attention thought
+      // becomes a self-thought turn on the dock's session — the SAME autonomous-turn
+      // lane as tasks (user turns still win; it defers while listening/speaking). This
+      // is the auto-raise replacement for the console's manual think-poke.
+      getGateApi()?.onRaise((t) => {
+        session(t.dockId).enqueueAutonomousTurn({
+          turnId: `self-${randomUUID()}`,
+          trigger: { kind: 'self', text: t.text },
+          expiresAt: Date.now() + 30_000,
+          coalesceKey: t.key, // dedup same-kind raises (e.g. 'arrival:guru')
+        });
+      });
 
       bus.on('agent', (msg) => {
         if (msg.source === 'station') return;

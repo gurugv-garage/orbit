@@ -15,14 +15,16 @@
 > surface; APP changes (always-on mic, echo/barge-in) pinned separately + deferred. This
 > doc pins the decisions + the seams.
 >
-> **Update:** Phases 3 + 4 built + Playwright-verified. Phase 3 = `force_get_current`
-> (first real summary producer). Phase 4 = the unified per-dock **memory store** (sqlite,
-> axes + lineage + supersede, Gemini-embedded semantic recall) + the full memory tool set
-> (`recall_memory`/`inspect_memory`/`remember`/`update_memory`/`forget_memory`/
-> `list_subjects`/`list_recent`) + the **4c console memory inspector**. **Next: Phase 5
-> (the real proactive attention gate)** — and the deferred memory follow-up (retention
-> tiers, gallery→store migration). The always-on-mic APP shift (A1) still gates the real
-> `listening`/segmentation signal.
+> **Update:** Phases 1–5 all built + console-verified (Playwright) + **E2E-tested across
+> module seams**. Phase 3 = `force_get_current`. Phase 4 = the unified per-dock **memory
+> store** (sqlite, axes + lineage + supersede, Gemini-embedded semantic recall) + the full
+> memory tool set + 4c inspector. Phase 5 = the **proactive attention gate** (cheap-rules
+> tier: arrival/emotion auto-raise a self-thought; cooldown/dedup/ego-guard; relevance tier
+> stubbed for A1) + 5c proactivity toggle. Integration tests cover the cross-module chains
+> (gate→session, grounding→prompt, memory-tool→store). **What's left:** the **always-on-mic
+> APP shift (A1)** — unblocks the real `listening`/segmentation/relevance signals and the
+> LLM-judge gate tier — plus the deferred memory follow-up (retention tiers, gallery→store
+> migration) and the LLM-judge escalation. The server-side foundation is complete.
 
 ## Where we are today (the gap)
 
@@ -494,9 +496,28 @@ gating — apply to task comms too; keep them unified, don't fork.)
    `/api/perception/memory*` (GET recall/list, GET item+lineage, POST remember, PATCH
    revise, DELETE forget). **Verified headful (Playwright):** rows + count + subjects
    render, semantic search reranks, lineage detail opens.
-5. **Proactive gate (Decision 1, later)** — cheap rules → LLM judge that auto-raises
-   thoughts instead of the console button. The console button (2c) stays as the manual
-   override + test path.
+5. **Proactive gate (Decision 1)** — ✅ **DONE (cheap-rules tier + scaffolding).** The
+   gate watches the perception stream and auto-raises a self-thought when something is
+   worth the robot's attention. As built:
+   - pure judge `evaluateGate(signals, cfg)` (`attention/gate.ts`) → raise|quiet, with
+     priority (relevance > arrival > strong-emotion), **cooldown** (no nagging) + **dedup**
+     (no repeat), and the **ego-motion guard** (an arrival during camera motion is the
+     robot looking around, not someone entering — Decision 5b);
+   - the **conversation-relevance tier is STUBBED** (`signals.relevance` always undefined)
+     — it needs the live transcript from the always-on-mic shift (A1); structure + rule +
+     test exist, like Phase 1 stubbed `listening`;
+   - `attention/gate-watcher.ts`: subscribes to the SnapshotStore, derives signals
+     (arrival/departure diffing, camera-motion + strong-emotion reads — pure
+     `deriveSignals`), debounces, and on a raise calls the brain's `enqueueAutonomousTurn`
+     (the same Phase-1 lane — user turns still win, defers while listening/speaking);
+   - **OFF by default** (proactivity is opt-in): `GateApi` (`getGateApi()`) toggles it +
+     exposes recent decisions; the brain registers `onRaise` at init.
+   - **5c console:** a "proactivity" toggle + a recent-decisions log in the Brain console
+     (REST `/api/perception/gate`). The 2c think-poke stays as the manual override.
+   The LLM-judge tier (the pyramid's escalation) is the future upgrade over these rules.
+   Unit-tested (`gate.test.ts` 10, `gate-watcher.test.ts` 8) + **E2E** (`gate-e2e.test.ts`:
+   a real arrival snapshot → real watcher → real gate → real session turn → the dock
+   speaks). Playwright-verified: the toggle flips and the server agrees.
 
 ### APP (node-dock) changes — only where genuinely required
 Most of this is **server-side and needs NO app change** (the phone already adopts

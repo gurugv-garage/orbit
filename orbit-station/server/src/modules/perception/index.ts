@@ -32,6 +32,8 @@ import { summarize } from './summarizer.js';
 import { buildGrounding, type LastSummary } from './grounding.js';
 import { MemoryStore, type MemoryRow, type MemoryType, type RecallFilter, type LineageEdge } from './memory/store.js';
 import { geminiEmbedder } from './memory/embedder.js';
+import { startGateWatcher, type RaisedThought } from './attention/gate-watcher.js';
+import { DEFAULT_GATE_CONFIG, type GateConfig, type GateOutcome } from './attention/gate.js';
 import { orbitDb } from '../../core/db.js';
 import { setVisionExtra, getVisionExtra, visionBase } from './vision-instruction.js';
 import { Gallery } from './face/gallery.js';
@@ -159,6 +161,25 @@ export function getMemoryStore(): MemoryStore | undefined {
   return memoryStoreRef.current;
 }
 
+/**
+ * The proactive ATTENTION GATE control surface (docs/PERCEPTION-TO-AGENT.md Phase 5).
+ * The brain registers `onRaise` so a gate firing becomes a self-thought
+ * (enqueueAutonomousTurn); the console toggles `enabled` + reads recent decisions.
+ */
+export interface GateApi {
+  setEnabled(on: boolean): void;
+  isEnabled(): boolean;
+  /** the brain calls this once to receive raised thoughts. */
+  onRaise(fn: (t: RaisedThought) => void): void;
+  /** recent gate decisions (raises + why-not), newest first — for the console. */
+  recentDecisions(limit?: number): Array<{ ts: number; dockId: string; raised: boolean; detail: string }>;
+}
+const gateRef: { current?: GateApi } = {};
+/** The live GateApi (set when the perception module inits). */
+export function getGateApi(): GateApi | undefined {
+  return gateRef.current;
+}
+
 
 export function perceptionModule(getHub: () => ProcessingHub): StationModule {
   let state: PerceptionState;
@@ -263,6 +284,29 @@ export function perceptionModule(getHub: () => ProcessingHub): StationModule {
         subjects: (dockId) => memory.subjects(dockId),
         recent: (dockId, limit) => memory.recent(dockId, limit),
         count: (dockId) => memory.count(dockId),
+      };
+
+      // PROACTIVE ATTENTION GATE (Phase 5) — watches the snapshot stream and raises a
+      // self-thought when something is worth the robot's attention (arrival / strong
+      // emotion / [relevance, stubbed]). OFF by default — proactivity is opt-in. The
+      // brain registers onRaise → enqueueAutonomousTurn; the console toggles + reads
+      // recent decisions.
+      const gateCfg: GateConfig = { ...DEFAULT_GATE_CONFIG };
+      let raiseHandler: ((t: RaisedThought) => void) | undefined;
+      const decisions: Array<{ ts: number; dockId: string; raised: boolean; detail: string }> = [];
+      const noteDecision = (dockId: string, o: GateOutcome) => {
+        // log only RAISES and the gate being enabled-but-quiet for an interesting
+        // reason (skip the constant "gate disabled" noise).
+        if (!o.raise && (o.reason === 'gate disabled' || o.reason === 'nothing worth raising')) return;
+        decisions.push({ ts: Date.now(), dockId, raised: o.raise, detail: o.raise ? `${o.kind}: ${o.text}` : o.reason });
+        if (decisions.length > 50) decisions.splice(0, decisions.length - 50);
+      };
+      startGateWatcher(snapshots, () => gateCfg, (t) => raiseHandler?.(t), noteDecision);
+      gateRef.current = {
+        setEnabled: (on) => { gateCfg.enabled = on; },
+        isEnabled: () => gateCfg.enabled,
+        onRaise: (fn) => { raiseHandler = fn; },
+        recentDecisions: (limit = 20) => decisions.slice(-limit).reverse(),
       };
 
       // In-process face API for the server brain (docs/SERVER-BRAIN-IMPL.md §3.1):
@@ -426,6 +470,20 @@ export function perceptionModule(getHub: () => ProcessingHub): StationModule {
         json(res, 200, state.all());
         return true;
       }
+      // ── ATTENTION GATE (Phase 5) — the console's proactivity control (5c). ──
+      // GET /gate → { enabled, recent: [...] }
+      if (req.method === 'GET' && subPath === '/gate') {
+        json(res, 200, { enabled: gateRef.current?.isEnabled() ?? false, recent: gateRef.current?.recentDecisions(20) ?? [] });
+        return true;
+      }
+      // POST /gate {enabled} → toggle proactivity
+      if (req.method === 'POST' && subPath === '/gate') {
+        const b = await parseBody<{ enabled?: boolean }>(req);
+        gateRef.current?.setEnabled(b.enabled === true);
+        json(res, 200, { ok: true, enabled: gateRef.current?.isEnabled() ?? false });
+        return true;
+      }
+
       // ── MEMORY (Decision 4) — the console's memory inspector (4c). dock-scoped. ──
       // GET /memory?dock=X[&query=&subject=&type=&inactive=1] → recall/list
       if (req.method === 'GET' && subPath === '/memory') {
