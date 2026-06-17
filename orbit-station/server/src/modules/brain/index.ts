@@ -289,6 +289,7 @@ export function brainModule(w: BrainWiring): StationModule {
         const lanes = [...sessions.values()].map((s) => ({
           dock: s.dock, sessionId: s.sessionId ?? null,
           turnActive: s.turnActive, lastTurnEndedAt: s.lastTurnEndedAt,
+          state: s.state(), // 2c: attention state (idle/listening/speaking/thinking)
           inflightToolCalls: rpc.inflight(s.dock),
         }));
         json(res, 200, lanes);
@@ -309,7 +310,27 @@ export function brainModule(w: BrainWiring): StationModule {
       const pm = subPath.match(/^\/([^/]+)\/profile$/);
       if (pm && req.method === 'GET') {
         const dock = decodeURIComponent(pm[1]!);
-        void buildDockProfile(dock, w, store).then((p) => json(res, 200, p));
+        // enrich with the LIVE session's attention state (idle/listening/speaking/
+        // thinking) + the grounding block, for the console's 2c test surface. The
+        // session may not exist yet (lazy) → 'idle' + whatever grounding exists.
+        const live = sessions.get(dock);
+        void buildDockProfile(dock, w, store).then((p) => json(res, 200, {
+          ...p,
+          state: live?.state() ?? 'idle',
+          listening: live?.isListening() ?? false,
+          grounding: getPerceptionGrounding()?.forDock(dock) ?? null,
+        }));
+        return true;
+      }
+      // ── 2c DEBUG: toggle the stubbed `listening` state (user mid-utterance) so the
+      // console can exercise the thought-defer path by hand. No real mic signal yet
+      // (Phase A1); this is the test seam. POST /:dock/listening {listening:bool}
+      const lm = subPath.match(/^\/([^/]+)\/listening$/);
+      if (lm && req.method === 'POST') {
+        const dock = decodeURIComponent(lm[1]!);
+        const body = JSON.parse((await readBody(req)) || '{}') as { listening?: boolean };
+        session(dock).setListening(body.listening === true);
+        json(res, 200, { ok: true, listening: body.listening === true });
         return true;
       }
       let m = subPath.match(/^\/([^/]+)\/sessions$/);

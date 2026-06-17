@@ -85,6 +85,11 @@ interface DockProfile {
   sessionCount: number;
   openSession: string | null;
   systemPrompt: string;
+  // 2c test surface: the live attention state + the grounding block the next turn
+  // would inject (docs/PERCEPTION-TO-AGENT.md Phase 2c).
+  state?: 'idle' | 'listening' | 'speaking' | 'thinking';
+  listening?: boolean;
+  grounding?: string | null;
 }
 
 /** A condensed prior exchange from a resumed/open session's transcript. */
@@ -210,6 +215,9 @@ export function Brain() {
   const [profile, setProfile] = useState<DockProfile | null>(null);
   const [showContext, setShowContext] = useState(false);
   const [showTasks, setShowTasks] = useState(false);
+  // 2c test surface: the self-thought box + grounding preview toggle.
+  const [thought, setThought] = useState('');
+  const [showGrounding, setShowGrounding] = useState(false);
   const [confirm, setConfirm] = useState<ConfirmReq | null>(null);
   const [expandedStep, setExpandedStep] = useState<number | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
@@ -479,6 +487,33 @@ export function Brain() {
     pub('agent', 'turn-cancel', { turnId: activeTurnId.current });
   };
 
+  // 2c: fire a SELF-THOUGHT (docs/PERCEPTION-TO-AGENT.md Phase 1). The dock routes
+  // it as an autonomous turn (trigger.kind:'self') — user turns still win; it defers
+  // while listening/speaking. Watch it appear in the turn stream tagged 'self'.
+  const think = async () => {
+    const text = thought.trim();
+    if (!text || !connected) return;
+    setThought('');
+    const d = dockRef.current.trim() || 'web-test';
+    await fetch(`/api/brain/${encodeURIComponent(d)}/think`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ text }),
+    });
+    await loadProfile(d); // refresh the state pill
+  };
+
+  // 2c: toggle the STUBBED listening state (user mid-utterance). No real mic signal
+  // yet (Phase A1) — this is the test seam so the thought-defer path is clickable.
+  const toggleListening = async () => {
+    const d = dockRef.current.trim() || 'web-test';
+    const next = !(profile?.listening ?? false);
+    await fetch(`/api/brain/${encodeURIComponent(d)}/listening`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ listening: next }),
+    });
+    await loadProfile(d);
+  };
+
   const endSession = async () => {
     const d = dockRef.current.trim() || 'web-test';
     await fetch(`/api/brain/${encodeURIComponent(d)}/session/end`, { method: 'POST' });
@@ -582,6 +617,40 @@ export function Brain() {
             </button>
           )}
         </div>
+      )}
+
+      {/* ── 2c: perception test surface — self-thoughts, attention state, grounding
+            (docs/PERCEPTION-TO-AGENT.md Phase 2c). Fire a thought and watch it route
+            in the turn stream (tagged 'self'); flip listening to see it defer. ── */}
+      {connected && (
+        <div className="br-strip br-percept">
+          <span className="br-logo" title="perception → agent test surface">👁 PERCEPT</span>
+          <span className="br-sep" />
+          <label className="br-lbl">state</label>
+          <span className={`br-state br-state-${profile?.state ?? 'idle'}`} title="live attention state">
+            {profile?.state ?? 'idle'}
+          </span>
+          <button className={`br-btn ${profile?.listening ? 'acc glow' : ''}`} onClick={toggleListening}
+            title="stub: user mid-utterance (no real mic yet). A thought DEFERS while on.">
+            {profile?.listening ? '🎙 listening ON' : '🎙 listening off'}
+          </button>
+          <span className="br-sep" />
+          <label className="br-lbl">think</label>
+          <input className="br-in" style={{ flex: 1, minWidth: 160 }} value={thought}
+            placeholder="a self-thought, e.g. 'the user has looked stuck for a while'"
+            onChange={(e) => setThought(e.target.value)}
+            onKeyDown={(e) => { if (e.key === 'Enter') void think(); }} />
+          <button className="br-btn acc" onClick={think} disabled={!thought.trim()}>fire thought</button>
+          <button className={`br-btn ${showGrounding ? 'acc' : ''}`} onClick={() => { setShowGrounding((v) => !v); if (profile) void loadProfile(profile.dock); }}>
+            {showGrounding ? '▾' : '▸'} grounding
+          </button>
+        </div>
+      )}
+      {/* grounding preview — the exact perception block the NEXT turn would inject. */}
+      {connected && showGrounding && (
+        <pre className="br-grounding">
+          {profile?.grounding?.trim() || '(no perception grounding yet — cold dock, no summary + no recent records)'}
+        </pre>
       )}
 
       {/* ── tasks: definitions + running instances (docs/TASKS_V1.md §8) ── */}
@@ -1329,6 +1398,17 @@ const CSS = `
   background: rgba(255,196,84,.18); color: #ffc454; border: 1px solid rgba(255,196,84,.35); }
 .brain .br-key-fallback { font-size: 10px; color: var(--dim); font-family: ui-monospace, Menlo, monospace; }
 .brain .br-key-fallback.bad { color: #ff9b6b; }
+/* 2c perception test surface */
+.brain .br-percept .br-logo { color: var(--accent-2, #7ec699); text-shadow: 0 0 14px rgba(126,198,153,.35); }
+.brain .br-state { font-size: 11px; font-family: ui-monospace, Menlo, monospace; padding: 3px 9px; border-radius: 6px;
+  border: 1px solid var(--line); text-transform: lowercase; letter-spacing: .04em; }
+.brain .br-state-idle { color: var(--dim); }
+.brain .br-state-listening { color: #ffc454; border-color: rgba(255,196,84,.45); background: rgba(255,196,84,.1); }
+.brain .br-state-speaking { color: #5db8ff; border-color: rgba(93,184,255,.45); background: rgba(93,184,255,.1); }
+.brain .br-state-thinking { color: #7ec699; border-color: rgba(126,198,153,.45); background: rgba(126,198,153,.1); }
+.brain .br-grounding { margin: 0 0 10px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px;
+  background: rgba(10,14,26,.55); color: var(--fg); font-family: ui-monospace, Menlo, monospace; font-size: 11px;
+  white-space: pre-wrap; max-height: 220px; overflow: auto; }
 /* dock context panel */
 .brain .br-ctx { margin: 0 0 10px; padding: 12px; border: 1px solid var(--line); border-radius: 10px; background: rgba(10,14,26,.4); }
 .brain .br-ctx-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 10px; }

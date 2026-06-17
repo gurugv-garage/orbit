@@ -8,11 +8,12 @@
 > the pure `ThoughtRouter` gate, the `listening`/`speaking` state accessor, the
 > `POST /api/brain/:dock/think` test-poke). Phase 2 = grounding (the last summary +
 > raw-since stream injected every turn, via `buildGrounding()` + the
-> `PerceptionGroundingApi` facade). All unit-tested. **Next: a console test surface (2c)**
-> to make Phases 1–2 visible/exercisable before stacking more. Then Phases 3–5 (pull
-> tools, memory store, the real attention gate), each followed by its own console surface;
-> APP changes (always-on mic, echo/barge-in) are pinned separately and deferred. This doc
-> pins the decisions + the seams.
+> `PerceptionGroundingApi` facade). Phase 2c = the Brain-console test surface (👁 PERCEPT
+> strip: state pill, listening toggle, think box, grounding preview) — verified headful
+> with Playwright + real Gemini. All unit-tested. **Next: Phase 3 (pull tools —
+> `force_get_current`, then `recall_memory`).** Then Phases 4–5, each with its console
+> surface; APP changes (always-on mic, echo/barge-in) pinned separately + deferred. This
+> doc pins the decisions + the seams.
 
 ## Where we are today (the gap)
 
@@ -430,16 +431,19 @@ gating — apply to task comms too; keep them unified, don't fork.)
 2. **Grounding (Decision 3.1)** — ✅ **DONE.** PUSH the last summary (with staleness) +
    the raw stream since it into every turn's prompt. Pure `buildGrounding()` +
    `PerceptionGroundingApi` facade + `lastSummary` cache; unit-tested. No per-turn Gemini.
-2c. **CONSOLE: thoughts + grounding test surface** — make Phases 1–2 *visible and
-   exercisable* in the browser (today they're curl-only). In the **Brain console**: a
-   **"think" box** (free text + a kind tag) that POSTs `/api/brain/:dock/think` so you
-   can fire a self-thought and watch it route (the obs stream already renders the turn,
-   now tagged `trigger.kind:'self'`); a **state pill** showing `state()`
-   (idle/listening/speaking/thinking) and a **listening toggle** that calls a small
-   debug seam (`setListening`) so the defer path is clickable, not just unit-tested; and
-   a **grounding preview** panel showing the exact block the next turn would inject
-   (already in `/profile` — surface it). *Why here, not later:* you can't trust Phase 3's
-   tools until you can SEE Phase 1–2 behaving on a real dock. Small, server-only deps.
+2c. **CONSOLE: thoughts + grounding test surface** — ✅ **DONE.** The Brain console now
+   has a **👁 PERCEPT strip** (shown once connected): a **state pill**
+   (idle/listening/speaking/thinking, color-coded), a **listening toggle** (POSTs
+   `/api/brain/:dock/listening` → `setListening` stub seam), a **"think" box** (POSTs
+   `/api/brain/:dock/think` → a self-thought; it appears in the turn stream tagged
+   `trigger.kind:'self'` with the full inspector), and a **grounding preview** panel
+   (the exact block the next turn injects, from `/profile`). Server: `/profile` enriched
+   with `state`/`listening`/`grounding`; `/docks` lanes carry `state`; `isListening()`
+   getter added. **Verified headful (Playwright + real Gemini):** fire-while-listening
+   DEFERS, toggle-off RUNS (the model replied to its own observation — "you look a little
+   stuck! need help?" — not "you said…"); grounding panel shows the cold-dock message.
+   *Why here, not later:* you can't trust Phase 3's tools until you can SEE Phase 1–2
+   behaving. Server-only deps; no app change.
 3. **Pull tools (Decision 3.2)** — `force_get_current` first (it's also the first real
    PRODUCER of summaries → makes grounding's cache live), then `recall_memory`/
    `inspect_memory`. New brain tools via the `tools.ts` pattern; a `MemoryApi` facade.

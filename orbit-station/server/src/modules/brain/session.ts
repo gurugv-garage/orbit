@@ -271,6 +271,10 @@ export class DockBrainSession {
   setListening(listening: boolean): void {
     this.#listening = listening;
   }
+  /** The stubbed listening flag (for the console's 2c test surface). */
+  isListening(): boolean {
+    return this.#listening;
+  }
 
   /** Pre-warm on streamed transcript partials: open/load the session and
    *  resolve the profile so the LLM call fires the instant the final lands. */
