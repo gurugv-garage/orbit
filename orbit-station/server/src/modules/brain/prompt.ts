@@ -88,9 +88,23 @@ export function nowLine(now: Date = new Date()): string {
  * Per-turn assembly — mirrors DockAgent.runTurn: stock prompt (+ optional
  * persona from the dock profile) + the live perception grounding line.
  */
-export function buildSystemPrompt(opts: { persona?: string; context?: string; memory?: string; skills?: string; now?: Date }): string {
+/**
+ * The framing for a SELF-THOUGHT turn (trigger.kind:'self') — the robot's own
+ * perception/awareness entering the session, NOT a user utterance
+ * (docs/PERCEPTION-TO-AGENT.md 2.1). Without it the model treats its own
+ * observation as something the user said ("you mentioned…") and feels obliged to
+ * reply. This makes silence a first-class option.
+ */
+export const SELF_THOUGHT_FRAMING = `
+This turn is YOUR OWN thought — something you noticed or realized just now from
+your senses, NOT something the person said to you. Do not reply as if they spoke.
+You may speak to them about it, do something, or simply stay silent and do
+nothing if it isn't worth raising. Silence is a fine choice.`.trim();
+
+export function buildSystemPrompt(opts: { persona?: string; context?: string; memory?: string; skills?: string; now?: Date; selfThought?: boolean }): string {
   let p = SYSTEM;
   p += `\n\n${nowLine(opts.now)}`;
+  if (opts.selfThought) p += `\n\n${SELF_THOUGHT_FRAMING}`;
   if (opts.persona && opts.persona.trim().length > 0) p += `\n\n${opts.persona.trim()}`;
   // memory = the previous session's compacted summary (session seeding): the
   // dock remembers ACROSS engagements, not just within one.

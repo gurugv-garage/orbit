@@ -330,6 +330,32 @@ export function brainModule(w: BrainWiring): StationModule {
         json(res, 200, { ok: true });
         return true;
       }
+      // ── internal THOUGHT poke (docs/PERCEPTION-TO-AGENT.md Phase 1) ──────────
+      // Inject a self-originated thought into the dock's session — the test seam
+      // for internal-thought routing before the real attention gate exists. The
+      // thought runs the SAME autonomous-turn lane as a task (user turns still
+      // win), but with trigger.kind:'self' so the prompt frames it as the robot's
+      // own observation. `text` is the thought; later this comes from the live
+      // perception summary instead of the request body.
+      m = subPath.match(/^\/([^/]+)\/think$/);
+      if (m && req.method === 'POST') {
+        const dock = decodeURIComponent(m[1]!);
+        const body = JSON.parse((await readBody(req)) || '{}') as { text?: string; ttlMs?: number; kind?: string };
+        const text = typeof body.text === 'string' ? body.text.trim() : '';
+        if (!text) { json(res, 400, { error: 'body.text (the thought) is required' }); return true; }
+        const ttl = typeof body.ttlMs === 'number' && body.ttlMs > 0 ? body.ttlMs : 30_000;
+        // coalesce by thought KIND (default 'self:test') so a newer thought of the
+        // same kind replaces a stale pending one, but different kinds don't clobber.
+        const kind = typeof body.kind === 'string' && body.kind ? body.kind : 'test';
+        session(dock).enqueueAutonomousTurn({
+          turnId: `self-${randomUUID()}`,
+          trigger: { kind: 'self', text },
+          expiresAt: Date.now() + ttl,
+          coalesceKey: `self:${kind}`,
+        });
+        json(res, 200, { ok: true });
+        return true;
+      }
       // delete a specific session (transcript + index entry). Refuses the
       // currently-open one; the obs trace is dropped via the obs DELETE route.
       m = subPath.match(/^\/([^/]+)\/session\/([^/]+)$/);

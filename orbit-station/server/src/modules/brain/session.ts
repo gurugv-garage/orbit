@@ -48,6 +48,7 @@ import type { MotionExecutor } from '../bodylink/motion.js';
 import type { FaceToolsApi } from '../perception/index.js';
 import { gesturesFromConfig } from '../bodylink/motion.js';
 import { buildSystemPrompt, isVisionIntent } from './prompt.js';
+import { decideThought, type SessionState } from './thought-router.js';
 import { MAX_HISTORY_MESSAGES, SESSION_IDLE_MIN, VISION_GATE } from './constants.js';
 import { RpcBroker } from './rpc.js';
 import { SentenceStreamer } from './sentence.js';
@@ -134,6 +135,14 @@ export class DockBrainSession {
   #autoQueue: (TurnRequest & { expiresAt?: number; coalesceKey?: string })[] = [];
   #autoDrainTimer: ReturnType<typeof setTimeout> | undefined;
   #draining = false;
+
+  // ── attention-gate state (docs/PERCEPTION-TO-AGENT.md 2.2) ────────────────
+  // The coarse session state the ThoughtRouter reads. `#speaking` is latched by
+  // noteSpeech (TTS playing our last answer). `#listening` (user mid-utterance)
+  // has NO real signal yet — the Android recognizer owns the mic — so it is a
+  // STUB set only via setListening() (tests + the future always-on-mic wire).
+  #speaking = false;
+  #listening = false;
 
   // ── per-turn state (reset in #runTurn) ────────────────────────────────────
   #activeTurnId?: string;
@@ -236,6 +245,29 @@ export class DockBrainSession {
     return this.#meta?.lastTurnEndedAt ?? 0;
   }
 
+  /**
+   * The coarse session state the attention gate routes on (2.2). Priority order
+   * matches "who wins": a running turn (`thinking`) outranks everything; then our
+   * own TTS (`speaking`); then a user mid-utterance (`listening`, stubbed today);
+   * else `idle`. A self-thought/task never barges a turn that's already in flight.
+   */
+  state(): SessionState {
+    if (this.#running || this.#turnActive) return 'thinking';
+    if (this.#speaking) return 'speaking';
+    if (this.#listening) return 'listening';
+    return 'idle';
+  }
+
+  /**
+   * Set the `listening` flag — user is mid-utterance. STUB seam: today nothing
+   * calls this with a real signal (the phone owns the mic and sends only finalized
+   * utterances). It exists so the gate is wired + unit-testable now; the real
+   * signal lands with the always-on-mic shift (PERCEPTION-TO-AGENT.md caveat).
+   */
+  setListening(listening: boolean): void {
+    this.#listening = listening;
+  }
+
   /** Pre-warm on streamed transcript partials: open/load the session and
    *  resolve the profile so the LLM call fires the instant the final lands. */
   preWarm(): void {
@@ -315,13 +347,37 @@ export class DockBrainSession {
     try {
       while (this.#autoQueue.length > 0) {
         // user priority: wait for the WHOLE current chain (incl. queued user
-        // supersede closures) to settle before taking the lane.
+        // supersede closures) to settle before even consulting the gate — a
+        // running turn is a promise we can await, not a flag we poll.
         while (this.#running) { try { await this.#running; } catch { /* unwound */ } }
-        // settle gap: don't barge into a rapid user exchange.
+
         const settle = num(this.#d.config('brainTaskSettleMs'), 1500);
-        if (Date.now() - this.lastTurnEndedAt < settle) { await sleep(250); continue; }
+        // The PURE gate (docs/PERCEPTION-TO-AGENT.md 2.2) decides run/defer/drop
+        // from state + staleness + the settle gap. It reads the HEAD of the queue
+        // (peek, not shift) so a deferred turn stays queued for the next pass.
+        const head = this.#autoQueue[0]!;
+        const decision = decideThought({
+          state: this.state(),
+          now: Date.now(),
+          expiresAt: head.expiresAt,
+          lastTurnEndedAt: this.lastTurnEndedAt,
+          settleMs: settle,
+        });
+        if (decision === 'drop') {
+          this.#autoQueue.shift(); // stale news — discard, never spoken
+          this.#d.log?.(`[brain] ${this.dock}: ${head.trigger.kind} turn dropped (stale)`);
+          continue;
+        }
+        if (decision === 'defer') {
+          // BUSY (speaking/listening) or within the settle gap → hold and re-poll.
+          // (`thinking` is already handled by the while(#running) await above; this
+          // covers the flag-based states that clear via external events.) For now a
+          // deferred thought is simply re-evaluated next pass — if it goes stale
+          // meanwhile, the next decision drops it (the doc's "log+drop" first cut).
+          await sleep(250);
+          continue;
+        }
         const req = this.#autoQueue.shift()!;
-        if (req.expiresAt != null && Date.now() > req.expiresAt) continue; // stale news dropped
         // NO await between the while(#running) exit and assigning #running below:
         // on the single-threaded loop a user request cannot slot into the gap.
         const run = this.#runTurn(req);
@@ -360,6 +416,9 @@ export class DockBrainSession {
    *  when the TTS tail drains after the loop closed — the end of the whole
    *  user-perceived turn). */
   noteSpeech(speaking: boolean): void {
+    // latch the `speaking` attention state so the thought gate defers behind our
+    // own TTS (state() reads #speaking; the drain re-checks after it drains).
+    this.#speaking = speaking;
     this.#shipObsMarker(speaking ? 'SpeakStart' : 'SpeakEnd');
     if (!speaking && !this.#turnActive) this.#shipObsMarker('TurnSettled');
   }
@@ -559,6 +618,10 @@ export class DockBrainSession {
       skills: [this.#skills.promptBlock, fileAccess ? FILE_TOOLS_PROMPT : '', taskPrompt]
         .filter(Boolean).join('\n\n'),
       context: [bodyLine, req.context?.state].filter(Boolean).join(' '),
+      // a self-thought is the robot's OWN perception/awareness, not a user
+      // utterance — frame it so the model doesn't reply "you said…" to itself
+      // and knows it may stay silent (docs/PERCEPTION-TO-AGENT.md 2.1).
+      selfThought: this.#triggerKind === 'self',
     });
     agent.state.model = this.#resolveModel();
     agent.state.thinkingLevel = (str(this.#d.config('brainThinkingLevel')) ?? 'off') as never;

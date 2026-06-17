@@ -4,7 +4,11 @@
 > feeds the dock's brain agent (`modules/brain/`): grounding, memory, and — the hard
 > part — **internal thoughts** the agent raises for itself.
 >
-> Status: **design.** No code yet. This pins the decisions + the seams; build in phases.
+> Status: **Phase 1 built** (internal-thought routing — `trigger.kind:'self'`, the pure
+> `ThoughtRouter` gate, the `listening`/`speaking` state accessor, and the
+> `POST /api/brain/:dock/think` test-poke; all unit-tested in `thought-router.test.ts`
+> + `autonomous.test.ts`). Phases 2–5 (grounding, tools, memory, the real gate) remain
+> design. This doc pins the decisions + the seams; build in phases.
 
 ## Where we are today (the gap)
 
@@ -378,18 +382,24 @@ gating — apply to task comms too; keep them unified, don't fork.)
 
 ## Build phases (proposed)
 
-1. **Internal-thought routing (Decision 2)** — the foundation. Concretely:
-   - add `trigger.kind: 'self'` + prompt framing ("this is your own thought, not the
-     user; choose to speak/act/stay silent");
-   - a `state(): 'idle'|'listening'|'speaking'|'thinking'` accessor over the session's
-     existing flags (`#running`, `#activeTurnId`, VAD/`noteSpeech`);
-   - the **`listening` gate** in `#drainAuto` (the one genuinely new rule);
-   - reuse `enqueueAutonomousTurn` (staleness/coalesce/user-priority already there);
-   - a **test button / REST poke** (`POST /api/perception/think` or a console button)
-     that injects a self-thought from the current perception summary;
-   - **unit tests** for the decision across every state cell (pure, no LLM/dock) —
-     extend the existing autonomous-turn tests rather than a parallel suite.
-   *This is the make-or-break and the most unit-testable; start here.*
+1. **Internal-thought routing (Decision 2)** — the foundation. ✅ **DONE.** As built:
+   - `trigger.kind: 'self'` + prompt framing (`SELF_THOUGHT_FRAMING` in `prompt.ts`,
+     gated by `buildSystemPrompt({ selfThought })`);
+   - a pure **`ThoughtRouter`** (`thought-router.ts`, `decideThought()`) returning
+     `run`/`defer`/`drop` over `{state, now, expiresAt, lastTurnEndedAt, settleMs}` —
+     the policy, exhaustively unit-tested in `thought-router.test.ts`;
+   - `DockBrainSession.state(): 'idle'|'listening'|'speaking'|'thinking'` over the
+     existing flags (`#running`/`#turnActive`, a `#speaking` flag latched by
+     `noteSpeech`, and a **stubbed `#listening`** flag set by `setListening()`);
+   - `#drainAuto` now calls `decideThought` (peek-not-shift) — the `listening`/
+     `speaking` defer + log-then-drop-on-stale are the new rules; user-priority +
+     coalesce + bounded queue are reused from `enqueueAutonomousTurn` unchanged;
+   - a **REST poke** `POST /api/brain/:dock/think` (`{text, ttlMs?, kind?}`) injects a
+     self-thought (coalesceKey `self:<kind>`);
+   - **integrated tests** in `autonomous.test.ts` (idle→run, listening/speaking→defer-
+     then-run, user supersede, expired→drop, deferred-past-expiry→drop, coalesce).
+   The `listening` signal is a STUB (the caveat below) — wired + tested, no real source
+   yet. The other three states have real signals today.
 2. **Grounding (Decision 3.1)** — push the last summary + freshness into the session.
 3. **Pull tools (Decision 3.2)** — `force_get_current`, then `recall_memory`/`inspect_memory`.
 4. **Memory store (Decision 4)** — persistence + retention tiers; back the tools with it.

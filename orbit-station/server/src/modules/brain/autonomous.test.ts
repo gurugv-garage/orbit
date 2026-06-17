@@ -225,3 +225,137 @@ test('coalesce: a different instance does NOT merge (separate turns)', async () 
   for (let i = 0; i < 50 && speakText(frames).length < 2; i++) await tick();
   assert.deepEqual(speakText(frames), ['one', 'two'], 'different instances stay separate');
 });
+
+// ── internal THOUGHTS (trigger.kind:'self') — docs/PERCEPTION-TO-AGENT.md Phase 1.
+// A self-thought rides the SAME autonomous-turn lane as a task, but is framed as
+// the robot's OWN observation and defers behind a user mid-utterance (`listening`).
+
+/** The obs TurnStart's trigger.kind for the first auto turn that started. */
+const turnStartKind = (obs: BusMessage[]): string | undefined => {
+  const ev = obs.find((m) => (m.payload as { kind?: string }).kind === 'TurnStart');
+  return ev ? (ev.payload as { data: { trigger: { kind: string } } }).data.trigger.kind : undefined;
+};
+
+test('a self-thought runs on an IDLE session and is framed self/autonomous', async () => {
+  const { session, frames, obs } = makeSession([say('You have looked stuck for a while.')]);
+  session.enqueueAutonomousTurn({
+    turnId: 'self-1', trigger: { kind: 'self', text: '[thought] the user seems stuck' },
+    expiresAt: Date.now() + 30_000, coalesceKey: 'self:test',
+  });
+  for (let i = 0; i < 50 && speakText(frames).length === 0; i++) await tick();
+
+  assert.deepEqual(speakText(frames), ['You have looked stuck for a while.']);
+  const acc = accepted(frames);
+  assert.equal(acc.length, 1);
+  assert.equal(acc[0]!.autonomous, true, 'self-thought adopts the autonomous turn-status');
+  assert.equal(turnStartKind(obs), 'self', "obs TurnStart carries trigger.kind:'self'");
+});
+
+test('state(): idle by default; a self-thought never reports listening on its own', () => {
+  const { session } = makeSession([]);
+  assert.equal(session.state(), 'idle');
+  session.setListening(true);
+  assert.equal(session.state(), 'listening', 'stub flag flips state to listening');
+  session.setListening(false);
+  assert.equal(session.state(), 'idle');
+});
+
+test('a self-thought DEFERS while the user is mid-utterance (listening), then runs', async () => {
+  const { session, frames } = makeSession([say('Want a hand with that?')]);
+  // user is mid-utterance — the station (stub) marks listening before the thought.
+  session.setListening(true);
+  session.enqueueAutonomousTurn({
+    turnId: 'self-1', trigger: { kind: 'self', text: '[thought] offer help' },
+    expiresAt: Date.now() + 30_000, coalesceKey: 'self:test',
+  });
+  // give the drain several passes — it must NOT speak while listening.
+  for (let i = 0; i < 8; i++) await tick();
+  assert.deepEqual(speakText(frames), [], 'held while the user is talking');
+
+  // user finished — listening clears, the thought now runs.
+  session.setListening(false);
+  for (let i = 0; i < 50 && speakText(frames).length === 0; i++) await tick();
+  assert.deepEqual(speakText(frames), ['Want a hand with that?']);
+});
+
+test('a self-thought DEFERS while TTS is playing (speaking), then runs', async () => {
+  const { session, frames } = makeSession([say('Good news for you.')]);
+  // robot is mid-speech (its own TTS) — noteSpeech latches the speaking state.
+  session.noteSpeech(true);
+  assert.equal(session.state(), 'speaking');
+  session.enqueueAutonomousTurn({
+    turnId: 'self-1', trigger: { kind: 'self', text: '[thought] share news' },
+    expiresAt: Date.now() + 30_000, coalesceKey: 'self:test',
+  });
+  for (let i = 0; i < 8; i++) await tick();
+  assert.deepEqual(speakText(frames), [], 'held while our own TTS plays');
+
+  session.noteSpeech(false); // TTS drained
+  for (let i = 0; i < 50 && speakText(frames).length === 0; i++) await tick();
+  assert.deepEqual(speakText(frames), ['Good news for you.']);
+});
+
+test('a user turn always wins: it supersedes a running self-thought', async () => {
+  let releaseThought!: () => void;
+  const gate = new Promise<void>((r) => { releaseThought = r; });
+  const { session, frames } = makeSession([sayAfter('half a thought...', gate), say('User wins.')]);
+
+  session.enqueueAutonomousTurn({
+    turnId: 'self-1', trigger: { kind: 'self', text: '[thought] musing' },
+    expiresAt: Date.now() + 30_000, coalesceKey: 'self:test',
+  });
+  for (let i = 0; i < 20 && accepted(frames).length === 0; i++) await tick();
+
+  const userTurn = session.handleTurnRequest({ turnId: 'u1', trigger: { kind: 'user', text: 'hey' } });
+  releaseThought();
+  await userTurn;
+  for (let i = 0; i < 50 && !speakText(frames).includes('User wins.'); i++) await tick();
+
+  assert.ok(statuses(frames).includes('cancelled'), 'the self-thought was cancelled');
+  assert.ok(speakText(frames).includes('User wins.'), 'the user turn completed');
+});
+
+test('an EXPIRED self-thought is dropped, not spoken', async () => {
+  const { session, frames } = makeSession([]); // no script — nothing should run
+  session.enqueueAutonomousTurn({
+    turnId: 'self-stale', trigger: { kind: 'self', text: 'old observation' },
+    expiresAt: Date.now() - 1, coalesceKey: 'self:test',
+  });
+  for (let i = 0; i < 10; i++) await tick();
+  assert.deepEqual(speakText(frames), []);
+  assert.deepEqual(accepted(frames), []);
+});
+
+test('a self-thought DEFERRED past its expiry is DROPPED when the lane frees', async () => {
+  const { session, frames } = makeSession([]); // nothing should ever run
+  session.setListening(true); // user talking → the thought defers
+  session.enqueueAutonomousTurn({
+    turnId: 'self-1', trigger: { kind: 'self', text: 'fleeting' },
+    expiresAt: Date.now() + 120, coalesceKey: 'self:test',
+  });
+  // hold past expiry while listening, then release — the gate must DROP it (stale),
+  // not speak a now-irrelevant thought.
+  for (let i = 0; i < 12; i++) await tick(); // > 120ms of ticks
+  session.setListening(false);
+  for (let i = 0; i < 10; i++) await tick();
+  assert.deepEqual(speakText(frames), [], 'a thought that went stale while deferred is dropped');
+});
+
+test('self-thought coalesce: a newer same-kind thought replaces a stale pending one', async () => {
+  // hold the lane (listening) so both thoughts queue before either runs; the 2nd
+  // same-kind ('self:presence') thought MERGES into the pending one (one turn).
+  const { session, frames } = makeSession([say('Two people just arrived.')]);
+  session.setListening(true);
+  session.enqueueAutonomousTurn({
+    turnId: 's1', trigger: { kind: 'self', text: 'someone arrived' },
+    expiresAt: Date.now() + 30_000, coalesceKey: 'self:presence',
+  });
+  session.enqueueAutonomousTurn({
+    turnId: 's2', trigger: { kind: 'self', text: 'a second person arrived' },
+    expiresAt: Date.now() + 30_000, coalesceKey: 'self:presence',
+  });
+  session.setListening(false);
+  for (let i = 0; i < 50 && accepted(frames).length === 0; i++) await tick();
+  await tick(); await tick();
+  assert.equal(accepted(frames).length, 1, 'two same-kind thoughts coalesce into one turn');
+});
