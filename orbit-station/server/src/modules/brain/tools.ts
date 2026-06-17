@@ -23,6 +23,7 @@ import type { RpcBroker } from './rpc.js';
 import { SafeCompute } from './safe-compute.js';
 import * as S from './schemas.js';
 import * as slack from '../../integrations/slack.js';
+import * as whatsapp from '../../integrations/whatsapp.js';
 
 /** Capture a live clip, then hand the finished file to a watcher. The session
  *  provides this; record_video kicks it off and returns immediately. */
@@ -161,6 +162,43 @@ export function buildSlackTools(): AgentTool<any>[] {
           ? `${people.length} people in the channel: ${people.join(', ')}${bots ? ` (+${bots} bot${bots > 1 ? 's' : ''})` : ''}.`
           : 'No people found in that channel.',
       );
+    }),
+  ];
+}
+
+/**
+ * The `send_to_whatsapp` tool — only offered when WhatsApp is configured
+ * (`WHATSAPP_TOKEN` + `WHATSAPP_PHONE_NUMBER_ID`), so the model never claims an
+ * ability it can't perform. Appended conditionally next to the Slack tools.
+ */
+export function buildWhatsAppTools(): AgentTool<any>[] {
+  if (!whatsapp.whatsappEnabled()) return [];
+  return [
+    tool('send_to_whatsapp', S.SEND_TO_WHATSAPP_DESC, S.sendToWhatsAppSchema, async (_id, args: { text: string; to?: string; recipients?: string[] }) => {
+      const text = args.text ?? '';
+      if (!text.trim()) return textResult('Nothing to send — the message text was empty.');
+
+      // Several recipients → fan out to individual 1:1 chats, reporting who got
+      // it and who didn't (one bad number doesn't sink the rest).
+      const many = (args.recipients ?? []).filter((r) => r?.trim());
+      if (many.length > 0) {
+        const { sent, failed } = await whatsapp.sendMessageToMany(many, text);
+        if (sent.length === 0) return textResult(`Couldn't send the WhatsApp message to anyone: ${failed.map((f) => `${f.to} (${f.error})`).join('; ')}`);
+        const okPart = `Sent on WhatsApp to ${sent.length} ${sent.length === 1 ? 'person' : 'people'}`;
+        return textResult(failed.length ? `${okPart}, but couldn't reach: ${failed.map((f) => f.to).join(', ')}.` : `${okPart}.`);
+      }
+
+      // Single recipient (or the configured default).
+      try {
+        await whatsapp.sendMessage({ text, to: args.to });
+      } catch (err) {
+        // A bad recipient / expired token / outside-the-24h-window surfaces here;
+        // hand the reason to the brain to narrate rather than failing silently.
+        return textResult(`Couldn't send the WhatsApp message: ${err instanceof Error ? err.message : String(err)}`);
+      }
+      // Say WHO it went to only when the user named a recipient — otherwise just
+      // "WhatsApp", so the model doesn't echo a raw default phone number back.
+      return textResult(`Sent on WhatsApp${args.to ? ` to ${args.to}` : ''}.`);
     }),
   ];
 }

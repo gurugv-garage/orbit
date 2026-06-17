@@ -235,6 +235,16 @@ export const listSlackMembersSchema = {
   },
 } as const;
 
+export const sendToWhatsAppSchema = {
+  type: 'object',
+  properties: {
+    text: { type: 'string', description: 'the message text. WhatsApp supports *bold*, _italic_, ~strikethrough~, and ```monospace```.' },
+    to: { type: 'string', description: 'a single recipient phone number in E.164 (e.g. +15551234567); omit to use the default recipient' },
+    recipients: { type: 'array', items: { type: 'string' }, description: 'send the SAME message to several people — each an E.164 number (each gets their own 1:1 chat; WhatsApp has no group send). Use this OR `to`, not both.' },
+  },
+  required: ['text'],
+} as const;
+
 // Descriptions live next to the schemas so the model-facing surface is one place.
 export const TAKE_PHOTO_DESC =
   'Take a photo with your camera RIGHT NOW (a still of what you currently see). ' +
@@ -260,6 +270,14 @@ export const DM_SLACK_USER_DESC =
 export const LIST_SLACK_MEMBERS_DESC =
   'List the people in a Slack channel (their names). Use when asked who is in a channel, or before ' +
   'mentioning/DMing someone to find the right person. Defaults to the configured channel if none is given.';
+export const SEND_TO_WHATSAPP_DESC =
+  'Send a WhatsApp message to one or more people. Use when the user asks you to message / text / WhatsApp ' +
+  'someone. Give one recipient in `to` (E.164, +15551234567), or several in `recipients` to send the SAME ' +
+  'message to each — every person gets their own 1:1 chat (WhatsApp has no group send, so "tell the group" ' +
+  'means listing the people). Omit both to use the configured default recipient. ' +
+  'WhatsApp formatting works: *bold*, _italic_, ~strikethrough~, ```monospace```. ' +
+  'Note: a reply is free within 24h of their last message; an unprompted message outside that window may ' +
+  'be rejected (needs a pre-approved template) — if so, say the message could not be delivered.';
 export const SET_FACE_DESC =
   "Set the dock's facial expression to match the mood of what you're saying. " +
   'The body also acts out the mood automatically — a sleepy face droops the head, excited does a happy ' +

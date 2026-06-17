@@ -54,7 +54,7 @@ import { SentenceStreamer } from './sentence.js';
 import { SessionStore, type SessionMeta } from './store.js';
 import { loadDockSkills, type DockSkills } from './skills.js';
 import { buildFileTools, FILE_TOOLS_PROMPT } from './filetools.js';
-import { buildDockTools, buildGrantTools, buildSlackTools, type ToolTurnContext } from './tools.js';
+import { buildDockTools, buildGrantTools, buildSlackTools, buildWhatsAppTools, type ToolTurnContext } from './tools.js';
 import type { MoveStep } from './schemas.js';
 import type { VideoRecorderApi } from '../perception/record/recorder.js';
 import * as slack from '../../integrations/slack.js';
@@ -573,6 +573,7 @@ export class DockBrainSession {
       ...this.#baseTools,
       ...buildGrantTools(this.dock, this.#grants(), this.#d.motion),
       ...buildSlackTools(), // send_to_slack — only when SLACK_BOT_TOKEN is set
+      ...buildWhatsAppTools(), // send_to_whatsapp — only when WHATSAPP_TOKEN is set
       ...(this.#skills.tool ? [this.#skills.tool] : []),
       ...(fileAccess ? buildFileTools({ confirm: (s, d) => this.#confirmOnDock(s, d) }) : []),
       ...(this.#d.getTaskTools?.(this.dock, () => this.#meta?.sessionId) ?? []),

@@ -1,17 +1,25 @@
 # WhatsApp setup — sending & receiving messages from the dock
 
-> **Status: design + setup doc — NOT yet implemented.** This describes the chosen
-> approach and the one-time account setup so the credentials are ready. The
-> `orbit-station` code (`integrations/whatsapp.ts`, the `send_to_whatsapp` brain
-> tool, the inbound webhook) is **not built yet** — the "How it works" section is
-> the spec for building it. Until then, nothing below is live.
+> **Status: outbound BUILT & live; inbound webhook not yet built.** The
+> `send_to_whatsapp` brain tool + `integrations/whatsapp.ts` exist and are gated
+> on `WHATSAPP_TOKEN`; a live check (`npm run whatsapp:check -w server`) sends a
+> real message. The Meta app "orbit" (App ID `1760660891596109`, business
+> portfolio "Guru GV", WABA `2488487064924852`) is set up with the free **test
+> number +1 555 667 4854** and a permanent System User token. **Still a spec:**
+> the inbound webhook (§5) and sending photos.
 
 The dock brain will talk to WhatsApp with one tool, in-process on orbit-station
 (no sidecar, no per-device token):
 
 | Tool | What it does |
 |---|---|
-| `send_to_whatsapp` | Send a text message to a recipient (default `WHATSAPP_DEFAULT_TO`). |
+| `send_to_whatsapp` | Send a text message to one recipient (`to`, default `WHATSAPP_DEFAULT_TO`) or the same text to several (`recipients[]`, each a 1:1 chat). |
+
+**No group sends.** The Cloud API can't post to a WhatsApp *group* (Meta's
+Groups API is limited-access / not on the test number), so "message the group"
+means listing the people — `recipients[]` fans the same text out to each as an
+individual chat, collecting per-recipient success/failure. For real group/channel
+posting, use Slack (`send_to_slack`).
 
 Sending photos is a planned follow-up (parallel to Slack's `take_photo`).
 
@@ -118,18 +126,34 @@ HTTPS URL** pointing at the station.
 cd orbit-station && npm run dev
 ```
 
+First, a quick standalone live check (no station needed) — proves the token,
+phone-number-id, and recipient allow-list are right by sending a real message:
+
+```bash
+npm run whatsapp:check -w server                 # sends to WHATSAPP_DEFAULT_TO
+npm run whatsapp:check -w server -- +15551234567 # or pass a recipient (E.164)
+```
+
 Then, from the Brain console or by talking to the dock:
 
 - "send *hello from orbit* to my WhatsApp"
 - (two-way) send a WhatsApp message to the orbit number and confirm the dock
-  reacts.
+  reacts. *(inbound webhook not built yet — see §5.)*
+
+### Branding (name + logo) — needs a registered number
+
+Recipients see the sender's **number** (no business name/logo) on the free test
+number — Meta only allows a custom **display name** + **profile photo** on a
+**registered** business number (your own, added + verified in WhatsApp Manager,
+display name reviewed by Meta). Deferred until orbit uses a real number.
 
 ---
 
-## How it works (under the hood) — implementation spec
+## How it works (under the hood)
 
-This is the design for the not-yet-written code; it mirrors the Slack integration
-([integrations/slack.ts](../orbit-station/server/src/integrations/slack.ts)).
+Outbound is **built** and mirrors the Slack integration
+([integrations/slack.ts](../orbit-station/server/src/integrations/slack.ts));
+inbound (the webhook) is still the spec below.
 
 - **Outbound** → `POST https://graph.facebook.com/v21.0/<PHONE_NUMBER_ID>/messages`
   with header `Authorization: Bearer <WHATSAPP_TOKEN>` and JSON body:
@@ -154,11 +178,12 @@ This is the design for the not-yet-written code; it mirrors the Slack integratio
 
 Where the code will live:
 
-| Piece | Location | Mirror of |
-|---|---|---|
-| Integration helper (`whatsappEnabled()`, `sendMessage()`, env readers) | `orbit-station/server/src/integrations/whatsapp.ts` | `integrations/slack.ts` |
-| Brain tool (`send_to_whatsapp`, gated on `whatsappEnabled()`, appended to `agent.state.tools` next to `buildSlackTools()`) | `modules/brain/{schemas.ts, tools.ts, session.ts}` | the `send_to_slack` tool |
-| Inbound webhook | a `/api/whatsapp` module mount | the `/api/slack` module |
+| Piece | Location | Mirror of | State |
+|---|---|---|---|
+| Integration helper (`whatsappEnabled()`, `sendMessage()`, env readers) | [integrations/whatsapp.ts](../orbit-station/server/src/integrations/whatsapp.ts) (+ `whatsapp.test.ts`) | `integrations/slack.ts` | **built** |
+| Brain tool (`send_to_whatsapp`, gated on `whatsappEnabled()`, appended to `agent.state.tools` via `buildWhatsAppTools()` next to `buildSlackTools()`) | `modules/brain/{schemas.ts, tools.ts, session.ts}` | the `send_to_slack` tool | **built** |
+| Live setup check (`npm run whatsapp:check -w server`) | `server/src/dev/whatsapp-check.ts` | `slack:check` | **built** |
+| Inbound webhook | a `/api/whatsapp` module mount | the `/api/slack` module | spec only |
 
 ## Troubleshooting
 
