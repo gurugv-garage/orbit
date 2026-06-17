@@ -29,6 +29,7 @@ import { bodyMotionWatchProcessor, type MotionCommand } from './processors/bodym
 import { SnapshotStore, isoIst, sampleEvenly } from './snapshots.js';
 import { TakeStore } from './takes.js';
 import { summarize } from './summarizer.js';
+import { buildGrounding, type LastSummary } from './grounding.js';
 import { setVisionExtra, getVisionExtra, visionBase } from './vision-instruction.js';
 import { Gallery } from './face/gallery.js';
 import { describeFace, describeAllFaces, type DetectedFace } from './face/recognizer.js';
@@ -44,6 +45,15 @@ async function describeAllBase64(b64: string): Promise<DetectedFace[]> {
 /** A horizontal position word from a normalized x (0=left … 1=right). */
 function sideOf(cx: number): 'left' | 'center' | 'right' {
   return cx < 0.4 ? 'left' : cx > 0.6 ? 'right' : 'center';
+}
+/** The dock most of these records belong to (the store mixes docks; a summarize
+ *  window is normally one dock's). Empty string if there are none. */
+function dominantDock(recs: { dockId: string }[]): string {
+  const tally = new Map<string, number>();
+  for (const r of recs) if (r.dockId) tally.set(r.dockId, (tally.get(r.dockId) ?? 0) + 1);
+  let best = '', n = 0;
+  for (const [d, c] of tally) if (c > n) { best = d; n = c; }
+  return best;
 }
 import { makeResult, type PerceptionResult } from './result.js';
 import { classifyDistance, TENTATIVE_THRESHOLD } from './face/gallery.js';
@@ -89,11 +99,32 @@ export function getFaceTools(): FaceToolsApi | undefined {
   return faceToolsRef.current;
 }
 
+/**
+ * Perception GROUNDING for the brain (docs/PERCEPTION-TO-AGENT.md Decision 3.1):
+ * the per-turn context block — the last summary (stamped with staleness) plus the
+ * raw stream since it. Pulled synchronously when a turn is built (no Gemini on the
+ * turn's critical path); the brain injects the returned string into the prompt.
+ * Returns undefined when nothing has been perceived yet (a cold dock).
+ */
+export interface PerceptionGroundingApi {
+  /** the grounding block for `dockId` right now, or undefined if there's nothing. */
+  forDock(dockId: string): string | undefined;
+}
+
+const groundingRef: { current?: PerceptionGroundingApi } = {};
+/** The live PerceptionGroundingApi (set when the perception module inits). */
+export function getPerceptionGrounding(): PerceptionGroundingApi | undefined {
+  return groundingRef.current;
+}
+
 
 export function perceptionModule(getHub: () => ProcessingHub): StationModule {
   let state: PerceptionState;
   const snapshots = new SnapshotStore(); // WebRTC vision+speech snapshot records
   const takes = new TakeStore();         // frozen snapshot bundles for A/B replay
+  // Latest produced summary PER DOCK — the head of perception grounding (3.1). Set
+  // on each successful /snapshots/summarize; read synchronously by the brain facade.
+  const lastSummary = new Map<string, LastSummary>();
   let bus: Bus;
   const gallery = new Gallery(GALLERY_PATH);
   const face = faceRecognitionProcessor(gallery);
@@ -131,6 +162,24 @@ export function perceptionModule(getHub: () => ProcessingHub): StationModule {
       hub.register(identitySnapshotProcessor(snapshots, // 👤 identity (face-api + boxes)
         (sid) => face.recognizeAllCurrent(sid),
         (sid) => bodymotion.current(sid))); // ego-aware: don't drop people mid-move
+
+      // Perception grounding facade for the brain (3.1): synchronously build the
+      // per-turn context block for a dock — last summary (with staleness) + the raw
+      // stream since it, from this dock's records. No network; the brain injects it.
+      groundingRef.current = {
+        forDock(dockId: string): string | undefined {
+          const now = Date.now();
+          // this dock's recent records (the store mixes docks; records are tagged).
+          const recent = snapshots.list().filter((r) => r.dockId === dockId);
+          const block = buildGrounding({
+            last: lastSummary.get(dockId) ?? null,
+            recent,
+            now,
+            nowIso: isoIst(new Date(now)),
+          });
+          return block ?? undefined;
+        },
+      };
 
       // In-process face API for the server brain (docs/SERVER-BRAIN-IMPL.md §3.1):
       // the same operations the WS request/result flow below serves, exposed as
@@ -353,6 +402,16 @@ export function perceptionModule(getHub: () => ProcessingHub): StationModule {
         const keyframes = body.withKeyframes
           ? snapshots.keyframesInWindow(fromIso, toIso, body.maxKeyframes ?? 6) : undefined;
         const result = await summarize(recs, { keyframes, model: body.model });
+        // Cache it as the head of grounding (3.1) for whichever dock this window is
+        // about — the dominant dockId in the summarized records. A real (non-empty,
+        // non-error) summary only; an error/empty leaves the prior summary in place.
+        const dockId = dominantDock(recs);
+        if (dockId && result.summary && !result.error) {
+          lastSummary.set(dockId, {
+            dockId, text: result.summary,
+            window: { from: fromIso, to: toIso }, computedAt: Date.now(),
+          });
+        }
         // Echo the exact window used so the console can pin its log to it.
         json(res, 200, { ...result, window: { from: fromIso, to: toIso } });
         return true;

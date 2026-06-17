@@ -101,7 +101,7 @@ your senses, NOT something the person said to you. Do not reply as if they spoke
 You may speak to them about it, do something, or simply stay silent and do
 nothing if it isn't worth raising. Silence is a fine choice.`.trim();
 
-export function buildSystemPrompt(opts: { persona?: string; context?: string; memory?: string; skills?: string; now?: Date; selfThought?: boolean }): string {
+export function buildSystemPrompt(opts: { persona?: string; context?: string; grounding?: string; memory?: string; skills?: string; now?: Date; selfThought?: boolean }): string {
   let p = SYSTEM;
   p += `\n\n${nowLine(opts.now)}`;
   if (opts.selfThought) p += `\n\n${SELF_THOUGHT_FRAMING}`;
@@ -114,6 +114,10 @@ export function buildSystemPrompt(opts: { persona?: string; context?: string; me
   // skills = pi progressive disclosure (names+descriptions only; full body via
   // the invoke_skill tool). Per-dock, loaded from the dock's own folder.
   if (opts.skills && opts.skills.trim().length > 0) p += `\n\n${opts.skills.trim()}`;
+  // perception grounding (docs/PERCEPTION-TO-AGENT.md 3.1): what's been happening,
+  // not just the instant — the last summary (with how stale it is) + the raw stream
+  // since. Stamped so the model knows whether it's live or old and can hedge.
+  if (opts.grounding && opts.grounding.trim().length > 0) p += `\n\n${opts.grounding.trim()}`;
   if (opts.context && opts.context.trim().length > 0) p += `\n\nCurrent state — ${opts.context.trim()}`;
   return p;
 }

@@ -27,7 +27,7 @@ import { readFileSync } from 'node:fs';
 import type { RouteContext, StationModule } from '../../core/module.js';
 import type { Directory } from '../docks/directory.js';
 import type { MotionExecutor } from '../bodylink/motion.js';
-import { getFaceTools } from '../perception/index.js';
+import { getFaceTools, getPerceptionGrounding } from '../perception/index.js';
 import type { VideoRecorderApi } from '../perception/record/recorder.js';
 import { RpcBroker } from './rpc.js';
 import { DockBrainSession, type TurnRequest, keyStatusFor } from './session.js';
@@ -147,7 +147,8 @@ export function brainModule(w: BrainWiring): StationModule {
     if (!s) {
       s = new DockBrainSession(dock, {
         bus, directory: w.directory, rpc, motion: w.motion, store,
-        getFaces: getFaceTools, recordVideo: w.recordVideo, config: w.config,
+        getFaces: getFaceTools, getGrounding: getPerceptionGrounding,
+        recordVideo: w.recordVideo, config: w.config,
         log: (line) => console.log(line),
         stopTasksForParent: (d, parentSessionId) => { supervisor.stopForParent(d, parentSessionId); },
         hasRunningTasks: (d, parentSessionId) => supervisor.hasRunningUnder(d, parentSessionId),
@@ -537,6 +538,9 @@ async function buildDockProfile(dock: string, w: BrainWiring, store: SessionStor
     memory,
     skills: [skills.promptBlock, fileAccess ? FILE_TOOLS_PROMPT : ''].filter(Boolean).join('\n\n') || undefined,
     context: bodyLine,
+    // the live grounding the dock would inject right now (so the console preview
+    // matches a real turn). Best-effort — undefined on a cold dock.
+    grounding: getPerceptionGrounding()?.forDock(dock),
   });
 
   const grantsAll = cfg('brainGrants') as Record<string, unknown> | undefined;

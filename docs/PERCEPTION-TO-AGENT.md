@@ -4,11 +4,12 @@
 > feeds the dock's brain agent (`modules/brain/`): grounding, memory, and — the hard
 > part — **internal thoughts** the agent raises for itself.
 >
-> Status: **Phase 1 built** (internal-thought routing — `trigger.kind:'self'`, the pure
-> `ThoughtRouter` gate, the `listening`/`speaking` state accessor, and the
-> `POST /api/brain/:dock/think` test-poke; all unit-tested in `thought-router.test.ts`
-> + `autonomous.test.ts`). Phases 2–5 (grounding, tools, memory, the real gate) remain
-> design. This doc pins the decisions + the seams; build in phases.
+> Status: **Phases 1–2 built.** Phase 1 = internal-thought routing (`trigger.kind:'self'`,
+> the pure `ThoughtRouter` gate, the `listening`/`speaking` state accessor, the
+> `POST /api/brain/:dock/think` test-poke). Phase 2 = grounding (the last summary +
+> raw-since stream injected every turn, via `buildGrounding()` + the
+> `PerceptionGroundingApi` facade). All unit-tested. Phases 3–5 (pull tools, memory store,
+> the real attention gate) remain design. This doc pins the decisions + the seams.
 
 ## Where we are today (the gap)
 
@@ -205,12 +206,35 @@ threshold below which we trust ONLY tap (not voice) to interrupt.
 Every turn (user OR self) carries perception context so the agent reasons over what's
 been happening — **not** just the current instant.
 
-### 3.1 Always-on: the last summary, with freshness
-Inject the **most recent summary** into the prompt, explicitly stamped with its time
-range and **how stale it is vs. now** — e.g. *"Perception (as of 2 min ago,
-covering 14:30–14:35): Guru has been coding, sounded frustrated, asked about lunch."*
-The agent must know whether this is live or old, so it can hedge ("a few minutes ago
-you were…") or refresh. A cheap state line (who's present, camera moving) rides along.
+### 3.1 Always-on: the last summary + the raw stream since it ✅ **BUILT (Phase 2)**
+Inject, **every turn (user AND self)**, the **most recent summary** stamped with its
+window and **how stale it is** — e.g. *"Perception — last summary (2 min ago, covering
+14:30–14:35 IST): Guru has been coding, sounded frustrated, asked about lunch."* —
+**followed by the raw stream SINCE that summary** (the stitched, timestamped, speaker/
+confidence-tagged records that accumulated after it: *"Since then (14:35–now, raw — not
+yet summarized): …"*). So the agent has the fused narrative up to a point, then the
+unfused "what's happened since." The agent thus knows whether context is live or old and
+can hedge ("a few minutes ago you were…").
+
+**Decided shape (NOT a fresh summarize per turn** — that's 5–15 s of Gemini we can't put
+on the turn's critical path): grounding reuses whatever summary was last produced
+(console click today; `force_get_current` later) and appends the cheap raw tail. No
+always-on Gemini loop. If no summary exists yet, grounding is just the recent raw window
+with its timestamps; a cold dock injects nothing.
+
+**Decided: PUSH/injected, not a tool.** The full block is injected automatically (the
+agent shouldn't have to *choose* to look — for a self-thought, perception IS the trigger;
+a weak model would answer blind if it were pull-only). The *deliberate/expensive* pulls
+(`force_get_current`, `recall_memory`) are the separate tool surface (3.2, Phase 3).
+
+**As built:** pure builder `buildGrounding()` (`perception/grounding.ts`) +
+`staleness()`; a per-dock `lastSummary` cache set on each successful
+`/snapshots/summarize`; the `PerceptionGroundingApi` facade (`getPerceptionGrounding()`,
+mirrors `FaceToolsApi`) the brain reads via the `getGrounding` dep and injects through
+`buildSystemPrompt({ grounding })`. The raw tail reuses the summarizer's `stitch()` and
+is capped (`MAX_RAW_LINES`). Unit-tested in `grounding.test.ts` (staleness phrasing,
+summary+since, since-window exclusion, no-summary fallback, cold-dock null, line cap).
+The console's dock-profile prompt preview shows the live grounding too.
 
 ### 3.2 The agent's tool surface (v1) — perceive → discover → inspect → mutate
 Think like the agent: it can't use point-lookups until it can **discover** what exists.
@@ -400,7 +424,9 @@ gating — apply to task comms too; keep them unified, don't fork.)
      then-run, user supersede, expired→drop, deferred-past-expiry→drop, coalesce).
    The `listening` signal is a STUB (the caveat below) — wired + tested, no real source
    yet. The other three states have real signals today.
-2. **Grounding (Decision 3.1)** — push the last summary + freshness into the session.
+2. **Grounding (Decision 3.1)** — ✅ **DONE.** PUSH the last summary (with staleness) +
+   the raw stream since it into every turn's prompt. Pure `buildGrounding()` +
+   `PerceptionGroundingApi` facade + `lastSummary` cache; unit-tested. No per-turn Gemini.
 3. **Pull tools (Decision 3.2)** — `force_get_current`, then `recall_memory`/`inspect_memory`.
 4. **Memory store (Decision 4)** — persistence + retention tiers; back the tools with it.
 5. **Proactive gate (Decision 1, later)** — cheap rules → LLM judge that auto-raises

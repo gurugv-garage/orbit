@@ -45,7 +45,7 @@ import {
 import type { Bus } from '../../core/bus.js';
 import type { Directory } from '../docks/directory.js';
 import type { MotionExecutor } from '../bodylink/motion.js';
-import type { FaceToolsApi } from '../perception/index.js';
+import type { FaceToolsApi, PerceptionGroundingApi } from '../perception/index.js';
 import { gesturesFromConfig } from '../bodylink/motion.js';
 import { buildSystemPrompt, isVisionIntent } from './prompt.js';
 import { decideThought, type SessionState } from './thought-router.js';
@@ -83,6 +83,10 @@ export interface SessionDeps {
   motion: MotionExecutor;
   store: SessionStore;
   getFaces: () => FaceToolsApi | undefined;
+  /** perception grounding (docs/PERCEPTION-TO-AGENT.md 3.1): the per-turn context
+   *  block (last summary + raw-since), pulled synchronously and injected into the
+   *  prompt. Undefined → no perception grounding (the dock behaves as before). */
+  getGrounding?: () => PerceptionGroundingApi | undefined;
   /** live video recorder (record_video tool). Undefined → tool not offered. */
   recordVideo?: VideoRecorderApi;
   /** effective config value by key (shared ConfigStore). */
@@ -612,12 +616,21 @@ export class DockBrainSession {
       + 'keep running. NEVER refuse with "I can only run predefined tasks": browse, reuse, '
       + 'or author. Track with get_task_status; manage with pause/resume/stop_task; answer '
       + 'a stuck task with provide_input. Relay any "[background task …]" message naturally.';
+    // perception grounding (3.1): the last summary (stamped with staleness) + the
+    // raw stream since it, for THIS dock. Pulled synchronously (no Gemini on the
+    // turn path) and injected every turn — user AND self — so the agent always
+    // reasons over what's been happening, not just the instant. Best-effort: a cold
+    // dock / unwired perception → undefined, and the turn grounds as before.
+    let grounding: string | undefined;
+    try { grounding = this.#d.getGrounding?.()?.forDock(this.dock); }
+    catch (err) { this.#d.log?.(`[brain] ${this.dock}: grounding failed (ignored): ${String(err)}`); }
     agent.state.systemPrompt = buildSystemPrompt({
       persona: str(this.#d.config('brainPersona')),
       memory,
       skills: [this.#skills.promptBlock, fileAccess ? FILE_TOOLS_PROMPT : '', taskPrompt]
         .filter(Boolean).join('\n\n'),
       context: [bodyLine, req.context?.state].filter(Boolean).join(' '),
+      grounding,
       // a self-thought is the robot's OWN perception/awareness, not a user
       // utterance — frame it so the model doesn't reply "you said…" to itself
       // and knows it may stay silent (docs/PERCEPTION-TO-AGENT.md 2.1).
