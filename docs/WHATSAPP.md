@@ -8,8 +8,9 @@
 > number +1 555 667 4854** and a permanent System User token. **Still a spec:**
 > the inbound webhook (§5) and sending photos.
 
-The dock brain will talk to WhatsApp with one tool, in-process on orbit-station
-(no sidecar, no per-device token):
+The dock brain talks to WhatsApp with one tool, in-process on orbit-station (no
+sidecar, no per-device token). The as-built design + decisions are in the
+**"As-built design"** section below; this top half is the one-time account setup.
 
 | Tool | What it does |
 |---|---|
@@ -38,7 +39,80 @@ they drive your *personal* number against Meta's ToS, and 2026 ban-detection fla
 automation even on long-stable bots — a ban costs your real WhatsApp account. See
 the footnote at the end.
 
-Implementation (planned): `orbit-station/server/src/integrations/whatsapp.ts`.
+Implementation: [integrations/whatsapp.ts](../orbit-station/server/src/integrations/whatsapp.ts).
+
+---
+
+## As-built design (outbound) & decisions
+
+This is what the committed code does and *why* — the design record for the
+outbound path. (Inbound is still the spec in §5 / "How it works".)
+
+**Shape.** One in-process tool, no sidecar, no per-device token — the station
+already holds the credential, so the tool just `import`s the integration and
+calls `fetch`. This mirrors `integrations/slack.ts` exactly (same `call()` /
+gate / "throw on non-ok" pattern), so there's one mental model for both.
+
+**The tool surface.** `send_to_whatsapp` takes `text` plus *either*:
+- `to` — one recipient (E.164), or omitted to use `WHATSAPP_DEFAULT_TO`; or
+- `recipients[]` — the **same** text fanned out to several people.
+
+**Decision — no group sends; fan-out instead.** The WhatsApp Cloud API cannot
+post to a WhatsApp *group*: `to` is always a single phone number, and Meta's
+Groups API is limited-access (approved BSPs only, group must be created *by* the
+business, not on the free test number). Rather than pretend, "message the group"
+is modelled as **fan-out to individuals** — `sendMessageToMany()` sends each as
+its own 1:1 chat. The tool description says this explicitly so the model lists
+the people instead of inventing a group id, and points at Slack
+(`send_to_slack`) for real channel/group posting. *Not allowed by design: any
+"send to a WhatsApp group" path — it's a Meta restriction we don't work around.*
+
+**Decision — partial-failure is collected, not fatal.** In a fan-out, each send
+is independent; one bad / non-allow-listed number doesn't abort the batch.
+`sendMessageToMany()` returns `{ sent[], failed[] }` and the tool reports e.g.
+*"Sent to 2 people, but couldn't reach: +1555…"* so the brain narrates the truth.
+
+**Decision — normalize + dedupe recipients.** The model may pass `+91 98442
+11401`, `919844211401`, or `0049 151…`; `normalizeTo()` strips `+`, spaces,
+dashes and a leading `00`, validates 6–15 digits, and the fan-out dedupes — so
+the same person isn't messaged twice and a malformed entry becomes a clean
+`failed` row, not a thrown batch.
+
+**Decision — stay inside the free 24h service window.** `sendMessage()` sends a
+plain `text` body (free + unlimited within 24h of the user's last inbound). An
+*unprompted* message outside that window needs a pre-approved template; we don't
+build templates — outside the window Meta returns an error the tool surfaces
+verbatim, rather than silently failing.
+
+**Gate.** `whatsappEnabled()` (token **and** phone-number-id present) decides
+whether `buildWhatsAppTools()` returns the tool at all — with no creds it's never
+offered to the model, so the brain can't claim an ability it lacks (same gate as
+Slack's `slackEnabled()`).
+
+**Open design — resolving people → numbers (NOT solved yet).** Today the tool
+takes only **E.164 numbers**, so *"send a message to guru"* has nothing to map
+"guru" → `+91…`. This differs from Slack, which has a real directory: `slack.ts`'s
+`resolveUser()` looks a name/@handle/email up against `users.list` for the whole
+workspace, so the model can say "DM guru" and it resolves. WhatsApp has **no such
+directory** — the Cloud API gives you a *number*, never a contact book, and
+there's no equivalent of `users.list`. So a name→number map has to be *ours*.
+For now the brain only sends to a number it's given (or `WHATSAPP_DEFAULT_TO`);
+if the user says a bare name, the right behavior is to **ask for the number**
+rather than guess. A contacts map is the main pending design piece — see below.
+
+**Verified.** `whatsapp.test.ts` (mocked fetch) covers shaping / normalization /
+fan-out / partial failure; `npm run whatsapp:check -w server` does a real live
+send; and a real LLM brain turn was confirmed to fire the tool end-to-end.
+
+## Pending / not built
+
+| Item | Notes |
+|---|---|
+| **Contacts: name → number** | *"Message guru"* can't resolve a name to a number — WhatsApp has no directory (unlike Slack's `resolveUser`), so the map must be ours. **Proposed:** a small contacts table — simplest is env (`WHATSAPP_CONTACTS="guru=+919844211401,amma=+91…"`) parsed into a `resolveContact(name)`; or a JSON file / config-console list when it grows. The tool gains a `name`/`contact` arg (or `to` accepts a known name) that resolves via this map, falling back to "ask for the number" on a miss — never guessing. Could later be unified with perception identities (the dock already names faces) so "tell the person I'm looking at". |
+| **Inbound webhook** (`/api/whatsapp`) | The dock *hearing* WhatsApp replies. Design is §5 + "How it works → Inbound"; needs a public HTTPS URL (tunnel) and a `/api/whatsapp` module mounting the verify-handshake + message parse into the same brain entry point Slack inbound uses. |
+| **Sending photos** | Parallel to Slack's `take_photo` — upload media + send an `image` message. Not yet wired. |
+| **Branding (name + logo)** | The test number shows a raw number; a custom display name + the eyes profile photo need a **registered** business number (see "Branding" under §6). Deferred. |
+| **Templates** | For unprompted messages outside the 24h window. Out of scope while orbit only *replies* to the user. |
 
 ---
 
