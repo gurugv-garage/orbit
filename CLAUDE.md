@@ -101,8 +101,11 @@ shared-format snapshot streams — 👁 vision (qwen2.5-VL via MLX sidecar), �
 ego-motion) — fused on demand by a Gemini summarizer; the **Perception Studio** console
 (`/#perception`) is the iterate-and-review playground with takes (A/B replay) —
 [docs/PERCEPTION-PIPELINE.md](docs/PERCEPTION-PIPELINE.md) for the as-built design +
-decisions, [docs/PERCEPTION-PYRAMID.md](docs/PERCEPTION-PYRAMID.md) for the tiered
-escalation plan, [models/BENCHMARKS.md](models/BENCHMARKS.md) for the model numbers).
+decisions, [docs/PERCEPTION-TO-AGENT.md](docs/PERCEPTION-TO-AGENT.md) for the
+agent plug-in (thoughts/grounding/memory/tools/gate — Phases 1-5 built),
+[docs/PERCEPTION-RUNBOOK.md](docs/PERCEPTION-RUNBOOK.md) for **how to run + test it
+end-to-end** (sidecars, station, phone), [docs/PERCEPTION-PYRAMID.md](docs/PERCEPTION-PYRAMID.md)
+for the tiered escalation plan, [models/BENCHMARKS.md](models/BENCHMARKS.md) for the model numbers).
 See [orbit-station/README.md](orbit-station/README.md) and
 [orbit-station/TESTING.md](orbit-station/TESTING.md). The heavier real-time STT/
 TTS **media brain** from plan.md §5 can still live as a separate sidecar fed by
