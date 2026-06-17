@@ -163,6 +163,11 @@ export const getDateTimeSchema = {
   properties: {},
 } as const;
 
+export const forceGetCurrentSchema = {
+  type: 'object',
+  properties: {},
+} as const;
+
 export const rememberFaceSchema = {
   type: 'object',
   properties: {
@@ -308,6 +313,14 @@ export const GET_DATE_TIME_DESC =
   'Get the current date and time (local timezone of where you run). Call this whenever you ' +
   'need to know "now" — what time it is, today\'s date/day of week, or to reason about an ' +
   '"at TIME" / "in N minutes" request before scheduling a reminder. Takes no arguments.';
+export const FORCE_GET_CURRENT_DESC =
+  'Look and listen RIGHT NOW and get a fresh read of what is happening around you — ' +
+  'the live moment, not the background sense you already have. Use this when the person ' +
+  'pushes for now-ness ("what am I holding right now?", "what do you see this instant?", ' +
+  '"look again"), or when your background perception feels stale and you need to be current ' +
+  'before answering. It captures a fresh camera + audio snapshot and summarizes it. ' +
+  'Deliberate and a little slow (a real capture) — do not call it every turn; your ongoing ' +
+  'perception already rides along. Takes no arguments.';
 export const REMEMBER_FACE_DESC =
   'Remember the person you can currently see in your camera, by name. ' +
   'Call this when someone tells you who they are ("I\'m guru", "remember me as Alice", "this is my friend Bob"). ' +

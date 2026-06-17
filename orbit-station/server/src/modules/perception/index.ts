@@ -109,6 +109,15 @@ export function getFaceTools(): FaceToolsApi | undefined {
 export interface PerceptionGroundingApi {
   /** the grounding block for `dockId` right now, or undefined if there's nothing. */
   forDock(dockId: string): string | undefined;
+  /**
+   * FORCE a fresh summary of the live moment NOW (docs/PERCEPTION-TO-AGENT.md 3.2
+   * `force_get_current`): flush the in-flight tail (open utterance + a one-shot
+   * vision capture), summarize the just-closed window, cache it as the dock's last
+   * summary (so grounding goes live), and return the summary text. Costs a Gemini
+   * call + a vision capture — deliberate, agent-invoked, NOT per-turn. `streamId`
+   * is the dock's live camera stream (for the vision flush); omit if none.
+   */
+  forceCurrent(dockId: string, streamId?: string, windowMs?: number): Promise<{ summary: string; error?: string; window: { from: string; to: string } }>;
 }
 
 const groundingRef: { current?: PerceptionGroundingApi } = {};
@@ -178,6 +187,28 @@ export function perceptionModule(getHub: () => ProcessingHub): StationModule {
             nowIso: isoIst(new Date(now)),
           });
           return block ?? undefined;
+        },
+        async forceCurrent(dockId, streamId, windowMs) {
+          // 1) FLUSH the in-flight tail so "right now" is captured (mirrors the
+          //    console's Summarize flush): force-end open utterances + a one-shot
+          //    vision capture, both awaited before we pin the window.
+          try { await stt.flushAll(); } catch { /* best-effort */ }
+          if (streamId) { try { await vision.captureNow(streamId); } catch { /* best-effort */ } }
+          // 2) PIN the window NOW (after the flush committed) and summarize it.
+          const toIso = isoIst(new Date());
+          const fromIso = isoIst(new Date(Date.now() - (windowMs ?? 60_000)));
+          const recs = snapshots.inWindowWithState(fromIso, toIso)
+            .filter((r) => r.dockId === dockId); // this dock only
+          const result = await summarize(recs);
+          // 3) CACHE as the dock's last summary so grounding (3.1) goes live — the
+          //    first real producer of summaries (the console click is the only other).
+          if (result.summary && !result.error) {
+            lastSummary.set(dockId, {
+              dockId, text: result.summary,
+              window: { from: fromIso, to: toIso }, computedAt: Date.now(),
+            });
+          }
+          return { summary: result.summary, error: result.error, window: { from: fromIso, to: toIso } };
         },
       };
 

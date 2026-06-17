@@ -14,6 +14,11 @@
 > `force_get_current`, then `recall_memory`).** Then Phases 4–5, each with its console
 > surface; APP changes (always-on mic, echo/barge-in) pinned separately + deferred. This
 > doc pins the decisions + the seams.
+>
+> **Update:** Phase 3's **`force_get_current`** tool (+ console 🔎 perceive-now button, 3c)
+> is built + Playwright-verified — the first real summary PRODUCER, making grounding live.
+> The remaining pull tools (`recall_memory`/`inspect_memory`) wait on the Phase-4 memory
+> store. **Next: Phase 4 (memory store).**
 
 ## Where we are today (the gap)
 
@@ -444,14 +449,22 @@ gating — apply to task comms too; keep them unified, don't fork.)
    stuck! need help?" — not "you said…"); grounding panel shows the cold-dock message.
    *Why here, not later:* you can't trust Phase 3's tools until you can SEE Phase 1–2
    behaving. Server-only deps; no app change.
-3. **Pull tools (Decision 3.2)** — `force_get_current` first (it's also the first real
-   PRODUCER of summaries → makes grounding's cache live), then `recall_memory`/
-   `inspect_memory`. New brain tools via the `tools.ts` pattern; a `MemoryApi` facade.
-3c. **CONSOLE: tool-call visibility** — the obs turn-inspector already shows tool calls;
-   add a perception/memory-tool **filter/affordance** so a `force_get_current` or
-   `recall_memory` call (args + result) is legible in the Brain console, and a button to
-   fire a turn that *should* trigger each tool (for manual verification before the gate
-   exists). Reuses the existing `ToolExecutionStart/End` obs events.
+3. **Pull tools (Decision 3.2)** — ⚙ **force_get_current DONE** (the rest — `recall_memory`/
+   `inspect_memory` — wait on the Phase-4 memory store). `force_get_current` is the first
+   real PRODUCER of summaries → makes grounding's cache live. As built: the
+   `PerceptionGroundingApi.forceCurrent(dock, streamId)` facade method (flush the open
+   utterance + a one-shot vision capture → summarize the pinned window → cache as the
+   dock's last summary → return text); the `force_get_current` brain tool
+   (`tools.ts`/`schemas.ts`, offered only when grounding is wired), passing the turn's
+   live `streamId`. Unit-tested in `tools.test.ts` (offered-iff-wired, flush+summarize,
+   error surfaced as a thrown tool error, perception-vanished guard).
+3c. **CONSOLE: tool-call visibility** — ✅ **DONE.** The obs turn-inspector already renders
+   `ToolExecutionStart/End`, so a `force_get_current` call shows up automatically; added a
+   **🔎 perceive now** button to the PERCEPT strip that fires a camera-context user turn so
+   the model reaches for the tool (manual verification before the gate exists). **Verified
+   headful (Playwright):** clicking it runs a multi-step turn and `force_get_current`
+   appears in the inspector. *(Real summary content needs a live camera; `web-test` has
+   none — proves the wiring, not the vision quality.)*
 4. **Memory store (Decision 4)** — persistence + retention tiers; back the tools with it.
 4c. **CONSOLE: memory inspector** — a **Memory panel** (likely in PerceptionStudio or a
    new tab): list/search memories (type/subject/time), open one to see its **lineage**

@@ -16,7 +16,7 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import type { AgentTool, AgentToolResult } from '@earendil-works/pi-agent-core';
-import type { FaceToolsApi, RecognizeOut } from '../perception/index.js';
+import type { FaceToolsApi, PerceptionGroundingApi, RecognizeOut } from '../perception/index.js';
 import type { MotionExecutor } from '../bodylink/motion.js';
 import type { MoveStep } from './schemas.js';
 import type { RpcBroker } from './rpc.js';
@@ -48,6 +48,8 @@ export interface ToolDeps {
   rpc: RpcBroker;
   motion: MotionExecutor;
   getFaces: () => FaceToolsApi | undefined;
+  /** perception grounding facade (force_get_current). Undefined → tool not offered. */
+  getGrounding?: () => PerceptionGroundingApi | undefined;
   getGestures: () => Record<string, MoveStep[]>;
   getTurnContext: () => ToolTurnContext;
   /** live video recording (record_video). Undefined → the tool isn't offered. */
@@ -292,6 +294,20 @@ export function buildDockTools(deps: ToolDeps): AgentTool<any>[] {
       const dest = (slack.slackEnabled() && (args.slackChannel ?? slack.slackDefaultChannel())) ? ' and send it to Slack' : '';
       return textResult(`Recording ${seconds}s of video now — I'll share it${dest} when it's ready.`);
     }),
+
+    // PERCEPTION (docs/PERCEPTION-TO-AGENT.md 3.2). force_get_current: flush + a fresh
+    // summary of the live moment. Offered only when the grounding facade is wired.
+    ...(deps.getGrounding ? [
+      tool('force_get_current', S.FORCE_GET_CURRENT_DESC, S.forceGetCurrentSchema, async () => {
+        const g = deps.getGrounding!();
+        if (!g) throw new Error('perception is not available right now');
+        const streamId = deps.getTurnContext().streamId;
+        const r = await g.forceCurrent(deps.dock, streamId);
+        if (r.error) throw new Error(`couldn't get a fresh read: ${r.error}`);
+        const from = r.window.from.slice(11, 19), to = r.window.to.slice(11, 19);
+        return textResult(`Right now (${from}–${to} IST): ${r.summary || '(nothing notable)'}`);
+      }),
+    ] : []),
 
     tool('remember_face', S.REMEMBER_FACE_DESC, S.rememberFaceSchema, async (_id, args: { name: string }) => {
       const r = await faces().enroll({ name: args.name ?? '', ...frameOpts() });

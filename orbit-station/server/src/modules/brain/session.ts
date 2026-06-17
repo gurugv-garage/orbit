@@ -182,6 +182,7 @@ export class DockBrainSession {
       rpc: deps.rpc,
       motion: deps.motion,
       getFaces: deps.getFaces,
+      getGrounding: deps.getGrounding,
       getGestures: () => gesturesFromConfig(deps.config('faceGestures')) as Record<string, MoveStep[]>,
       getTurnContext: () => this.#turnCtx,
       recordVideo: deps.recordVideo

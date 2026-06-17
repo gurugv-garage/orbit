@@ -467,10 +467,10 @@ export function Brain() {
   }, [disconnect, refreshSessions, loadHistory, loadProfile]);
   useEffect(() => () => disconnect(), [disconnect]);
 
-  const send = () => {
-    const text = input.trim();
-    if (!text || !connected || turnActive) return;
-    setInput('');
+  // Send a user utterance as a turn (the console acts as a test phone). Shared by
+  // the text box and the 2c/3c quick-test buttons.
+  const sendUtterance = (text: string, contextState?: string) => {
+    if (!text.trim() || !connected || turnActive) return;
     const id = `t-${Math.random().toString(36).slice(2, 10)}`;
     activeTurnId.current = id;
     setTurnActive(true);
@@ -478,8 +478,17 @@ export function Brain() {
     pub('agent', 'turn-request', {
       turnId: id,
       trigger: { kind: 'user', text },
-      context: { state: 'You are talking through the station console (a test phone, no camera).' },
+      // default: a no-camera test phone. The perceive-now button overrides this so
+      // the model actually reaches for force_get_current (3c verification).
+      context: { state: contextState ?? 'You are talking through the station console (a test phone, no camera).' },
     });
+  };
+
+  const send = () => {
+    const text = input.trim();
+    if (!text || !connected || turnActive) return;
+    setInput('');
+    sendUtterance(text);
   };
 
   const cancel = () => {
@@ -641,6 +650,14 @@ export function Brain() {
             onChange={(e) => setThought(e.target.value)}
             onKeyDown={(e) => { if (e.key === 'Enter') void think(); }} />
           <button className="br-btn acc" onClick={think} disabled={!thought.trim()}>fire thought</button>
+          <span className="br-sep" />
+          {/* 3c: a user turn worded to trigger force_get_current — verify the tool
+              fires + its call shows in the inspector (no need to type). */}
+          <button className="br-btn" onClick={() => sendUtterance('what do you see right now? look right now.',
+            'You have a live camera and microphone. Use your perception tools to check the live moment.')}
+            disabled={turnActive} title="sends a user turn that should call force_get_current">
+            🔎 perceive now
+          </button>
           <button className={`br-btn ${showGrounding ? 'acc' : ''}`} onClick={() => { setShowGrounding((v) => !v); if (profile) void loadProfile(profile.dock); }}>
             {showGrounding ? '▾' : '▸'} grounding
           </button>
