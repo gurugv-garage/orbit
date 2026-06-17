@@ -15,10 +15,14 @@
 > surface; APP changes (always-on mic, echo/barge-in) pinned separately + deferred. This
 > doc pins the decisions + the seams.
 >
-> **Update:** Phase 3's **`force_get_current`** tool (+ console 🔎 perceive-now button, 3c)
-> is built + Playwright-verified — the first real summary PRODUCER, making grounding live.
-> The remaining pull tools (`recall_memory`/`inspect_memory`) wait on the Phase-4 memory
-> store. **Next: Phase 4 (memory store).**
+> **Update:** Phases 3 + 4 built + Playwright-verified. Phase 3 = `force_get_current`
+> (first real summary producer). Phase 4 = the unified per-dock **memory store** (sqlite,
+> axes + lineage + supersede, Gemini-embedded semantic recall) + the full memory tool set
+> (`recall_memory`/`inspect_memory`/`remember`/`update_memory`/`forget_memory`/
+> `list_subjects`/`list_recent`) + the **4c console memory inspector**. **Next: Phase 5
+> (the real proactive attention gate)** — and the deferred memory follow-up (retention
+> tiers, gallery→store migration). The always-on-mic APP shift (A1) still gates the real
+> `listening`/segmentation signal.
 
 ## Where we are today (the gap)
 
@@ -465,11 +469,31 @@ gating — apply to task comms too; keep them unified, don't fork.)
    headful (Playwright):** clicking it runs a multi-step turn and `force_get_current`
    appears in the inspector. *(Real summary content needs a live camera; `web-test` has
    none — proves the wiring, not the vision quality.)*
-4. **Memory store (Decision 4)** — persistence + retention tiers; back the tools with it.
-4c. **CONSOLE: memory inspector** — a **Memory panel** (likely in PerceptionStudio or a
-   new tab): list/search memories (type/subject/time), open one to see its **lineage**
-   (what it was derived from) + confidence, and manually add/revise/forget — the human
-   view of Decision 4's store. This is also how we'll *debug* what the agent recalls.
+4. **Memory store (Decision 4)** — ✅ **DONE (core).** The unified per-dock evolving store
+   is built: `memory/store.ts` (`MemoryStore`) over sqlite (`orbitDb()`, injectable for
+   tests), with the three axes (type/subject/derivation) + confidence as columns,
+   first-class **lineage** (`memory_lineage`), **supersede-not-delete** (revise inserts a
+   new active row + marks the old `revised`, linked by `supersedes`; forget → `forgotten`,
+   history kept), and **semantic recall from v1** (per-memory embedding BLOB + in-process
+   cosine scan — no vector DB). Embedder: `memory/embedder.ts` (Gemini
+   `gemini-embedding-001`, graceful-null → recall falls back to recency). The `MemoryApi`
+   facade (`getMemoryApi()`, mirrors `FaceToolsApi`) backs the brain tools:
+   **`recall_memory`** (structured + semantic), `list_subjects`/`list_recent` (orient),
+   **`inspect_memory`** (lineage + confidence — "why do I believe this"), `remember`,
+   `update_memory` (revise), `forget_memory` — all in `tools.ts`/`schemas.ts`, offered
+   only when memory is wired. Heavily unit-tested: `store.test.ts` (11 — supersede chain,
+   forget, structured + interval + semantic recall, lineage, orientation) + `tools.test.ts`
+   (memory tools via a mock facade). **Verified live:** semantic recall ranks "what do they
+   like to drink" → "prefers tea", "when is my flight" → "the flight to Delhi is Friday".
+   *Deferred to the memory follow-up (4.6): retention/rollup tiers, the gallery→store
+   migration (the gallery still runs as its own JSON for now), grounding's memory-selection.*
+4c. **CONSOLE: memory inspector** — ✅ **DONE.** A **memory panel** in the Brain console
+   (toggled from the PERCEPT strip): the dock's memories with color-coded type chips,
+   subject, confidence; a **semantic search** box; click a row → the **lineage detail**
+   ("why do I believe this": derivation, confidence, sources) + **forget**. REST under
+   `/api/perception/memory*` (GET recall/list, GET item+lineage, POST remember, PATCH
+   revise, DELETE forget). **Verified headful (Playwright):** rows + count + subjects
+   render, semantic search reranks, lineage detail opens.
 5. **Proactive gate (Decision 1, later)** — cheap rules → LLM judge that auto-raises
    thoughts instead of the console button. The console button (2c) stays as the manual
    override + test path.

@@ -92,6 +92,14 @@ interface DockProfile {
   grounding?: string | null;
 }
 
+/** 4c memory inspector (docs/PERCEPTION-TO-AGENT.md Decision 4). */
+interface MemoryItem {
+  id: string; type: string; subject: string; claim: string; confidence: number;
+  derivation: string; status: string; createdAt: number; validFrom: number;
+}
+interface MemoryView { count: number; subjects: string[]; memories: MemoryItem[] }
+interface MemoryDetail { memory: MemoryItem; lineage: { sourceKind: string; sourceId: string }[] }
+
 /** A condensed prior exchange from a resumed/open session's transcript. */
 interface PastExchange { user: string; reply: string; userAt?: number; replyAt?: number }
 
@@ -218,6 +226,11 @@ export function Brain() {
   // 2c test surface: the self-thought box + grounding preview toggle.
   const [thought, setThought] = useState('');
   const [showGrounding, setShowGrounding] = useState(false);
+  // 4c memory inspector: this dock's memories + the selected one's lineage.
+  const [showMemory, setShowMemory] = useState(false);
+  const [memData, setMemData] = useState<MemoryView | null>(null);
+  const [memQuery, setMemQuery] = useState('');
+  const [memSel, setMemSel] = useState<MemoryDetail | null>(null);
   const [confirm, setConfirm] = useState<ConfirmReq | null>(null);
   const [expandedStep, setExpandedStep] = useState<number | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
@@ -523,6 +536,29 @@ export function Brain() {
     await loadProfile(d);
   };
 
+  // 4c: load this dock's memories (optionally filtered by a semantic query).
+  const loadMemory = async (query?: string) => {
+    const d = dockRef.current.trim() || 'web-test';
+    const u = new URL(`/api/perception/memory`, location.origin);
+    u.searchParams.set('dock', d);
+    if (query?.trim()) u.searchParams.set('query', query.trim());
+    try {
+      const r = await fetch(u.toString());
+      if (r.ok) setMemData(await r.json() as MemoryView);
+    } catch { /* station down */ }
+  };
+  const inspectMemory = async (id: string) => {
+    try {
+      const r = await fetch(`/api/perception/memory/item/${encodeURIComponent(id)}`);
+      if (r.ok) setMemSel(await r.json() as MemoryDetail);
+    } catch { /* ignore */ }
+  };
+  const forgetMemory = async (id: string) => {
+    await fetch(`/api/perception/memory/item/${encodeURIComponent(id)}`, { method: 'DELETE' });
+    setMemSel(null);
+    await loadMemory(memQuery);
+  };
+
   const endSession = async () => {
     const d = dockRef.current.trim() || 'web-test';
     await fetch(`/api/brain/${encodeURIComponent(d)}/session/end`, { method: 'POST' });
@@ -661,6 +697,9 @@ export function Brain() {
           <button className={`br-btn ${showGrounding ? 'acc' : ''}`} onClick={() => { setShowGrounding((v) => !v); if (profile) void loadProfile(profile.dock); }}>
             {showGrounding ? '▾' : '▸'} grounding
           </button>
+          <button className={`br-btn ${showMemory ? 'acc' : ''}`} onClick={() => { const n = !showMemory; setShowMemory(n); if (n) void loadMemory(); }}>
+            {showMemory ? '▾' : '▸'} memory
+          </button>
         </div>
       )}
       {/* grounding preview — the exact perception block the NEXT turn would inject. */}
@@ -668,6 +707,52 @@ export function Brain() {
         <pre className="br-grounding">
           {profile?.grounding?.trim() || '(no perception grounding yet — cold dock, no summary + no recent records)'}
         </pre>
+      )}
+
+      {/* 4c: memory inspector — the dock's unified memory (Decision 4). List/search,
+          click a row for its lineage ("why do I believe this"), forget. */}
+      {connected && showMemory && (
+        <div className="br-mem">
+          <div className="br-mem-bar">
+            <span className="br-mem-count">{memData?.count ?? 0} memories</span>
+            {(memData?.subjects ?? []).length > 0 && (
+              <span className="br-mem-subjects">about: {memData!.subjects.join(', ')}</span>
+            )}
+            <input className="br-in" style={{ flex: 1, minWidth: 140 }} value={memQuery}
+              placeholder="semantic search, e.g. 'what do I know about guru'"
+              onChange={(e) => setMemQuery(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter') void loadMemory(memQuery); }} />
+            <button className="br-btn" onClick={() => void loadMemory(memQuery)}>search</button>
+            <button className="br-btn" onClick={() => { setMemQuery(''); void loadMemory(); }}>all</button>
+          </div>
+          <div className="br-mem-body">
+            <div className="br-mem-list">
+              {(memData?.memories ?? []).length === 0 && <div className="dim" style={{ padding: 8 }}>no memories yet</div>}
+              {(memData?.memories ?? []).map((m) => (
+                <div key={m.id} className={`br-mem-row ${memSel?.memory.id === m.id ? 'sel' : ''}`} onClick={() => void inspectMemory(m.id)}>
+                  <span className={`br-mem-type t-${m.type}`}>{m.type}</span>
+                  {m.subject && <span className="br-mem-subj">{m.subject}</span>}
+                  <span className="br-mem-claim">{m.claim}</span>
+                  <span className="br-mem-conf" title="confidence">{m.confidence.toFixed(2)}</span>
+                </div>
+              ))}
+            </div>
+            {memSel && (
+              <div className="br-mem-detail">
+                <div className="br-mem-detail-h">why do I believe this</div>
+                <div className="br-mem-claim-lg">"{memSel.memory.claim}"</div>
+                <div className="br-kv"><span className="br-kv-k">type</span><span className="br-kv-v">{memSel.memory.type}{memSel.memory.subject ? ` · ${memSel.memory.subject}` : ''}</span></div>
+                <div className="br-kv"><span className="br-kv-k">deriv</span><span className="br-kv-v">{memSel.memory.derivation} · conf {memSel.memory.confidence.toFixed(2)}</span></div>
+                <div className="br-kv"><span className="br-kv-k">when</span><span className="br-kv-v">{new Date(memSel.memory.createdAt).toLocaleString()}</span></div>
+                <div className="br-mem-detail-h" style={{ marginTop: 8 }}>lineage</div>
+                {memSel.lineage.length === 0
+                  ? <div className="dim" style={{ fontSize: 11 }}>told / inferred directly (no recorded source)</div>
+                  : memSel.lineage.map((e, i) => <div key={i} className="br-mem-lin mono">{e.sourceKind}:{e.sourceId}</div>)}
+                <button className="br-btn" style={{ marginTop: 10 }} onClick={() => void forgetMemory(memSel.memory.id)}>forget this</button>
+              </div>
+            )}
+          </div>
+        </div>
       )}
 
       {/* ── tasks: definitions + running instances (docs/TASKS_V1.md §8) ── */}
@@ -1426,6 +1511,27 @@ const CSS = `
 .brain .br-grounding { margin: 0 0 10px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px;
   background: rgba(10,14,26,.55); color: var(--fg); font-family: ui-monospace, Menlo, monospace; font-size: 11px;
   white-space: pre-wrap; max-height: 220px; overflow: auto; }
+/* 4c memory inspector */
+.brain .br-mem { margin: 0 0 10px; border: 1px solid var(--line); border-radius: 8px; background: rgba(10,14,26,.4); overflow: hidden; }
+.brain .br-mem-bar { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+.brain .br-mem-count { font-size: 11px; color: var(--accent-2, #7ec699); font-weight: 600; }
+.brain .br-mem-subjects { font-size: 10px; color: var(--dim); }
+.brain .br-mem-body { display: flex; gap: 0; max-height: 280px; }
+.brain .br-mem-list { flex: 1; overflow: auto; }
+.brain .br-mem-row { display: flex; align-items: center; gap: 8px; padding: 6px 10px; cursor: pointer; border-bottom: 1px solid rgba(255,255,255,.04); font-size: 12px; }
+.brain .br-mem-row:hover { background: rgba(255,255,255,.03); }
+.brain .br-mem-row.sel { background: rgba(93,184,255,.1); }
+.brain .br-mem-type { font-size: 9px; text-transform: uppercase; letter-spacing: .06em; padding: 1px 6px; border-radius: 4px; border: 1px solid var(--line); color: var(--dim); flex-shrink: 0; }
+.brain .br-mem-type.t-person { color: #7ec699; border-color: rgba(126,198,153,.4); }
+.brain .br-mem-type.t-preference { color: #ffc454; border-color: rgba(255,196,84,.4); }
+.brain .br-mem-type.t-summary { color: #5db8ff; border-color: rgba(93,184,255,.4); }
+.brain .br-mem-subj { font-size: 11px; color: var(--accent-2, #7ec699); flex-shrink: 0; }
+.brain .br-mem-claim { flex: 1; color: var(--fg); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.brain .br-mem-conf { font-size: 10px; color: var(--dim); font-family: ui-monospace, Menlo, monospace; flex-shrink: 0; }
+.brain .br-mem-detail { width: 280px; flex-shrink: 0; padding: 10px 12px; border-left: 1px solid var(--line); background: var(--bg-1); overflow: auto; }
+.brain .br-mem-detail-h { font-size: 9px; text-transform: uppercase; letter-spacing: .14em; color: var(--accent); margin-bottom: 6px; }
+.brain .br-mem-claim-lg { font-size: 12px; color: var(--fg); margin-bottom: 8px; }
+.brain .br-mem-lin { font-size: 11px; color: var(--accent-2, #7ec699); margin: 2px 0; }
 /* dock context panel */
 .brain .br-ctx { margin: 0 0 10px; padding: 12px; border: 1px solid var(--line); border-radius: 10px; background: rgba(10,14,26,.4); }
 .brain .br-ctx-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 10px; }

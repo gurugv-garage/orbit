@@ -45,7 +45,7 @@ import {
 import type { Bus } from '../../core/bus.js';
 import type { Directory } from '../docks/directory.js';
 import type { MotionExecutor } from '../bodylink/motion.js';
-import type { FaceToolsApi, PerceptionGroundingApi } from '../perception/index.js';
+import type { FaceToolsApi, PerceptionGroundingApi, MemoryApi } from '../perception/index.js';
 import { gesturesFromConfig } from '../bodylink/motion.js';
 import { buildSystemPrompt, isVisionIntent } from './prompt.js';
 import { decideThought, type SessionState } from './thought-router.js';
@@ -55,7 +55,7 @@ import { SentenceStreamer } from './sentence.js';
 import { SessionStore, type SessionMeta } from './store.js';
 import { loadDockSkills, type DockSkills } from './skills.js';
 import { buildFileTools, FILE_TOOLS_PROMPT } from './filetools.js';
-import { buildDockTools, buildGrantTools, buildSlackTools, buildWhatsAppTools, type ToolTurnContext } from './tools.js';
+import { buildDockTools, buildGrantTools, buildSlackTools, buildWhatsAppTools, buildMemoryTools, type ToolTurnContext } from './tools.js';
 import type { MoveStep } from './schemas.js';
 import type { VideoRecorderApi } from '../perception/record/recorder.js';
 import * as slack from '../../integrations/slack.js';
@@ -87,6 +87,9 @@ export interface SessionDeps {
    *  block (last summary + raw-since), pulled synchronously and injected into the
    *  prompt. Undefined → no perception grounding (the dock behaves as before). */
   getGrounding?: () => PerceptionGroundingApi | undefined;
+  /** the dock's unified memory facade (recall/inspect/remember/update/forget tools).
+   *  Undefined → memory tools not offered. */
+  getMemory?: () => MemoryApi | undefined;
   /** live video recorder (record_video tool). Undefined → tool not offered. */
   recordVideo?: VideoRecorderApi;
   /** effective config value by key (shared ConfigStore). */
@@ -655,6 +658,9 @@ export class DockBrainSession {
       ...buildGrantTools(this.dock, this.#grants(), this.#d.motion),
       ...buildSlackTools(), // send_to_slack — only when SLACK_BOT_TOKEN is set
       ...buildWhatsAppTools(), // send_to_whatsapp — only when WHATSAPP_TOKEN is set
+      // memory tools (recall/inspect/remember/update/forget) — only when the dock's
+      // memory facade is wired (docs/PERCEPTION-TO-AGENT.md Decision 4).
+      ...(this.#d.getMemory ? buildMemoryTools(this.dock, this.#d.getMemory) : []),
       ...(this.#skills.tool ? [this.#skills.tool] : []),
       ...(fileAccess ? buildFileTools({ confirm: (s, d) => this.#confirmOnDock(s, d) }) : []),
       ...(this.#d.getTaskTools?.(this.dock, () => this.#meta?.sessionId) ?? []),

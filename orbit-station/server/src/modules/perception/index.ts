@@ -30,6 +30,9 @@ import { SnapshotStore, isoIst, sampleEvenly } from './snapshots.js';
 import { TakeStore } from './takes.js';
 import { summarize } from './summarizer.js';
 import { buildGrounding, type LastSummary } from './grounding.js';
+import { MemoryStore, type MemoryRow, type MemoryType, type RecallFilter, type LineageEdge } from './memory/store.js';
+import { geminiEmbedder } from './memory/embedder.js';
+import { orbitDb } from '../../core/db.js';
 import { setVisionExtra, getVisionExtra, visionBase } from './vision-instruction.js';
 import { Gallery } from './face/gallery.js';
 import { describeFace, describeAllFaces, type DetectedFace } from './face/recognizer.js';
@@ -126,6 +129,36 @@ export function getPerceptionGrounding(): PerceptionGroundingApi | undefined {
   return groundingRef.current;
 }
 
+/**
+ * The MEMORY facade for the brain (docs/PERCEPTION-TO-AGENT.md Decision 4 + the
+ * 3.2 pull tools) — the dock's unified, evolving, per-dock memory, exposed the
+ * way an LLM agent reaches for it: discover (subjects/recent), recall (structured
+ * AND/OR semantic), inspect (lineage), and mutate (remember/update/forget). Wraps
+ * MemoryStore so the brain never touches sqlite directly (same facade pattern as
+ * FaceToolsApi). A `memoryHit` carries the lineage inline for inspect.
+ */
+export interface MemoryApi {
+  recall(f: RecallFilter): Promise<MemoryRow[]>;
+  inspect(id: string): { memory: MemoryRow; lineage: LineageEdge[] } | undefined;
+  remember(m: { dockId: string; type: MemoryType; subject?: string; claim: string; confidence?: number }): Promise<string>;
+  update(id: string, patch: { claim?: string; confidence?: number; subject?: string }): Promise<string | null>;
+  forget(id: string): boolean;
+  subjects(dockId: string): string[];
+  recent(dockId: string, limit?: number): MemoryRow[];
+  count(dockId: string): number;
+}
+
+const memoryRef: { current?: MemoryApi } = {};
+/** The live MemoryApi (set when the perception module inits). */
+export function getMemoryApi(): MemoryApi | undefined {
+  return memoryRef.current;
+}
+/** The live MemoryStore (for the console's memory inspector REST routes). */
+const memoryStoreRef: { current?: MemoryStore } = {};
+export function getMemoryStore(): MemoryStore | undefined {
+  return memoryStoreRef.current;
+}
+
 
 export function perceptionModule(getHub: () => ProcessingHub): StationModule {
   let state: PerceptionState;
@@ -134,6 +167,9 @@ export function perceptionModule(getHub: () => ProcessingHub): StationModule {
   // Latest produced summary PER DOCK — the head of perception grounding (3.1). Set
   // on each successful /snapshots/summarize; read synchronously by the brain facade.
   const lastSummary = new Map<string, LastSummary>();
+  // The unified per-dock MEMORY store (Decision 4) — durable sqlite, gemini-embedded
+  // for semantic recall. Backs the recall_memory/inspect/remember/update/forget tools.
+  const memory = new MemoryStore(orbitDb(), geminiEmbedder());
   let bus: Bus;
   const gallery = new Gallery(GALLERY_PATH);
   const face = faceRecognitionProcessor(gallery);
@@ -210,6 +246,23 @@ export function perceptionModule(getHub: () => ProcessingHub): StationModule {
           }
           return { summary: result.summary, error: result.error, window: { from: fromIso, to: toIso } };
         },
+      };
+
+      // MEMORY facade (Decision 4) — the brain's discover/recall/inspect/mutate
+      // surface over the unified store. The brain never imports MemoryStore directly.
+      memoryStoreRef.current = memory;
+      memoryRef.current = {
+        recall: (f) => memory.recall(f),
+        inspect: (id) => {
+          const m = memory.get(id);
+          return m ? { memory: m, lineage: memory.lineage(id) } : undefined;
+        },
+        remember: (m) => memory.remember({ ...m, derivation: 'observed' }),
+        update: (id, patch) => memory.revise(id, patch),
+        forget: (id) => memory.forget(id),
+        subjects: (dockId) => memory.subjects(dockId),
+        recent: (dockId, limit) => memory.recent(dockId, limit),
+        count: (dockId) => memory.count(dockId),
       };
 
       // In-process face API for the server brain (docs/SERVER-BRAIN-IMPL.md §3.1):
@@ -373,6 +426,57 @@ export function perceptionModule(getHub: () => ProcessingHub): StationModule {
         json(res, 200, state.all());
         return true;
       }
+      // ── MEMORY (Decision 4) — the console's memory inspector (4c). dock-scoped. ──
+      // GET /memory?dock=X[&query=&subject=&type=&inactive=1] → recall/list
+      if (req.method === 'GET' && subPath === '/memory') {
+        const u = new URL(req.url ?? '', 'http://x');
+        const dock = u.searchParams.get('dock') ?? '';
+        if (!dock) { json(res, 400, { error: 'dock query param required' }); return true; }
+        const rows = await memory.recall({
+          dockId: dock,
+          query: u.searchParams.get('query') || undefined,
+          subject: u.searchParams.get('subject') || undefined,
+          type: (u.searchParams.get('type') as MemoryType) || undefined,
+          includeInactive: u.searchParams.get('inactive') === '1',
+          limit: Number(u.searchParams.get('limit') ?? 50),
+        });
+        json(res, 200, { count: memory.count(dock), subjects: memory.subjects(dock), memories: rows });
+        return true;
+      }
+      // GET /memory/item/:id → one memory + its lineage (the "why" view)
+      let mm = subPath.match(/^\/memory\/item\/([^/]+)$/);
+      if (mm && req.method === 'GET') {
+        const id = decodeURIComponent(mm[1]!);
+        const m = memory.get(id);
+        if (!m) { json(res, 404, { error: 'no such memory' }); return true; }
+        json(res, 200, { memory: m, lineage: memory.lineage(id) });
+        return true;
+      }
+      // POST /memory {dock, type, subject?, claim, confidence?} → remember (console add)
+      if (req.method === 'POST' && subPath === '/memory') {
+        const b = await parseBody<{ dock?: string; type?: MemoryType; subject?: string; claim?: string; confidence?: number }>(req);
+        if (!b.dock || !b.claim?.trim()) { json(res, 400, { error: 'dock + claim required' }); return true; }
+        const id = await memory.remember({ dockId: b.dock, type: b.type || 'fact', subject: b.subject, claim: b.claim.trim(), confidence: b.confidence });
+        json(res, 200, { ok: true, id });
+        return true;
+      }
+      // PATCH /memory/item/:id {claim?, confidence?, subject?} → revise (supersede)
+      mm = subPath.match(/^\/memory\/item\/([^/]+)$/);
+      if (mm && req.method === 'PATCH') {
+        const id = decodeURIComponent(mm[1]!);
+        const b = await parseBody<{ claim?: string; confidence?: number; subject?: string }>(req);
+        const newId = await memory.revise(id, b);
+        json(res, newId ? 200 : 404, { ok: !!newId, id: newId });
+        return true;
+      }
+      // DELETE /memory/item/:id → forget (purge from active recall)
+      mm = subPath.match(/^\/memory\/item\/([^/]+)$/);
+      if (mm && req.method === 'DELETE') {
+        const ok = memory.forget(decodeURIComponent(mm[1]!));
+        json(res, ok ? 200 : 404, { ok });
+        return true;
+      }
+
       // Snapshot records (WebRTC vision + speech), shared format, ordered by start.
       // GET /snapshots[?limit=N]; POST /snapshots/clear wipes the ring.
       if (req.method === 'GET' && subPath === '/snapshots') {

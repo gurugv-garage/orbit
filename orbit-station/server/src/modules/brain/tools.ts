@@ -16,7 +16,8 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import type { AgentTool, AgentToolResult } from '@earendil-works/pi-agent-core';
-import type { FaceToolsApi, PerceptionGroundingApi, RecognizeOut } from '../perception/index.js';
+import type { FaceToolsApi, PerceptionGroundingApi, MemoryApi, RecognizeOut } from '../perception/index.js';
+import type { MemoryRow } from '../perception/memory/store.js';
 import type { MotionExecutor } from '../bodylink/motion.js';
 import type { MoveStep } from './schemas.js';
 import type { RpcBroker } from './rpc.js';
@@ -203,6 +204,85 @@ export function buildWhatsAppTools(): AgentTool<any>[] {
       return textResult(`Sent on WhatsApp${args.to ? ` to ${args.to}` : ''}.`);
     }),
   ];
+}
+
+/** Render a memory for the model: id (so it can inspect/update/forget), the claim,
+ *  subject, confidence, and when it took effect. Short — the model reads many. */
+function fmtMemory(m: MemoryRow): string {
+  const when = new Date(m.validFrom).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+  const subj = m.subject ? ` about ${m.subject}` : '';
+  return `[${m.id.slice(0, 8)}] (${m.type}${subj}, conf ${m.confidence.toFixed(2)}, ${when}) ${m.claim}`;
+}
+
+/**
+ * The MEMORY tools (docs/PERCEPTION-TO-AGENT.md 3.2 + Decision 4) — the agent's
+ * discover/recall/inspect/mutate surface over its unified per-dock memory. Built
+ * conditionally (empty when the memory facade isn't wired), mirroring the Slack/
+ * WhatsApp tool sets. Every tool maps to a natural agent intent.
+ */
+export function buildMemoryTools(dock: string, getMemory: () => MemoryApi | undefined): AgentTool<any>[] {
+  const mem = (): MemoryApi => {
+    const m = getMemory();
+    if (!m) throw new Error('memory is not available right now');
+    return m;
+  };
+  return [
+    tool('recall_memory', S.RECALL_MEMORY_DESC, S.recallMemorySchema, async (_id, args: { query?: string; subject?: string; type?: string }) => {
+      const rows = await mem().recall({
+        dockId: dock, query: args.query, subject: args.subject,
+        type: args.type as MemoryRow['type'] | undefined, limit: 12,
+      });
+      if (rows.length === 0) return textResult('You don\'t have any memories matching that.');
+      return textResult(`Your memories:\n${rows.map(fmtMemory).join('\n')}`);
+    }),
+
+    tool('list_subjects', S.LIST_SUBJECTS_DESC, { type: 'object', properties: {} }, async () => {
+      const subs = mem().subjects(dock);
+      return textResult(subs.length ? `You have memories about: ${subs.join(', ')}.` : 'You don\'t have memories about anyone or anything yet.');
+    }),
+
+    tool('list_recent', S.LIST_RECENT_DESC, S.listRecentSchema, async (_id, args: { limit?: number }) => {
+      const rows = mem().recent(dock, Math.max(1, Math.min(30, Math.floor(args.limit ?? 10))));
+      return textResult(rows.length ? `Recent memories:\n${rows.map(fmtMemory).join('\n')}` : 'Nothing in memory yet.');
+    }),
+
+    tool('inspect_memory', S.INSPECT_MEMORY_DESC, S.inspectMemorySchema, async (_id, args: { id: string }) => {
+      const got = mem().inspect(resolveId(mem(), dock, args.id));
+      if (!got) return textResult('No memory with that id.');
+      const { memory, lineage } = got;
+      const src = lineage.length ? lineage.map((e) => `${e.sourceKind}:${e.sourceId}`).join(', ') : 'something you were told / inferred directly (no recorded source)';
+      return textResult(
+        `"${memory.claim}" — ${memory.derivation}, confidence ${memory.confidence.toFixed(2)}, ` +
+        `learned ${new Date(memory.createdAt).toLocaleString()}. Derived from: ${src}.`,
+      );
+    }),
+
+    tool('remember', S.REMEMBER_DESC, S.rememberSchema, async (_id, args: { claim: string; subject?: string; type?: string }) => {
+      if (!args.claim?.trim()) throw new Error('nothing to remember — the claim was empty');
+      await mem().remember({ dockId: dock, type: (args.type as MemoryRow['type']) || 'fact', subject: args.subject, claim: args.claim.trim(), confidence: 0.7 });
+      return textResult(`Okay, I'll remember that${args.subject ? ` about ${args.subject}` : ''}.`);
+    }),
+
+    tool('update_memory', S.UPDATE_MEMORY_DESC, S.updateMemorySchema, async (_id, args: { id: string; claim: string }) => {
+      const newId = await mem().update(resolveId(mem(), dock, args.id), { claim: args.claim });
+      return textResult(newId ? 'Updated — that\'s what I\'ll remember now (I kept the old version in my history).' : 'I couldn\'t find that memory to update.');
+    }),
+
+    tool('forget_memory', S.FORGET_MEMORY_DESC, S.forgetMemorySchema, async (_id, args: { id: string }) => {
+      const ok = mem().forget(resolveId(mem(), dock, args.id));
+      return textResult(ok ? 'Done — I\'ve let that go.' : 'I couldn\'t find that memory to forget.');
+    }),
+  ];
+}
+
+/** Resolve a possibly-truncated id (the model sees `[8-char]` prefixes in lists)
+ *  to a full id by matching against this dock's recent memories. Falls back to the
+ *  raw arg (a full id passed straight through). */
+function resolveId(api: MemoryApi, dock: string, idArg: string): string {
+  const id = (idArg ?? '').trim();
+  if (id.length >= 32) return id; // already a full uuid
+  const hit = api.recent(dock, 100).find((m) => m.id.startsWith(id));
+  return hit?.id ?? id;
 }
 
 export function buildDockTools(deps: ToolDeps): AgentTool<any>[] {

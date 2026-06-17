@@ -339,6 +339,86 @@ export const FORGET_FACE_DESC =
   'to delete a stored identity ("delete that", "don\'t remember me as X"). Do NOT call this just because a guess ' +
   'was wrong: if you mis-guessed and the person is actually someone new, use remember_face with their real name instead.';
 
+// ── memory tools (docs/PERCEPTION-TO-AGENT.md 3.2 + Decision 4) ──────────────
+export const MEMORY_TYPES = ['person', 'summary', 'event', 'preference', 'fact', 'place'] as const;
+
+export const recallMemorySchema = {
+  type: 'object',
+  properties: {
+    query: { type: 'string', description: 'a natural-language question to search your memories semantically, e.g. "did we talk about my flight?"' },
+    subject: { type: 'string', description: 'who/what the memory is about, e.g. "guru" or "kitchen" (exact subject filter)' },
+    type: { type: 'string', enum: MEMORY_TYPES, description: 'narrow to a kind of memory' },
+  },
+} as const;
+
+export const listRecentSchema = {
+  type: 'object',
+  properties: { limit: { type: 'number', description: 'how many recent memories (default 10)' } },
+} as const;
+
+export const inspectMemorySchema = {
+  type: 'object',
+  properties: { id: { type: 'string', description: 'the memory id (from a recall result)' } },
+  required: ['id'],
+} as const;
+
+export const rememberSchema = {
+  type: 'object',
+  properties: {
+    claim: { type: 'string', description: 'the fact to remember, in your own words, e.g. "prefers tea over coffee"' },
+    subject: { type: 'string', description: 'who/what it is about, e.g. "guru"' },
+    type: { type: 'string', enum: MEMORY_TYPES, description: 'the kind of memory (default: fact)' },
+  },
+  required: ['claim'],
+} as const;
+
+export const updateMemorySchema = {
+  type: 'object',
+  properties: {
+    id: { type: 'string', description: 'the memory id to revise (from a recall result)' },
+    claim: { type: 'string', description: 'the corrected fact' },
+  },
+  required: ['id', 'claim'],
+} as const;
+
+export const forgetMemorySchema = {
+  type: 'object',
+  properties: { id: { type: 'string', description: 'the memory id to forget (from a recall result)' } },
+  required: ['id'],
+} as const;
+
+export const RECALL_MEMORY_DESC =
+  'Search your own memory — what you know about the people, places, preferences, and ' +
+  'things that have happened around you. Use a natural-language `query` to find by meaning ' +
+  '("what do I know about Guru", "did we talk about lunch"), and/or `subject`/`type` to ' +
+  'narrow it. Returns matching memories with their confidence and when you learned them. ' +
+  'Call this when the person refers to something past, asks what you know/remember, or you ' +
+  'need context you do not already have in front of you.';
+export const LIST_SUBJECTS_DESC =
+  'List who and what you have memories about (the subjects) — a quick way to orient before ' +
+  'a targeted recall. Takes no arguments.';
+export const LIST_RECENT_DESC =
+  'List your most recent memories — what you have learned or noted lately. Use it to get ' +
+  'your bearings or when asked "what do you remember recently?".';
+export const INSPECT_MEMORY_DESC =
+  'Look into WHY you believe a memory — what it was derived from (which observations / other ' +
+  'memories), when, and how confident you are. Use this when someone challenges or questions ' +
+  'a memory ("are you sure?", "that\'s wrong") so you can either defend it with what you saw, ' +
+  'or recognize it was a thin inference and correct it with update_memory.';
+export const REMEMBER_DESC =
+  'Remember a new fact you learned in conversation — a preference, a detail about someone, ' +
+  'something to keep in mind ("Guru prefers tea", "the standup is at 10"). Give the claim in ' +
+  'your own words, who/what it is about (subject), and the kind. For remembering a PERSON BY ' +
+  'FACE, use remember_face instead — this is for facts, not faces.';
+export const UPDATE_MEMORY_DESC =
+  'Correct a memory the person says is wrong, or that you have learned has changed. Keeps the ' +
+  'old version in your history (you can still say what you used to believe) but makes the new ' +
+  'claim your current belief. Use after inspect_memory when you decide a memory needs revising.';
+export const FORGET_MEMORY_DESC =
+  'Forget a memory — when it is wrong, no longer true, or the person asks you to drop it. ' +
+  'It stops surfacing in recall (kept in history, not surfaced). For forgetting a stored FACE, ' +
+  'use forget_face instead.';
+
 /**
  * One move step, as the model emits it (single-joint or multi-joint form).
  * Shared vocabulary with the motion executor and the faceGestures config.

@@ -27,7 +27,7 @@ import { readFileSync } from 'node:fs';
 import type { RouteContext, StationModule } from '../../core/module.js';
 import type { Directory } from '../docks/directory.js';
 import type { MotionExecutor } from '../bodylink/motion.js';
-import { getFaceTools, getPerceptionGrounding } from '../perception/index.js';
+import { getFaceTools, getPerceptionGrounding, getMemoryApi } from '../perception/index.js';
 import type { VideoRecorderApi } from '../perception/record/recorder.js';
 import { RpcBroker } from './rpc.js';
 import { DockBrainSession, type TurnRequest, keyStatusFor } from './session.js';
@@ -148,6 +148,7 @@ export function brainModule(w: BrainWiring): StationModule {
       s = new DockBrainSession(dock, {
         bus, directory: w.directory, rpc, motion: w.motion, store,
         getFaces: getFaceTools, getGrounding: getPerceptionGrounding,
+        getMemory: getMemoryApi,
         recordVideo: w.recordVideo, config: w.config,
         log: (line) => console.log(line),
         stopTasksForParent: (d, parentSessionId) => { supervisor.stopForParent(d, parentSessionId); },
