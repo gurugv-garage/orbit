@@ -169,6 +169,20 @@ class RemoteBrain(
         scope.launch { startTurn(userText) }
     }
 
+    /** A1.2 (always-on-mic shift): the user TAPPED — mark the dock "addressed" so
+     *  the station turns the next utterance (from the always-on server STT) into a
+     *  turn. The mic is always listening; tap signals intent, not mic-on. The phone
+     *  no longer builds turn-requests from speech — it adopts the station's turn
+     *  (adoptAutonomousTurn) when the resulting turn-status arrives.
+     *  Telemetry send: a dropped tap just means the user re-taps. */
+    fun addressed() {
+        if (!isConfigured) return
+        link.publish("agent", "addressed", buildJsonObject {
+            put("at", System.currentTimeMillis())
+        })
+        trace("ADDRESSED (tap) → station")
+    }
+
     fun stop() {
         // Silence is LOCAL FIRST — the user tapped to stop; the sound must die
         // this instant, not after a network round trip.

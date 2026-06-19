@@ -233,6 +233,10 @@ export interface FinalTranscript {
 export interface TranscriptApi {
   /** the brain calls this once to receive final transcripts. */
   onFinal(fn: (t: FinalTranscript) => void): void;
+  /** A1.2 echo-gate: the brain reports when the dock's OWN TTS is playing, so
+   *  the STT processor drops audio then (no self-transcribe). Mirrors the brain's
+   *  noteSpeech signal (the phone's speech-status frames). */
+  setSpeaking(dockId: string, speaking: boolean): void;
 }
 const transcriptRef: { current?: TranscriptApi } = {};
 /** The live TranscriptApi (set when the perception module inits). */
@@ -257,9 +261,32 @@ export function perceptionModule(getHub: () => ProcessingHub): StationModule {
   const face = faceRecognitionProcessor(gallery);
   // A1.2: the brain registers onFinal (via TranscriptApi) to receive each final
   // utterance; we hold the single handler and forward stt-watch's events to it.
+  // It also reports `speaking` per dock (echo-gate) — stt-watch drops audio then.
   let finalHandler: ((t: FinalTranscript) => void) | undefined;
-  transcriptRef.current = { onFinal: (fn) => { finalHandler = fn; } };
-  const stt = sttWatchProcessor(snapshots, (e) => finalHandler?.(e)); // 🎙 speech (exposes flushAll)
+  // Echo-gate: a dock is "speaking" while its TTS plays AND for a short tail after
+  // (TTS reverb + AEC settle still leak into the mic just after speech-status off).
+  // Map dockId → epoch ms until which it counts as speaking.
+  //
+  // CRITICAL: the deadline is ALWAYS FINITE and self-healing. `speaking:true` does
+  // NOT latch forever — it sets a bounded window that each subsequent frame extends.
+  // If a `speaking:false` (or a long TTS's repeated keepalives) is ever lost, the
+  // gate auto-recovers when the window lapses instead of stranding the station
+  // permanently deaf (the stuck-mute bug). A real long reply re-sends speech-status
+  // as it streams sentences, so the window keeps extending while TTS actually plays.
+  const SPEAK_ON_WINDOW_MS = 6_000; // a single speech-status:true holds the mute this long…
+  const SPEAK_TAIL_MS = 800;        // …and a speech-status:false leaves this much tail.
+  const speakingUntil = new Map<string, number>();
+  transcriptRef.current = {
+    onFinal: (fn) => { finalHandler = fn; },
+    setSpeaking: (dockId, on) => {
+      speakingUntil.set(dockId, Date.now() + (on ? SPEAK_ON_WINDOW_MS : SPEAK_TAIL_MS));
+    },
+  };
+  const stt = sttWatchProcessor(
+    snapshots,
+    (e) => finalHandler?.(e),
+    (dockId) => Date.now() < (speakingUntil.get(dockId) ?? 0),
+  ); // 🎙 speech (exposes flushAll)
   // Vision reuses the face processor's decoded frame (ONE ffmpeg per dock, not two).
   const vision = visionSnapshotProcessor(snapshots, (sid) => face.currentFrame(sid)); // 👁 vision (captureNow)
   const bodymotion = bodyMotionWatchProcessor(snapshots); // 🤖 ego-motion (setMotion seam)

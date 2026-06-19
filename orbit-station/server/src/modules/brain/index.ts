@@ -260,6 +260,9 @@ export function brainModule(w: BrainWiring): StationModule {
             break;
           case 'speech-status':
             session(dock).noteSpeech(p?.speaking === true);
+            // A1.2 echo-gate: tell the STT processor to drop audio while our TTS
+            // plays, so the station doesn't transcribe the dock's own voice.
+            getTranscriptApi()?.setSpeaking(dock, p?.speaking === true);
             break;
           // 'tool-result' is consumed by the RpcBroker's own subscription
           default:

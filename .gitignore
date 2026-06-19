@@ -59,3 +59,5 @@ node-dock/app/bench/results/*.log
 
 # --- ESP-IDF / PlatformIO firmware build (node-dock/body-firmware) ---
 .pio/
+.webrtc-aar/
+.webrtc-src/

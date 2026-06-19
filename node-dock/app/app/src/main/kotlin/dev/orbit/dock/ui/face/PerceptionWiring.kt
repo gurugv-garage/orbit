@@ -8,6 +8,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.launchIn
 import kotlinx.coroutines.flow.onEach
+import kotlinx.coroutines.launch
 import timber.log.Timber
 
 /** Live transcript snapshot for the subtitle band. */
@@ -63,6 +64,9 @@ class PerceptionWiring(
     @Volatile private var faceCurrentlyPresent = false   // for the arrival edge
     @Volatile private var listeningActive = false        // a session is open
     @Volatile private var dockSpeaking = false           // TTS playing
+    // A1.2: guards the tap-but-no-speech case (no transcript ever comes → the
+    // Listening face would otherwise stick). Cancelled when a transcript resolves.
+    private var listenTimeout: kotlinx.coroutines.Job? = null
     // Cool-off: after an auto-listen fires, suppress the next for this long so a
     // face flickering at the edge of detection doesn't keep re-arming listening.
     @Volatile private var lastAutoListenMs = 0L
@@ -79,6 +83,7 @@ class PerceptionWiring(
     private val audioWakeRequiredFrames = 2      // consecutive frames above threshold
     private val faceFreshnessMs = 3500L          // face must have been seen within
     private val wakeCooldownMs = 2000L           // suppress repeated triggers
+    private val LISTEN_ACK_TIMEOUT_MS = 8_000L   // tap-but-no-speech → drop Listening
 
     fun attach(scope: CoroutineScope) {
         PerceptionBus.events
@@ -129,32 +134,44 @@ class PerceptionWiring(
                         // the Speaker). Nothing to do here; keeps when exhaustive.
                     }
                     is PerceptionEvent.WakeWord -> {
-                        // Fired by tap-to-start OR auto-listen-on-face. Begin a
-                        // listening session.
-                        Timber.i("listen: ${event.label}")
+                        // Tap = "addressed" (A1.2). Show the Listening face as an
+                        // ack; the sentence-end (final transcript) clears it. Guard
+                        // the tap-but-no-speech case with a timeout so it can't stick.
+                        Timber.i("listen (tap/addressed): ${event.label}")
                         listeningActive = true
                         controller.listen()
                         _transcript.value = TranscriptState()
+                        listenTimeout?.cancel()
+                        listenTimeout = scope.launch {
+                            kotlinx.coroutines.delay(LISTEN_ACK_TIMEOUT_MS)
+                            if (controller.state.value == FaceState.Listening) {
+                                Timber.i("tap ack timed out (no speech) → Idle")
+                                listeningActive = false
+                                controller.silence()
+                            }
+                        }
                         onWake()
                     }
                     is PerceptionEvent.Transcript -> {
-                        Timber.d("transcript: \"${event.text}\" final=${event.isFinal}")
+                        // A1.2: transcripts now arrive FROM the station's always-on
+                        // STT (not a local recognizer). They're utterance-final, and
+                        // the server VAD endpoint IS the sentence-end signal — so a
+                        // final transcript ends the listening face. The station owns
+                        // turn-building (the addressed latch), so we do NOT start a
+                        // local turn here — we just show the words + resolve the face.
+                        Timber.d("transcript (station): \"${event.text}\" final=${event.isFinal}")
                         _transcript.value = TranscriptState(event.text, event.isFinal)
-                        // A final transcript ends the listening session (the
-                        // pipeline clears its own flag the same way). Without
-                        // this, an action-only turn (no TTS → no re-arm → no
-                        // session_ended) left the flag stuck true and
-                        // auto-listen-on-face dead until the next manual tap.
-                        if (event.isFinal) listeningActive = false
-                        if (!event.isFinal && controller.state.value == FaceState.Engaged) {
-                            controller.listen()
-                        }
-                        if (event.isFinal && event.text.isNotBlank()) {
-                            if (shouldWinkFor(event.text)) {
+                        if (event.isFinal) {
+                            listeningActive = false
+                            listenTimeout?.cancel()
+                            // sentence-end: drop the Listening face back to Idle
+                            // UNLESS an agent turn already took over (Speaking/Engaged).
+                            val s = controller.state.value
+                            if (s == FaceState.Listening) controller.silence()
+                            if (event.text.isNotBlank() && shouldWinkFor(event.text)) {
                                 Timber.i("wink keyword trigger: \"${event.text}\"")
                                 controller.wink()
                             }
-                            onUserUtterance(event.text)
                         }
                     }
                     is PerceptionEvent.FaceSeen -> {

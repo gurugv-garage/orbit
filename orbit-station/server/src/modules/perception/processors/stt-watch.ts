@@ -183,6 +183,16 @@ class UtteranceDetector {
     await (this.commit ?? this.#onUtterance)(concatFrames(frames), started, new Date());
   }
 
+  /** Drop any in-progress utterance + buffers WITHOUT committing. Used by the
+   *  echo-gate: when the dock starts speaking, anything captured up to that point
+   *  is either the user's tail (already endpointed) or onset of the dock's own
+   *  voice — neither should commit. Keeps the decoder alive (unlike stop()). */
+  reset(): void {
+    this.#inSpeech = false;
+    this.#utter = []; this.#preroll = []; this.#carry = new Int16Array(0);
+    this.#silenceMs = 0; this.#utterMs = 0; this.#startedAt = null;
+  }
+
   stop(): void {
     this.#started = false;
     try { this.#dec?.delete(); } catch { /* */ }
@@ -247,6 +257,8 @@ function isLowConfidence(t: Transcription): boolean {
 interface StreamState {
   ctx: StreamContext;
   detector: UtteranceDetector;
+  /** echo-gate: true while we're dropping audio because the dock is speaking. */
+  muted: boolean;
 }
 
 /** A final transcript + its utterance window, handed to the A1.2 transcript hook. */
@@ -264,6 +276,10 @@ export function sttWatchProcessor(
   /** A1.2: called once per endpointed final utterance (text + window), so the
    *  brain can decide via the addressed latch whether it becomes an agent turn. */
   onFinal?: (e: FinalTranscriptEvent) => void,
+  /** A1.2 echo-gate (2c.1 Tier 2): true while the dock's OWN TTS is playing. We
+   *  drop audio then so the station never transcribes the dock's own voice (the
+   *  self-transcribe feedback loop). Defaults to never-speaking. */
+  isSpeaking?: (dockId: string) => boolean,
 ): StreamProcessor & {
   /** Force-commit any in-progress utterance on EVERY stream now, awaiting the
    *  transcription. Used by the Summarize flush so a mid-sentence is captured. */
@@ -314,11 +330,22 @@ export function sttWatchProcessor(
       const detector = new UtteranceDetector((pcm, startedAt, endedAt) => { void commit(pcm, startedAt, endedAt); });
       detector.commit = commit; // flushNow awaits this; the live path stays fire-and-forget
       detector.start();
-      streams.set(ctx.streamId, { ctx, detector });
+      streams.set(ctx.streamId, { ctx, detector, muted: false });
     },
 
     onRtp(streamId: string, _kind: MediaKind, rtp: RtpPacket) {
-      streams.get(streamId)?.detector.feed(rtp);
+      const st = streams.get(streamId);
+      if (!st) return;
+      // Echo-gate (2c.1 Tier 2): while the dock's own TTS plays, DROP audio so we
+      // don't transcribe ourselves (the self-transcribe feedback loop). On the
+      // edge into speaking, discard any in-progress utterance so a half-captured
+      // user tail / TTS onset can't commit.
+      if (isSpeaking?.(st.ctx.dockId)) {
+        if (!st.muted) { st.detector.reset(); st.muted = true; }
+        return;
+      }
+      st.muted = false;
+      st.detector.feed(rtp);
     },
 
     onStreamEnd(streamId: string) {
