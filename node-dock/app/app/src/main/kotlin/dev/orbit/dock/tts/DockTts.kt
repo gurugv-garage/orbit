@@ -5,11 +5,16 @@ import android.media.AudioAttributes
 import android.os.Bundle
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
+import dev.orbit.dock.perception.WebRtcAudio
 import dev.orbit.dock.ui.face.FaceController
 import dev.orbit.dock.ui.face.VoiceProfile
 import timber.log.Timber
+import java.io.File
 import java.util.Locale
 import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.Executors
+import java.util.concurrent.ScheduledExecutorService
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
@@ -40,6 +45,10 @@ class DockTts(
     // from the next sentence — the desired behaviour.
     @Volatile private var voice: VoiceProfile = VoiceProfile()
     private val activeUtterances = mutableSetOf<String>()
+    // A1: per-utterance synth output files (id → wav) awaiting render, and a
+    // scheduler that ends the speaking signal at the PCM's real playback duration.
+    private val synthFiles = ConcurrentHashMap<String, File>()
+    private val scheduler: ScheduledExecutorService = Executors.newSingleThreadScheduledExecutor()
     // Rising/falling edges of the public "speaking" signal. Turn-aware so the
     // gap between streamed sentences never reads as "stopped speaking" — that
     // false edge mid-reply is what re-armed the mic over the dock's own voice.
@@ -56,15 +65,19 @@ class DockTts(
             // Apply the active face's voice (pitch/rate/engine voice). Defaults
             // reproduce the historical 1.0 rate / 1.05 pitch.
             applyVoiceLocked()
-            // Keep TTS on the normal media/assistant output so it's clearly
-            // audible on the speaker. The platform AEC on the VOICE_COMMUNICATION
-            // *capture* path cancels against the device's speaker output mix, so
-            // it still subtracts our TTS from the mic without us having to hijack
-            // playback routing (USAGE_VOICE_COMMUNICATION can route to earpiece /
-            // go silent outside a call). Capture-side AEC, audible playback.
+            // A1.2 AEC fix: play TTS on USAGE_VOICE_COMMUNICATION so it joins the
+            // SAME audio world WebRTC's mic capture uses. Measured (with the
+            // always-on-mic shift): the old USAGE_ASSISTANT/media routing was NOT
+            // referenced by the voice-comm echo canceller, so the station's STT
+            // transcribed the dock's own TTS verbatim. Putting playback on the
+            // voice-comm path gives the echo canceller the reference it needs to
+            // subtract our TTS from the streamed mic. (The old comment claimed
+            // assistant output was cancelled "against the speaker mix" — empirically
+            // false in the new path.) If routing ever goes to the earpiece on some
+            // OEM, revisit by routing TTS PCM through WebRTC's ADM playout directly.
             tts?.setAudioAttributes(
                 AudioAttributes.Builder()
-                    .setUsage(AudioAttributes.USAGE_ASSISTANT)
+                    .setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
                     .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
                     .build(),
             )
@@ -76,14 +89,17 @@ class DockTts(
     }.apply {
         setOnUtteranceProgressListener(object : UtteranceProgressListener() {
             override fun onStart(utteranceId: String?) {
-                Timber.v("TTS start: $utteranceId")
-                face.speak()
-                if (gate.onUtteranceStarted()) onSpeakingChanged(true)
+                // This is SYNTHESIS start (file being written), NOT playback. The
+                // speaking-on edge + face.speak() now fire at PLAYBACK start, in
+                // feedSynthesized(), so we don't mark speaking here.
+                Timber.v("TTS synth start: $utteranceId")
             }
 
             override fun onDone(utteranceId: String?) {
-                Timber.v("TTS done: $utteranceId")
-                finishUtterance(utteranceId)
+                // Synthesis complete → the WAV is ready. Render it through WebRTC
+                // (plays out + AEC reference); playback timing drives the rest.
+                Timber.v("TTS synth done: $utteranceId")
+                utteranceId?.let { feedSynthesized(it) }
             }
 
             @Deprecated("Deprecated in Java")
@@ -157,8 +173,12 @@ class DockTts(
     override fun stop() {
         try {
             tts.stop()
+            // A1: also drop any TTS PCM still queued in the WebRTC render loopback,
+            // else a barge-in/cancel would keep playing the already-synthesized tail.
+            WebRtcAudio.stopTtsRender()
             synchronized(activeUtterances) { activeUtterances.clear() }
             synchronized(pending) { pending.clear() }
+            synthFiles.clear()
         } catch (t: Throwable) {
             Timber.w(t, "TTS stop failed")
         }
@@ -209,12 +229,69 @@ class DockTts(
         }
     }
 
+    // A1 (always-on-mic AEC): speech is RENDERED THROUGH WebRTC, not played by
+    // Android TTS directly. We synthesizeToFile → PCM → resample to 16k → feed
+    // WebRtcAudio.renderTtsPcm, which plays it out the speaker AND makes it the
+    // software-AEC reference, so the station's STT no longer transcribes the dock's
+    // own voice. The speaking signal (face + the station gate) is driven by PLAYBACK
+    // timing (PCM duration), NOT synthesis completion (synthesizeToFile's onDone
+    // fires when the file is written, well before playback ends).
     private fun speakNow(text: String) {
         val id = UUID.randomUUID().toString()
         synchronized(activeUtterances) { activeUtterances.add(id) }
+        val file = File(appCtx.cacheDir, "tts-$id.wav")
+        synthFiles[id] = file
         val params = Bundle().apply {
             putString(TextToSpeech.Engine.KEY_PARAM_UTTERANCE_ID, id)
         }
-        tts.speak(text, TextToSpeech.QUEUE_ADD, params, id)
+        // onStart/onDone of synthesis are handled by the progress listener:
+        //  - we tie the SPEAKING-ON edge + face.speak() to playback start (in
+        //    feedSynthesized), not synth onStart;
+        //  - synth onDone → read+resample+feed the loopback.
+        tts.synthesizeToFile(text, params, file, id)
+    }
+
+    /** Synthesis finished for [id]: read the WAV, resample to 16k, render through
+     *  WebRTC, and schedule the utterance's end based on playback duration. */
+    private fun feedSynthesized(id: String) {
+        val file = synthFiles.remove(id) ?: return
+        val pcm16 = runCatching { readWavResampledTo16k(file) }.getOrNull()
+        runCatching { file.delete() }
+        if (pcm16 == null || pcm16.isEmpty()) { finishUtterance(id); return }
+        // playback-start edge (the real "now speaking").
+        face.speak()
+        if (gate.onUtteranceStarted()) onSpeakingChanged(true)
+        WebRtcAudio.renderTtsPcm(appCtx, pcm16)
+        // schedule end at the PCM's real duration (16k mono 16-bit) + a small tail.
+        val playMs = (pcm16.size.toLong() / 2 * 1000 / 16_000) + 150
+        scheduler.schedule({ finishUtterance(id) }, playMs, java.util.concurrent.TimeUnit.MILLISECONDS)
+    }
+
+    /** Read a TTS-engine WAV (its own rate, e.g. 24k) → mono PCM-16 resampled to 16k. */
+    private fun readWavResampledTo16k(file: File): ByteArray {
+        val all = file.readBytes()
+        if (all.size <= 44) return ByteArray(0)
+        val srcRate = java.nio.ByteBuffer.wrap(all, 24, 4)
+            .order(java.nio.ByteOrder.LITTLE_ENDIAN).int
+        val pcm = all.copyOfRange(44, all.size)
+        return if (srcRate == 16_000) pcm else resamplePcm16(pcm, srcRate, 16_000)
+    }
+
+    /** Linear-interpolation resample of mono PCM-16 LE. */
+    private fun resamplePcm16(src: ByteArray, srcRate: Int, dstRate: Int): ByteArray {
+        if (srcRate == dstRate) return src
+        val sb = java.nio.ByteBuffer.wrap(src).order(java.nio.ByteOrder.LITTLE_ENDIAN).asShortBuffer()
+        val inN = src.size / 2
+        val outN = (inN.toLong() * dstRate / srcRate).toInt()
+        val out = java.nio.ByteBuffer.allocate(outN * 2).order(java.nio.ByteOrder.LITTLE_ENDIAN)
+        val step = srcRate.toDouble() / dstRate
+        var pos = 0.0
+        for (i in 0 until outN) {
+            val idx = pos.toInt(); val frac = pos - idx
+            val a = sb.get(idx.coerceIn(0, inN - 1)).toInt()
+            val b = sb.get((idx + 1).coerceIn(0, inN - 1)).toInt()
+            out.putShort((a + (b - a) * frac).toInt().toShort()); pos += step
+        }
+        return out.array()
     }
 }

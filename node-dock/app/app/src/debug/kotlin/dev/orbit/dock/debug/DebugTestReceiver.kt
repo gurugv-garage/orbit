@@ -39,6 +39,29 @@ object DebugTestReceiver {
                 when (action) {
                     "${PREFIX}LISTEN" ->
                         PerceptionBus.emit(PerceptionEvent.WakeWord(label = "(debug-listen)"))
+                    "${PREFIX}ECHOLOOP" -> {
+                        // Isolated AEC test: play a probe THROUGH WebRTC (its ADM
+                        // renders it = the AEC reference) and capture the AEC'd mic
+                        // → echo-loop-residual.wav. If WebRTC AEC cancels its own
+                        // playback, the residual is silence. (EchoLoopTest.kt)
+                        Timber.i("DEBUG echo-loop test")
+                        (ctx ?: context).let { dev.orbit.dock.perception.EchoLoopTest.run(it) }
+                    }
+                    "${PREFIX}AECPOC" -> {
+                        // A1 POC: production-style single ADM (VOICE_COMMUNICATION mic,
+                        // SOFTWARE AEC) renders a loopback TTS track + records the AEC'd
+                        // samplesReadyCallback mic (= what production sends the station).
+                        // Silence residual → A1 works in the real ADM. (AecPocTest.kt)
+                        Timber.i("DEBUG aec-poc test")
+                        (ctx ?: context).let { dev.orbit.dock.perception.AecPocTest.run(it) }
+                    }
+                    "${PREFIX}AECPROD" -> {
+                        // A1 PROD loopback test: feed a probe through the REAL
+                        // WebRtcAudio.renderTtsPcm while live-streaming. Audible +
+                        // station should NOT transcribe it. (AecPocTest.pumpThroughProduction)
+                        Timber.i("DEBUG aec-prod loopback test")
+                        (ctx ?: context).let { dev.orbit.dock.perception.AecPocTest.pumpThroughProduction(it) }
+                    }
                     "${PREFIX}STOP" ->
                         PerceptionBus.emit(PerceptionEvent.StopListening)
                     "${PREFIX}SAY" -> {
@@ -133,6 +156,9 @@ object DebugTestReceiver {
         }
         val filter = IntentFilter().apply {
             addAction("${PREFIX}LISTEN")
+            addAction("${PREFIX}ECHOLOOP")
+            addAction("${PREFIX}AECPOC")
+            addAction("${PREFIX}AECPROD")
             addAction("${PREFIX}STOP")
             addAction("${PREFIX}SAY")
             addAction("${PREFIX}SPEAKING")
