@@ -1,6 +1,6 @@
 /**
  * ThoughtRouter — the PURE decision at the heart of internal-thought routing
- * (docs/perception-to-agent.md Decision 2.2).
+ * (docs/perception-to-brain.md Decision 2.2).
  *
  * A station-originated turn (a background TASK notification, or the robot's own
  * perception THOUGHT) is a *candidate to speak*. Before it takes the lane it runs
@@ -27,7 +27,7 @@
  *    this has no real signal (the Android recognizer owns the mic and only hands
  *    us a finalized sentence), so it is STUBBED — the routing is built + tested
  *    against an injected flag; the wire lands with the always-on-mic shift
- *    (perception-to-agent.md "THE PHASE-1 CAVEAT").
+ *    (perception-to-brain.md "THE PHASE-1 CAVEAT").
  *  - `idle`      — none of the above; free to run.
  */
 export type SessionState = 'idle' | 'listening' | 'speaking' | 'thinking';

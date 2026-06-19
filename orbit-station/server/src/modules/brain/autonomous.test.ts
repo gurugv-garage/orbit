@@ -226,7 +226,7 @@ test('coalesce: a different instance does NOT merge (separate turns)', async () 
   assert.deepEqual(speakText(frames), ['one', 'two'], 'different instances stay separate');
 });
 
-// ── internal THOUGHTS (trigger.kind:'self') — docs/perception-to-agent.md Phase 1.
+// ── internal THOUGHTS (trigger.kind:'self') — docs/perception-to-brain.md Phase 1.
 // A self-thought rides the SAME autonomous-turn lane as a task, but is framed as
 // the robot's OWN observation and defers behind a user mid-utterance (`listening`).
 

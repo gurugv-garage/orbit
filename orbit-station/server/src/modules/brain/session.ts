@@ -83,7 +83,7 @@ export interface SessionDeps {
   motion: MotionExecutor;
   store: SessionStore;
   getFaces: () => FaceToolsApi | undefined;
-  /** perception grounding (docs/perception-to-agent.md 3.1): the per-turn context
+  /** perception grounding (docs/perception-to-brain.md 3.1): the per-turn context
    *  block (last summary + raw-since), pulled synchronously and injected into the
    *  prompt. Undefined → no perception grounding (the dock behaves as before). */
   getGrounding?: () => PerceptionGroundingApi | undefined;
@@ -143,7 +143,7 @@ export class DockBrainSession {
   #autoDrainTimer: ReturnType<typeof setTimeout> | undefined;
   #draining = false;
 
-  // ── attention-gate state (docs/perception-to-agent.md 2.2) ────────────────
+  // ── attention-gate state (docs/perception-to-brain.md 2.2) ────────────────
   // The coarse session state the ThoughtRouter reads. `#speaking` is latched by
   // noteSpeech (TTS playing our last answer). `#listening` (user mid-utterance)
   // has NO real signal yet — the Android recognizer owns the mic — so it is a
@@ -270,7 +270,7 @@ export class DockBrainSession {
    * Set the `listening` flag — user is mid-utterance. STUB seam: today nothing
    * calls this with a real signal (the phone owns the mic and sends only finalized
    * utterances). It exists so the gate is wired + unit-testable now; the real
-   * signal lands with the always-on-mic shift (perception-to-agent.md caveat).
+   * signal lands with the always-on-mic shift (perception-to-brain.md caveat).
    */
   setListening(listening: boolean): void {
     this.#listening = listening;
@@ -364,7 +364,7 @@ export class DockBrainSession {
         while (this.#running) { try { await this.#running; } catch { /* unwound */ } }
 
         const settle = num(this.#d.config('brainTaskSettleMs'), 1500);
-        // The PURE gate (docs/perception-to-agent.md 2.2) decides run/defer/drop
+        // The PURE gate (docs/perception-to-brain.md 2.2) decides run/defer/drop
         // from state + staleness + the settle gap. It reads the HEAD of the queue
         // (peek, not shift) so a deferred turn stays queued for the next pass.
         const head = this.#autoQueue[0]!;
@@ -641,7 +641,7 @@ export class DockBrainSession {
       grounding,
       // a self-thought is the robot's OWN perception/awareness, not a user
       // utterance — frame it so the model doesn't reply "you said…" to itself
-      // and knows it may stay silent (docs/perception-to-agent.md 2.1).
+      // and knows it may stay silent (docs/perception-to-brain.md 2.1).
       selfThought: this.#triggerKind === 'self',
     });
     agent.state.model = this.#resolveModel();
@@ -659,7 +659,7 @@ export class DockBrainSession {
       ...buildSlackTools(), // send_to_slack — only when SLACK_BOT_TOKEN is set
       ...buildWhatsAppTools(), // send_to_whatsapp — only when WHATSAPP_TOKEN is set
       // memory tools (recall/inspect/remember/update/forget) — only when the dock's
-      // memory facade is wired (docs/perception-to-agent.md Decision 4).
+      // memory facade is wired (docs/perception-to-brain.md Decision 4).
       ...(this.#d.getMemory ? buildMemoryTools(this.dock, this.#d.getMemory) : []),
       ...(this.#skills.tool ? [this.#skills.tool] : []),
       ...(fileAccess ? buildFileTools({ confirm: (s, d) => this.#confirmOnDock(s, d) }) : []),

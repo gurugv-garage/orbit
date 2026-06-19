@@ -1,5 +1,5 @@
 /**
- * force_get_current (docs/perception-to-agent.md 3.2) — the perception PULL tool:
+ * force_get_current (docs/perception-to-brain.md 3.2) — the perception PULL tool:
  *  - offered only when the grounding facade is wired (getGrounding present);
  *  - flushes + summarizes the live moment via forceCurrent(dock, streamId);
  *  - passes the dock's live streamId from the turn context;

@@ -185,7 +185,7 @@ Legend: `[x]` done · `[~]` in progress · `[ ]` not started · `[?]` open quest
 > ([media-processing.md](media-processing.md)) and the **perception pipeline**
 > ([perception-pipeline.md](perception-pipeline.md): in-process WebRTC SFU, MLX
 > Whisper STT, qwen2.5-VL vision, face-api identity/emotion, Gemini fusion) replaced
-> the planned stack; **perception→agent** ([perception-to-agent.md](perception-to-agent.md))
+> the planned stack; **perception→agent** ([perception-to-brain.md](perception-to-brain.md))
 > wired thoughts/grounding/memory/tools/the proactive gate into the brain (built +
 > tested on hardware). §3.1-3.4 are kept as the historical plan; the ▸ notes mark
 > what superseded each.
@@ -209,7 +209,7 @@ Legend: `[x]` done · `[~]` in progress · `[ ]` not started · `[?]` open quest
 > **MLX Whisper small.en** VAD-endpointed STT (not faster-whisper); STT/TTS stay on the
 > PHONE for now (transcripts up, sentence text down), so server-side Piper isn't used.
 > Moving the mic into the always-on WebRTC path is the pending "A1" shift
-> ([perception-to-agent.md](perception-to-agent.md)).
+> ([perception-to-brain.md](perception-to-brain.md)).
 - [x] WebRTC SFU running on the station — *in-process (werift), not LiveKit*
 - [x] VAD chunking utterances — *in-process VAD endpointing in the STT processor*
 - [x] STT — *Whisper small.en via MLX sidecar, with confidence metrics*
@@ -233,7 +233,7 @@ Legend: `[x]` done · `[~]` in progress · `[ ]` not started · `[?]` open quest
 > [agent-model.md](agent-model.md). Model is config (`brainModel`, default
 > gemini-2.5-flash; any provider). Tools, per-dock sessions, autonomous/`self` turns,
 > grounding, memory, and the proactive gate are all wired
-> ([perception-to-agent.md](perception-to-agent.md)). Rover task tools (navigate/grab)
+> ([perception-to-brain.md](perception-to-brain.md)). Rover task tools (navigate/grab)
 > are still future — the rover isn't wired to the station yet.
 - [x] LLM choice — *config-driven (`brainModel`); per-turn provider/key resolution*
 - [x] System prompt + tool-use schema — *prompt.ts + schemas.ts; set_face/move/compute/memory/…*
@@ -315,9 +315,9 @@ or **shared**.
   per-dock **memory store** (sqlite via the perception module: type/subject/lineage +
   confidence, supersede-not-delete, Gemini-embedded semantic recall) plus per-dock
   session persistence + cross-session compaction. Not "Koog recall" (the Kotlin brain
-  was replaced); see [perception-to-agent.md](perception-to-agent.md) §4.
+  was replaced); see [perception-to-brain.md](perception-to-brain.md) §4.
 - [ ] **(B) Wake word** — S. Now reframed as the station-side **attention gate**
-  (wake = interject = thought, one mechanism — [perception-to-agent.md](perception-to-agent.md)
+  (wake = interject = thought, one mechanism — [perception-to-brain.md](perception-to-brain.md)
   Decision 1). The proactive gate's cheap-rules tier is built; a real wake/relevance
   signal is blocked on the always-on-mic shift (A1). Client Porcupine is no longer the plan.
 - [x] **(D) `remember` + `recall_memory` tools** — DONE. The brain has

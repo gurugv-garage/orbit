@@ -124,7 +124,7 @@ CANNOT do this (text-only task; moondream hallucinates an image). Needs a text L
 | moondream (text-only) | — | — | ❌ garbles / hallucinates a scene. Not usable. |
 | **gemma (small, Ollama)** | ~7 GB | ~7–10 s | ✅ correct summaries + structured events ("person appeared then left"). Runs rarely (every ~30 s), so cost amortizes. |
 
-Not yet wired — this is the pyramid's tier 2 (see docs/perception-pyramid.md).
+Not yet wired — this is the pyramid's tier 2 (see docs/perception-pipeline.md §9).
 
 ---
 
@@ -150,7 +150,7 @@ requests to one) segfault. Fixes that hold: (1) run each MLX model in its OWN
 process; (2) funnel all MLX calls through ONE worker thread per process (a lock is
 NOT enough — the Metal context binds to the calling thread).
 
-The pyramid principle (docs/perception-pyramid.md): the cheaper the model, the more
+The pyramid principle (docs/perception-pipeline.md §9): the cheaper the model, the more
 often it runs; expensive ones run rarely / on demand. Don't pin everything at once.
 
 ---

@@ -215,7 +215,7 @@ function fmtMemory(m: MemoryRow): string {
 }
 
 /**
- * The MEMORY tools (docs/perception-to-agent.md 3.2 + Decision 4) — the agent's
+ * The MEMORY tools (docs/perception-to-brain.md 3.2 + Decision 4) — the agent's
  * discover/recall/inspect/mutate surface over its unified per-dock memory. Built
  * conditionally (empty when the memory facade isn't wired), mirroring the Slack/
  * WhatsApp tool sets. Every tool maps to a natural agent intent.
@@ -375,7 +375,7 @@ export function buildDockTools(deps: ToolDeps): AgentTool<any>[] {
       return textResult(`Recording ${seconds}s of video now — I'll share it${dest} when it's ready.`);
     }),
 
-    // PERCEPTION (docs/perception-to-agent.md 3.2). force_get_current: flush + a fresh
+    // PERCEPTION (docs/perception-to-brain.md 3.2). force_get_current: flush + a fresh
     // summary of the live moment. Offered only when the grounding facade is wired.
     ...(deps.getGrounding ? [
       tool('force_get_current', S.FORCE_GET_CURRENT_DESC, S.forceGetCurrentSchema, async () => {

@@ -177,7 +177,7 @@ export function brainModule(w: BrainWiring): StationModule {
       bus = b;
       rpc = new RpcBroker(bus, w.directory);
 
-      // PROACTIVE GATE (docs/perception-to-agent.md Phase 5): a raised attention thought
+      // PROACTIVE GATE (docs/perception-to-brain.md Phase 5): a raised attention thought
       // becomes a self-thought turn on the dock's session — the SAME autonomous-turn
       // lane as tasks (user turns still win; it defers while listening/speaking). This
       // is the auto-raise replacement for the console's manual think-poke.
@@ -366,7 +366,7 @@ export function brainModule(w: BrainWiring): StationModule {
         json(res, 200, { ok: true });
         return true;
       }
-      // ── internal THOUGHT poke (docs/perception-to-agent.md Phase 1) ──────────
+      // ── internal THOUGHT poke (docs/perception-to-brain.md Phase 1) ──────────
       // Inject a self-originated thought into the dock's session — the test seam
       // for internal-thought routing before the real attention gate exists. The
       // thought runs the SAME autonomous-turn lane as a task (user turns still

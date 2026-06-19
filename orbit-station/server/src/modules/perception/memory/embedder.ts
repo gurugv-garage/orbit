@@ -1,5 +1,5 @@
 /**
- * The production embedder for memory semantic recall (docs/perception-to-agent.md
+ * The production embedder for memory semantic recall (docs/perception-to-brain.md
  * 4.4) — Gemini's embeddings API (`text-embedding-004`). Chosen for v1 because it
  * reuses the GEMINI_API_KEY already in `.env` (no new sidecar surface) and is cheap
  * for our scale (per-dock, hundreds–low-thousands of memories). Swappable: the

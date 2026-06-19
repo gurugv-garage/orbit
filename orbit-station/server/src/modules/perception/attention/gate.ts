@@ -1,5 +1,5 @@
 /**
- * The proactive ATTENTION GATE (docs/perception-to-agent.md Decision 1) — the
+ * The proactive ATTENTION GATE (docs/perception-to-brain.md Decision 1) — the
  * cheap-rules tier of "should the robot raise something on its own right now?".
  *
  * A *candidate to speak* is a perception event worth the robot's attention: someone

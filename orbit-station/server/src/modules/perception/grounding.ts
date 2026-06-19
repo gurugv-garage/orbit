@@ -1,7 +1,7 @@
 /**
  * Perception GROUNDING — the context every brain turn (user OR self) carries so
  * the agent reasons over what's been happening, not just the current instant
- * (docs/perception-to-agent.md Decision 3.1).
+ * (docs/perception-to-brain.md Decision 3.1).
  *
  * The decided shape (NOT a fresh summarize per turn — that's 5–15 s of Gemini we
  * can't put on the turn's critical path):

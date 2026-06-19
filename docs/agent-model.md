@@ -72,7 +72,7 @@ TurnEnd
   a user-boundary cap trim) so the next turn stays valid.
 - **Autonomous turns:** `task`/`self` turns enter a bounded queue
   (`enqueueAutonomousTurn`) with coalescing + staleness; a **user turn always wins**.
-  The `self`-thought routing is in [perception-to-agent](perception-to-agent.md).
+  The `self`-thought routing is in [perception-to-brain](perception-to-brain.md).
 
 ## The events
 
@@ -128,7 +128,7 @@ loading third-party extension *modules* is future.
 
 ## See also
 
-- [perception-to-agent](perception-to-agent.md) — perception feeding the brain
+- [perception-to-brain](perception-to-brain.md) — perception feeding the brain
   (thoughts, grounding, memory, tools, the attention gate).
 - [tasks.md](tasks.md) — background jobs as separate processes (the `task` trigger).
 - [operations/perception-runbook.md](operations/perception-runbook.md) — run + test.

@@ -1,5 +1,5 @@
 /**
- * The proactive attention gate (docs/perception-to-agent.md Decision 1) — the pure
+ * The proactive attention gate (docs/perception-to-brain.md Decision 1) — the pure
  * cheap-rules judge. Every cell: disabled, cooldown, dedup, priority order
  * (relevance > arrival > emotion), the ego-motion guard, and the relevance stub.
  */

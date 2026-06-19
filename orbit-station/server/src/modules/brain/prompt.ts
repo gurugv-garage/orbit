@@ -91,7 +91,7 @@ export function nowLine(now: Date = new Date()): string {
 /**
  * The framing for a SELF-THOUGHT turn (trigger.kind:'self') — the robot's own
  * perception/awareness entering the session, NOT a user utterance
- * (docs/perception-to-agent.md 2.1). Without it the model treats its own
+ * (docs/perception-to-brain.md 2.1). Without it the model treats its own
  * observation as something the user said ("you mentioned…") and feels obliged to
  * reply. This makes silence a first-class option.
  */
@@ -114,7 +114,7 @@ export function buildSystemPrompt(opts: { persona?: string; context?: string; gr
   // skills = pi progressive disclosure (names+descriptions only; full body via
   // the invoke_skill tool). Per-dock, loaded from the dock's own folder.
   if (opts.skills && opts.skills.trim().length > 0) p += `\n\n${opts.skills.trim()}`;
-  // perception grounding (docs/perception-to-agent.md 3.1): what's been happening,
+  // perception grounding (docs/perception-to-brain.md 3.1): what's been happening,
   // not just the instant — the last summary (with how stale it is) + the raw stream
   // since. Stamped so the model knows whether it's live or old and can hedge.
   if (opts.grounding && opts.grounding.trim().length > 0) p += `\n\n${opts.grounding.trim()}`;

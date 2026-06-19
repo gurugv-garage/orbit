@@ -1,6 +1,6 @@
 /**
  * SttWatchProcessor — always-on server-side speech-to-text (perception pyramid
- * tier-1 audio sensor, docs/perception-pyramid.md), with VAD ENDPOINTING.
+ * tier-1 audio sensor, docs/perception-pipeline.md §9), with VAD ENDPOINTING.
  *
  * Per producer it depacketizes the WebRTC Opus audio RTP, decodes it in-process to
  * 16 kHz mono PCM (opusscript), and runs a voice-activity detector over 30 ms

@@ -3,11 +3,11 @@
 > What the perception pipeline actually is today, component by component, and
 > **why each piece is what it is** — the alternatives we weighed, the numbers that
 > settled it, and the tradeoff we accepted. This is the decision record; the raw
-> model measurements live in [models/BENCHMARKS.md](../models/BENCHMARKS.md) and the
-> future tiered-escalation plan in [perception-pyramid.md](perception-pyramid.md).
+> model measurements live in [models/BENCHMARKS.md](../models/BENCHMARKS.md). The
+> future **tiered-escalation plan (the pyramid)** is now §9 of this doc.
 >
 > Status: **built and running** (the snapshot pipeline + console). The pyramid's
-> tier-2/3 escalation is still design.
+> tier-2/3 escalation (§9) is still design.
 
 Code: `orbit-station/server/src/modules/perception/`. Console (the playground):
 `http://localhost:8099/#perception`.
@@ -356,6 +356,66 @@ Not a benchmark yet — explicitly an **iterate-and-review** surface:
 
 ---
 
+## 9. The pyramid — tiered escalation (the forward plan)
+
+> Status: **tier-1 is what §1-8 above describe (built + running). Tiers 2-3 are the
+> plan**, partly realized by the attention gate ([perception-to-brain.md](perception-to-brain.md)
+> Decision 5). This section folds in the former `perception-pyramid.md`.
+
+The pipeline above is **tier-1** of a cost/frequency pyramid: the cheaper a layer, the
+more often it runs, so the whole thing stays nearly free — expensive layers fire rarely.
+
+```
+ FREQUENCY        TIER / PROCESSOR          COST         WHAT IT PRODUCES
+ ─────────        ────────────────          ────         ────────────────
+ continuous       T1  the snapshot streams  ~free        the always-current facts:
+ (~1 Hz / utt)        (§1-8: vision, speech,             vision/speech/identity/emotion/
+                       identity, emotion,                bodymotion snapshot records +
+                       bodymotion) + code                per-dock world-state + transitions
+                       roll-up in PerceptionState        (presence 0→1→0 = appeared/left)
+
+ on change /      T2  fusion summarizer      $ (rare)     fuse a window of facts into a
+ on demand            (Gemini today; a small              short narrative (the summarizer,
+                       LOCAL llm is the planned           §6). Today on-demand; the planned
+                       always-on tier)                    always-on tier runs only when T1
+                                                          flags a change.
+
+ rarely /         T3  the dock BRAIN          $ / net     judgment + the actual RESPONSE
+ on escalation        (modules/brain, the pi    (rare)    (speak / act / a self-thought),
+                       loop)                              grounded on T1/T2.
+```
+
+**"When to respond" = the pyramid IS the decider.** There's no separate responder
+component — each cheap tier gates the next expensive one:
+
+```
+ T1 code/rules  detects a change worth noticing  ──▶ wakes T2 / raises a candidate
+ T2 (judge)     decides "this is significant"     ──▶ wakes T3
+ T3 brain       decides "respond, and how"        ──▶ dock speaks / acts
+```
+
+The code/rules layer filters ~99% of frames for free (nothing changed → silence); the
+expensive brain only ever sees the few moments worth a response — so "when to respond"
+never burns an LLM per frame. **This is exactly the attention gate**
+([perception-to-brain.md](perception-to-brain.md) Decision 1/5): its built **cheap-rules
+tier** (arrival/emotion → raise a `self`-thought) is T1→escalation; its planned
+**LLM-judge tier** is T2 deciding "worth interjecting?". The pyramid is the *why*; the
+gate is the *where it lands in the agent*.
+
+**Consumers read the tier matching their need** — the grounding facade does this today:
+- "who's there right now?" → T1 current state (free, instant — `PerceptionState`).
+- "what happened recently?" → T2 last summary + raw-since (the grounding block).
+- "give me a situation report now" → T3 on demand (`force_get_current` re-summarizes).
+
+**What's still future** (the gap between today and the full pyramid):
+- a **small LOCAL** always-on T2 (gemma/qwen-small) so the ~30 s fuse isn't a remote
+  Gemini call — fusion is on-demand today, not always-on.
+- the gate's **T2 judge tier** (cheap rules → small-LLM "worth interjecting?"), blocked
+  on the always-on-mic shift for the conversational half.
+- a code roll-up that emits `watcher-event` on T1 transitions to *wake* T2 automatically.
+
+---
+
 ## Component summary
 
 | Stream | Component | Where | Footprint | Latency | Confidence signal | Main limitation |
@@ -375,7 +435,7 @@ Not a benchmark yet — explicitly an **iterate-and-review** surface:
 
 - [models/BENCHMARKS.md](../models/BENCHMARKS.md) — the measured model numbers
   (footprint, latency, WER, accuracy) and how to reproduce them.
-- [perception-pyramid.md](perception-pyramid.md) — the tiered always-on escalation
-  this pipeline is the tier-1 of (when/whether to respond).
+- [perception-to-brain.md](perception-to-brain.md) — how perception feeds the dock
+  brain (thoughts, grounding, memory, tools, the attention gate = the pyramid's T2/T3).
 - [media-processing.md](media-processing.md) — the SFU + processing-tap plumbing the
   processors hang off.
