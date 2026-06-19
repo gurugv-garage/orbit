@@ -172,12 +172,23 @@ Legend: `[x]` done · `[~]` in progress · `[ ]` not started · `[?]` open quest
 
 > **Renamed `plat` → `orbit-station` + split (2026-06-02).** The **control
 > plane** is built (`orbit-station/`, Node/TS): one WebSocket, browser UI, and
-> modules — observability (agent-core trace ingest), config push, bodylink
-> console, `mind` stub, bench viewer (moved from `node-dock/app/bench`), ota
-> (self-update for body + app, [ota.md](ota.md)). See
-> `orbit-station/README.md` + `TESTING.md` and decision log "orbit-station
-> split". The **media pipeline below** (WebRTC/STT/TTS) is a deferred separate
-> sidecar — the checkboxes still stand for that.
+> modules — brain (the dock's server-side LLM loop), observability, config push,
+> bodylink, `mind` stub, bench viewer, ota, **media** (WebRTC SFU + processing
+> tap) and **perception** (the on-device understanding pipeline). See
+> `orbit-station/README.md` + `TESTING.md`.
+>
+> **Architecture has moved on from §3.1-3.4 below.** Those checkboxes describe the
+> ORIGINAL `plat` media plan (LiveKit + faster-whisper + Piper + MediaPipe +
+> MoonDream, a separate Python pipeline). What was actually built is different and
+> lives in its own docs: the **server brain** ([agent-model.md](agent-model.md))
+> moved the LLM loop onto the station; the **media SFU + tap**
+> ([media-processing.md](media-processing.md)) and the **perception pipeline**
+> ([perception-pipeline.md](perception-pipeline.md): in-process WebRTC SFU, MLX
+> Whisper STT, qwen2.5-VL vision, face-api identity/emotion, Gemini fusion) replaced
+> the planned stack; **perception→agent** ([perception-to-agent.md](perception-to-agent.md))
+> wired thoughts/grounding/memory/tools/the proactive gate into the brain (built +
+> tested on hardware). §3.1-3.4 are kept as the historical plan; the ▸ notes mark
+> what superseded each.
 
 ### 3.0 orbit-station control plane
 - [x] One WS hub + in-process bus; raw-WS protocol for all peers
@@ -194,34 +205,54 @@ Legend: `[x]` done · `[~]` in progress · `[ ]` not started · `[?]` open quest
 - [ ] `mind` gains triggers (rules, then maybe LLM supervisor)
 - [ ] HTTPS in real deployment; auth on the WS for non-LAN
 
-### 3.1 Audio pipeline (centralized at agent — deferred media sidecar)
-- [ ] WebRTC SFU (LiveKit) running on laptop
-- [ ] Per-stream Silero VAD chunking utterances
-- [ ] `faster-whisper-small` STT on GPU (or `base` CPU fallback)
-- [ ] Transcript stream tagged with room ID + timestamp
-- [ ] Piper TTS for replies
-- [ ] Streaming optimization: stream LLM tokens → streaming Piper → low perceived latency
+### 3.1 Audio pipeline — ▸ SUPERSEDED by the built perception/media stack
+> Built differently (see [perception-pipeline.md](perception-pipeline.md) §3 +
+> [media-processing.md](media-processing.md)): in-process WebRTC SFU (not LiveKit);
+> **MLX Whisper small.en** VAD-endpointed STT (not faster-whisper); STT/TTS stay on the
+> PHONE for now (transcripts up, sentence text down), so server-side Piper isn't used.
+> Moving the mic into the always-on WebRTC path is the pending "A1" shift
+> ([perception-to-agent.md](perception-to-agent.md)).
+- [x] WebRTC SFU running on the station — *in-process (werift), not LiveKit*
+- [x] VAD chunking utterances — *in-process VAD endpointing in the STT processor*
+- [x] STT — *Whisper small.en via MLX sidecar, with confidence metrics*
+- [x] Transcript stream tagged with timing + speaker guess — *snapshot records*
+- [ ] Server-side TTS — *deferred; TTS stays on the phone (sentence text down)*
 
-### 3.2 Vision pipeline
-- [ ] Per-phone video frame ingestion at ~10 FPS
-- [ ] MediaPipe BlazeFace face detection per stream
-- [ ] Presence fusion: per-room "user is here" boolean from face + voice + ambient
-- [ ] Robot camera ingestion (OAK-D RGB via ROS2 bridge)
-- [ ] On-demand object detection (YOLO / OWL-ViT) for "find the X"
-- [ ] On-demand VLM (Moondream / SmolVLM) for "what do you see"
+### 3.2 Vision pipeline — ▸ SUPERSEDED by the built perception pipeline
+> Built differently (see [perception-pipeline.md](perception-pipeline.md)): face-api
+> (not MediaPipe) for identity+emotion; **qwen2.5-VL** temporal (not Moondream/YOLO) for
+> what's happening; a Gemini summarizer fuses the streams on demand. Robot-camera/ROS2
+> ingestion is still future (rover-side).
+- [x] Phone video frame ingestion — *WebRTC → SFU → in-process tap*
+- [x] Face detection + recognition per stream — *face-api (enroll-then-match gallery)*
+- [x] Presence + identity + emotion — *debounced presence, named faces, hedged emotion*
+- [x] On-demand "what do you see" — *qwen2.5-VL vision snapshots + force_get_current tool*
+- [ ] Robot camera ingestion (OAK-D RGB via ROS2 bridge) — *rover-side, future*
+- [ ] On-demand object detection for "find the X" — *not built (the VLM covers describe)*
 
-### 3.3 LLM orchestration
-- [ ] LLM choice decided (local llama vs API) — currently "anything works later"
-- [ ] System prompt + tool-use schema (navigate-to-room, grab-object, find-person, speak)
-- [ ] Conversation context per user (simple in-memory for now)
-- [ ] LLM decides: spoken response only, or robot task, or both
-- [ ] Tool calls dispatched to robot or audio system
+### 3.3 LLM orchestration — ▸ BUILT as the server brain
+> The dock's LLM loop runs in `orbit-station/modules/brain/` (embedded TS pi); see
+> [agent-model.md](agent-model.md). Model is config (`brainModel`, default
+> gemini-2.5-flash; any provider). Tools, per-dock sessions, autonomous/`self` turns,
+> grounding, memory, and the proactive gate are all wired
+> ([perception-to-agent.md](perception-to-agent.md)). Rover task tools (navigate/grab)
+> are still future — the rover isn't wired to the station yet.
+- [x] LLM choice — *config-driven (`brainModel`); per-turn provider/key resolution*
+- [x] System prompt + tool-use schema — *prompt.ts + schemas.ts; set_face/move/compute/memory/…*
+- [x] Conversation context per dock — *per-dock pi session, persisted + compacted*
+- [x] LLM decides: speak, act, or both — *and stay silent (self-thoughts)*
+- [x] Tool calls dispatched — *in-process (body/perception) or phone RPC (set_face)*
+- [ ] Rover task tools (navigate-to-room, grab-object) — *future; rover not wired in*
 
-### 3.4 World model
-- [ ] User location: room + DoA + freshness
-- [ ] Robot pose: subscribed from `/odom` via ROS2 bridge
-- [ ] Conversation context
-- [ ] Room → map-coordinate map (manual config file)
+### 3.4 World model — ▸ PARTLY built (per-dock); cross-device still future
+> Per-dock world-state (presence/identity) + the unified per-dock **memory store**
+> (sqlite, lineage, semantic recall) are built (perception module). Multi-room user
+> location + rover pose fusion are still future (need >1 dock / the rover wired in).
+- [x] Conversation context — *per-dock session + the memory store*
+- [x] Per-dock presence/identity world-state — *perception `PerceptionState`*
+- [ ] User location: room + DoA + freshness — *future (multi-dock)*
+- [ ] Robot pose from `/odom` via ROS2 bridge — *future (rover not wired in)*
+- [ ] Room → map-coordinate map — *future*
 
 ### 3.5 Cross-system bridge
 - [ ] ROS2 bridge: `rosbridge_server` OR native ROS2 node running on laptop (decide)
@@ -282,15 +313,18 @@ or **shared**.
   (BOM, assembly, 3D-print SCAD/STL) at
   [../node-dock/hardware/](../node-dock/hardware/); physical body assembly
   still pending.
-- [ ] **(A) Persistent memory / conversation history** — S. Local SQLite (or
-  JSON) per dock keyed by turn. Surfaced as Koog recall tool. UX win:
-  "what did I ask yesterday?". Revisit centralisation once there's >1 dock.
-- [ ] **(B) Wake word "hey jarvis"** — S. Porcupine SDK already integrated;
-  needs the access key in `local.properties` and wire-up. UX win: no
-  more tap-to-wake.
-- [ ] **(D) `remember(text)` + `recall(query)` tools** — M. Builds on (A);
-  explicit user-managed notes with naive text retrieval. Vector search
-  later if scale demands it.
+- [x] **(A) Persistent memory / conversation history** — DONE, server-side. The
+  per-dock **memory store** (sqlite via the perception module: type/subject/lineage +
+  confidence, supersede-not-delete, Gemini-embedded semantic recall) plus per-dock
+  session persistence + cross-session compaction. Not "Koog recall" (the Kotlin brain
+  was replaced); see [perception-to-agent.md](perception-to-agent.md) §4.
+- [ ] **(B) Wake word** — S. Now reframed as the station-side **attention gate**
+  (wake = interject = thought, one mechanism — [perception-to-agent.md](perception-to-agent.md)
+  Decision 1). The proactive gate's cheap-rules tier is built; a real wake/relevance
+  signal is blocked on the always-on-mic shift (A1). Client Porcupine is no longer the plan.
+- [x] **(D) `remember` + `recall_memory` tools** — DONE. The brain has
+  remember/recall_memory/inspect_memory/update/forget tools over the (A) store, with
+  semantic + structured recall. Builds on (A) as planned.
 - [~] **(F) Voice barge-in during TTS** — wired, blocked on the VAD fix. WebRTC
   AEC keeps the mic open during TTS (the hard part, done). The RMS-threshold
   approach envisioned here was tried and reverted — AEC residual energy makes

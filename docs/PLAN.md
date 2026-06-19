@@ -2,6 +2,16 @@
 
 > Personal robotics platform. Multiple nodes integrated through a central agent.
 > Sim-first; hardware after sim is solid. N-node native; 1-node first.
+>
+> **This is the VISION doc** (architecture + decision log) — kept aspirational.
+> Two things below have since been **renamed / built differently**, noted inline
+> where they appear: **`plat` is now `orbit-station`** (the central service); and
+> the **agent loop runs server-side** with the perception stack built on the media
+> tap, not the original LiveKit/Whisper/Piper plan. Current state:
+> [agent-model.md](agent-model.md) (the brain), [media-processing.md](media-processing.md)
+> + [perception-pipeline.md](perception-pipeline.md) (senses),
+> [perception-to-agent.md](perception-to-agent.md) (the bridge), [TODO.md](TODO.md)
+> (what's actually done).
 
 ---
 
