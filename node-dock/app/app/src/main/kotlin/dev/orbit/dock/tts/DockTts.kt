@@ -49,6 +49,11 @@ class DockTts(
     // scheduler that ends the speaking signal at the PCM's real playback duration.
     private val synthFiles = ConcurrentHashMap<String, File>()
     private val scheduler: ScheduledExecutorService = Executors.newSingleThreadScheduledExecutor()
+    // Running playback clock: when the audio queued so far finishes (ms epoch).
+    // Sentences synthesize near-simultaneously but play sequentially, so each new
+    // utterance's end is scheduled relative to this, not `now`.
+    private val playbackLock = Any()
+    @Volatile private var playbackEndsAt = 0L
     // Rising/falling edges of the public "speaking" signal. Turn-aware so the
     // gap between streamed sentences never reads as "stopped speaking" — that
     // false edge mid-reply is what re-armed the mic over the dock's own voice.
@@ -178,7 +183,11 @@ class DockTts(
             WebRtcAudio.stopTtsRender()
             synchronized(activeUtterances) { activeUtterances.clear() }
             synchronized(pending) { pending.clear() }
+            // delete any orphaned synth WAVs (synthesized but not yet rendered) so a
+            // barge-in mid-synthesis doesn't leak files in cacheDir; reset the clock.
+            synthFiles.values.forEach { runCatching { it.delete() } }
             synthFiles.clear()
+            synchronized(playbackLock) { playbackEndsAt = 0L }
         } catch (t: Throwable) {
             Timber.w(t, "TTS stop failed")
         }
@@ -262,9 +271,18 @@ class DockTts(
         face.speak()
         if (gate.onUtteranceStarted()) onSpeakingChanged(true)
         WebRtcAudio.renderTtsPcm(appCtx, pcm16)
-        // schedule end at the PCM's real duration (16k mono 16-bit) + a small tail.
-        val playMs = (pcm16.size.toLong() / 2 * 1000 / 16_000) + 150
-        scheduler.schedule({ finishUtterance(id) }, playMs, java.util.concurrent.TimeUnit.MILLISECONDS)
+        // Schedule this utterance's end. Sentences synthesize near-simultaneously but
+        // play SEQUENTIALLY from the shared render queue, so each finish must wait for
+        // the audio queued AHEAD of it — schedule from a running playback clock, not
+        // from `now` (else all timers fire at once and speaking falls mid-reply).
+        val playMs = pcm16.size.toLong() / 2 * 1000 / 16_000
+        val startAt = synchronized(playbackLock) {
+            val base = maxOf(System.currentTimeMillis(), playbackEndsAt)
+            playbackEndsAt = base + playMs
+            base
+        }
+        val endInMs = (startAt - System.currentTimeMillis()) + playMs + 150 // + small tail
+        scheduler.schedule({ finishUtterance(id) }, endInMs.coerceAtLeast(0), java.util.concurrent.TimeUnit.MILLISECONDS)
     }
 
     /** Read a TTS-engine WAV (its own rate, e.g. 24k) → mono PCM-16 resampled to 16k. */

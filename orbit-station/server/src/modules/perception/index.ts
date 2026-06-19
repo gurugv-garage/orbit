@@ -408,9 +408,16 @@ export function perceptionModule(getHub: () => ProcessingHub): StationModule {
       // cadence, fuse the recent window + cache it. Cheap: skips idle docks +
       // throttles busy ones (shouldSummarize). OFF if PERCEPTION_AUTO_SUMMARY=0.
       if (process.env.PERCEPTION_AUTO_SUMMARY !== '0') {
+        // Count records per dock from one store scan, memoized for a beat so the
+        // auto-summarizer's activeDocks()+countFor(d)×N calls in a single tick
+        // share ONE pass over snapshots (instead of rescanning per dock).
+        let countCache: { at: number; map: Map<string, number> } | null = null;
         const dockCounts = (): Map<string, number> => {
+          const now = Date.now();
+          if (countCache && now - countCache.at < 1_000) return countCache.map;
           const m = new Map<string, number>();
           for (const r of snapshots.list()) m.set(r.dockId, (m.get(r.dockId) ?? 0) + 1);
+          countCache = { at: now, map: m };
           return m;
         };
         startAutoSummarizer({
