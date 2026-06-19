@@ -505,7 +505,7 @@ export function perceptionModule(getHub: () => ProcessingHub): StationModule {
         return true;
       }
       // ── SIDECAR HEALTH — the two MLX apps are the only out-of-process pieces
-      // (PERCEPTION-RUNBOOK §1). Ping each /health (short timeout) so the console
+      // (operations/perception-runbook.md §1). Ping each /health (short timeout) so the console
       // can show up/down + which model is loaded, without anyone sshing in.
       // GET /sidecars → [{ name, url, up, model?, latencyMs?, error? }, …]
       if (req.method === 'GET' && subPath === '/sidecars') {

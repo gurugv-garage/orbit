@@ -1,6 +1,6 @@
 /**
  * Sidecar supervisor — start/stop/restart the two MLX sidecars (the only
- * out-of-process perception pieces; see PERCEPTION-RUNBOOK §1) from the console,
+ * out-of-process perception pieces; see operations/perception-runbook.md §1) from the console,
  * so you don't have to drop to a shell. Convenience for the single-laptop dev/test
  * workflow — NOT a production process manager.
  *

@@ -347,7 +347,7 @@ class PerceptionPipeline(private val appContext: Context) {
         // leaves the dock's own voice in the mic at VAD ~0.98, so a VAD-during-TTS
         // trigger SELF-INTERRUPTS the dock on its own speech. The fix (route TTS
         // through a WebRTC loopback so software AEC cancels it — proven in
-        // EchoLoopTest, see docs/barge-in-findings.md) isn't productionized yet.
+        // EchoLoopTest, see docs/findings/barge-in-findings.md) isn't productionized yet.
         // Until then, interruption is tap-only. Keep BARGE_IN_ENABLED=false.
         @Suppress("ConstantConditionIf")
         if (BARGE_IN_ENABLED && dockSpeaking) {

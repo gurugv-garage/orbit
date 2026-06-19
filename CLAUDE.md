@@ -103,7 +103,7 @@ ego-motion) — fused on demand by a Gemini summarizer; the **Perception Studio*
 [docs/PERCEPTION-PIPELINE.md](docs/PERCEPTION-PIPELINE.md) for the as-built design +
 decisions, [docs/PERCEPTION-TO-AGENT.md](docs/PERCEPTION-TO-AGENT.md) for the
 agent plug-in (thoughts/grounding/memory/tools/gate — Phases 1-5 built),
-[docs/PERCEPTION-RUNBOOK.md](docs/PERCEPTION-RUNBOOK.md) for **how to run + test it
+[docs/operations/perception-runbook.md](docs/operations/perception-runbook.md) for **how to run + test it
 end-to-end** (sidecars, station, phone), [docs/PERCEPTION-PYRAMID.md](docs/PERCEPTION-PYRAMID.md)
 for the tiered escalation plan, [models/BENCHMARKS.md](models/BENCHMARKS.md) for the model numbers).
 See [orbit-station/README.md](orbit-station/README.md) and
