@@ -327,6 +327,10 @@ the `type:'person'` specialization for now; they're folded behind this surface l
 
 ## Decision 4 — Memory: a unified, per-dock, evolving store (the keystone)
 
+> **Built.** This section is the *design rationale*; the **as-built implementation +
+> integration reference** (schema, store API, recall, the `MemoryApi` facade, the brain
+> tools, REST) is **[memory.md](memory.md)**.
+
 `recall_memory` (the agent tool, 3.2) + grounding need perception to **outlive the
 in-memory ring** (drops after ~1000 records). This is the deepest sub-system; its own design
 pass. Home: a **memory sub-system of the perception module**, **per dock** (each dock

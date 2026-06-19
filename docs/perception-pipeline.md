@@ -25,7 +25,7 @@ All paths under `orbit-station/server/src/modules/perception/`.
 | 👤 **Identity + 😮 emotion** | `processors/identity-snapshot.ts` + `face/recognizer.ts`, `face/gallery.ts` | `identitySnapshotProcessor(store, recognizeAll, cameraMotion)`; `describeExpression()` |
 | 🤖 **Bodymotion** | `processors/bodymotion-watch.ts` | `bodyMotionWatchProcessor(store)`; `pushCommand()`, `current()` |
 | 🧠 **Fusion** | `summarizer.ts` | `stitch()` + `summarize(records, opts)` → Gemini |
-| **Memory** (persistent per-dock store — outlives the ring) | `memory/store.ts` + `memory/embedder.ts` | `MemoryStore` (sqlite; recall/inspect/remember/update/forget); design in [perception-to-brain.md](perception-to-brain.md) Decision 4 |
+| **Memory** (persistent per-dock store — outlives the ring) | `memory/store.ts` + `memory/embedder.ts` | `MemoryStore` (sqlite; recall/inspect/remember/update/forget). Full ref: [memory.md](memory.md) |
 | **The tap** (stream lifecycle → processors) | `hub.ts` | `ProcessingHub` (the SFU media tap; `mediaKinds:[]` lifecycle-only path) |
 | **Frame decode** (one ffmpeg/dock, shared) | `face/frame-grabber.ts` | `currentFrame(streamId)` — vision reads the face processor's grabber |
 | **Takes** (A/B replay) | `takes.ts` | `TakeStore` |
@@ -405,10 +405,11 @@ across sessions, not just narrate the last minute.
 - The brain reaches it through a `MemoryApi` facade as tools (`recall_memory`,
   `inspect_memory`, `remember`, `update_memory`, `forget_memory`).
 
-This lives in the perception module (it's derived from perception), but its **design +
-the agent-facing tool surface are documented with the brain integration**:
-[perception-to-brain.md](perception-to-brain.md) **Decision 4** (the keystone). Here it's
-flagged so the module's component inventory is complete; the full model lives there.
+This lives in the perception module (it's derived from perception). Full
+implementation + integration reference (schema, store API, recall, the facade + the
+brain tools): **[memory.md](memory.md)**; the design rationale (the keystone argument):
+[perception-to-brain.md](perception-to-brain.md) **Decision 4**. Here it's flagged so the
+module's component inventory is complete; the details live in those.
 
 ---
 
