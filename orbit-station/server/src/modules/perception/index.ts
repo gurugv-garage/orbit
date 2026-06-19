@@ -213,6 +213,33 @@ export function getGateApi(): GateApi | undefined {
   return gateRef.current;
 }
 
+/**
+ * Final-transcript hook (A1.2, the always-on-mic shift). The server STT
+ * (stt-watch) emits one final transcript per endpointed utterance; the brain
+ * registers `onFinal` to receive each with its utterance window, so it can decide
+ * — via the addressed latch — whether that utterance becomes an agent turn.
+ * Mirrors GateApi.onRaise (a single consumer, set once at brain init).
+ */
+export interface FinalTranscript {
+  dockId: string;
+  streamId: string;
+  text: string;
+  /** the utterance's VAD window (ms epoch) — drives the addressed correlation. */
+  startedAt: number;
+  endedAt: number;
+  /** Whisper's own confidence flag (a gasp/low-conf word is tagged, not dropped). */
+  lowConfidence: boolean;
+}
+export interface TranscriptApi {
+  /** the brain calls this once to receive final transcripts. */
+  onFinal(fn: (t: FinalTranscript) => void): void;
+}
+const transcriptRef: { current?: TranscriptApi } = {};
+/** The live TranscriptApi (set when the perception module inits). */
+export function getTranscriptApi(): TranscriptApi | undefined {
+  return transcriptRef.current;
+}
+
 
 export function perceptionModule(getHub: () => ProcessingHub): StationModule {
   let state: PerceptionState;
@@ -228,7 +255,11 @@ export function perceptionModule(getHub: () => ProcessingHub): StationModule {
   let bus: Bus;
   const gallery = new Gallery(GALLERY_PATH);
   const face = faceRecognitionProcessor(gallery);
-  const stt = sttWatchProcessor(snapshots);        // 🎙 speech (exposes flushAll)
+  // A1.2: the brain registers onFinal (via TranscriptApi) to receive each final
+  // utterance; we hold the single handler and forward stt-watch's events to it.
+  let finalHandler: ((t: FinalTranscript) => void) | undefined;
+  transcriptRef.current = { onFinal: (fn) => { finalHandler = fn; } };
+  const stt = sttWatchProcessor(snapshots, (e) => finalHandler?.(e)); // 🎙 speech (exposes flushAll)
   // Vision reuses the face processor's decoded frame (ONE ffmpeg per dock, not two).
   const vision = visionSnapshotProcessor(snapshots, (sid) => face.currentFrame(sid)); // 👁 vision (captureNow)
   const bodymotion = bodyMotionWatchProcessor(snapshots); // 🤖 ego-motion (setMotion seam)

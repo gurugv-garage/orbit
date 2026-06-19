@@ -249,7 +249,22 @@ interface StreamState {
   detector: UtteranceDetector;
 }
 
-export function sttWatchProcessor(store: SnapshotStore): StreamProcessor & {
+/** A final transcript + its utterance window, handed to the A1.2 transcript hook. */
+export interface FinalTranscriptEvent {
+  dockId: string;
+  streamId: string;
+  text: string;
+  startedAt: number;
+  endedAt: number;
+  lowConfidence: boolean;
+}
+
+export function sttWatchProcessor(
+  store: SnapshotStore,
+  /** A1.2: called once per endpointed final utterance (text + window), so the
+   *  brain can decide via the addressed latch whether it becomes an agent turn. */
+  onFinal?: (e: FinalTranscriptEvent) => void,
+): StreamProcessor & {
   /** Force-commit any in-progress utterance on EVERY stream now, awaiting the
    *  transcription. Used by the Summarize flush so a mid-sentence is captured. */
   flushAll(): Promise<void>;
@@ -289,6 +304,12 @@ export function sttWatchProcessor(store: SnapshotStore): StreamProcessor & {
         // confidence rides along so downstream sees Whisper's certainty, not a constant
         const conf = tr.avgLogprob != null ? Math.max(0, Math.min(1, 1 + tr.avgLogprob)) : 0.8;
         ctx.emit({ kind: 'transcript', source: 'stt-watch', payload: { text: tr.text, isFinal: true }, confidence: conf });
+        // A1.2: hand the final transcript + its utterance window to the brain's
+        // addressed latch so a tapped utterance can become an agent turn.
+        onFinal?.({
+          dockId: ctx.dockId, streamId: ctx.streamId, text: tr.text,
+          startedAt: startedAt.getTime(), endedAt: endedAt.getTime(), lowConfidence,
+        });
       };
       const detector = new UtteranceDetector((pcm, startedAt, endedAt) => { void commit(pcm, startedAt, endedAt); });
       detector.commit = commit; // flushNow awaits this; the live path stays fire-and-forget

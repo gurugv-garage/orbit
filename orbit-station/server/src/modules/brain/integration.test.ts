@@ -28,6 +28,7 @@ import { RpcBroker } from './rpc.js';
 import { SessionStore } from './store.js';
 import { DockBrainSession, type SessionDeps } from './session.js';
 import { buildMemoryTools } from './tools.js';
+import { newLatch, tap as tapLatch, decideAddressed, type AddressedLatch } from './addressed.js';
 import { MemoryStore, type Embedder } from '../perception/memory/store.js';
 import type { MemoryApi, PerceptionGroundingApi } from '../perception/index.js';
 
@@ -121,4 +122,60 @@ test('E2E memory: remember then recall_memory round-trip through the real store'
   const id = memStore.recent(DOCK, 1)[0]!.id;
   await tools.get('forget_memory')!.execute('c4', { id: id.slice(0, 8) } as never);
   assert.equal(memStore.count(DOCK), 0, 'forget purged it from active recall');
+});
+
+test('E2E addressed (A1.2): a tapped final transcript becomes a user turn; an un-tapped one does not', async () => {
+  const bus = new Bus();
+  const directory = new Directory(() => [phonePeer()], join(tmpdir(), `dir-${Math.random()}.json`));
+  const store = new SessionStore(mkdtempSync(join(tmpdir(), 'addr-e2e-')));
+  const motion = new MotionExecutor(bus, directory);
+
+  // capture the user text the LLM actually receives per turn.
+  const seenTurns: string[] = [];
+  const cfg = { brainModel: 'openai-compatible/faux@http://test' } as Record<string, unknown>;
+  const deps: SessionDeps = {
+    bus, directory, rpc: new RpcBroker(bus, directory), motion, store,
+    getFaces: () => undefined,
+    config: (k) => cfg[k],
+    streamFn: ((_model: unknown, ctx: any) => {
+      // streamFn(model, context, options) — messages live on the context arg.
+      const msgs = (ctx?.messages ?? []) as Array<{ role: string; content: any }>;
+      const lastUser = [...msgs].reverse().find((x) => x.role === 'user');
+      const t = Array.isArray(lastUser?.content)
+        ? lastUser!.content.map((c: any) => c.text ?? '').join('')
+        : String(lastUser?.content ?? '');
+      if (t) seenTurns.push(t);
+      const s: AssistantMessageEventStream = createAssistantMessageEventStream();
+      s.push({ type: 'start', partial: assistant('') });
+      s.push({ type: 'done', reason: 'stop', message: assistant('ok') });
+      s.end();
+      return s;
+    }) as never,
+  };
+  const session = new DockBrainSession(DOCK, deps);
+
+  // Replicate the brain/index.ts addressed wiring against THIS session.
+  const latch = new Map<string, AddressedLatch>();
+  const latchOf = (d: string) => latch.get(d) ?? newLatch();
+  const onFinal = async (t: { dockId: string; text: string; startedAt: number; endedAt: number }) => {
+    const { addressed, next } = decideAddressed(latchOf(t.dockId), { startedAt: t.startedAt, endedAt: t.endedAt });
+    latch.set(t.dockId, next);
+    if (addressed) await session.handleTurnRequest({ turnId: `addr-${Math.random()}`, trigger: { kind: 'user', text: t.text } });
+  };
+
+  // 1) un-tapped utterance → overheard, NO turn.
+  await onFinal({ dockId: DOCK, text: 'just talking to myself', startedAt: 1000, endedAt: 1500 });
+  for (let i = 0; i < 10; i++) await tick();
+  assert.deepEqual(seenTurns, [], 'overheard speech does not drive a turn');
+
+  // 2) tap, then speak → addressed, ONE turn with that text.
+  latch.set(DOCK, tapLatch(latchOf(DOCK), 2000));
+  await onFinal({ dockId: DOCK, text: 'what time is it', startedAt: 2100, endedAt: 2700 });
+  for (let i = 0; i < 20 && seenTurns.length === 0; i++) await tick();
+  assert.deepEqual(seenTurns, ['what time is it'], 'tapped utterance drove exactly one user turn');
+
+  // 3) the next utterance (latch cleared at sentence-end) is overheard again.
+  await onFinal({ dockId: DOCK, text: 'and now muttering', startedAt: 3000, endedAt: 3500 });
+  for (let i = 0; i < 10; i++) await tick();
+  assert.deepEqual(seenTurns, ['what time is it'], 'one tap → one turn; next sentence overheard');
 });

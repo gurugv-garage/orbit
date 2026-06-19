@@ -27,7 +27,8 @@ import { readFileSync } from 'node:fs';
 import type { RouteContext, StationModule } from '../../core/module.js';
 import type { Directory } from '../docks/directory.js';
 import type { MotionExecutor } from '../bodylink/motion.js';
-import { getFaceTools, getPerceptionGrounding, getMemoryApi, getGateApi } from '../perception/index.js';
+import { getFaceTools, getPerceptionGrounding, getMemoryApi, getGateApi, getTranscriptApi } from '../perception/index.js';
+import { newLatch, tap as tapLatch, decideAddressed, type AddressedLatch } from './addressed.js';
 import type { VideoRecorderApi } from '../perception/record/recorder.js';
 import { RpcBroker } from './rpc.js';
 import { DockBrainSession, type TurnRequest, keyStatusFor } from './session.js';
@@ -190,6 +191,28 @@ export function brainModule(w: BrainWiring): StationModule {
         });
       });
 
+      // ADDRESSED TRANSCRIPT → TURN (A1.2, always-on-mic shift). The server STT
+      // hears EVERY utterance; a dock tap marks intent ("talking TO me"). Per dock
+      // we hold an addressed latch (tapped by the `addressed` agent frame below);
+      // when a final utterance qualifies (overlaps/follows the tap), it becomes a
+      // user turn-request. The latch clears at sentence-end (one tap → one turn).
+      // Overheard (un-tapped) speech is ignored here — only the attention gate may
+      // act on it (A1.5). See addressed.ts for the pure correlation + tests.
+      const addressedLatch = new Map<string, AddressedLatch>();
+      const latchOf = (dock: string): AddressedLatch =>
+        addressedLatch.get(dock) ?? newLatch();
+      getTranscriptApi()?.onFinal((t) => {
+        const { addressed, next } = decideAddressed(latchOf(t.dockId), {
+          startedAt: t.startedAt, endedAt: t.endedAt,
+        });
+        addressedLatch.set(t.dockId, next);
+        if (!addressed) return;
+        void session(t.dockId).handleTurnRequest({
+          turnId: `addr-${randomUUID()}`,
+          trigger: { kind: 'user', text: t.text },
+        }).catch((err) => console.error(`[brain] ${t.dockId}: addressed turn crashed`, err));
+      });
+
       bus.on('agent', (msg) => {
         if (msg.source === 'station') return;
         const dock = dockOf(msg.source);
@@ -224,6 +247,14 @@ export function brainModule(w: BrainWiring): StationModule {
               console.error(`[brain] ${dock}: turn crashed`, err);
             });
             break;
+          case 'addressed': {
+            // A1.2: the dock tapped — mark it addressed so the next qualifying
+            // utterance (from the always-on server STT) becomes a turn. `at` is
+            // the tap time (ms epoch); default to now if absent.
+            const at = typeof p?.at === 'number' ? p.at : Date.now();
+            addressedLatch.set(dock, tapLatch(latchOf(dock), at));
+            break;
+          }
           case 'turn-cancel':
             session(dock).cancel(typeof p?.turnId === 'string' ? p.turnId : undefined);
             break;
