@@ -54,7 +54,6 @@
 - [Build phases (proposed)](#build-phases-proposed)
   - [APP (node-dock) changes — only where genuinely required](#app-node-dock-changes--only-where-genuinely-required)
 - [Decided](#decided)
-- [Implementation anchors (read this before coding Phase 1)](#implementation-anchors-read-this-before-coding-phase-1)
 - [Open questions (for the follow-up)](#open-questions-for-the-follow-up)
 <!-- /TOC -->
 
@@ -66,10 +65,6 @@ per-turn grounding line (face recognition pulled on demand + one camera frame). 
 rich snapshot pipeline (continuous vision/speech/identity/emotion/bodymotion + the
 summarizer) is **not wired to the brain at all**. Plugging it in is the set of
 decisions below (1, 2, 2b, 2c, 3, 4, 5), then the phased build.
-
-> **Implementing this? Start at "Implementation anchors" (end of doc)** for the exact
-> files, function names, and line references for Phase 1, plus the one caveat that
-> shapes it (the `listening` signal doesn't exist yet — Phase 1 stubs it).
 
 ### The key realization: a thought IS an autonomous turn
 
@@ -579,70 +574,6 @@ phase surfaces a concrete need; the default is the existing autonomous-turn UX.
   speaking. (Revisit only if urgent-event interruption proves necessary.)
 - **Deferred thought → re-evaluate** when the agent next pauses (or **log+drop** if
   re-eval is too complex for the first cut).
-
-## Implementation anchors (read this before coding Phase 1)
-
-Concrete code references so a fresh agent can start without re-discovering the codebase.
-All paths under `orbit-station/server/src/`.
-
-**Files that exist + what to touch:**
-- `modules/brain/session.ts` — the dock session. Key seams:
-  - `interface TurnRequest { turnId; trigger: { kind: string; text }; … }` (~line 67).
-    `trigger.kind` is a **plain string** today (`'user'` / `'task'`) — adding `'self'`
-    needs **no enum change**, just new handling + prompt framing.
-  - `enqueueAutonomousTurn(req: TurnRequest & { expiresAt?; coalesceKey? })` (~line 283)
-    — **the injection point for a thought.** Already does coalesce + bounded queue.
-  - `#drainAuto()` (just after) — drains the auto queue; `while (#running) await` =
-    user-priority; `expiresAt` check = staleness; `settleMs` gap. **Add the `listening`
-    gate here.**
-  - State flags to expose as `state()`: `#running` (a turn in flight), `#turnActive`
-    (~line 152, getter ~233), `#activeTurnId`, `#cancelled`; `preWarm()` (~241) and
-    `noteSpeech(speaking)` (~362, ships SpeakStart/SpeakEnd) are the speaking/listening
-    hooks.
-- `modules/brain/prompt.ts` — builds the system prompt. It does **not** currently branch
-  on `trigger.kind`; the **`'self'` framing** ("this is your own thought, not the user")
-  is new here.
-- `modules/brain/index.ts` — WS routing. `turn-request` → `handleTurnRequest` (~line 208);
-  task events → `enqueueAutonomousTurn` (~line 200) is the **pattern to copy** for the
-  thought test-poke. Add a `POST /api/perception/think` (or brain route) that calls
-  `session(dock).enqueueAutonomousTurn({ trigger:{kind:'self', text}, expiresAt, coalesceKey })`.
-- `modules/brain/autonomous.test.ts` — **extend THIS** for the thought routing tests (not
-  a new suite). It already exercises the auto-turn lane.
-
-**`coalesceKey` convention for thoughts:** tasks key on `instanceId`. Thoughts should key
-on a **thought kind/topic** (e.g. `'self:presence'`, `'self:emotion'`) so a newer thought
-of the same kind replaces a stale pending one, but different kinds don't clobber each
-other. Pin the exact keys when the gate is built.
-
-**THE PHASE-1 CAVEAT (don't miss this):** the **`listening` state has no real signal
-today** — the Android recognizer owns the mic, so the station sees no live user speech
-(see Open questions: always-on-mic shift). So Phase 1 **builds the structure** — the
-`state()` accessor, the `listening` branch in `#drainAuto`, and tests that drive it via a
-**stubbed/injected** `listening` flag — but cannot wire `listening` to a real signal yet.
-That's fine and intended: the routing logic is fully unit-testable against a stubbed
-state; the real signal lands with the mic shift. Build + test the gate now; connect the
-wire later. The other three states (`idle`/`speaking`/`thinking`) DO have real signals
-today and should be wired for real.
-
-**What Phase 1 delivers (acceptance):** `trigger.kind:'self'` handled end-to-end; a
-test-poke injects a thought from the current perception summary; `idle` → runs,
-`thinking`/user-turn → user wins, `speaking` → defers, `listening` (stubbed) → defers;
-all unit-tested in `autonomous.test.ts`; no live mic/LLM needed for the tests.
-
-**Anchors for the LATER phases (grounding/tools/memory) — reuse existing perception code:**
-- Grounding + `force_get_current` reuse `modules/perception/`: `summarize()`
-  (`summarizer.ts`), the flush + summarize already wired at the `POST /snapshots/flush`
-  and `/snapshots/summarize` routes (`index.ts`), and `inWindowWithState`/`stateAt`
-  (`snapshots.ts`) for windowed/state recall. `force_get_current` ≈ flush-then-summarize
-  the live window, exposed as a brain tool.
-- The brain reaches perception today via the **`FaceToolsApi` facade** (`getFaceTools()`
-  in `perception/index.ts`, consumed in `brain/tools.ts`); the new memory tools follow
-  the **same facade pattern** — a `MemoryApi` exposed from the perception module, consumed
-  as brain tools. Don't let the brain import the store directly (keep the facade).
-- New brain tools go in `modules/brain/tools.ts` (`tool(name, DESC, schema, fn)`); schemas
-  in `modules/brain/schemas.ts`. The existing `*_face` tools are the worked example.
-- Memory store: `core/db.ts` is the shared sqlite layer (backs config/cost) — the memory
-  tables live there, owned by the perception module.
 
 ## Open questions (for the follow-up)
 - `recall_memory` exact `type` taxonomy + `time_interval` grammar + `query` semantics.
