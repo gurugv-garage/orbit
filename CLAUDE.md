@@ -126,3 +126,7 @@ the media tap; the SFU + Live Wall are the first piece of it.
   harness code was deleted in the server-brain cutover; results + cases stay.)
 - node-rover's `ext/` (linorobot2 etc.) are vendored third-party clones,
   gitignored — re-clone rather than track.
+- **Docs TOCs are auto-generated** — long docs (over ~150 lines) carry a
+  `<!-- TOC -->…<!-- /TOC -->` block built by `node docs/bin/gen-toc.mjs` (zero-dep).
+  Don't hand-edit the block; after changing headings, re-run the script (or
+  `--check` to detect a stale TOC). Anchors match GitHub's slug algorithm.
