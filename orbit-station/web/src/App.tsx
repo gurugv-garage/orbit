@@ -13,6 +13,7 @@ import { Bench } from './modules/Bench';
 import { Ota } from './modules/Ota';
 import { LiveStream } from './modules/LiveStream';
 import { Perception } from './modules/Perception';
+import { Memory } from './modules/Memory';
 import { Cost } from './modules/Cost';
 
 interface ViewDef { id: string; label: string; ico: string; el: React.ReactNode; }
@@ -28,6 +29,7 @@ const VIEWS: ViewDef[] = [
   { id: 'bodylink', label: 'Body', ico: '🦾', el: <BodyLink /> },
   { id: 'live', label: 'Live', ico: '📹', el: <LiveStream /> },
   { id: 'perception', label: 'Perception', ico: '🧠', el: <Perception /> },
+  { id: 'memory', label: 'Memory', ico: '🗃', el: <Memory /> },
   { id: 'ota', label: 'Updates', ico: '⬆', el: <Ota /> },
   { id: 'bench', label: 'Benchmarks', ico: '📊', el: <Bench /> },
 ];
