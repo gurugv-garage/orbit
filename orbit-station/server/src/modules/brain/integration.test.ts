@@ -179,3 +179,84 @@ test('E2E addressed (A1.2): a tapped final transcript becomes a user turn; an un
   for (let i = 0; i < 10; i++) await tick();
   assert.deepEqual(seenTurns, ['what time is it'], 'one tap → one turn; next sentence overheard');
 });
+
+/**
+ * A reusable barge-in harness. The first turn's stream stays open for `firstMs`
+ * (the dock "mid-reply"); later turns complete instantly. Returns helpers to drive
+ * addressed turns and inspect which turn text the LLM actually started. The open
+ * stream ends on a short timer so an abort+unwind can complete (a real provider
+ * ends on the agent's abort; the timer is the test stand-in).
+ */
+function bargeHarness(firstMs = 200) {
+  const bus = new Bus();
+  const directory = new Directory(() => [phonePeer()], join(tmpdir(), `dir-${Math.random()}.json`));
+  const store = new SessionStore(mkdtempSync(join(tmpdir(), 'barge-e2e-')));
+  const motion = new MotionExecutor(bus, directory);
+  const started: string[] = [];
+  const cfg = { brainModel: 'openai-compatible/faux@http://test' } as Record<string, unknown>;
+  let nth = 0;
+  const deps: SessionDeps = {
+    bus, directory, rpc: new RpcBroker(bus, directory), motion, store,
+    getFaces: () => undefined,
+    config: (k) => cfg[k],
+    streamFn: ((_model: unknown, ctx: any) => {
+      const msgs = (ctx?.messages ?? []) as Array<{ role: string; content: any }>;
+      const lastUser = [...msgs].reverse().find((x) => x.role === 'user');
+      const t = Array.isArray(lastUser?.content) ? lastUser!.content.map((c: any) => c.text ?? '').join('') : '';
+      started.push(t);
+      const s: AssistantMessageEventStream = createAssistantMessageEventStream();
+      s.push({ type: 'start', partial: assistant('') });
+      const slow = nth++ === 0;
+      const finish = () => { s.push({ type: 'done', reason: 'stop', message: assistant('ok') }); s.end(); };
+      if (slow) setTimeout(finish, firstMs); else finish();
+      return s;
+    }) as never,
+  };
+  const session = new DockBrainSession(DOCK, deps);
+  const addressed = (text: string) =>
+    session.handleTurnRequest({ turnId: `t-${Math.random()}`, trigger: { kind: 'user', text } });
+  return { session, addressed, started };
+}
+
+// VARIANT 1 — the canonical case: barge-in mid-reply supersedes.
+test('E2E barge-in (A1.4) v1: an addressed utterance mid-turn supersedes the running turn', async () => {
+  const { addressed, started } = bargeHarness(400);
+  void addressed('tell me a long story');
+  for (let i = 0; i < 20 && started.length === 0; i++) await tick();
+  assert.deepEqual(started, ['tell me a long story'], 'first turn started');
+  void addressed('stop, what time is it');
+  for (let i = 0; i < 60 && started.length < 2; i++) await tick();
+  assert.equal(started.length, 2, 'the barge-in turn started');
+  assert.equal(started[1], 'stop, what time is it', 'barge-in text drove the new turn');
+});
+
+// VARIANT 2 — the barge-in WINS: its text is what ultimately runs to completion.
+test('E2E barge-in (A1.4) v2: the barge-in turn is the one that completes', async () => {
+  const { session, addressed, started } = bargeHarness(400);
+  void addressed('first long thing');
+  for (let i = 0; i < 20 && started.length === 0; i++) await tick();
+  await session.handleTurnRequest({ turnId: 'barge', trigger: { kind: 'user', text: 'actually never mind, hi' } });
+  for (let i = 0; i < 30; i++) await tick();
+  assert.equal(started.at(-1), 'actually never mind, hi', 'the last started turn is the barge-in');
+  assert.ok(started.length >= 2, 'at least the original + barge-in started');
+});
+
+// VARIANT 3 — double barge-in: a second interrupt supersedes the first interrupt.
+test('E2E barge-in (A1.4) v3: a second barge-in supersedes the first barge-in', async () => {
+  const { addressed, started } = bargeHarness(400);
+  void addressed('story one');
+  for (let i = 0; i < 20 && started.length === 0; i++) await tick();
+  void addressed('wait, question A');
+  for (let i = 0; i < 20 && started.length < 2; i++) await tick();
+  void addressed('no, question B');
+  for (let i = 0; i < 60 && started.at(-1) !== 'no, question B'; i++) await tick();
+  assert.equal(started.at(-1), 'no, question B', 'the final barge-in is what runs');
+});
+
+// VARIANT 4 — no barge-in: a single turn with no interrupt completes normally.
+test('E2E barge-in (A1.4) v4: a lone turn (no interrupt) completes without supersede', async () => {
+  const { addressed, started } = bargeHarness(50);
+  await addressed('just one question');
+  for (let i = 0; i < 30; i++) await tick();
+  assert.deepEqual(started, ['just one question'], 'exactly one turn started, no spurious supersede');
+});

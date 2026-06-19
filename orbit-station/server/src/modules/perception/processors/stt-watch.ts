@@ -27,6 +27,10 @@ import type { StreamContext, StreamProcessor } from '../processor.js';
 import { makeSnapshot, type SnapshotStore } from '../snapshots.js';
 
 const SIDECAR_URL = process.env.PERCEPTION_SIDECAR_URL ?? 'http://127.0.0.1:8078';
+/** A1.4: the echo-gate (drop audio while the dock speaks) is OFF by default — the
+ *  A1 AEC fix cancels the dock's own voice, and the gate would block voice
+ *  barge-in. Set STT_ECHO_GATE=1 to re-enable on a device with weak AEC. */
+const ECHO_GATE = process.env.STT_ECHO_GATE === '1';
 const OPUS_RATE = 48_000; // WebRTC Opus is 48 kHz
 const SAMPLE_RATE = 16_000; // whisper wants 16 kHz
 const FRAME_MS = 30;
@@ -336,11 +340,13 @@ export function sttWatchProcessor(
     onRtp(streamId: string, _kind: MediaKind, rtp: RtpPacket) {
       const st = streams.get(streamId);
       if (!st) return;
-      // Echo-gate (2c.1 Tier 2): while the dock's own TTS plays, DROP audio so we
-      // don't transcribe ourselves (the self-transcribe feedback loop). On the
-      // edge into speaking, discard any in-progress utterance so a half-captured
-      // user tail / TTS onset can't commit.
-      if (isSpeaking?.(st.ctx.dockId)) {
+      // Echo-gate (2c.1 Tier 2): drop audio while the dock's own TTS plays so we
+      // don't transcribe ourselves. NOW DEFAULT-OFF: the A1 AEC fix (TTS rendered
+      // through WebRTC → software AEC) cancels the dock's voice at the source, so
+      // this mute is redundant AND blocks voice barge-in (A1.4) — it deafens the
+      // station exactly when the user might talk over the dock. Kept behind a flag
+      // (STT_ECHO_GATE=1) as a one-line fallback for a device whose AEC is weaker.
+      if (ECHO_GATE && isSpeaking?.(st.ctx.dockId)) {
         if (!st.muted) { st.detector.reset(); st.muted = true; }
         return;
       }
