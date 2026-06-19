@@ -2,7 +2,7 @@
  * Observability types — a faithful TS mirror of agent-core's vocabulary so any
  * agent-core host (the dock app today) can ship its loop events here verbatim.
  *
- * Source of truth: docs/agent-model.md (at the repo root)
+ * Source of truth: docs/brain.md (at the repo root)
  *   Session ⊃ Turns ⊃ Steps ⊃ (one LLM call each)
  *   AgentEvent: node-dock/app/agent-core/.../agent/Types.kt
  *
@@ -109,7 +109,7 @@ export interface StepRecord {
 export interface SpeechWindow { startedAt: number; endedAt?: number }
 
 /**
- * What started a turn. A turn is trigger-agnostic (agent-model.md): today the
+ * What started a turn. A turn is trigger-agnostic (brain.md): today the
  * only `kind` is "user" (speaks/types), `text` = the utterance. Future kinds —
  * "heartbeat", "schedule", "node" (another orbit node), etc. — set a different
  * kind and carry their own payload in `text`. The UI badges on `kind`.
@@ -128,7 +128,7 @@ export interface TurnRecord {
   /** when the TTS tail finished after endedAt — the real end of the UX turn. */
   settledAt?: number;
   steps: StepRecord[];
-  /** llm calls = steps that emitted tool calls + 1 (per agent-model.md). */
+  /** llm calls = steps that emitted tool calls + 1 (per brain.md). */
   llmCalls: number;
 }
 

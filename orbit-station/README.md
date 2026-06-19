@@ -30,7 +30,7 @@ orbit-station/
 
 | Module | Topic | What |
 |---|---|---|
-| **observability** | `obs` | Ingests agent-core's `AgentEvent` stream (Session ⊃ Turn ⊃ Step ⊃ LLM-call), reconstructs the tree, streams it live. Vocabulary mirrors `docs/agent-model.md`. |
+| **observability** | `obs` | Ingests agent-core's `AgentEvent` stream (Session ⊃ Turn ⊃ Step ⊃ LLM-call), reconstructs the tree, streams it live. Vocabulary mirrors `docs/brain.md`. |
 | **config** | `config` | Central config: in-code defaults + runtime overrides, **pushed on change** over WS to the ESP32 + dock app (no polling). Scopes: `station` / `dock` / `body`. |
 | **bodylink** | `bodylink` | Direct body-control console, bypassing the dock app. Speaks the BodyLink `set_target` protocol (`node-dock/bodylink/DESIGN.md`); profile-driven sliders, live reported state. |
 | **media** | `media` | In-process WebRTC **SFU** + a **processing tap** (in-process or sidecar). `docs/media-processing.md`. |

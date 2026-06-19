@@ -1,9 +1,9 @@
-# The agent model — vocabulary, loop & architecture
+# The brain — the dock's agent: vocabulary, loop & architecture
 
-The **canonical** definition of the dock brain: the vocabulary its loop uses, the
-loop itself, and where it runs today. Other parts of the project **adopt these
-terms** rather than inventing their own — so "turn" and "step" mean the same thing
-everywhere.
+The **canonical** definition of the dock brain (the user-facing LLM agent, the
+`modules/brain/` module): the vocabulary its loop uses, the loop itself, and where it
+runs today. Other parts of the project **adopt these terms** rather than inventing
+their own — so "turn" and "step" mean the same thing everywhere.
 
 The brain is the upstream TypeScript **[pi](https://github.com/earendil-works/pi)**
 agent runtime — a dependency-free LLM tool-calling loop — embedded in orbit-station

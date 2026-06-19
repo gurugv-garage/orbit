@@ -1,4 +1,4 @@
-> **DECISION TRACE (historical).** Current canonical agent doc: [../agent-model.md](../agent-model.md).
+> **DECISION TRACE (historical).** Current canonical agent doc: [../brain.md](../brain.md).
 > Original design + risk analysis for moving the brain off the phone — kept for the reasoning.
 
 # Server-side brain — moving the dock's agent loop to orbit-station

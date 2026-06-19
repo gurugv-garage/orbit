@@ -8,7 +8,7 @@
 > where they appear: **`plat` is now `orbit-station`** (the central service); and
 > the **agent loop runs server-side** with the perception stack built on the media
 > tap, not the original LiveKit/Whisper/Piper plan. Current state:
-> [agent-model.md](agent-model.md) (the brain), [media-processing.md](media-processing.md)
+> [brain.md](brain.md) (the brain), [media-processing.md](media-processing.md)
 > + [perception-pipeline.md](perception-pipeline.md) (senses),
 > [perception-to-brain.md](perception-to-brain.md) (the bridge), [TODO.md](TODO.md)
 > (what's actually done).

@@ -1,4 +1,4 @@
-> **DECISION TRACE (historical).** Current canonical agent doc: [../agent-model.md](../agent-model.md).
+> **DECISION TRACE (historical).** Current canonical agent doc: [../brain.md](../brain.md).
 > pi-native extension surface (Skills, coding tools) — kept for detail.
 
 # Server brain — extension capabilities (pi-native)

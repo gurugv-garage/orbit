@@ -82,7 +82,7 @@ Connect to the station WS (e.g. `ws://10.0.2.2:8099/ws` from the emulator,
 ```
 `payload` is an **`AgentEventDto`** — a direct serialization of agent-core's
 `AgentEvent` (see [`server/src/modules/observability/types.ts`](server/src/modules/observability/types.ts)
-and `docs/agent-model.md`). Emit the full sequence:
+and `docs/brain.md`). Emit the full sequence:
 `TurnStart → StepStart → (MessageEnd, ToolExecutionStart/End)* → StepEnd → … → TurnEnd`.
 Put model/usage on `StepEnd.data`, the spoken text on `MessageEnd.data.text`,
 tool name/args on `ToolExecutionStart.data`.

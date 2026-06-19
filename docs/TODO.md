@@ -180,7 +180,7 @@ Legend: `[x]` done · `[~]` in progress · `[ ]` not started · `[?]` open quest
 > **Architecture has moved on from §3.1-3.4 below.** Those checkboxes describe the
 > ORIGINAL `plat` media plan (LiveKit + faster-whisper + Piper + MediaPipe +
 > MoonDream, a separate Python pipeline). What was actually built is different and
-> lives in its own docs: the **server brain** ([agent-model.md](agent-model.md))
+> lives in its own docs: the **server brain** ([brain.md](brain.md))
 > moved the LLM loop onto the station; the **media SFU + tap**
 > ([media-processing.md](media-processing.md)) and the **perception pipeline**
 > ([perception-pipeline.md](perception-pipeline.md): in-process WebRTC SFU, MLX
@@ -230,7 +230,7 @@ Legend: `[x]` done · `[~]` in progress · `[ ]` not started · `[?]` open quest
 
 ### 3.3 LLM orchestration — ▸ BUILT as the server brain
 > The dock's LLM loop runs in `orbit-station/modules/brain/` (embedded TS pi); see
-> [agent-model.md](agent-model.md). Model is config (`brainModel`, default
+> [brain.md](brain.md). Model is config (`brainModel`, default
 > gemini-2.5-flash; any provider). Tools, per-dock sessions, autonomous/`self` turns,
 > grounding, memory, and the proactive gate are all wired
 > ([perception-to-brain.md](perception-to-brain.md)). Rover task tools (navigate/grab)

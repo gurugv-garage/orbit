@@ -48,7 +48,7 @@ link (`StationLink`) and the brain facade (`RemoteBrain`). No LLM transport,
 no API keys: model + persona + provider keys are station config
 (`orbit-station/.env` + the config console). The server-brain cutover deleted
 the old `:agent-core` (vendored pi-kt; its Session/Turn/Step vocabulary doc
-moved to [docs/agent-model.md](docs/agent-model.md)) and the `:bench` harness
+moved to [docs/brain.md](docs/brain.md)) and the `:bench` harness
 code (`bench/cases` + committed `bench/results/` snapshots remain as the
 benchmark record; a TS re-run harness against `modules/brain/` is future
 work). Debug builds register `DebugTestReceiver` — drive turns over adb:
@@ -86,7 +86,7 @@ as separate OS processes that connect back over the WS `tasks` topic, see
 [docs/tasks.md](docs/tasks.md)), docks (registry — groups peers by dock name,
 capability routing via `resolveCap`; `GET /api/docks`), observability
 (Session/Turn/Step trace ingest — vocabulary in
-[docs/agent-model.md](docs/agent-model.md)), config (defaults +
+[docs/brain.md](docs/brain.md)), config (defaults +
 push-on-change to firmware/app; `brain*` keys = the dock's brain profile),
 bodylink (the motion executor — the ONLY body command path — + console),
 bench (the dock-LLM results viewer), ota (over-the-air

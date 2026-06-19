@@ -836,7 +836,7 @@ export class DockBrainSession {
 
   /** Translate pi loop events → speak frames + status + obs DTOs. NOTE the
    *  vocabulary shift: current upstream pi calls one LLM call+tools a "turn"
-   *  and the whole prompt() run "agent_*" — our obs model (agent-model.md)
+   *  and the whole prompt() run "agent_*" — our obs model (brain.md)
    *  calls those Step and Turn; mapped here. */
   #onAgentEvent(event: AgentEvent): void {
     switch (event.type) {

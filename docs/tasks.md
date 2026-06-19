@@ -6,7 +6,7 @@ A **task** is a long-running background job the dock brain authors, runs, and
 supervises — *"remind me every 5 minutes to drink water"*, *"tell me in 10 minutes
 to take a bath"*. Each running task is its **own OS process** that connects back to
 the station over the existing WebSocket; all parent↔task communication is messages
-on one topic. Companion to [agent-model.md](agent-model.md) (the brain's turn
+on one topic. Companion to [brain.md](brain.md) (the brain's turn
 lifecycle + WS hub; Skills — tasks reuse its progressive-disclosure + authoring
 pattern). Why the design is process-per-task and not the original in-process
 framework: [decision-traces/tasks-design-history.md](decision-traces/tasks-design-history.md).

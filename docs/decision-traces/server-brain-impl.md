@@ -1,4 +1,4 @@
-> **DECISION TRACE (historical).** Current canonical agent doc: [../agent-model.md](../agent-model.md).
+> **DECISION TRACE (historical).** Current canonical agent doc: [../brain.md](../brain.md).
 > The full as-built cutover record (stages, wire protocol, reconnection) — kept for detail.
 
 # Server brain — production implementation plan
