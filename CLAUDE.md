@@ -12,7 +12,7 @@ root; all paths in these docs are relative to it.
 | `docs/` | PLAN.md (architecture + decision log), TODO.md (progress) — **read these first** | living |
 | `node-dock/` | Stationary desk companion: an Android phone (face UI + camera/mic perception + TTS) and an ESP32 servo body. **The LLM brain and body control live in orbit-station** (server brain — [docs/decision-traces/server-brain-impl.md](docs/decision-traces/server-brain-impl.md)); the phone and ESP32 are both station WS clients and never talk to each other | **active** |
 | `node-rover/` | Mobile floor robot, linorobot2-based, ROS2. Sim works through nav; hardware/manipulation next | sim done |
-| `orbit-station/` | Central **brain + control plane**: Node/TS, one WebSocket for all firmware/apps, browser UI. Modules: **brain** (per-dock pi agent sessions — the dock's LLM loop), docks (registry + capability routing), observability (Session/Turn/Step traces), config push, bodylink (motion executor + console), mind (stub), bench viewer, ota (self-update for body + app — [docs/ota.md](docs/ota.md)). (Renamed from `plat`; the WebRTC/STT/TTS **media brain** from PLAN.md §5 is a separate later sidecar, not this.) | **active** |
+| `orbit-station/` | Central **brain + control plane**: Node/TS, one WebSocket for all firmware/apps, browser UI. Modules: **brain** (per-dock pi agent sessions — the dock's LLM loop), docks (registry + capability routing), observability (Session/Turn/Step traces), config push, bodylink (motion executor + console), bench viewer, ota (self-update for body + app — [docs/ota.md](docs/ota.md)). (Renamed from `plat`; the WebRTC/STT/TTS **media brain** from PLAN.md §5 is a separate later sidecar, not this.) | **active** |
 
 ## node-dock (the part under active development)
 
@@ -89,7 +89,7 @@ capability routing via `resolveCap`; `GET /api/docks`), observability
 [docs/agent-model.md](docs/agent-model.md)), config (defaults +
 push-on-change to firmware/app; `brain*` keys = the dock's brain profile),
 bodylink (the motion executor — the ONLY body command path — + console),
-mind (stub), bench (the dock-LLM results viewer), ota (over-the-air
+bench (the dock-LLM results viewer), ota (over-the-air
 self-update for the ESP32 body + Android app — [docs/ota.md](docs/ota.md);
 targets hello-v2 `kind`), media (in-process
 WebRTC **SFU** — the dock streams live A/V here and the console's "Live Wall"

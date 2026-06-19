@@ -18,7 +18,7 @@ together. Space-themed, dark, responsive browser UI.
 orbit-station/
   server/        Node/TS backend — raw-WS hub + bus + modules + REST
     src/core/      protocol, bus, hub (ws), http, module contract
-    src/modules/   observability, config, bodylink, mind, bench, station
+    src/modules/   observability, config, bodylink, bench, station
     src/dev/       smoke-client.ts — manual end-to-end poke (not part of runtime)
   web/           React + Vite + TS browser UI (space theme)
     src/lib/       station WS client + protocol mirror + hooks
@@ -33,7 +33,6 @@ orbit-station/
 | **observability** | `obs` | Ingests agent-core's `AgentEvent` stream (Session ⊃ Turn ⊃ Step ⊃ LLM-call), reconstructs the tree, streams it live. Vocabulary mirrors `docs/agent-model.md`. |
 | **config** | `config` | Central config: in-code defaults + runtime overrides, **pushed on change** over WS to the ESP32 + dock app (no polling). Scopes: `station` / `dock` / `body`. |
 | **bodylink** | `bodylink` | Direct body-control console, bypassing the dock app. Speaks the BodyLink `set_target` protocol (`node-dock/bodylink/DESIGN.md`); profile-driven sliders, live reported state. |
-| **mind** | `mind` | **Stub.** Watches the whole bus; takes no action yet. Will become the awareness/trigger layer. |
 | **media** | `media` | In-process WebRTC **SFU** + a **processing tap** (in-process or sidecar). `docs/media-processing.md`. |
 | **perception** | `perception` | On-device understanding on the media tap: five shared-format snapshot streams (👁 vision/🎙 speech/👤 identity/😮 emotion/🤖 bodymotion) → Gemini summarizer; the **Perception Studio** console (`/#perception`) is the playground. `../docs/perception-pipeline.md`. |
 | **bench** | — | Serves the dock-LLM benchmark snapshots; the viewer is embedded in the UI. |

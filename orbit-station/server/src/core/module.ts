@@ -2,8 +2,8 @@
  * Module contract. orbit-station is a registry of modules; each owns a topic,
  * optionally some HTTP routes (REST/ingest), and reacts to the bus.
  *
- * A module is independent unless it explicitly subscribes to another's topic.
- * `mind` is the one designed to subscribe broadly.
+ * A module is independent unless it explicitly subscribes to another's topic
+ * (some — e.g. observability — subscribe broadly).
  */
 
 import type { IncomingMessage, ServerResponse } from 'node:http';

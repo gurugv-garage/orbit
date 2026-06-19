@@ -13,7 +13,7 @@
  *
  * Live: every ingested event is re-published on the bus (topic 'obs', kind
  * 'event') so the browser UI's WS subscription streams it in real time, and so
- * `mind` can watch the agent stream.
+ * observability re-publishes the agent stream for the live UI.
  */
 
 import type { Bus } from '../../core/bus.js';
@@ -29,7 +29,7 @@ export function observabilityModule(): StationModule {
 
   function ingest(ev: AgentEventDto, source: string): void {
     store.ingest(ev, source);
-    // re-publish for live UI + mind. MUST be source 'station' so our own bus
+    // re-publish for live UI. MUST be source 'station' so our own bus
     // handler (below) skips re-ingesting it — otherwise every HTTP event lands
     // in the store twice (the original ingest above + this echo). WS-arrived
     // events are already published by the hub, so they only need this for HTTP.

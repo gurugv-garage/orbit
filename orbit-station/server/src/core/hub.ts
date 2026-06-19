@@ -1,6 +1,6 @@
 /**
  * The single WebSocket hub. Bridges sockets to the bus:
- *   - inbound `publish` frames  → bus.publish (so modules + mind react)
+ *   - inbound `publish` frames  → bus.publish (so modules react)
  *   - bus messages              → outbound `event` frames to topic subscribers
  *
  * Tracks each peer's identity (role, id, dock, component, kind, caps) and

@@ -173,7 +173,7 @@ Legend: `[x]` done · `[~]` in progress · `[ ]` not started · `[?]` open quest
 > **Renamed `plat` → `orbit-station` + split (2026-06-02).** The **control
 > plane** is built (`orbit-station/`, Node/TS): one WebSocket, browser UI, and
 > modules — brain (the dock's server-side LLM loop), observability, config push,
-> bodylink, `mind` stub, bench viewer, ota, **media** (WebRTC SFU + processing
+> bodylink, bench viewer, ota, **media** (WebRTC SFU + processing
 > tap) and **perception** (the on-device understanding pipeline). See
 > `orbit-station/README.md` + `TESTING.md`.
 >
@@ -195,14 +195,12 @@ Legend: `[x]` done · `[~]` in progress · `[ ]` not started · `[?]` open quest
 - [x] Observability: agent-core Session/Turn/Step trace ingest + live stream
 - [x] Config: defaults + push-on-change to firmware/app over WS
 - [x] BodyLink console: direct body control (profile-driven), bypassing the app
-- [x] Mind: stub subscriber (no actions yet)
 - [x] Bench viewer folded in; browser UI (space-themed, responsive); verified in-browser
 - [x] Wire real producers: dock app (device) + ESP32 firmware dial the station
   over WS — both verified live (app reports build/heartbeat, ESP32 sends
   profile/state + obeys console commands)
 - [x] OTA module + Updates console tab (self-update for body + app, [ota.md](ota.md))
 - [x] Config: flat global keys + per-peer interest push + build-time bake
-- [ ] `mind` gains triggers (rules, then maybe LLM supervisor)
 - [ ] HTTPS in real deployment; auth on the WS for non-LAN
 
 ### 3.1 Audio pipeline — ▸ SUPERSEDED by the built perception/media stack

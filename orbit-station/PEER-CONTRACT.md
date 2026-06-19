@@ -161,5 +161,5 @@ That's the whole handshake.
 | `event {topic,kind,payload,ts}` | station | fan-out to subscribers |
 | `error {message}` | station | bad frame |
 
-Topics: `obs` · `config` · `bodylink` · `mind` · `station`.
+Topics: `obs` · `config` · `bodylink` · `station`.
 Roles: `browser` · `app` · `firmware`.

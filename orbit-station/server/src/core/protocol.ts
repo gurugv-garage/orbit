@@ -37,7 +37,6 @@ export type Topic =
   | 'obs'          // observability: agent Session/Turn/Step/event stream
   | 'config'       // config push: defaults + live changes
   | 'bodylink'     // body command path: set_target in, applied/state/digest out
-  | 'mind'         // mind module's awareness/announcements (stub for now)
   | 'station'      // station-level: peer presence, dock directory, health
   | 'ota'          // self-update: availability offers + progress/result (docs/ota.md)
   | 'media'        // WebRTC live A/V: SDP/ICE signaling for the in-process SFU

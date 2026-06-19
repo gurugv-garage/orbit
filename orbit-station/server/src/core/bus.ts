@@ -3,8 +3,7 @@
  *
  * Everything that happens — a peer publishing an agent event, a config change,
  * a body command, a peer connecting — becomes a bus message on a topic. The WS
- * hub bridges the bus to/from sockets; modules subscribe to react. `mind` will
- * eventually be just another subscriber here.
+ * hub bridges the bus to/from sockets; modules subscribe to react.
  */
 
 import type { ComponentAddr, Topic } from './protocol.js';

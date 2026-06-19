@@ -85,7 +85,6 @@ Verify in the UI:
 - **Observability** → turns appear live, each with steps, model badge, tool calls.
 - **BodyLink** → neck + foot controls render; moving a slider updates `cmd`, and
   `reported` tracks it (the fake body echoes).
-- **Mind** → activity feed scrolls bus traffic.
 
 `Ctrl-C` the smoke client → roster drops those peers within ~1s; the UI shows
 "No peers" / "No body connected" gracefully. **This is the disconnection test.**
@@ -171,6 +170,5 @@ GET   /api/observability/sessions[/:id]
 POST  /api/observability/events            (HTTP ingest alt to WS)
 GET   /api/config  ·  PATCH /api/config/:scope
 GET   /api/bodylink/profile · /state  ·  POST /api/bodylink/command
-GET   /api/mind/feed
 GET   /api/bench/results/:file · /images/:file
 ```

@@ -99,7 +99,7 @@ One new topic in `server/src/core/protocol.ts`:
 
 ```ts
 export type Topic =
-  | 'obs' | 'config' | 'bodylink' | 'mind' | 'station'
+  | 'obs' | 'config' | 'bodylink' | 'station'
   | 'ota';        // ← new: update availability + (optional) progress
 ```
 

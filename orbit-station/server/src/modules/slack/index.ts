@@ -8,7 +8,7 @@
  *
  * SCOPE (v1 — the REAL respond-in-session logic is still parked):
  *   - It keeps a rolling feed + publishes every classified event on the `slack`
- *     bus topic, so the console/mind can see Slack is flowing.
+ *     bus topic, so the console can see Slack is flowing.
  *   - Plain CHANNEL messages are recorded but otherwise IGNORED (we don't act,
  *     don't even wake the brain) — matches "hears any channel, processes none yet".
  *   - @MENTIONS and DMs get an immediate CANNED reply ("feature coming soon"),
@@ -58,7 +58,7 @@ export function slackModule(): StationModule {
     feed.push({ ts: Date.now(), kind: ev.kind, channel: ev.channel, user: ev.user, text: ev.text, forSession });
     if (feed.length > FEED_MAX) feed.shift();
 
-    // Surface on the bus so the console/mind can see Slack traffic. Directed at
+    // Surface on the bus so the console can see Slack traffic. Directed at
     // nobody — purely observational for now.
     bus.publish({
       topic: 'slack', kind: ev.kind,
