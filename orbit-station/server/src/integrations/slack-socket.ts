@@ -28,6 +28,14 @@ const API = 'https://slack.com/api';
 /** Slack requires an envelope ack within 3s; reconnect well before idle limits. */
 const RECONNECT_BASE_MS = 1_000;
 const RECONNECT_MAX_MS = 30_000;
+/**
+ * Slack kicks a redundant socket within ~1s of `open` (e.g. another live socket
+ * on the app, or a stale one it hasn't reaped). So a socket only counts as
+ * "healthy" — and only then resets the backoff — once it has survived this long.
+ * Resetting retry on `open` instead lets a too_many_websockets loop pin the
+ * delay at the 1s minimum forever.
+ */
+const STABLE_AFTER_MS = 10_000;
 
 export interface SlackEvent {
   /** what kind of human input this is. */
@@ -67,6 +75,7 @@ export class SlackSocket {
   #stopped = false;
   #retry = 0;
   #reconnectTimer?: ReturnType<typeof setTimeout>;
+  #stableTimer?: ReturnType<typeof setTimeout>;
   #connected = false;
 
   constructor(appToken: string, opts: SlackSocketOpts) {
@@ -84,6 +93,7 @@ export class SlackSocket {
   stop(): void {
     this.#stopped = true;
     if (this.#reconnectTimer) clearTimeout(this.#reconnectTimer);
+    if (this.#stableTimer) clearTimeout(this.#stableTimer);
     try { this.#ws?.close(); } catch { /* */ }
     this.#ws = undefined;
     this.#connected = false;
@@ -104,15 +114,21 @@ export class SlackSocket {
     this.#ws = ws;
 
     ws.on('open', () => {
-      this.#retry = 0;
       this.#connected = true;
       this.#opts.onStatus?.('connected');
       this.#log('socket mode connected');
+      // Only clear the backoff once this socket proves it survives — a redundant
+      // socket gets kicked within ~1s, so resetting on `open` would let a
+      // too_many_websockets loop reconnect at the 1s floor forever.
+      if (this.#stableTimer) clearTimeout(this.#stableTimer);
+      this.#stableTimer = setTimeout(() => { this.#retry = 0; }, STABLE_AFTER_MS);
+      this.#stableTimer.unref?.();
     });
     ws.on('message', (raw) => this.#onMessage(raw.toString()));
     ws.on('error', (e) => this.#log(`ws error: ${String(e)}`));
     ws.on('close', () => {
       this.#connected = false;
+      if (this.#stableTimer) clearTimeout(this.#stableTimer);
       this.#opts.onStatus?.('disconnected');
       if (!this.#stopped) this.#scheduleReconnect();
     });
