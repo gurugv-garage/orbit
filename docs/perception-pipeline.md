@@ -12,6 +12,30 @@
 Code: `orbit-station/server/src/modules/perception/`. Console (the playground):
 `http://localhost:8099/#perception`.
 
+### Code map — key files + entry points
+
+All paths under `orbit-station/server/src/modules/perception/`.
+
+| Piece | File | Entry point |
+|---|---|---|
+| **Module + wiring** (registers every processor, owns REST) | `index.ts` | `perceptionModule(getHub)` (~L217); processors registered in `init()` (~L256-262) |
+| **Shared envelope + ring store** | `snapshots.ts` | `makeSnapshot()`, `SnapshotStore`, `stateAt()` / `inWindowWithState()`, `STATE_KINDS` |
+| 👁 **Vision** | `processors/vision-snapshot.ts` | `visionSnapshotProcessor(store, getFrame)` → `:8080/temporal`; `captureNow()` for flush |
+| 🎙 **Speech** | `processors/stt-watch.ts` | `sttWatchProcessor(store)` → `:8078/transcribe`; VAD endpointing; `flushAll()` |
+| 👤 **Identity + 😮 emotion** | `processors/identity-snapshot.ts` + `face/recognizer.ts`, `face/gallery.ts` | `identitySnapshotProcessor(store, recognizeAll, cameraMotion)`; `describeExpression()` |
+| 🤖 **Bodymotion** | `processors/bodymotion-watch.ts` | `bodyMotionWatchProcessor(store)`; `pushCommand()`, `current()` |
+| 🧠 **Fusion** | `summarizer.ts` | `stitch()` + `summarize(records, opts)` → Gemini |
+| **The tap** (stream lifecycle → processors) | `hub.ts` | `ProcessingHub` (the SFU media tap; `mediaKinds:[]` lifecycle-only path) |
+| **Frame decode** (one ffmpeg/dock, shared) | `face/frame-grabber.ts` | `currentFrame(streamId)` — vision reads the face processor's grabber |
+| **Takes** (A/B replay) | `takes.ts` | `TakeStore` |
+| **Sidecars** (the 2 MLX apps) | `sidecars.ts` | `SidecarSupervisor`; `GET/POST /api/perception/sidecars[/:name/...]` |
+| **Console** | `web/src/modules/PerceptionStudio.tsx` | the `/#perception` playground |
+
+Key REST routes (all under `/api/perception`): `GET /snapshots`, `POST /snapshots/flush`,
+`POST /snapshots/summarize`, `POST /bodymotion` (inject a mock motion command),
+`/takes/*`, `/gallery/*`, `GET /sidecars`. The Python sidecar lives at
+`models/perception-sidecar/sidecar.py` (run/test: [operations/perception-runbook.md](operations/perception-runbook.md)).
+
 ---
 
 ## 1. The shape: one stream in, four parallel "snapshot" streams out
@@ -67,6 +91,9 @@ span-collapsing). Graceful default + opt-in richness, not rigidity. (bodymotion,
 
 ## 2. 👁 Vision — Qwen2.5-VL-3B (MLX 4-bit), latency-bound windows
 
+> Code: `processors/vision-snapshot.ts` (`WINDOW_FRAMES=5`, `FRAME_GAP_MS=700`,
+> `TEMPORAL_URL :8080`); sidecar `models/perception-sidecar/sidecar.py`.
+
 **What:** a Python/MLX **sidecar** (`models/perception-sidecar`, `/temporal` on
 :8080) loads Qwen2.5-VL-3B once and answers `{frames, prompt} → description`. The
 TS processor samples **5 frames at ~700 ms** apart, posts them, commits the result,
@@ -101,6 +128,9 @@ to be skeptical, and why **resolution is pinned at 512**.
 
 ## 3. 🎙 Speech — Whisper small.en (MLX), VAD-endpointed
 
+> Code: `processors/stt-watch.ts` (`ENDPOINT_MS=1300`, `SIDECAR_URL :8078`,
+> `isLowConfidence()` on `LOGPROB_MIN`/`NOSPEECH_MAX`); same sidecar binary.
+
 **What:** the STT processor depacketizes WebRTC Opus → 16 kHz PCM in-process, runs
 a **voice-activity detector** over 30 ms frames, and on an utterance boundary
 (≥1.3 s trailing silence) sends the *whole utterance once* to the whisper sidecar
@@ -129,6 +159,9 @@ hard audio — hence `lowConfidence` tagging rather than trusting every word.
 ---
 
 ## 4. 👤 Identity — face-api (TF.js), enroll-then-match, debounced
+
+> Code: `processors/identity-snapshot.ts` (`CONFIRM=2`/`DROP=2` hysteresis) +
+> `face/recognizer.ts` (`detectAllFaces`) + `face/gallery.ts` (the enrolled gallery).
 
 **What:** face-api (`@vladmandic/face-api`) runs **in-process** (no sidecar — it's
 TF.js, ~tens of ms) on ~1 fps decoded frames. **`detectAllFaces`** → for *every*
@@ -160,6 +193,9 @@ quality gap, not a structural one.
 
 ## 5. 😮 Emotion — face-api expression, **hedged** (descriptive, not forced)
 
+> Code: `processors/identity-snapshot.ts` → `describeExpression()`
+> (`EMOTION_MIN=0.45`, `EMOTION_MARGIN=0.25`, `EMOTION_STRONG=0.7`) — rides the §4 pass.
+
 **What:** the expression net is part of face-api's **same single pass** as
 detection/landmarks/recognition (it reuses the aligned face crop — ~330 KB net,
 near-zero extra cost; there is **no** separate "identify then emote" round-trip).
@@ -186,6 +222,9 @@ together.
 ---
 
 ## 5b. 🤖 Body-motion — egocentric awareness (the camera moves)
+
+> Code: `processors/bodymotion-watch.ts` (`pushCommand()`, `current()`,
+> `SETTLE_TAIL_MS=600`); inject via `POST /api/perception/bodymotion`.
 
 **The problem:** every other stream silently assumes a **fixed** camera — "if the
 view changed, the world changed." But the camera sits on a **robot** that pans,
@@ -279,6 +318,9 @@ affected.
 ---
 
 ## 6. Fusion — Gemini summarizer (gemini-2.5-flash), on demand
+
+> Code: `summarizer.ts` (`stitch()` builds the transcript, `summarize()` calls Gemini);
+> invoked from the `POST /snapshots/summarize` route in `index.ts`.
 
 **What:** on a Summarize request, the server **stitches** the window's records into
 one chronological, role-tagged transcript (collapsing identity flicker into spans,
