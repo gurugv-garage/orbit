@@ -7,7 +7,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
-import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.launchIn
 import kotlinx.coroutines.flow.onEach
@@ -15,35 +14,42 @@ import kotlinx.coroutines.launch
 import timber.log.Timber
 
 /**
- * Wires the perception layer end-to-end:
+ * Wires the on-device perception layer:
  *   - [MicCapture] → [SileroVad] (VAD events) + [PorcupineWakeWord] (wake events)
- *   - Wake event → [SttEngine.start()] (one utterance, auto-stops on end-of-speech)
+ *   - mic RMS levels for the UI meter
  *   - All events fan out via [PerceptionBus]
  *
  * The pipeline owns its own scope; `stop()` cancels everything cleanly.
  *
- * v1 hysteresis:
- *   - VAD `active=true` after 3 consecutive frames with p > 0.5
- *   - VAD `active=false` after 10 frames < 0.35 (~320 ms hangover)
+ * **A1 — the always-on-mic shift (docs/perception-to-brain.md).** The on-device
+ * Android SpeechRecognizer is GONE. STT now runs SERVER-SIDE: the dock publishes
+ * its AEC'd mic over WebRTC ([MediaStreamer]) and orbit-station's `stt-watch`
+ * processor does VAD-endpointed transcription. The mic is therefore captured
+ * CONTINUOUSLY here — the WebRTC ADM is never released mid-session (it used to be,
+ * to hand the mic to SpeechRecognizer; that time-share is what made the streamed
+ * audio glitch). One capture (the shared ADM) feeds BOTH this local pipeline
+ * (VAD/wake/levels) AND the published audio track — no second mic session.
  *
- * STT activation:
- *   - On wake-word event: start STT (free-form utterance)
- *   - STT auto-finalizes on end-of-speech and emits Transcript(final=true)
- *   - Concurrent wake events while listening are ignored
+ * **Tap is now the "addressed" signal, not "mic-on".** A tap still emits
+ * [PerceptionEvent.WakeWord], but it no longer starts a recognizer — the mic is
+ * always listening. Whoever consumes the tap (A1.2: a station turn-request) treats
+ * it as "this speech is directed AT the agent." Until A1.2 lands, the tap drives
+ * only the local face/UI affordances.
+ *
+ * v1 VAD hysteresis:
+ *   - VAD `active=true` after 3 consecutive frames with p > 0.05
+ *   - VAD `active=false` after 10 frames < 0.02 (~320 ms hangover)
  */
 class PerceptionPipeline(private val appContext: Context) {
 
     private var scope: CoroutineScope? = null
     private var job: Job? = null
-    private var stt: SttEngine? = null
 
     // VAD hysteresis state
     private var vadActive = false
     private var aboveCount = 0
     private var belowCount = 0
     private var frameIndex = 0
-
-    @Volatile private var sttBusy = false
 
     // True while the dock is speaking (TTS). When the (echo-cancelled) VAD goes
     // active during this window, the user is talking over the dock → barge-in.
@@ -55,32 +61,9 @@ class PerceptionPipeline(private val appContext: Context) {
     // brief AEC residual spikes of the dock's own voice don't trip it.
     private var bargeAbove = 0
 
-    // When true, the echo gate is disabled so STT stays armed through TTS — used
-    // only by the AEC self-test to measure whether the dock transcribes itself.
-    private val aecTestMode: Boolean get() = AecTestMode.enabled
-
-    // ── Continuous listening session (TAP-ONLY) ───────────────────────────
-    // Tap starts a session; it keeps re-arming SpeechRecognizer (one-shot) so
-    // it stays listening forever. The session ends ONLY when:
-    //   - a transcript is produced (→ agent turn), or
-    //   - stopListening() is called (tap-to-stop / barge-in).
-    // While the dock is speaking (TTS), STT is paused (echo gate) and resumes
-    // when speech ends. No wake word, no VAD-wake, no timeout.
-    @Volatile private var listeningActive = false
-
-    // Set true when a final transcript is produced this session, so the
-    // trailing SR "final" status doesn't emit session_ended over the agent.
-    @Volatile private var gotTranscript = false
-
-    // Continuous-conversation decision machine: re-arm the mic once after the
-    // dock finishes speaking a voice-initiated turn. Pure + unit tested.
-    private val autoRelisten = AutoRelisten()
-
     fun start() {
-        // Guard on the SCOPE, not the mic job: unstick() replaces the mic job
-        // at runtime, so a stale `job` reference could read inactive while the
-        // pipeline is very much running — and a second start() would then
-        // double-run the whole pipeline (two mics, two bus subscriptions).
+        // Guard on the SCOPE: a second start() would double-run the whole pipeline
+        // (two mics, two bus subscriptions).
         if (scope != null) {
             Timber.w("PerceptionPipeline already running")
             return
@@ -91,7 +74,6 @@ class PerceptionPipeline(private val appContext: Context) {
 
         val vad = SileroVad.fromAssets(appContext)
         val wake = PorcupineWakeWord.jarvis(appContext, BuildConfig.PORCUPINE_ACCESS_KEY)
-        stt = AndroidSpeechRecognizerStt(appContext)
         PerceptionBus.emit(
             PerceptionEvent.Status(
                 source = "pipeline",
@@ -100,8 +82,7 @@ class PerceptionPipeline(private val appContext: Context) {
                     append(if (vad != null) "ok" else "off")
                     append(", wake=")
                     append(if (wake != null) "ok(${wake.label})" else "off (no Porcupine key)")
-                    append(", stt=")
-                    append(stt?.label ?: "off")
+                    append(", stt=server (always-on mic)")
                 },
             )
         )
@@ -109,10 +90,10 @@ class PerceptionPipeline(private val appContext: Context) {
         PerceptionReady.set(true)
 
         val mic = MicCapture(appContext)
-        // SpeechRecognizer needs exclusive access to the mic. Our continuous
-        // AudioRecord (here) blocks it on some devices. Pause our capture
-        // while STT is active, resume on Transcript/Error/Status(final).
-        fun launchMicJob(): Job = mic.frames()
+        // The mic flow runs for the LIFE of the pipeline — never cancelled for STT
+        // (there is no on-device STT anymore). This keeps the shared WebRTC ADM
+        // capturing continuously, so the published audio track never glitches.
+        val micJob: Job = mic.frames()
             .catch { t ->
                 Timber.e(t, "mic flow failure")
                 PerceptionBus.emit(PerceptionEvent.Error("mic", t))
@@ -125,142 +106,15 @@ class PerceptionPipeline(private val appContext: Context) {
             }
             .launchIn(s)
 
-        var micJob: Job = launchMicJob()
-
-        // Helper that *always* unsticks the pipeline: clears sttBusy,
-        // restarts MicCapture, and cancels any pending watchdog. Called
-        // from every STT termination event and from the watchdog itself.
-        var watchdog: Job? = null
-        fun unstick(reason: String) {
-            if (watchdog != null) {
-                watchdog?.cancel()
-                watchdog = null
-            }
-            val wasStuck = sttBusy || !micJob.isActive
-            sttBusy = false
-            if (!micJob.isActive) micJob = launchMicJob()
-            if (wasStuck) Timber.i("pipeline unstick: $reason")
-        }
-
-        // (Re)arm the STT hang-watchdog: if no Transcript/Error/Status(final)
-        // arrives within 15s, force a final so we don't get stuck.
-        fun armWatchdog() {
-            watchdog?.cancel()
-            watchdog = s.launch {
-                kotlinx.coroutines.delay(15_000)
-                try { stt?.stop() } catch (_: Throwable) {}
-                listeningActive = false
-                unstick("watchdog timeout (15s)")
-                PerceptionBus.emit(PerceptionEvent.Status(stt?.label ?: "stt", "final"))
-            }
-        }
-
-        // Emit a single "session_ended" signal so the UI returns the face to
-        // Idle exactly once when the whole listening session is over (NOT on
-        // per-shot SR no-matches during continuous listening).
-        fun emitSessionEnded() {
-            PerceptionBus.emit(PerceptionEvent.Status(stt?.label ?: "stt", "session_ended"))
-        }
-
-
-        // STT bus subscription — track busy state via Status/Error events,
-        // and pause/resume MicCapture to give STT exclusive mic access.
-        val sttJob = s.launch {
+        // Track TTS state (for barge-in detection below). No STT to pause/resume.
+        val speakingJob = s.launch {
             PerceptionBus.events.collect { event ->
-                when (event) {
-                    is PerceptionEvent.WakeWord -> {
-                        // Tap-to-start. One tap = one listening shot. When SR
-                        // ends (transcript / no-match / timeout) the session is
-                        // over and the UI drops to idle — the user re-taps to
-                        // listen again. No re-arm, no echo gate.
-                        listeningActive = true
-                        gotTranscript = false
-                        autoRelisten.onSessionStarted()
-
-                        // Release our mic before starting STT. cancelAndJoin()
-                        // waits for the WebRTC ADM to fully release (detaching the
-                        // hardware AEC effect) so SR gets a clean input path — not
-                        // the silenced mic that caused "no match". The delay lets
-                        // the input HAL settle after AEC teardown (heavier than a
-                        // plain AudioRecord release, so a bit longer).
-                        if (micJob.isActive) {
-                            micJob.cancelAndJoin()
-                            kotlinx.coroutines.delay(250)
-                        }
-                        startStt()
-                        armWatchdog()
+                if (event is PerceptionEvent.Speaking) {
+                    dockSpeaking = event.active
+                    if (event.active) {
+                        speakStartMs = System.currentTimeMillis()
+                        bargeAbove = 0
                     }
-                    is PerceptionEvent.Transcript -> if (event.isFinal) {
-                        // Got a real utterance → end the session; the agent
-                        // turn takes over from here. Mark it so the trailing
-                        // Status("final") does NOT emit session_ended (which
-                        // would yank the face to Idle while the agent is
-                        // driving it).
-                        gotTranscript = true
-                        listeningActive = false
-                        autoRelisten.onVoiceTranscript()
-                        unstick("transcript final")
-                    }
-                    is PerceptionEvent.Error -> if (event.source == stt?.label) {
-                        // SR ended empty (no-match / speech-timeout / audio).
-                        // One tap = one shot: do NOT re-arm. End the session so
-                        // the UI honestly drops to idle; the user re-taps to
-                        // listen again.
-                        listeningActive = false
-                        autoRelisten.onSessionEndedEmpty()
-                        unstick("stt error (session over)")
-                        emitSessionEnded()
-                    }
-                    is PerceptionEvent.Status -> if (event.message == "final" && event.source == stt?.label) {
-                        // SR finalized. If a transcript was produced, the agent
-                        // now owns the face — stay quiet. Otherwise the session
-                        // ended empty → drop the UI to idle.
-                        listeningActive = false
-                        if (gotTranscript) {
-                            gotTranscript = false
-                        } else {
-                            autoRelisten.onSessionEndedEmpty()
-                            unstick("stt final (session over)")
-                            emitSessionEnded()
-                        }
-                    }
-                    is PerceptionEvent.StopListening -> {
-                        // Tap-to-stop: end the session now. Cancel any pending
-                        // auto-relisten so we don't re-arm after a deliberate stop.
-                        listeningActive = false
-                        gotTranscript = false
-                        autoRelisten.onCancelled()
-                        try { stt?.stop() } catch (_: Throwable) {}
-                        unstick("tap-stop")
-                    }
-                    is PerceptionEvent.Speaking -> {
-                        dockSpeaking = event.active
-                        if (event.active) {
-                            speakStartMs = System.currentTimeMillis()
-                            bargeAbove = 0
-                        }
-                        // One-shot model: the listening session already ended
-                        // when the transcript came in, so there's nothing to
-                        // gate here. If the dock somehow starts speaking while
-                        // SR is still armed (e.g. a system reply), stop SR so
-                        // the mic doesn't transcribe the dock's own voice.
-                        // EXCEPT in AEC test mode: we deliberately keep STT armed
-                        // through TTS to measure whether AEC stops the dock from
-                        // hearing itself (the echo gate would otherwise mask it).
-                        if (event.active && listeningActive && !aecTestMode) {
-                            listeningActive = false
-                            try { stt?.stop() } catch (_: Throwable) {}
-                        }
-                        // Continuous conversation: when the dock finishes
-                        // speaking the reply to a voice-initiated turn, re-arm
-                        // the mic once so the user can keep talking hands-free.
-                        // Non-voice turns (no prior session) don't re-arm.
-                        if (autoRelisten.onSpeakingChanged(event.active)) {
-                            Timber.i("auto-relisten: re-arming mic after reply")
-                            PerceptionBus.emit(PerceptionEvent.WakeWord(label = "(auto-relisten)"))
-                        }
-                    }
-                    else -> {}
                 }
             }
         }
@@ -270,8 +124,6 @@ class PerceptionPipeline(private val appContext: Context) {
         parent.invokeOnCompletion {
             vad?.close()
             wake?.close()
-            stt?.close()
-            stt = null
             Timber.d("PerceptionPipeline scope completed")
         }
     }
@@ -287,34 +139,6 @@ class PerceptionPipeline(private val appContext: Context) {
         aboveCount = 0
         belowCount = 0
         frameIndex = 0
-        sttBusy = false
-        listeningActive = false
-        gotTranscript = false
-    }
-
-    /**
-     * Called from outside to force-start STT (e.g., tap-to-wake handler in UI).
-     */
-    fun startStt() {
-        if (sttBusy) {
-            Timber.d("STT already busy — ignoring start request")
-            return
-        }
-        sttBusy = true
-        stt?.start()
-    }
-
-    /**
-     * End an in-progress listening session immediately (tap-to-stop). Stops
-     * SpeechRecognizer and clears the session. The mic (VAD/wake) resumes via
-     * the normal Status(final) → unstick path, or the next tap.
-     */
-    fun stopListening() {
-        if (!listeningActive) return
-        Timber.i("stopListening (tap-stop)")
-        listeningActive = false
-        gotTranscript = false
-        try { stt?.stop() } catch (_: Throwable) {}
     }
 
     // ── private ──────────────────────────────────────────────────────────
