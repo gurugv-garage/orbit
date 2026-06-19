@@ -25,6 +25,7 @@ All paths under `orbit-station/server/src/modules/perception/`.
 | 👤 **Identity + 😮 emotion** | `processors/identity-snapshot.ts` + `face/recognizer.ts`, `face/gallery.ts` | `identitySnapshotProcessor(store, recognizeAll, cameraMotion)`; `describeExpression()` |
 | 🤖 **Bodymotion** | `processors/bodymotion-watch.ts` | `bodyMotionWatchProcessor(store)`; `pushCommand()`, `current()` |
 | 🧠 **Fusion** | `summarizer.ts` | `stitch()` + `summarize(records, opts)` → Gemini |
+| **Memory** (persistent per-dock store — outlives the ring) | `memory/store.ts` + `memory/embedder.ts` | `MemoryStore` (sqlite; recall/inspect/remember/update/forget); design in [perception-to-brain.md](perception-to-brain.md) Decision 4 |
 | **The tap** (stream lifecycle → processors) | `hub.ts` | `ProcessingHub` (the SFU media tap; `mediaKinds:[]` lifecycle-only path) |
 | **Frame decode** (one ffmpeg/dock, shared) | `face/frame-grabber.ts` | `currentFrame(streamId)` — vision reads the face processor's grabber |
 | **Takes** (A/B replay) | `takes.ts` | `TakeStore` |
@@ -49,6 +50,7 @@ Key REST routes (all under `/api/perception`): `GET /snapshots`, `POST /snapshot
   - [State vs event streams — and windowed look-back (a design note)](#state-vs-event-streams--and-windowed-look-back-a-design-note)
 - [6. Fusion — Gemini summarizer (gemini-2.5-flash), on demand](#6-fusion--gemini-summarizer-gemini-25-flash-on-demand)
 - [7. The console = the playground (where the tuning happens)](#7-the-console--the-playground-where-the-tuning-happens)
+- [7b. Persistent memory (beyond the ring)](#7b-persistent-memory-beyond-the-ring)
 - [8. The hard-won lessons (the radars)](#8-the-hard-won-lessons-the-radars)
 - [9. The pyramid — tiered escalation (the forward plan)](#9-the-pyramid--tiered-escalation-the-forward-plan)
 - [Component summary](#component-summary)
@@ -384,6 +386,29 @@ Not a benchmark yet — explicitly an **iterate-and-review** surface:
   model/keyframes. This is what makes "old vs new" comparisons real.
 - **Per-record provenance:** every row shows the **model used**, its **inference
   latency**, and **confidence** (and for speech, Whisper's lp/ns/cr metrics).
+
+---
+
+## 7b. Persistent memory (beyond the ring)
+
+The snapshot store (§1) is an **ephemeral ring** — "what's current," dropped after
+~1000 records. The module ALSO owns a **durable, per-dock memory store** that outlives
+the ring: `memory/store.ts` (sqlite via `core/db.ts`) + `memory/embedder.ts` (Gemini
+embeddings for semantic recall). It's what lets the dock remember *"Guru prefers tea"*
+across sessions, not just narrate the last minute.
+
+- **A memory** carries `type` (person/preference/event/summary/…), `subject` (who/what
+  it's about), a `claim`, `confidence`, and **lineage** (what it was derived from) —
+  evolved by **supersede**, not delete-in-place, so history is queryable.
+- **Two recall modes:** structured (filter by type/subject/time) and **semantic**
+  (in-process cosine over the dock's embedded memories — no vector DB at this scale).
+- The brain reaches it through a `MemoryApi` facade as tools (`recall_memory`,
+  `inspect_memory`, `remember`, `update_memory`, `forget_memory`).
+
+This lives in the perception module (it's derived from perception), but its **design +
+the agent-facing tool surface are documented with the brain integration**:
+[perception-to-brain.md](perception-to-brain.md) **Decision 4** (the keystone). Here it's
+flagged so the module's component inventory is complete; the full model lives there.
 
 ---
 
