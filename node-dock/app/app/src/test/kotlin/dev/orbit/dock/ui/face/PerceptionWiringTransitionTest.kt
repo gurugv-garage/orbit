@@ -6,6 +6,7 @@ import dev.orbit.dock.perception.PerceptionEvent
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
+import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.runTest
@@ -51,28 +52,27 @@ class PerceptionWiringTransitionTest {
         val (c, _) = fixture(testScheduler)
         assertThat(c.state.value).isEqualTo(FaceState.Idle)
 
-        // tap → STT arms
+        // tap → Listening ack (A1.2). advanceTimeBy inside the ack window, NOT
+        // advanceUntilIdle — the latter trips the ~8s no-speech timeout to Idle.
         PerceptionBus.emit(PerceptionEvent.WakeWord("(tap)"))
-        PerceptionBus.emit(PerceptionEvent.SttListening(armed = true))
-        advanceUntilIdle()
+        advanceTimeBy(100)
         assertThat(c.state.value).isEqualTo(FaceState.Listening)
 
-        // user finishes, transcript handed to agent; SR disarms (but NOT
-        // session_ended — the agent owns the face now)
-        PerceptionBus.emit(PerceptionEvent.SttListening(armed = false))
+        // server final transcript (the VAD sentence-end) clears Listening; the
+        // agent turn then drives the face. STT is server-side now — there's no
+        // local SttListening(armed=false); the final transcript is the signal.
         PerceptionBus.emit(PerceptionEvent.Transcript("hi", isFinal = true))
-        advanceUntilIdle()
-        // face must NOT have dropped to Idle just because SR disarmed
-        assertThat(c.state.value).isNotEqualTo(FaceState.Idle)
+        advanceTimeBy(100)
+        assertThat(c.state.value).isEqualTo(FaceState.Idle)
 
-        // dock speaks
+        // dock speaks (agent turn)
         c.speak()
-        advanceUntilIdle()
+        advanceTimeBy(100)
         assertThat(c.state.value).isEqualTo(FaceState.Speaking)
 
         // TTS finishes → silence → Idle
         c.silence()
-        advanceUntilIdle()
+        advanceTimeBy(100)
         assertThat(c.state.value).isEqualTo(FaceState.Idle)
     }
 
@@ -180,18 +180,19 @@ class PerceptionWiringTransitionTest {
     fun twoConsecutiveTurnsEachReachListeningThenSpeaking() = runTest {
         val (c, _) = fixture(testScheduler)
         repeat(2) {
+            // tap → Listening ack (A1.2; advanceTimeBy keeps us in the ack window).
             PerceptionBus.emit(PerceptionEvent.WakeWord("(turn)"))
-            PerceptionBus.emit(PerceptionEvent.SttListening(armed = true))
-            advanceUntilIdle()
+            advanceTimeBy(100)
             assertThat(c.state.value).isEqualTo(FaceState.Listening)
 
+            // server final transcript clears Listening; the agent turn speaks.
             PerceptionBus.emit(PerceptionEvent.Transcript("x", isFinal = true))
             c.speak()
-            advanceUntilIdle()
+            advanceTimeBy(100)
             assertThat(c.state.value).isEqualTo(FaceState.Speaking)
 
             c.silence()
-            advanceUntilIdle()
+            advanceTimeBy(100)
             assertThat(c.state.value).isEqualTo(FaceState.Idle)
         }
     }
