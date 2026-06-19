@@ -34,6 +34,7 @@ import { SidecarSupervisor } from './sidecars.js';
 import { MemoryStore, type MemoryRow, type MemoryType, type RecallFilter, type LineageEdge } from './memory/store.js';
 import { geminiEmbedder } from './memory/embedder.js';
 import { startGateWatcher, type RaisedThought } from './attention/gate-watcher.js';
+import { startAutoSummarizer } from './auto-summarizer.js';
 import { DEFAULT_GATE_CONFIG, type GateConfig, type GateOutcome } from './attention/gate.js';
 import { orbitDb } from '../../core/db.js';
 import { setVisionExtra, getVisionExtra, visionBase } from './vision-instruction.js';
@@ -321,6 +322,29 @@ export function perceptionModule(getHub: () => ProcessingHub): StationModule {
         (sid) => face.recognizeAllCurrent(sid),
         (sid) => bodymotion.current(sid))); // ego-aware: don't drop people mid-move
 
+      // Summarize a dock's recent window and cache it as `lastSummary` (so grounding
+      // goes live). Shared by force_get_current, the console, and the A1.5
+      // auto-summarizer. `flush` (default true) force-ends the in-flight tail first.
+      const summarizeWindowAndCache = async (
+        dockId: string, opts?: { streamId?: string; windowMs?: number; flush?: boolean },
+      ): Promise<{ summary: string; error?: string; window: { from: string; to: string } }> => {
+        if (opts?.flush !== false) {
+          try { await stt.flushAll(); } catch { /* best-effort */ }
+          if (opts?.streamId) { try { await vision.captureNow(opts.streamId); } catch { /* best-effort */ } }
+        }
+        const toIso = isoIst(new Date());
+        const fromIso = isoIst(new Date(Date.now() - (opts?.windowMs ?? 60_000)));
+        const recs = snapshots.inWindowWithState(fromIso, toIso).filter((r) => r.dockId === dockId);
+        const result = await summarize(recs);
+        if (result.summary && !result.error) {
+          lastSummary.set(dockId, {
+            dockId, text: result.summary,
+            window: { from: fromIso, to: toIso }, computedAt: Date.now(),
+          });
+        }
+        return { summary: result.summary, error: result.error, window: { from: fromIso, to: toIso } };
+      };
+
       // Perception grounding facade for the brain (3.1): synchronously build the
       // per-turn context block for a dock — last summary (with staleness) + the raw
       // stream since it, from this dock's records. No network; the brain injects it.
@@ -338,26 +362,10 @@ export function perceptionModule(getHub: () => ProcessingHub): StationModule {
           return block ?? undefined;
         },
         async forceCurrent(dockId, streamId, windowMs) {
-          // 1) FLUSH the in-flight tail so "right now" is captured (mirrors the
-          //    console's Summarize flush): force-end open utterances + a one-shot
-          //    vision capture, both awaited before we pin the window.
-          try { await stt.flushAll(); } catch { /* best-effort */ }
-          if (streamId) { try { await vision.captureNow(streamId); } catch { /* best-effort */ } }
-          // 2) PIN the window NOW (after the flush committed) and summarize it.
-          const toIso = isoIst(new Date());
-          const fromIso = isoIst(new Date(Date.now() - (windowMs ?? 60_000)));
-          const recs = snapshots.inWindowWithState(fromIso, toIso)
-            .filter((r) => r.dockId === dockId); // this dock only
-          const result = await summarize(recs);
-          // 3) CACHE as the dock's last summary so grounding (3.1) goes live — the
-          //    first real producer of summaries (the console click is the only other).
-          if (result.summary && !result.error) {
-            lastSummary.set(dockId, {
-              dockId, text: result.summary,
-              window: { from: fromIso, to: toIso }, computedAt: Date.now(),
-            });
-          }
-          return { summary: result.summary, error: result.error, window: { from: fromIso, to: toIso } };
+          // Flush the in-flight tail (so "right now" is captured), then summarize +
+          // cache the window. force_get_current is the deliberate, on-demand path;
+          // the A1.5 auto-summarizer uses the same helper on a cadence.
+          return summarizeWindowAndCache(dockId, { streamId, windowMs, flush: true });
         },
       };
 
@@ -394,6 +402,25 @@ export function perceptionModule(getHub: () => ProcessingHub): StationModule {
         if (decisions.length > 50) decisions.splice(0, decisions.length - 50);
       };
       startGateWatcher(snapshots, () => gateCfg, (t) => raiseHandler?.(t), noteDecision);
+
+      // A1.5 auto-summarizer: keep grounding's lastSummary fresh without a manual
+      // /summarize. Per active dock (those with recent records), on a debounced
+      // cadence, fuse the recent window + cache it. Cheap: skips idle docks +
+      // throttles busy ones (shouldSummarize). OFF if PERCEPTION_AUTO_SUMMARY=0.
+      if (process.env.PERCEPTION_AUTO_SUMMARY !== '0') {
+        const dockCounts = (): Map<string, number> => {
+          const m = new Map<string, number>();
+          for (const r of snapshots.list()) m.set(r.dockId, (m.get(r.dockId) ?? 0) + 1);
+          return m;
+        };
+        startAutoSummarizer({
+          store: snapshots,
+          activeDocks: () => [...dockCounts().keys()],
+          countFor: (d) => dockCounts().get(d) ?? 0,
+          summarizeAndCache: async (d) => { await summarizeWindowAndCache(d, { flush: true }); },
+          log: (m) => console.log(m),
+        });
+      }
       gateRef.current = {
         setEnabled: (on) => { gateCfg.enabled = on; },
         isEnabled: () => gateCfg.enabled,
