@@ -260,3 +260,49 @@ test('E2E barge-in (A1.4) v4: a lone turn (no interrupt) completes without super
   for (let i = 0; i < 30; i++) await tick();
   assert.deepEqual(started, ['just one question'], 'exactly one turn started, no spurious supersede');
 });
+
+// A1.2 ADOPTION (the bug a server-only test missed): an addressed turn is
+// station-originated, so its turn-status MUST carry autonomous:true — otherwise
+// the phone drops its speak frames as stale (no audible reply). This captures the
+// actual wire frame the phone receives.
+test('E2E addressed adoption (A1.2): a station-originated user turn is flagged autonomous', async () => {
+  const bus = new Bus();
+  const directory = new Directory(() => [phonePeer()], join(tmpdir(), `dir-${Math.random()}.json`));
+  const store = new SessionStore(mkdtempSync(join(tmpdir(), 'adopt-e2e-')));
+  const motion = new MotionExecutor(bus, directory);
+  const cfg = { brainModel: 'openai-compatible/faux@http://test' } as Record<string, unknown>;
+  const deps: SessionDeps = {
+    bus, directory, rpc: new RpcBroker(bus, directory), motion, store,
+    getFaces: () => undefined, config: (k) => cfg[k],
+    streamFn: ((_m: unknown, _c: any) => {
+      const s: AssistantMessageEventStream = createAssistantMessageEventStream();
+      s.push({ type: 'start', partial: assistant('') });
+      s.push({ type: 'done', reason: 'stop', message: assistant('hi') });
+      s.end(); return s;
+    }) as never,
+  };
+  const session = new DockBrainSession(DOCK, deps);
+
+  // capture the turn-status 'accepted' frames the phone would receive.
+  const accepted: Array<{ turnId: string; autonomous?: boolean }> = [];
+  bus.on('agent', (msg) => {
+    if (msg.kind === 'turn-status') {
+      const p = msg.payload as { state?: string; turnId: string; autonomous?: boolean };
+      if (p.state === 'accepted') accepted.push({ turnId: p.turnId, autonomous: p.autonomous });
+    }
+  });
+
+  // a station-originated addressed turn (what brain/index.ts sends from a tap).
+  await session.handleTurnRequest({ turnId: 'addr-1', trigger: { kind: 'user', text: 'hi' }, stationOriginated: true });
+  for (let i = 0; i < 20; i++) await tick();
+  const addr = accepted.find((a) => a.turnId === 'addr-1');
+  assert.ok(addr, 'the addressed turn was accepted');
+  assert.equal(addr!.autonomous, true, 'station-originated user turn MUST be autonomous (phone adopts it)');
+
+  // a NORMAL phone-started user turn must NOT be autonomous (phone already owns it).
+  await session.handleTurnRequest({ turnId: 'user-1', trigger: { kind: 'user', text: 'yo' } });
+  for (let i = 0; i < 20; i++) await tick();
+  const usr = accepted.find((a) => a.turnId === 'user-1');
+  assert.ok(usr, 'the user turn was accepted');
+  assert.notEqual(usr!.autonomous, true, 'a phone-started user turn is NOT autonomous');
+});

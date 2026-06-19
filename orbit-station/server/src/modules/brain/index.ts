@@ -63,6 +63,8 @@ export interface BrainWiring {
 export function brainModule(w: BrainWiring): StationModule {
   const store = new SessionStore();
   const sessions = new Map<string, DockBrainSession>();
+  // Set in init(): simulate a tapped addressed utterance (debug self-test seam).
+  let injectAddressed: (dock: string, text: string) => void = () => {};
   const tasksRoot = defaultTasksRoot();
   const userTasks = userTasksRoot();
   const taskRoots = [
@@ -201,7 +203,10 @@ export function brainModule(w: BrainWiring): StationModule {
       const addressedLatch = new Map<string, AddressedLatch>();
       const latchOf = (dock: string): AddressedLatch =>
         addressedLatch.get(dock) ?? newLatch();
-      getTranscriptApi()?.onFinal((t) => {
+      // Run an addressed final transcript through the latch → maybe a turn. Shared
+      // by the real onFinal hook and the debug-inject route (so self-tests drive
+      // the EXACT same path without a live mic).
+      const onAddressedFinal = (t: { dockId: string; text: string; startedAt: number; endedAt: number }) => {
         const { addressed, next } = decideAddressed(latchOf(t.dockId), {
           startedAt: t.startedAt, endedAt: t.endedAt,
         });
@@ -210,7 +215,19 @@ export function brainModule(w: BrainWiring): StationModule {
         void session(t.dockId).handleTurnRequest({
           turnId: `addr-${randomUUID()}`,
           trigger: { kind: 'user', text: t.text },
+          stationOriginated: true, // A1.2: the phone must ADOPT this (it didn't start it)
         }).catch((err) => console.error(`[brain] ${t.dockId}: addressed turn crashed`, err));
+      };
+      // Debug self-test: simulate a TAPPED utterance (tap the latch, then feed a
+      // final transcript) so a turn always fires — drives the real addressed→turn→
+      // adopt path with NO live mic. Exposed via POST /:dock/debug/say.
+      injectAddressed = (dock, text) => {
+        const at = Date.now();
+        addressedLatch.set(dock, tapLatch(latchOf(dock), at));
+        onAddressedFinal({ dockId: dock, text, startedAt: at + 1, endedAt: at + 2 });
+      };
+      getTranscriptApi()?.onFinal((t) => {
+        onAddressedFinal(t);
       });
 
       bus.on('agent', (msg) => {
@@ -424,6 +441,21 @@ export function brainModule(w: BrainWiring): StationModule {
           coalesceKey: `self:${kind}`,
         });
         json(res, 200, { ok: true });
+        return true;
+      }
+      // ── debug: simulate an ADDRESSED utterance (A1.2 self-test, no live mic) ──
+      // POST /:dock/debug/say {text} → taps the latch + feeds `text` as a final
+      // transcript, driving the real addressed→turn→adopt path. Lets the loop be
+      // tested end-to-end (incl. the phone adopting the station-originated turn)
+      // without anyone speaking. The dock will reply through DockTts as usual.
+      m = subPath.match(/^\/([^/]+)\/debug\/say$/);
+      if (m && req.method === 'POST') {
+        const dock = decodeURIComponent(m[1]!);
+        const body = JSON.parse((await readBody(req)) || '{}') as { text?: string };
+        const text = typeof body.text === 'string' ? body.text.trim() : '';
+        if (!text) { json(res, 400, { error: 'body.text (the utterance) is required' }); return true; }
+        injectAddressed(dock, text);
+        json(res, 200, { ok: true, injected: text });
         return true;
       }
       // delete a specific session (transcript + index entry). Refuses the

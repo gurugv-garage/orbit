@@ -74,6 +74,12 @@ export interface TurnRequest {
   /** for autonomous (task) turns: drop the turn if it can't start before this
    *  wall-clock (stale news is not spoken — docs/tasks.md §7a). */
   expiresAt?: number;
+  /** A1.2: this turn was STARTED BY THE STATION (not the phone) even though its
+   *  trigger.kind is 'user' (an addressed always-on-mic utterance). The phone must
+   *  ADOPT it (autonomous:true) so its speak frames aren't dropped as stale — it
+   *  never set currentTurnId locally. Distinct from trigger.kind, which still
+   *  frames the prompt as a user utterance. */
+  stationOriginated?: boolean;
 }
 
 export interface SessionDeps {
@@ -155,6 +161,9 @@ export class DockBrainSession {
   #activeTurnId?: string;
   #triggerText = '';
   #triggerKind = 'user';
+  // A1.2: a station-originated user turn (an addressed always-on-mic utterance) —
+  // the phone must adopt it even though its trigger.kind is 'user'.
+  #stationOriginated = false;
   #cancelled = false;
   #timedOut = false;
   #spokeThisTurn = false;
@@ -571,6 +580,7 @@ export class DockBrainSession {
     this.#activeTurnId = req.turnId;
     this.#triggerText = req.trigger.text;
     this.#triggerKind = req.trigger.kind || 'user';
+    this.#stationOriginated = req.stationOriginated === true;
     this.#cancelled = false;
     this.#timedOut = false;
     this.#spokeThisTurn = false;
@@ -701,7 +711,9 @@ export class DockBrainSession {
     this.#sendToVoice('turn-status', {
       turnId: req.turnId,
       state: 'accepted',
-      ...(this.#triggerKind !== 'user' ? { autonomous: true } : {}),
+      // autonomous (phone must ADOPT) iff the phone didn't start it: any non-user
+      // trigger (task/self) OR a station-originated user turn (A1.2 addressed mic).
+      ...(this.#triggerKind !== 'user' || this.#stationOriginated ? { autonomous: true } : {}),
     });
 
     const timeoutMs = num(this.#d.config('brainTurnTimeoutMs'), 60_000);
