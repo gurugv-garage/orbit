@@ -26,7 +26,7 @@
  * subscribes to `track.onReceiveRtp`. `onProducerGone(streamId)` lets it flush /
  * close per-stream resources (files, sidecar sessions).
  *
- * See docs/MEDIA-PROCESSING.md for the end-to-end picture + a sidecar example.
+ * See docs/media-processing.md for the end-to-end picture + a sidecar example.
  */
 
 import type { MediaStreamTrack, RtpPacket } from 'werift';
@@ -82,7 +82,7 @@ export class InProcessTap implements MediaTap {
  * tolerates a slow consumer (drops, not back-pressure) — right for real-time media.
  *
  * Env: MEDIA_SINK="udp://127.0.0.1:5004" (host = the sidecar). See the sidecar
- * example in docs/MEDIA-PROCESSING.md.
+ * example in docs/media-processing.md.
  */
 import { createSocket, type Socket } from 'node:dgram';
 

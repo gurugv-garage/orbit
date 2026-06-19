@@ -2,7 +2,7 @@
  * Media module — an in-process WebRTC **SFU**. The dock app publishes ONE live
  * A/V stream (AEC'd mic + camera) to the station; this module ingests it and
  * fans it out to N browser viewers (and later other docks). It is the small
- * first step of the "media brain" that plan.md §5 defers to a sidecar — kept
+ * first step of the "media brain" that PLAN.md §5 defers to a sidecar — kept
  * light (pure-TS werift) and isolated so it can move out of process unchanged.
  *
  * **Process-portable by design:** this module touches the outside world ONLY via
@@ -48,7 +48,7 @@ export function mediaModule(getTap?: () => MediaTap | undefined): StationModule 
       // Processing tap: the perception module's ProcessingHub if wired (main.ts),
       // else MEDIA_SINK forwarding (e.g. udp://127.0.0.1:5004). The hub multiplexes
       // to N processors; tapFromEnv is the standalone fallback. See
-      // docs/MEDIA-PROCESSING.md + the perception module.
+      // docs/media-processing.md + the perception module.
       const tap = getTap?.() ?? tapFromEnv() ?? undefined;
 
       // The SFU emits signaling by publishing directed `media` frames; the hub

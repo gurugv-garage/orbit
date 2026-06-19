@@ -1,5 +1,5 @@
 /**
- * Task tools (see docs/TASKS_V1.md) — the model-facing surface. Definition tools
+ * Task tools (see docs/tasks.md) — the model-facing surface. Definition tools
  * take a `name`, instance tools take an `instanceId`. `run_task` validates inputs
  * against the definition's manifest schema and refuses a missing/ill-typed
  * required param (the LLM is expected to gather/ask for them up front).

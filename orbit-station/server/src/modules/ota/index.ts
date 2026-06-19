@@ -1,6 +1,6 @@
 /**
  * OTA module — serve update artifacts, announce availability, drive builds.
- * See docs/OTA.md §2 + §7. Mirrors the `config` module's shape.
+ * See docs/ota.md §2 + §7. Mirrors the `config` module's shape.
  *
  * Two devices self-update by pulling from here:
  *   - the dock app (Android, PackageInstaller silent install)
@@ -61,7 +61,7 @@ export function otaModule(getHub: () => Hub): StationModule {
     return 'localhost';
   }
 
-  /** Absolute URL a device fetches the artifact from (docs/OTA.md §1: url is absolute). */
+  /** Absolute URL a device fetches the artifact from (docs/ota.md §1: url is absolute). */
   function artifactUrl(target: OtaTarget): string {
     const port = Number(process.env.PORT ?? 8099);
     return `http://${lanHost()}:${port}/api/ota/${target}/${ARTIFACT_FILE[target]}`;
@@ -72,7 +72,7 @@ export function otaModule(getHub: () => Hub): StationModule {
     return getHub().roster().filter((p) => p.kind === TARGET_KIND[target]);
   }
 
-  /** Send an `available` offer to one peer (directed). docs/OTA.md §1. */
+  /** Send an `available` offer to one peer (directed). docs/ota.md §1. */
   function offer(target: OtaTarget, meta: OtaMeta, peerId: string): void {
     bus.publish({
       topic: 'ota',
@@ -157,7 +157,7 @@ export function otaModule(getHub: () => Hub): StationModule {
   return {
     name: 'ota',
     topic: 'ota',
-    description: 'self-update: artifact store, availability offers, tmux builds (docs/OTA.md)',
+    description: 'self-update: artifact store, availability offers, tmux builds (docs/ota.md)',
 
     init(b) {
       bus = b;
@@ -165,7 +165,7 @@ export function otaModule(getHub: () => Hub): StationModule {
       // A device connected/reconnected (peer-joined) OR its heartbeat reported a
       // new build (peer-updated) → if it's behind the current artifact, offer
       // right away. The "peer (re)appears while behind" half of the symmetric
-      // trigger (docs/OTA.md §3.4); peer-updated also keeps the console fresh
+      // trigger (docs/ota.md §3.4); peer-updated also keeps the console fresh
       // after an OTA reboot without waiting for a full reconnect.
       bus.on('station', (msg) => {
         if (msg.source !== 'station') return;
@@ -252,7 +252,7 @@ export function otaModule(getHub: () => Hub): StationModule {
           json(res, 409, { error: 'build already running', attach: attachCmd(target) });
           return true;
         }
-        // Release details entered in the console at build time (docs/OTA.md §3).
+        // Release details entered in the console at build time (docs/ota.md §3).
         // The station records them as build metadata; devices never see them.
         const body = await readBody(req).catch(() => '');
         const notes = (() => {

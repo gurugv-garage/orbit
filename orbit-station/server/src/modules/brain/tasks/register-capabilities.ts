@@ -1,5 +1,5 @@
 /**
- * The station capabilities a task can invoke (docs/TASKS_V1.md).
+ * The station capabilities a task can invoke (docs/tasks.md).
  *
  * MENTAL MODEL: a task is just another entry point into the STATION'S ENVIRONMENT,
  * running limited LLM-authored code on the same machine, with the same `.env`

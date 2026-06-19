@@ -2,7 +2,7 @@
  * Docks module — publishes the dock directory (composition + live presence).
  *
  * A **dock** (e.g. "anne-bot") is a named composition of components (phone,
- * body, …; docs/SERVER-BRAIN-IMPL.md §2). Every component dials the station
+ * body, …; docs/decision-traces/server-brain-impl.md §2). Every component dials the station
  * and declares its address (dock, component) + capabilities in `hello`. The
  * [Directory] (directory.ts) tracks composition; this module wires it to the
  * bus + console:

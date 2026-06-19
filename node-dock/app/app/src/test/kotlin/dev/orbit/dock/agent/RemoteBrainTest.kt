@@ -250,7 +250,7 @@ class RemoteBrainTest {
         assertThat(r.speaker.spoken.single()).contains("lost the link")
     }
 
-    // ── autonomous (task) turn adoption (docs/TASKS_V1.md §7b) ───────────────
+    // ── autonomous (task) turn adoption (docs/tasks.md §7b) ───────────────
 
     @Test
     fun `autonomous accepted turn is adopted so its speak frames reach TTS`() {

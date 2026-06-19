@@ -339,7 +339,7 @@ export const FORGET_FACE_DESC =
   'to delete a stored identity ("delete that", "don\'t remember me as X"). Do NOT call this just because a guess ' +
   'was wrong: if you mis-guessed and the person is actually someone new, use remember_face with their real name instead.';
 
-// ── memory tools (docs/PERCEPTION-TO-AGENT.md 3.2 + Decision 4) ──────────────
+// ── memory tools (docs/perception-to-agent.md 3.2 + Decision 4) ──────────────
 export const MEMORY_TYPES = ['person', 'summary', 'event', 'preference', 'fact', 'place'] as const;
 
 export const recallMemorySchema = {

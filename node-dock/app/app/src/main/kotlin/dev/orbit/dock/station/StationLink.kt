@@ -79,7 +79,7 @@ class StationLink(
      */
     private val configInterest: List<String> = emptyList(),
     /**
-     * OTA gate (docs/OTA.md §3): the app's running build (versionCode). Sent in
+     * OTA gate (docs/ota.md §3): the app's running build (versionCode). Sent in
      * `hello` + each heartbeat so the station can compare and offer an update.
      * It's the ONLY version on the wire — the station owns build→label metadata.
      * 0 = don't advertise a build.
@@ -174,7 +174,7 @@ class StationLink(
             put("kind", "dock-android-app")
             put("caps", buildJsonArray { add("voice"); add("face"); add("camera") })
             put("label", "$dock phone")
-            // OTA gate (docs/OTA.md §3): build is the only version on the wire.
+            // OTA gate (docs/ota.md §3): build is the only version on the wire.
             if (build > 0) put("build", build)
         }))
         s.send(json.encodeToString(JsonObject.serializer(), buildJsonObject {
@@ -257,7 +257,7 @@ class StationLink(
         while (session != null) {
             publish("station", "heartbeat", buildJsonObject {
                 put("component", "phone")
-                // OTA build in every heartbeat (docs/OTA.md §3) — keeps the
+                // OTA build in every heartbeat (docs/ota.md §3) — keeps the
                 // station's version view fresh + self-healing without a full
                 // reconnect. Just the gate int; small payload.
                 if (build > 0) put("build", build)

@@ -1,6 +1,6 @@
 /**
  * The dock MEMORY store — the unified, per-dock, evolving memory sub-system
- * (docs/PERCEPTION-TO-AGENT.md Decision 4). One sqlite-backed store of MEMORIES,
+ * (docs/perception-to-agent.md Decision 4). One sqlite-backed store of MEMORIES,
  * each described by three axes + confidence, every derived one carrying LINEAGE,
  * and everything mutable: revise (supersede, history kept) and forget (purge),
  * never mutate-in-place. Recall has two modes — structured (exact filters) and

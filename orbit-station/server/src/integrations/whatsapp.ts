@@ -18,7 +18,7 @@
  * so it works inside the window; outside it Meta returns an error the brain
  * narrates (rather than a silent no-op).
  *
- * SETUP (how to get a token + number id): see docs/WHATSAPP.md.
+ * SETUP (how to get a token + number id): see docs/whatsapp.md.
  */
 
 const GRAPH = 'https://graph.facebook.com/v21.0';

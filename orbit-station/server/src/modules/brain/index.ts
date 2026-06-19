@@ -1,5 +1,5 @@
 /**
- * Brain module — the dock's LLM loop, server-side (docs/SERVER-BRAIN-IMPL.md).
+ * Brain module — the dock's LLM loop, server-side (docs/decision-traces/server-brain-impl.md).
  *
  * Owns the `agent` topic. One DockBrainSession per dock (lazy). Tenancy rule:
  * a frame's dock is resolved from the SENDER's hello via the roster — never
@@ -72,7 +72,7 @@ export function brainModule(w: BrainWiring): StationModule {
   let rpc: RpcBroker;
 
   // A task's parent signal (notify / finish / errored / stuck) → an autonomous
-  // turn in that dock's conversational session (TASKS_V1 §7a).
+  // turn in that dock's conversational session (tasks §7a).
   const onTaskSignal = (dock: string, info: InstanceInfo, kind: SignalKind, ev: { text: string; image?: string }) => {
     // Use the session FACTORY, not sessions.get: after a station restart the
     // in-memory DockBrainSession may not exist yet (it's created lazily on the
@@ -177,7 +177,7 @@ export function brainModule(w: BrainWiring): StationModule {
       bus = b;
       rpc = new RpcBroker(bus, w.directory);
 
-      // PROACTIVE GATE (docs/PERCEPTION-TO-AGENT.md Phase 5): a raised attention thought
+      // PROACTIVE GATE (docs/perception-to-agent.md Phase 5): a raised attention thought
       // becomes a self-thought turn on the dock's session — the SAME autonomous-turn
       // lane as tasks (user turns still win; it defers while listening/speaking). This
       // is the auto-raise replacement for the console's manual think-poke.
@@ -366,7 +366,7 @@ export function brainModule(w: BrainWiring): StationModule {
         json(res, 200, { ok: true });
         return true;
       }
-      // ── internal THOUGHT poke (docs/PERCEPTION-TO-AGENT.md Phase 1) ──────────
+      // ── internal THOUGHT poke (docs/perception-to-agent.md Phase 1) ──────────
       // Inject a self-originated thought into the dock's session — the test seam
       // for internal-thought routing before the real attention gate exists. The
       // thought runs the SAME autonomous-turn lane as a task (user turns still
@@ -410,7 +410,7 @@ export function brainModule(w: BrainWiring): StationModule {
         json(res, ok ? 200 : 404, { ok });
         return true;
       }
-      // ── skills (docs/SERVER-BRAIN-SELFMOD.md §1a) — per-dock install/list/remove.
+      // ── skills (docs/decision-traces/server-brain-selfmod.md §1a) — per-dock install/list/remove.
       // The dock's NEXT session picks up an installed skill (loaded per turn).
       m = subPath.match(/^\/([^/]+)\/skills$/);
       if (m && req.method === 'GET') {
@@ -439,7 +439,7 @@ export function brainModule(w: BrainWiring): StationModule {
         return true;
       }
 
-      // ── tasks (docs/TASKS_V1.md §8) ───────────────────────────────────────
+      // ── tasks (docs/tasks.md §8) ───────────────────────────────────────
       // definitions (shared, by name)
       if (req.method === 'GET' && subPath === '/tasks') {
         const defs = await loadAllTaskDefs(taskRoots);

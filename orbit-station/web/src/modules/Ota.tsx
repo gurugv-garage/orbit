@@ -1,12 +1,12 @@
 /**
  * OTA / Updates console — trigger builds + watch self-update status for both
- * targets (the dock body ESP32 and the dock app). See docs/OTA.md §7.
+ * targets (the dock body ESP32 and the dock app). See docs/ota.md §7.
  *
  * Reads the snapshot over REST (GET /api/ota), then stays live off the `ota`
  * bus topic: `state` (artifact + per-device build/status + build session),
  * `progress` (the phase bar), `result` (settle done/failed/rolledback).
  *
- * Versions on the wire are build-only (docs/OTA.md §3): a device reports just
+ * Versions on the wire are build-only (docs/ota.md §3): a device reports just
  * its monotonic `build`. The human label / release notes / build time are
  * STATION-owned metadata, recorded in meta.json at build time and shown here.
  */
@@ -184,7 +184,7 @@ function OtaCard({ target, st, live, onChange }: { target: Target; st: TargetSta
           </button>
           {target === 'app' && (
             // Wired install over USB — for OEMs that block app self-install
-            // (e.g. MIUI). Runs `adb install -r` on the host. docs/OTA.md.
+            // (e.g. MIUI). Runs `adb install -r` on the host. docs/ota.md.
             <button disabled={!!busy || !artifact} onClick={() => post('install-adb', undefined, 'install-adb')} title="Install the built APK over USB via adb (works when the phone OEM blocks app self-install)">
               {busy === 'install-adb' ? 'Installing…' : 'Install via USB (adb)'}
             </button>

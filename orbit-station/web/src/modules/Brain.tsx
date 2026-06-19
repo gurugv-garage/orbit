@@ -86,13 +86,13 @@ interface DockProfile {
   openSession: string | null;
   systemPrompt: string;
   // 2c test surface: the live attention state + the grounding block the next turn
-  // would inject (docs/PERCEPTION-TO-AGENT.md Phase 2c).
+  // would inject (docs/perception-to-agent.md Phase 2c).
   state?: 'idle' | 'listening' | 'speaking' | 'thinking';
   listening?: boolean;
   grounding?: string | null;
 }
 
-/** 4c memory inspector (docs/PERCEPTION-TO-AGENT.md Decision 4). */
+/** 4c memory inspector (docs/perception-to-agent.md Decision 4). */
 interface MemoryItem {
   id: string; type: string; subject: string; claim: string; confidence: number;
   derivation: string; status: string; createdAt: number; validFrom: number;
@@ -100,7 +100,7 @@ interface MemoryItem {
 interface MemoryView { count: number; subjects: string[]; memories: MemoryItem[] }
 interface MemoryDetail { memory: MemoryItem; lineage: { sourceKind: string; sourceId: string }[] }
 
-/** 5c proactive attention gate (docs/PERCEPTION-TO-AGENT.md Phase 5). */
+/** 5c proactive attention gate (docs/perception-to-agent.md Phase 5). */
 interface GateDecision { ts: number; dockId: string; raised: boolean; detail: string }
 
 /** A condensed prior exchange from a resumed/open session's transcript. */
@@ -515,7 +515,7 @@ export function Brain() {
     pub('agent', 'turn-cancel', { turnId: activeTurnId.current });
   };
 
-  // 2c: fire a SELF-THOUGHT (docs/PERCEPTION-TO-AGENT.md Phase 1). The dock routes
+  // 2c: fire a SELF-THOUGHT (docs/perception-to-agent.md Phase 1). The dock routes
   // it as an autonomous turn (trigger.kind:'self') — user turns still win; it defers
   // while listening/speaking. Watch it appear in the turn stream tagged 'self'.
   const think = async () => {
@@ -687,7 +687,7 @@ export function Brain() {
       )}
 
       {/* ── 2c: perception test surface — self-thoughts, attention state, grounding
-            (docs/PERCEPTION-TO-AGENT.md Phase 2c). Fire a thought and watch it route
+            (docs/perception-to-agent.md Phase 2c). Fire a thought and watch it route
             in the turn stream (tagged 'self'); flip listening to see it defer. ── */}
       {connected && (
         <div className="br-strip br-percept">
@@ -805,7 +805,7 @@ export function Brain() {
         </div>
       )}
 
-      {/* ── tasks: definitions + running instances (docs/TASKS_V1.md §8) ── */}
+      {/* ── tasks: definitions + running instances (docs/tasks.md §8) ── */}
       {connected && profile && showTasks && <TasksPanel dock={profile.dock} />}
 
       {/* ── dock context: this dock's full brain state in one place ── */}
@@ -1358,7 +1358,7 @@ function Timeline({ turn }: { turn: TurnDebug }) {
   );
 }
 
-// ── tasks panel (docs/TASKS_V1.md §8) ────────────────────────────────────────
+// ── tasks panel (docs/tasks.md §8) ────────────────────────────────────────
 
 interface TaskParamSpec { name: string; type: string; required?: boolean; default?: unknown }
 interface TaskDefDto { name: string; description: string; params: TaskParamSpec[]; goal: string; source?: 'packaged' | 'generated' }

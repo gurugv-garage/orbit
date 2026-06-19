@@ -1,6 +1,6 @@
 /**
  * SessionStore — persistence + lifecycle for dock brain sessions
- * (docs/SERVER-BRAIN-IMPL.md §3.0).
+ * (docs/decision-traces/server-brain-impl.md §3.0).
  *
  * A SESSION is a bounded conversational engagement of a dock: opened lazily
  * on the first turn, closed on idle timeout or explicit end, decoupled from

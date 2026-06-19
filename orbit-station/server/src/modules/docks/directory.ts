@@ -1,7 +1,7 @@
 /**
  * The dock directory — the one place dock COMPOSITION lives.
  *
- * A dock is a named composition of components (docs/SERVER-BRAIN-IMPL.md §2):
+ * A dock is a named composition of components (docs/decision-traces/server-brain-impl.md §2):
  * the directory tracks which slots a dock is expected to have (the manifest),
  * which peer currently fills each slot (from the live roster), and resolves
  * addresses for the rest of the station:

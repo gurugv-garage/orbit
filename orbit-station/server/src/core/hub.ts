@@ -39,7 +39,7 @@ export interface RosterEntry {
   kind?: string;
   /** capability tags ("voice", "face", "camera", "servo", …). */
   caps?: string[];
-  /** OTA running build (docs/OTA.md §3): the monotonic gate — the only version a device reports. */
+  /** OTA running build (docs/ota.md §3): the monotonic gate — the only version a device reports. */
   build?: number;
   /** peer's remote IP, captured server-side from the socket. */
   ip?: string;
@@ -250,7 +250,7 @@ export class Hub {
         if (f.kind === 'heartbeat') {
           const hb = f.payload as { links?: Record<string, boolean>; build?: number } | null;
           if (hb?.links && typeof hb.links === 'object') peer.links = hb.links;
-          // OTA build in the heartbeat (docs/OTA.md §3): refresh the roster
+          // OTA build in the heartbeat (docs/ota.md §3): refresh the roster
           // version so it stays current without a reconnect (e.g. after an OTA
           // where the device rebooted but the socket/peer entry persisted).
           if (typeof hb?.build === 'number' && hb.build !== peer.build) {

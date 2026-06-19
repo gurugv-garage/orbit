@@ -1,5 +1,5 @@
 /**
- * ThoughtRouter — the pure routing decision (docs/PERCEPTION-TO-AGENT.md 2.2).
+ * ThoughtRouter — the pure routing decision (docs/perception-to-agent.md 2.2).
  * Exhaustive truth table: every session state × staleness × settle-gap cell.
  * No LLM, no dock, no clock — `now` is injected, so each case is deterministic.
  */

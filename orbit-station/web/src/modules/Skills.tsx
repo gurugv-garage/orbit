@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 
 /**
- * Skills console (docs/SERVER-BRAIN-SELFMOD.md §1a) — install/list/remove a
+ * Skills console (docs/decision-traces/server-brain-selfmod.md §1a) — install/list/remove a
  * dock's pi Skills. Tenancy is the folder: each dock has its own skills lane;
  * an installed SKILL.md is picked up by that dock's NEXT brain session.
  */

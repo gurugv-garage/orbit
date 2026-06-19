@@ -149,7 +149,7 @@ function entry(e: Omit<ConfigEntry, 'jsonSchema'>): ConfigEntry {
 }
 
 export const REGISTRY: ConfigEntry[] = [
-  // ── server brain (docs/SERVER-BRAIN-IMPL.md §3.1) — consumed in-process by
+  // ── server brain (docs/decision-traces/server-brain-impl.md §3.1) — consumed in-process by
   // the brain module, applied at turn start; tag 'station' (never pushed to
   // devices). Provider API keys are station env vars, not config.
   //
@@ -184,7 +184,7 @@ export const REGISTRY: ConfigEntry[] = [
     description: 'Extended reasoning budget for brain turns. Off = lowest latency (the dock default); higher levels stream thinking before answering.',
   }),
   entry({ key: 'brainTurnTimeoutMs', type: 'number', schema: z.number().int().min(5_000).max(300_000), default: 60_000, tags: ['station'] }),
-  // ── tasks (docs/TASKS_V1.md) ──────────────────────────────────────────────
+  // ── tasks (docs/tasks.md) ──────────────────────────────────────────────
   entry({
     key: 'brainTaskMax', type: 'number', schema: z.number().int().min(0).max(10), default: 3, tags: ['station'],
     label: 'Max tasks per dock',

@@ -1,5 +1,5 @@
 /**
- * Full pi coding tools (docs/SERVER-BRAIN-SELFMOD.md Tier 4):
+ * Full pi coding tools (docs/decision-traces/server-brain-selfmod.md Tier 4):
  *  - read_file works WITHOUT confirmation (ask about the code freely);
  *  - write/edit/run REQUIRE confirmation and abort on a decline;
  *  - the FILE_TOOLS_PROMPT advertises the capability to the model.

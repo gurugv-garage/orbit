@@ -25,7 +25,7 @@ import timber.log.Timber
 
 /**
  * The dock's brain, remote edition — the phone-side half of the server brain
- * (docs/SERVER-BRAIN-IMPL.md §4). Replaces [DockAgent] behind the same public
+ * (docs/decision-traces/server-brain-impl.md §4). Replaces [DockAgent] behind the same public
  * surface (`respond`, `stop`, `state`, `events`, `setSpeaking`,
  * `setToolCalling`, `shutdown`, `isConfigured`) so the UI wiring is untouched —
  * but the LLM loop itself runs in orbit-station: this class only ships the
@@ -435,7 +435,7 @@ class RemoteBrain(
     private fun onTurnStatus(p: JsonObject) {
         val turnId = p.str("turnId")
         // ADOPT a station-originated (task) turn this phone didn't initiate
-        // (docs/TASKS_V1.md §7b): an `accepted` frame flagged autonomous:true is
+        // (docs/tasks.md §7b): an `accepted` frame flagged autonomous:true is
         // the brain speaking on its own. Without this the speak frames would be
         // dropped by the turnId gate below. Adopt only when no LOCAL user turn is
         // in flight — if one is, the station's supersede logic sorts it out.

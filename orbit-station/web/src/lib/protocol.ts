@@ -62,7 +62,7 @@ export interface DockInfo {
   components: DockComponent[];
 }
 
-// background tasks (docs/TASKS_V1.md) — a running instance of a task definition.
+// background tasks (docs/tasks.md) — a running instance of a task definition.
 // Mirror of server/.../tasks/supervisor.ts InstanceInfo.
 export type TaskState = 'running' | 'stuck' | 'done' | 'errored' | 'stopped';
 export interface TaskInstance {

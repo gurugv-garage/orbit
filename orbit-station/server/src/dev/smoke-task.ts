@@ -1,6 +1,6 @@
 /**
  * smoke:task — drives the TASK lifecycle end-to-end against a live station, no
- * hardware (docs/TASKS_V1.md §11). Connects a fake phone (opens a session by
+ * hardware (docs/tasks.md §11). Connects a fake phone (opens a session by
  * sending one turn), starts a task via REST, and prints the unsolicited
  * autonomous turn frames the task triggers (accepted(autonomous)/speak/done) plus
  * the instance state from REST. Proves the wire→speak chain with a real server.

@@ -1,5 +1,5 @@
 /**
- * The attention-gate WATCHER (docs/PERCEPTION-TO-AGENT.md Decision 1) — feeds the
+ * The attention-gate WATCHER (docs/perception-to-agent.md Decision 1) — feeds the
  * pure gate (gate.ts) from the live perception stream and raises a self-thought when
  * it fires.
  *

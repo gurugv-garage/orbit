@@ -30,19 +30,19 @@ orbit-station/
 
 | Module | Topic | What |
 |---|---|---|
-| **observability** | `obs` | Ingests agent-core's `AgentEvent` stream (Session ⊃ Turn ⊃ Step ⊃ LLM-call), reconstructs the tree, streams it live. Vocabulary mirrors `docs/AGENT-MODEL.md`. |
+| **observability** | `obs` | Ingests agent-core's `AgentEvent` stream (Session ⊃ Turn ⊃ Step ⊃ LLM-call), reconstructs the tree, streams it live. Vocabulary mirrors `docs/agent-model.md`. |
 | **config** | `config` | Central config: in-code defaults + runtime overrides, **pushed on change** over WS to the ESP32 + dock app (no polling). Scopes: `station` / `dock` / `body`. |
 | **bodylink** | `bodylink` | Direct body-control console, bypassing the dock app. Speaks the BodyLink `set_target` protocol (`node-dock/bodylink/DESIGN.md`); profile-driven sliders, live reported state. |
 | **mind** | `mind` | **Stub.** Watches the whole bus; takes no action yet. Will become the awareness/trigger layer. |
-| **media** | `media` | In-process WebRTC **SFU** + a **processing tap** (in-process or sidecar). `docs/MEDIA-PROCESSING.md`. |
-| **perception** | `perception` | On-device understanding on the media tap: five shared-format snapshot streams (👁 vision/🎙 speech/👤 identity/😮 emotion/🤖 bodymotion) → Gemini summarizer; the **Perception Studio** console (`/#perception`) is the playground. `../docs/PERCEPTION-PIPELINE.md`. |
+| **media** | `media` | In-process WebRTC **SFU** + a **processing tap** (in-process or sidecar). `docs/media-processing.md`. |
+| **perception** | `perception` | On-device understanding on the media tap: five shared-format snapshot streams (👁 vision/🎙 speech/👤 identity/😮 emotion/🤖 bodymotion) → Gemini summarizer; the **Perception Studio** console (`/#perception`) is the playground. `../docs/perception-pipeline.md`. |
 | **bench** | — | Serves the dock-LLM benchmark snapshots; the viewer is embedded in the UI. |
 | **station** | `station` | Meta: health, module registry, live peer roster. |
 
 Planned: a **brain** module (`agent` topic) hosting the dock's LLM loop
 server-side (full cutover — the phone keeps no local loop). Design/risks:
-[`../docs/SERVER-BRAIN.md`](../docs/SERVER-BRAIN.md); implementation plan:
-[`../docs/SERVER-BRAIN-IMPL.md`](../docs/SERVER-BRAIN-IMPL.md).
+[`../docs/decision-traces/server-brain-design.md`](../docs/decision-traces/server-brain-design.md); implementation plan:
+[`../docs/decision-traces/server-brain-impl.md`](../docs/decision-traces/server-brain-impl.md).
 
 ## Connecting peers (the one WebSocket)
 
@@ -102,7 +102,7 @@ The dock can post to Slack with three tools: `send_to_slack` (rich text /
 Block Kit), `take_photo` (uploads the photo), and `record_video` (uploads the
 clip when it's ready). All use the bot token above.
 
-**Full token setup — [docs/SLACK.md](../docs/SLACK.md).** In short:
+**Full token setup — [docs/slack.md](../docs/slack.md).** In short:
 
 1. Create a Slack app at <https://api.slack.com/apps> → *From scratch*.
 2. **OAuth & Permissions → Bot Token Scopes**: add `chat:write` (post messages)

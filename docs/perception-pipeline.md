@@ -4,7 +4,7 @@
 > **why each piece is what it is** — the alternatives we weighed, the numbers that
 > settled it, and the tradeoff we accepted. This is the decision record; the raw
 > model measurements live in [models/BENCHMARKS.md](../models/BENCHMARKS.md) and the
-> future tiered-escalation plan in [PERCEPTION-PYRAMID.md](PERCEPTION-PYRAMID.md).
+> future tiered-escalation plan in [perception-pyramid.md](perception-pyramid.md).
 >
 > Status: **built and running** (the snapshot pipeline + console). The pyramid's
 > tier-2/3 escalation is still design.
@@ -375,7 +375,7 @@ Not a benchmark yet — explicitly an **iterate-and-review** surface:
 
 - [models/BENCHMARKS.md](../models/BENCHMARKS.md) — the measured model numbers
   (footprint, latency, WER, accuracy) and how to reproduce them.
-- [PERCEPTION-PYRAMID.md](PERCEPTION-PYRAMID.md) — the tiered always-on escalation
+- [perception-pyramid.md](perception-pyramid.md) — the tiered always-on escalation
   this pipeline is the tier-1 of (when/whether to respond).
-- [MEDIA-PROCESSING.md](MEDIA-PROCESSING.md) — the SFU + processing-tap plumbing the
+- [media-processing.md](media-processing.md) — the SFU + processing-tap plumbing the
   processors hang off.

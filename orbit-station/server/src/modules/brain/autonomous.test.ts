@@ -1,5 +1,5 @@
 /**
- * Autonomous (task) turn injection — docs/TASKS_V1.md §7a, §11.B.
+ * Autonomous (task) turn injection — docs/tasks.md §7a, §11.B.
  *  - enqueueAutonomousTurn makes the dock speak unprompted, with autonomous:true
  *    on the accepted turn-status and trigger.kind:'task' on the obs TurnStart;
  *  - a queued task turn WAITS for an in-flight user turn (users never starved);
@@ -226,7 +226,7 @@ test('coalesce: a different instance does NOT merge (separate turns)', async () 
   assert.deepEqual(speakText(frames), ['one', 'two'], 'different instances stay separate');
 });
 
-// ── internal THOUGHTS (trigger.kind:'self') — docs/PERCEPTION-TO-AGENT.md Phase 1.
+// ── internal THOUGHTS (trigger.kind:'self') — docs/perception-to-agent.md Phase 1.
 // A self-thought rides the SAME autonomous-turn lane as a task, but is framed as
 // the robot's OWN observation and defers behind a user mid-utterance (`listening`).
 

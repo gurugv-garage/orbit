@@ -1,5 +1,5 @@
 /**
- * Per-dock Skills (docs/SERVER-BRAIN-SELFMOD.md §1a) — pi's own skill engine,
+ * Per-dock Skills (docs/decision-traces/server-brain-selfmod.md §1a) — pi's own skill engine,
  * hosted against the raw `Agent` we already drive.
  *
  * pi gives us `loadSkills` (parse SKILL.md, validate frontmatter) and

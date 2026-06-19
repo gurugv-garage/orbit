@@ -1,5 +1,5 @@
 /**
- * Manifest input-schema validation (see docs/TASKS_V1.md).
+ * Manifest input-schema validation (see docs/tasks.md).
  *
  * A definition declares `params` (key/val schema). `run_task` supplies values;
  * `validateParams` checks required presence + coarse types, applies defaults,

@@ -3,7 +3,7 @@
  *
  * One process: HTTP(S) server (browser UI + REST/ingest) + one WebSocket hub
  * (device/browser peers) + an in-process bus that ties the modules together.
- * Since the server-brain cutover (docs/SERVER-BRAIN-IMPL.md) this process is
+ * Since the server-brain cutover (docs/decision-traces/server-brain-impl.md) this process is
  * also the dock's BRAIN (pi agent sessions) and the body's single master
  * (motion executor) — the station is the one WebSocket server in the system.
  */
@@ -35,7 +35,7 @@ import { otaModule } from './modules/ota/index.js';
 import { stationModule } from './modules/station.js';
 
 // LLM provider keys live in the STATION's environment now (never in device
-// builds — docs/SERVER-BRAIN-IMPL.md §3.1). For dev convenience they load
+// builds — docs/decision-traces/server-brain-impl.md §3.1). For dev convenience they load
 // from a gitignored `orbit-station/.env` (KEY=VALUE lines; real env wins).
 loadDotEnv(new URL('../../.env', import.meta.url).pathname);
 console.log(`orbit-station starting with Node ${process.version}`);

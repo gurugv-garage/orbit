@@ -1,5 +1,5 @@
 /**
- * Full pi coding skills for the dock brain (docs/SERVER-BRAIN-SELFMOD.md §1b,
+ * Full pi coding skills for the dock brain (docs/decision-traces/server-brain-selfmod.md §1b,
  * Tier 4). The model gets the coding-agent surface: read_file, write_file,
  * edit_file, run_command — over the WHOLE station host, INCLUDING its own
  * source code. The dock can inspect and rewrite the robot it runs on.

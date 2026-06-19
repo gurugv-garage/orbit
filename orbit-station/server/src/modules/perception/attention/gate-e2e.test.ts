@@ -1,5 +1,5 @@
 /**
- * END-TO-END integration (docs/PERCEPTION-TO-AGENT.md Phase 5) — the WHOLE proactive
+ * END-TO-END integration (docs/perception-to-agent.md Phase 5) — the WHOLE proactive
  * chain across modules, no mocks of the seam under test:
  *
  *   identity snapshot lands in the store

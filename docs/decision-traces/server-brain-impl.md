@@ -1,3 +1,6 @@
+> **DECISION TRACE (historical).** Current canonical agent doc: [../agent-model.md](../agent-model.md).
+> The full as-built cutover record (stages, wire protocol, reconnection) — kept for detail.
+
 # Server brain — production implementation plan
 
 ## 0. Implementation status (living — update as stages land)
@@ -161,7 +164,7 @@ when the rover lands).
 ---
 
 **Status: implementation plan (2026-06-12, rev 2).** Supersedes the experiment
-framing in [SERVER-BRAIN.md](SERVER-BRAIN.md) §0/§10. Decisions baked in:
+framing in [SERVER-BRAIN.md](server-brain-design.md) §0/§10. Decisions baked in:
 
 1. **No Kotlin fallback.** Full cutover: the phone's agent loop (`DockAgent`,
    `DockStreamFn`, the `llm/` surface, `:agent-core` from `:app`) is deleted.
@@ -175,14 +178,14 @@ framing in [SERVER-BRAIN.md](SERVER-BRAIN.md) §0/§10. Decisions baked in:
    The phone only *displays* body status — not latency-sensitive; a
    low-frequency digest suffices. **One WebSocket server in the whole system
    (the station).** The "dial the stable party" rationale that originally made
-   the ESP32 a server now points at the station — see the plan.md decision log.
+   the ESP32 a server now points at the station — see the PLAN.md decision log.
 4. **Big-bang cutover.** Fully controlled project, no users in the field, no
    rollout/compatibility requirements. Station, app, and firmware all change
    at once; downtime during the switch is fine. Phasing below is *build
    order*, not compatibility management.
 5. **STT/TTS stay on the phone for now** (transcripts up, sentence text down).
    Moving them server-side is a later phase, deliberately not elaborated here —
-   see [SERVER-BRAIN.md](SERVER-BRAIN.md) §6 (shadow-mode path).
+   see [SERVER-BRAIN.md](server-brain-design.md) §6 (shadow-mode path).
 
 Everything else from SERVER-BRAIN.md stands: streaming-first on every hop,
 fire-and-forget actuation, pi sessions with compaction, profiles in the config
@@ -369,7 +372,7 @@ primitives are baked in v1 even though v1 ships single-dock behavior:
    docks/capabilities this dock's brain may use, default none) so tool
    exposure is policy, not possibility. The rover itself is then "just
    another dock" whose components declare caps like `drive`/`nav` (its ROS2
-   bridging lives behind a station module, per plan.md §7's plat-bridges
+   bridging lives behind a station module, per PLAN.md §7's plat-bridges
    decision — out of scope here, but it lands in this addressing model
    without changes).
 2. **Dock-to-dock A/V** — e.g., the rover's camera on the desk dock's
@@ -571,7 +574,7 @@ keeps the existing outbox semantics.
   only socket. *Removal note:* keep the command-handling core
   (`set_target`/`profile`/`applied`/clamps) transport-agnostic when cutting
   the listener out — a standalone-server mode is a parked SDK idea
-  ([bodylink/DESIGN.md](../node-dock/bodylink/DESIGN.md) banner) and may
+  ([bodylink/DESIGN.md](../../node-dock/bodylink/DESIGN.md) banner) and may
   return as a product of the protocol; delete the socket, not the shape.
 - **Port the BodyLink contract to the station connection** (most exists via
   the console path; verify parity): per-part idempotent `set_target`,
@@ -738,7 +741,7 @@ heartbeat granularity, with no device→device traffic.
   surface. v1 exposes **none** of it (the toolset is fixed; the model reads
   human-set config, never writes it). Each feature is grant-gated
   (`brainExtensions`, default-off); design + decision log + TODO:
-  [SERVER-BRAIN-SELFMOD.md](SERVER-BRAIN-SELFMOD.md).
+  [SERVER-BRAIN-SELFMOD.md](server-brain-selfmod.md).
 
 ## 10. Build order (not a rollout)
 
@@ -861,8 +864,8 @@ future behaviors); `set_target`/`applied`/`profile` parity on the station
 socket; staleness tripwire; `BL_FW_BUILD` bump; `scripts/test_body.sh` →
 station REST.
 
-**docs** — this file; [plan.md](plan.md) §9 entries (server brain amendment +
-"one server" body decision); [SERVER-BRAIN.md](SERVER-BRAIN.md) banner;
-[bodylink/DESIGN.md](../node-dock/bodylink/DESIGN.md) banner (topology
+**docs** — this file; [PLAN.md](../PLAN.md) §9 entries (server brain amendment +
+"one server" body decision); [SERVER-BRAIN.md](server-brain-design.md) banner;
+[bodylink/DESIGN.md](../../node-dock/bodylink/DESIGN.md) banner (topology
 retired, contract semantics live on over the station socket); CLAUDE.md
 node-dock section at cutover.

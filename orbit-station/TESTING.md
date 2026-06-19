@@ -114,14 +114,14 @@ The app holds a WS connection and publishes agent-core `AgentEvent`s on the
 
 Same as §3, but:
 1. Phone on the **same Wi-Fi** as the laptop (and not on a guest VLAN that
-   blocks LAN peer traffic — see plan.md §4 risk 6 re: dock VLAN).
+   blocks LAN peer traffic — see PLAN.md §4 risk 6 re: dock VLAN).
 2. Station URL → **`ws://192.168.1.10:8099/ws`** (the LAN address from the banner).
 3. If using HTTPS (`npm run certs`), use `wss://…` and trust the self-signed
    cert on the device, or stay on `ws://` for bring-up.
 4. Repeat the §3 observability + config checks.
 
 **Pass:** identical behavior to the emulator over the real network. Watch for
-Wi-Fi flakiness (plan.md §4 risk 5) — the StationClient auto-reconnects; the
+Wi-Fi flakiness (PLAN.md §4 risk 5) — the StationClient auto-reconnects; the
 roster should recover after a network blip without a restart.
 
 ---

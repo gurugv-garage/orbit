@@ -1,21 +1,15 @@
 # Tasks — background jobs as separate processes
 
-**Status: BUILT + tested. As-built reference (was a design doc; rewritten to match
-the shipped implementation).**
+**Status: BUILT + tested. As-built reference.**
 
 A **task** is a long-running background job the dock brain authors, runs, and
 supervises — *"remind me every 5 minutes to drink water"*, *"tell me in 10 minutes
 to take a bath"*. Each running task is its **own OS process** that connects back to
 the station over the existing WebSocket; all parent↔task communication is messages
-on one topic. Companion to [SERVER-BRAIN-IMPL.md](SERVER-BRAIN-IMPL.md) (turn
-lifecycle, the WS hub) and [SERVER-BRAIN-SELFMOD.md](SERVER-BRAIN-SELFMOD.md)
-(Skills — tasks reuse its progressive-disclosure + authoring pattern).
-
-> **History.** This started as an in-process design built around a single
-> `ctx.step` primitive, child pi sessions, and a curated camera/body capability
-> menu. That was scrapped: a task is now **a plain Node process + a WS connection +
-> a tiny message contract**, nothing more. The guiding rule throughout — *only
-> structure where a real contract exists; don't reinvent.*
+on one topic. Companion to [agent-model.md](agent-model.md) (the brain's turn
+lifecycle + WS hub; Skills — tasks reuse its progressive-disclosure + authoring
+pattern). Why the design is process-per-task and not the original in-process
+framework: [decision-traces/tasks-design-history.md](decision-traces/tasks-design-history.md).
 
 ---
 

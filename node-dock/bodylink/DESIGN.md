@@ -1,6 +1,6 @@
 # BodyLink — protocol & spec
 
-> **2026-06-12 — topology change planned ([docs/SERVER-BRAIN-IMPL.md](../../docs/SERVER-BRAIN-IMPL.md)).**
+> **2026-06-12 — topology change planned ([docs/decision-traces/server-brain-impl.md](../../docs/decision-traces/server-brain-impl.md)).**
 > The Brain role moves from the phone to **orbit-station**, and the transport
 > moves to the body's existing station WS connection — the body's own WS
 > *server* (§1.2) is removed; the firmware becomes client-only, and the phone

@@ -6,7 +6,7 @@
  *
  * It uses the station's own helper (postMessage/uploadFile) where one exists, and
  * raw Web API calls for the read/reaction surface we haven't wrapped yet — so a
- * green run here also confirms the future-facing scopes from docs/SLACK.md.
+ * green run here also confirms the future-facing scopes from docs/slack.md.
  *
  *   # set SLACK_BOT_TOKEN (+ optionally SLACK_DEFAULT_CHANNEL) in orbit-station/.env
  *   npm run slack:check                 # uses SLACK_DEFAULT_CHANNEL
@@ -196,7 +196,7 @@ async function main(): Promise<void> {
   // 13) inbound: Socket Mode connects (needs SLACK_APP_TOKEN; SKIP if unset)
   await check('Socket Mode connect (inbound)', async () => {
     const appToken = slackAppToken();
-    if (!appToken) return 'skip:SLACK_APP_TOKEN not set (inbound off — see docs/SLACK.md)';
+    if (!appToken) return 'skip:SLACK_APP_TOKEN not set (inbound off — see docs/slack.md)';
     const connected = await new Promise<boolean>((resolve) => {
       const sock = new SlackSocket(appToken, {
         botUserId, onEvent: () => {},
@@ -213,7 +213,7 @@ async function main(): Promise<void> {
   console.log(results.join('\n'));
   console.log(`\n  ${n} checks — ${passed} ok, ${failed} fail, ${skipped} skip`);
   if (failed === 0 && skipped > 0) {
-    console.log('  (SKIPs are scopes from docs/SLACK.md not added yet — add them + reinstall the app.)');
+    console.log('  (SKIPs are scopes from docs/slack.md not added yet — add them + reinstall the app.)');
   }
   console.log('');
   process.exit(failed === 0 ? 0 : 1);

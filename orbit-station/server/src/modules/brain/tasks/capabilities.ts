@@ -1,6 +1,6 @@
 /**
  * Task capabilities — the station-side surface a task PROCESS can invoke over the
- * wire (docs/TASKS_V1.md §"capability layer"). A task runs as its own process; when
+ * wire (docs/tasks.md §"capability layer"). A task runs as its own process; when
  * it needs something only the station can do (grab the dock's current camera frame,
  * ask a vision model, drive the body), it sends a `request` frame and the station
  * runs a REGISTERED handler and replies. This is the inverse of RpcBroker (which

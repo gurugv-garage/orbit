@@ -138,7 +138,7 @@ export function getFaceTools(): FaceToolsApi | undefined {
 }
 
 /**
- * Perception GROUNDING for the brain (docs/PERCEPTION-TO-AGENT.md Decision 3.1):
+ * Perception GROUNDING for the brain (docs/perception-to-agent.md Decision 3.1):
  * the per-turn context block — the last summary (stamped with staleness) plus the
  * raw stream since it. Pulled synchronously when a turn is built (no Gemini on the
  * turn's critical path); the brain injects the returned string into the prompt.
@@ -148,7 +148,7 @@ export interface PerceptionGroundingApi {
   /** the grounding block for `dockId` right now, or undefined if there's nothing. */
   forDock(dockId: string): string | undefined;
   /**
-   * FORCE a fresh summary of the live moment NOW (docs/PERCEPTION-TO-AGENT.md 3.2
+   * FORCE a fresh summary of the live moment NOW (docs/perception-to-agent.md 3.2
    * `force_get_current`): flush the in-flight tail (open utterance + a one-shot
    * vision capture), summarize the just-closed window, cache it as the dock's last
    * summary (so grounding goes live), and return the summary text. Costs a Gemini
@@ -165,7 +165,7 @@ export function getPerceptionGrounding(): PerceptionGroundingApi | undefined {
 }
 
 /**
- * The MEMORY facade for the brain (docs/PERCEPTION-TO-AGENT.md Decision 4 + the
+ * The MEMORY facade for the brain (docs/perception-to-agent.md Decision 4 + the
  * 3.2 pull tools) — the dock's unified, evolving, per-dock memory, exposed the
  * way an LLM agent reaches for it: discover (subjects/recent), recall (structured
  * AND/OR semantic), inspect (lineage), and mutate (remember/update/forget). Wraps
@@ -195,7 +195,7 @@ export function getMemoryStore(): MemoryStore | undefined {
 }
 
 /**
- * The proactive ATTENTION GATE control surface (docs/PERCEPTION-TO-AGENT.md Phase 5).
+ * The proactive ATTENTION GATE control surface (docs/perception-to-agent.md Phase 5).
  * The brain registers `onRaise` so a gate firing becomes a self-thought
  * (enqueueAutonomousTurn); the console toggles `enabled` + reads recent decisions.
  */
@@ -343,7 +343,7 @@ export function perceptionModule(getHub: () => ProcessingHub): StationModule {
         recentDecisions: (limit = 20) => decisions.slice(-limit).reverse(),
       };
 
-      // In-process face API for the server brain (docs/SERVER-BRAIN-IMPL.md §3.1):
+      // In-process face API for the server brain (docs/decision-traces/server-brain-impl.md §3.1):
       // the same operations the WS request/result flow below serves, exposed as
       // function calls so the brain's tools skip the round-trip.
       faceToolsRef.current = {

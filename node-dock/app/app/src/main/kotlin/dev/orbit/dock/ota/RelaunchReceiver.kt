@@ -15,7 +15,7 @@ import timber.log.Timber
  * updated* app in a NEW process, so the relaunch always survives. We also handle
  * BOOT_COMPLETED so a dock appliance comes back after a power cycle.
  *
- * See docs/OTA.md §5.
+ * See docs/ota.md §5.
  */
 class RelaunchReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {

@@ -1,5 +1,5 @@
 /**
- * DockBrainSession — one dock's brain lane (docs/SERVER-BRAIN-IMPL.md §3.1).
+ * DockBrainSession — one dock's brain lane (docs/decision-traces/server-brain-impl.md §3.1).
  *
  * Owns the pi Agent, the turn lifecycle, history hygiene, and the wire
  * conversation with the phone (speak frames, turn-status) — a 1:1 port of
@@ -72,7 +72,7 @@ export interface TurnRequest {
   imageBase64?: string;
   imageMime?: string;
   /** for autonomous (task) turns: drop the turn if it can't start before this
-   *  wall-clock (stale news is not spoken — docs/TASKS_V1.md §7a). */
+   *  wall-clock (stale news is not spoken — docs/tasks.md §7a). */
   expiresAt?: number;
 }
 
@@ -83,7 +83,7 @@ export interface SessionDeps {
   motion: MotionExecutor;
   store: SessionStore;
   getFaces: () => FaceToolsApi | undefined;
-  /** perception grounding (docs/PERCEPTION-TO-AGENT.md 3.1): the per-turn context
+  /** perception grounding (docs/perception-to-agent.md 3.1): the per-turn context
    *  block (last summary + raw-since), pulled synchronously and injected into the
    *  prompt. Undefined → no perception grounding (the dock behaves as before). */
   getGrounding?: () => PerceptionGroundingApi | undefined;
@@ -98,14 +98,14 @@ export interface SessionDeps {
   /** test seam: scripted LLM transport (pi StreamFn). Default: pi-ai providers. */
   streamFn?: import('@earendil-works/pi-agent-core').StreamFn;
   /** stop every task instance running under a parent conversational session
-   *  (the lifetime cascade — TASKS_V1 §5). Set by the brain module; the
+   *  (the lifetime cascade — tasks §5). Set by the brain module; the
    *  supervisor is the source of truth for what's running. */
   stopTasksForParent?: (dock: string, parentSessionId: string) => void;
   /** does this conversational session have any running tasks? (idle-close guard
-   *  — TASKS_V1 §5: a task keeps its parent session alive). */
+   *  — tasks §5: a task keeps its parent session alive). */
   hasRunningTasks?: (dock: string, parentSessionId: string) => boolean;
   /** the dock's model-facing task tools, built per-turn with the live session id
-   *  as the parent (TASKS_V1 §6). Undefined → tasks disabled / not wired. */
+   *  as the parent (tasks §6). Undefined → tasks disabled / not wired. */
   getTaskTools?: (dock: string, parentSessionId: () => string | undefined) => import('@earendil-works/pi-agent-core').AgentTool<any>[];
 }
 
@@ -136,14 +136,14 @@ export class DockBrainSession {
   #latestReq?: TurnRequest;
 
   // autonomous (task) turn queue — station-originated turns injected into the
-  // same lane (docs/TASKS_V1.md §7a). User turns always win: the drain loop only
+  // same lane (docs/tasks.md §7a). User turns always win: the drain loop only
   // ever starts a task turn in a FREE lane, and a user turn supersedes a running
   // one via the normal handleTurnRequest path.
   #autoQueue: (TurnRequest & { expiresAt?: number; coalesceKey?: string })[] = [];
   #autoDrainTimer: ReturnType<typeof setTimeout> | undefined;
   #draining = false;
 
-  // ── attention-gate state (docs/PERCEPTION-TO-AGENT.md 2.2) ────────────────
+  // ── attention-gate state (docs/perception-to-agent.md 2.2) ────────────────
   // The coarse session state the ThoughtRouter reads. `#speaking` is latched by
   // noteSpeech (TTS playing our last answer). `#listening` (user mid-utterance)
   // has NO real signal yet — the Android recognizer owns the mic — so it is a
@@ -270,7 +270,7 @@ export class DockBrainSession {
    * Set the `listening` flag — user is mid-utterance. STUB seam: today nothing
    * calls this with a real signal (the phone owns the mic and sends only finalized
    * utterances). It exists so the gate is wired + unit-testable now; the real
-   * signal lands with the always-on-mic shift (PERCEPTION-TO-AGENT.md caveat).
+   * signal lands with the always-on-mic shift (perception-to-agent.md caveat).
    */
   setListening(listening: boolean): void {
     this.#listening = listening;
@@ -323,7 +323,7 @@ export class DockBrainSession {
 
   /** Inject a station-originated (task) turn into this dock's lane. The turn only
    *  ever STARTS in a free lane and is superseded by any user turn exactly like a
-   *  normal turn — users are never starved (docs/TASKS_V1.md §7a). */
+   *  normal turn — users are never starved (docs/tasks.md §7a). */
   enqueueAutonomousTurn(req: TurnRequest & { expiresAt?: number; coalesceKey?: string }): void {
     // COALESCE: a task often emits a notify then a finish ~0ms apart (the reminder,
     // then "reminded"). Two back-to-back autonomous turns make the 2nd supersede the
@@ -364,7 +364,7 @@ export class DockBrainSession {
         while (this.#running) { try { await this.#running; } catch { /* unwound */ } }
 
         const settle = num(this.#d.config('brainTaskSettleMs'), 1500);
-        // The PURE gate (docs/PERCEPTION-TO-AGENT.md 2.2) decides run/defer/drop
+        // The PURE gate (docs/perception-to-agent.md 2.2) decides run/defer/drop
         // from state + staleness + the settle gap. It reads the HEAD of the queue
         // (peek, not shift) so a deferred turn stays queued for the next pass.
         const head = this.#autoQueue[0]!;
@@ -437,7 +437,7 @@ export class DockBrainSession {
 
   /** Idle-close check (clock measured from last turn END — an active turn
    *  always resets it, so closing mid-turn is impossible by construction).
-   *  A session with RUNNING TASKS is NOT idle-closed (TASKS_V1 §5): the task
+   *  A session with RUNNING TASKS is NOT idle-closed (tasks §5): the task
    *  keeps it alive, so a reminder/watcher set just before the user went quiet
    *  isn't silently killed by the idle sweep. */
   maybeIdleClose(now = Date.now()): void {
@@ -641,7 +641,7 @@ export class DockBrainSession {
       grounding,
       // a self-thought is the robot's OWN perception/awareness, not a user
       // utterance — frame it so the model doesn't reply "you said…" to itself
-      // and knows it may stay silent (docs/PERCEPTION-TO-AGENT.md 2.1).
+      // and knows it may stay silent (docs/perception-to-agent.md 2.1).
       selfThought: this.#triggerKind === 'self',
     });
     agent.state.model = this.#resolveModel();
@@ -659,7 +659,7 @@ export class DockBrainSession {
       ...buildSlackTools(), // send_to_slack — only when SLACK_BOT_TOKEN is set
       ...buildWhatsAppTools(), // send_to_whatsapp — only when WHATSAPP_TOKEN is set
       // memory tools (recall/inspect/remember/update/forget) — only when the dock's
-      // memory facade is wired (docs/PERCEPTION-TO-AGENT.md Decision 4).
+      // memory facade is wired (docs/perception-to-agent.md Decision 4).
       ...(this.#d.getMemory ? buildMemoryTools(this.dock, this.#d.getMemory) : []),
       ...(this.#skills.tool ? [this.#skills.tool] : []),
       ...(fileAccess ? buildFileTools({ confirm: (s, d) => this.#confirmOnDock(s, d) }) : []),
@@ -683,7 +683,7 @@ export class DockBrainSession {
       streamId,
     };
     // vision-gate bypass for task turns: the triggering frame IS the evidence,
-    // and task text won't match the vision-intent regex (TASKS_V1 §7a).
+    // and task text won't match the vision-intent regex (tasks §7a).
     const gate = VISION_GATE && this.#triggerKind === 'user';
     const content: (TextContent | ImageContent)[] = [{ type: 'text', text: req.trigger.text }];
     if (!gate || isVisionIntent(req.trigger.text)) {
@@ -697,7 +697,7 @@ export class DockBrainSession {
     }
 
     // autonomous:true signals the phone to ADOPT a station-originated turn it
-    // didn't initiate (RemoteBrain.kt — TASKS_V1 §7b).
+    // didn't initiate (RemoteBrain.kt — tasks §7b).
     this.#sendToVoice('turn-status', {
       turnId: req.turnId,
       state: 'accepted',
@@ -836,7 +836,7 @@ export class DockBrainSession {
 
   /** Translate pi loop events → speak frames + status + obs DTOs. NOTE the
    *  vocabulary shift: current upstream pi calls one LLM call+tools a "turn"
-   *  and the whole prompt() run "agent_*" — our obs model (AGENT-MODEL.md)
+   *  and the whole prompt() run "agent_*" — our obs model (agent-model.md)
    *  calls those Step and Turn; mapped here. */
   #onAgentEvent(event: AgentEvent): void {
     switch (event.type) {

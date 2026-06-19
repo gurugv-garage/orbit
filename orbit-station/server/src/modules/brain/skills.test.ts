@@ -1,5 +1,5 @@
 /**
- * Per-dock Skills (docs/SERVER-BRAIN-SELFMOD.md §1a):
+ * Per-dock Skills (docs/decision-traces/server-brain-selfmod.md §1a):
  *  - install/list/remove round-trip + path-containment guard + bad-frontmatter
  *    rejection (the REST helpers);
  *  - an installed skill reaches the MODEL: its name+description ride the system

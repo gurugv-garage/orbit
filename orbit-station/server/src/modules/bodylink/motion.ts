@@ -1,5 +1,5 @@
 /**
- * MotionExecutor — the body's single master (docs/SERVER-BRAIN-IMPL.md §3.2).
+ * MotionExecutor — the body's single master (docs/decision-traces/server-brain-impl.md §3.2).
  *
  * The brain's `move`/gesture tools and the console both come through here, in
  * one process — the dual-master conflict (phone vs console) is gone by

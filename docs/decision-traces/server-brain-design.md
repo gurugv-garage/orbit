@@ -1,21 +1,24 @@
+> **DECISION TRACE (historical).** Current canonical agent doc: [../agent-model.md](../agent-model.md).
+> Original design + risk analysis for moving the brain off the phone — kept for the reasoning.
+
 # Server-side brain — moving the dock's agent loop to orbit-station
 
 **Status: design + risk analysis (2026-06-11).** This is the exploration
 behind moving the LLM agentic orchestration off the phone (node-dock/app, the
 vendored Kotlin pi port) onto orbit-station (Node/TS, embedding the original
 TypeScript [pi](https://github.com/earendil-works/pi)), with the phone
-becoming perception + actuation. Companion to [plan.md](plan.md) §5/§10 and
-[MEDIA-PROCESSING.md](MEDIA-PROCESSING.md).
+becoming perception + actuation. Companion to [PLAN.md](../PLAN.md) §5/§10 and
+[media-processing.md](../media-processing.md).
 
 > **Superseded in part (2026-06-12):** the production implementation plan is
-> [SERVER-BRAIN-IMPL.md](SERVER-BRAIN-IMPL.md). Three decisions changed from
+> [SERVER-BRAIN-IMPL.md](server-brain-impl.md). Three decisions changed from
 > the experiment framing below: it is a **full cutover with no Kotlin
 > fallback** (no `brainMode` flag; the phone loop is deleted at cleanup);
 > **reconnection handling is a first-class requirement** (designed and tested
 > explicitly, not best-effort); and **the station drives the body directly**
 > — the ESP32 becomes client-only (one WS server in the whole system), the
 > `move` tool executes in-process at the station, and the phone never talks
-> to the firmware (see the plan.md "One WebSocket server" decision). It is a
+> to the firmware (see the PLAN.md "One WebSocket server" decision). It is a
 > big-bang cutover — no compatibility windows. The analysis, STT/TTS
 > placement, and perf numbers below still stand (move-bearing turns get
 > *faster* than analyzed: no tool RPC for motion). The §5 session model is
@@ -49,7 +52,7 @@ The phone's loop works, but every brain iteration is an APK sideload; models
 are limited to two hand-rolled transports (Ollama NDJSON + OpenAI SSE); API
 keys ship inside the APK; conversation history dies with the app process; and
 the station — which already runs face recognition and sees every dock — can't
-contribute anything to the prompt. Per plan.md §10 ("move only when latency,
+contribute anything to the prompt. Per PLAN.md §10 ("move only when latency,
 capability, or complexity force it"): **capability is the driver here** —
 latency is roughly break-even (§7), and iteration speed, real providers,
 durable sessions, and perception fusion are the wins.
@@ -241,7 +244,7 @@ transcript-only debugging.
 
 **Option B — server media brain.** Uplink is half-built: the SFU already
 receives the dock's Opus and the `ProcessingHub` is a `MediaTap` designed for
-an STT sidecar ([MEDIA-PROCESSING.md](MEDIA-PROCESSING.md)). But: server VAD
+an STT sidecar ([media-processing.md](../media-processing.md)). But: server VAD
 endpointing replaces Silero-on-device; wake word either stays on-device
 (gating when audio "counts") or goes always-streaming (battery/privacy);
 utterance-final whisper *loses* Android's streaming partials (~+300–800ms to
@@ -416,6 +419,6 @@ station mode.
 | station | [`server/src/core/protocol.ts`](../orbit-station/server/src/core/protocol.ts) | add the `agent` topic; the wire contract |
 | station | [`server/src/modules/perception/index.ts`](../orbit-station/server/src/modules/perception/index.ts) | the directed `reqId` RPC pattern to replicate; face tools to call in-process |
 | station | [`server/src/modules/config/registry.ts`](../orbit-station/server/src/modules/config/registry.ts) | the `brainMode` flag |
-| phone | [`DockAgent.kt`](../node-dock/app/app/src/main/kotlin/dev/orbit/dock/agent/DockAgent.kt) | the loop being ported: prompt grounding, `sanitizeHistory`, sentence streaming, cancel semantics |
-| phone | [`StationLink.kt`](../node-dock/app/app/src/main/kotlin/dev/orbit/dock/station/StationLink.kt) | WS plumbing to extend with the `agent` topic |
+| phone | [`DockAgent.kt`](../../node-dock/app/app/src/main/kotlin/dev/orbit/dock/agent/DockAgent.kt) | the loop being ported: prompt grounding, `sanitizeHistory`, sentence streaming, cancel semantics |
+| phone | [`StationLink.kt`](../../node-dock/app/app/src/main/kotlin/dev/orbit/dock/station/StationLink.kt) | WS plumbing to extend with the `agent` topic |
 | upstream | [github.com/earendil-works/pi](https://github.com/earendil-works/pi) | `@earendil-works/pi-agent-core` + `pi-ai` (MIT) |

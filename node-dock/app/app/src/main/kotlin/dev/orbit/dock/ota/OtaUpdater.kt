@@ -24,7 +24,7 @@ import java.security.DigestInputStream
 import java.security.MessageDigest
 
 /**
- * App self-update over OTA (docs/OTA.md §5). Given an `ota/available` offer
+ * App self-update over OTA (docs/ota.md §5). Given an `ota/available` offer
  * from the station, downloads the APK, verifies its sha256, and installs it via
  * [PackageInstaller]. As **device owner** the install is silent (no tap); else
  * the system shows a confirm dialog. Android independently refuses any APK not
@@ -198,7 +198,7 @@ class OtaUpdater(
                         // Update applied; Android now kills us. Relaunch is NOT
                         // done here (the dying process races the kill) — the new
                         // post-update process gets MY_PACKAGE_REPLACED and
-                        // RelaunchReceiver starts the app back up. See docs/OTA.md §5.
+                        // RelaunchReceiver starts the app back up. See docs/ota.md §5.
                         Timber.i("OTA: install succeeded — RelaunchReceiver will restart the new build")
                     else -> {
                         val msg = intent.getStringExtra(PackageInstaller.EXTRA_STATUS_MESSAGE)

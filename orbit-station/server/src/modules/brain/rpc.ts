@@ -3,7 +3,7 @@
  *
  * The brain's phone-surface tools (set_face today) execute remotely: the
  * broker publishes a directed `tool-call` on the `agent` topic and resolves
- * the matching `tool-result` by reqId. Semantics (docs/SERVER-BRAIN-IMPL.md §2):
+ * the matching `tool-result` by reqId. Semantics (docs/decision-traces/server-brain-impl.md §2):
  *
  *   - fire-and-forget actuation: the device acks instantly after dispatching;
  *     one LAN RTT per call, never actuation-travel time.

@@ -1,6 +1,6 @@
 # Plugging perception into the dock agent — design
 
-> How the always-on perception pipeline ([PERCEPTION-PIPELINE.md](PERCEPTION-PIPELINE.md))
+> How the always-on perception pipeline ([perception-pipeline.md](perception-pipeline.md))
 > feeds the dock's brain agent (`modules/brain/`): grounding, memory, and — the hard
 > part — **internal thoughts** the agent raises for itself.
 >

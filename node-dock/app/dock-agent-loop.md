@@ -1,7 +1,7 @@
 > **SUPERSEDED (2026-06): the loop described here moved to the station.**
 > `DockAgent` and the on-phone loop were deleted in the server-brain
 > cutover — the semantics below now live in
-> `orbit-station/server/src/modules/brain/` (see docs/SERVER-BRAIN-IMPL.md).
+> `orbit-station/server/src/modules/brain/` (see docs/decision-traces/server-brain-impl.md).
 > Kept as the design record of those semantics.
 
 # The dock agent loop — lifecycle, state machines, mechanics
@@ -13,7 +13,7 @@ should *feel* (narration rules, restraint, tunables, acceptance criteria) see
 [UX.md](UX.md).
 
 **Vocabulary** (session / turn / step / LLM call) is owned by `:agent-core` and
-defined in [agent-core/AGENT-MODEL.md](agent-core/AGENT-MODEL.md); the dock
+defined in [../../docs/agent-model.md](../../docs/agent-model.md); the dock
 **adopts** it. In short: a **turn** is one `prompt()` (the dock's complete
 response to one trigger); a **step** is one LLM call + its tool executions; a turn
 is 1+ steps, so a tool-using turn makes multiple LLM calls. A **session** is the
@@ -54,7 +54,7 @@ DockAgent streams prose to **DockTts** (`speak()`) and fires body/face tools;
 ## Terminology (adopted from agent-core)
 
 The **session / turn / step / LLM call** vocabulary is defined in
-[agent-core/AGENT-MODEL.md](agent-core/AGENT-MODEL.md). What the dock pins down on
+[../../docs/agent-model.md](../../docs/agent-model.md). What the dock pins down on
 top of that abstract model:
 
 - **Trigger** — today a turn is triggered by the user **speaking** or **typing**
@@ -70,7 +70,7 @@ top of that abstract model:
 > **Disambiguation:** a **step** (one LLM call + its tools) is unrelated to a
 > `move_sequence` **motion step** (one servo move); context distinguishes them.
 > And the mic's "listening window" (one armed `SpeechRecognizer` shot) is a
-> perception concept — *not* a [Session](agent-core/AGENT-MODEL.md).
+> perception concept — *not* a [Session](../../docs/agent-model.md).
 
 ---
 
@@ -106,7 +106,7 @@ the state machines that bracket the turn.
 
 The dock does **not** implement the tool-calling loop itself. It delegates to the
 dock-agnostic `:agent-core` module (our own engine; see its
-[AGENT-MODEL.md](agent-core/AGENT-MODEL.md)). Here we rely only on its
+[agent-model.md](../../docs/agent-model.md)). Here we rely only on its
 **interface** — what you call and what you get back — not how it works inside:
 
 - **In:** you configure it (with a prompt, a model, tools, and a transport — the
@@ -283,7 +283,7 @@ Owner: [`PerceptionPipeline`](app/src/main/kotlin/dev/orbit/dock/perception/Perc
 
 > The perception code calls this a "session" (`sessionActive`, `onSessionStarted`,
 > `session_ended`) — a **mic listening window**, *not* the conversational
-> [Session](agent-core/AGENT-MODEL.md) (shared message history). They're
+> [Session](../../docs/agent-model.md) (shared message history). They're
 > orthogonal; the name overlap is historical.
 
 ```

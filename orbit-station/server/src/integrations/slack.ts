@@ -15,7 +15,7 @@
  * offered to the model (so it never claims an ability it can't perform).
  *
  * SETUP (how to get a token): see orbit-station/README.md "Slack" and the
- * docs/SLACK.md walkthrough.
+ * docs/slack.md walkthrough.
  */
 
 import { readFile } from 'node:fs/promises';

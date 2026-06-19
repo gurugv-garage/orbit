@@ -5,7 +5,7 @@ import android.content.ComponentName
 import android.content.Context
 
 /**
- * Device-admin receiver for OTA self-update (docs/OTA.md §5.1).
+ * Device-admin receiver for OTA self-update (docs/ota.md §5.1).
  *
  * We don't use admin *policies*; this exists so the app can be made the
  * **device owner** via a one-time `adb shell dpm set-device-owner

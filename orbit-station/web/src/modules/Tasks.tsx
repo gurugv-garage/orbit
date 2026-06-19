@@ -4,7 +4,7 @@ import { useDocks, useNow, relTime } from '../lib/useDocks';
 import type { TaskInstance, TaskState } from '../lib/protocol';
 
 /**
- * Tasks console (docs/TASKS_V1.md) — every background task INSTANCE across all
+ * Tasks console (docs/tasks.md) — every background task INSTANCE across all
  * docks: which are still running, how long each has run, the parent session it's
  * tied to, its params, and (on expand) its live status, log tail, and source.
  *
@@ -61,7 +61,7 @@ export function Tasks() {
     <section>
       <h2 className="title">Tasks</h2>
       <p className="subtitle">
-        Background jobs the dock brain runs as separate processes (<code>docs/TASKS_V1.md</code>).
+        Background jobs the dock brain runs as separate processes (<code>docs/tasks.md</code>).
         Each instance is its own process tied to the session that spawned it.
       </p>
 

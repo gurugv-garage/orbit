@@ -8,7 +8,7 @@ implementation serves.
 **Living document — optimize for a natural feel, iterate freely.** Tunables are
 called out explicitly so changing the feel is cheap. This is the *behavior /
 feel* spec; for the *mechanics* it serves — the turn lifecycle, the
-[terminology](agent-core/AGENT-MODEL.md) (session / turn / step / LLM call), the
+[terminology](../../docs/agent-model.md) (session / turn / step / LLM call), the
 state machines, how `DockAgent` drives the loop and runs speech + motion in
 parallel — see [dock-agent-loop.md](dock-agent-loop.md). Read that first; don't
 duplicate it here.

@@ -16,7 +16,7 @@ machines + agent mechanics) in [dock-agent-loop.md](dock-agent-loop.md); the int
 - **SDK:** minSdk 26 (Android 8.0) · targetSdk 35 (Android 15) · JDK 21.
 - **Dev target:** AVD (Pixel 3a API 35 arm64) **and** physical Android device. Use `10.0.2.2:<port>` from AVD or the laptop's LAN IP from a real phone.
 - **LLM endpoint:** **Ollama local-first** (`OLLAMA_BASE_URL` + `OLLAMA_MODEL` in `local.properties`), **OpenRouter fallback chain** when Ollama is empty/unreachable. Streaming. Model comparison + current pick: [bench/README.md](bench/README.md).
-- **Agent framework:** our own **`:agent-core`** loop (pure-JVM: loop + tools + sessions; vocabulary in [agent-core/AGENT-MODEL.md](agent-core/AGENT-MODEL.md)). `DockAgent` is a thin facade; `DockStreamFn` (in `dev/orbit/dock/llm/`) is the transport. (Koog was evaluated and dropped — this loop is lighter and Android-free.)
+- **Agent framework:** our own **`:agent-core`** loop (pure-JVM: loop + tools + sessions; vocabulary in [../../docs/agent-model.md](../../docs/agent-model.md)). `DockAgent` is a thin facade; `DockStreamFn` (in `dev/orbit/dock/llm/`) is the transport. (Koog was evaluated and dropped — this loop is lighter and Android-free.)
 - **STT:** Android `SpeechRecognizer` (Google on-device) on real devices; **dev bypass via text input** for emulator + scripted testing.
 - **TTS:** Android `TextToSpeech` (sentence-boundary chunked), also rendered as a subtitle on the face.
 - **Camera + gaze:** MediaPipe FaceMesh, works in emulator via AVD `Webcam0` and on the physical front camera.

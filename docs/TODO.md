@@ -1,6 +1,6 @@
 # orbit — TODO
 
-Progress tracker for the orbit platform. Pieces per `plan.md`: **node-rover** (mobile robot), **node-dock** (desk companion), **plat** (central agent + WebRTC SFU). Within each: sim → real hardware. Check items as they ship.
+Progress tracker for the orbit platform. Pieces per `PLAN.md`: **node-rover** (mobile robot), **node-dock** (desk companion), **plat** (central agent + WebRTC SFU). Within each: sim → real hardware. Check items as they ship.
 
 Legend: `[x]` done · `[~]` in progress · `[ ]` not started · `[?]` open question/blocked
 
@@ -71,7 +71,7 @@ Legend: `[x]` done · `[~]` in progress · `[ ]` not started · `[?]` open quest
   — Earlier stub agent_node was removed alongside the arm stub.
 
 ### 1.5 Hardware (later — sim must be solid first)
-- [ ] BOM purchased per `plan.md` Section 3
+- [ ] BOM purchased per `PLAN.md` Section 3
 - [ ] Pi 4 imaged, ROS2 Jazzy + linorobot2 packages installed on it
 - [ ] Pi Pico flashed with linorobot2 firmware
 - [ ] Motor + encoder + DRV8833 wired; `test_motors` calibration done
@@ -132,7 +132,7 @@ Legend: `[x]` done · `[~]` in progress · `[ ]` not started · `[?]` open quest
 - [ ] Mute-other-rooms during TTS to prevent cross-room AEC issues
 - [ ] NTP sync across all phones validated
 
-### 2.3 Hardening (per `plan.md` Section 4 risks)
+### 2.3 Hardening (per `PLAN.md` Section 4 risks)
 - [ ] VLAN for phones; outbound internet blocked at router
 - [ ] Static IPs configured per phone
 - [ ] Wi-Fi watchdog automation per node (auto-recover from stale DNS / DHCP failures)
@@ -145,7 +145,7 @@ Legend: `[x]` done · `[~]` in progress · `[ ]` not started · `[?]` open quest
 - [ ] Replacement schedule documented (~18 months expected)
 - [ ] CI: build app against next Android beta to catch API regressions early
 
-### 2.5 Self-update (OTA) — see [OTA.md](OTA.md)
+### 2.5 Self-update (OTA) — see [ota.md](ota.md)
 - [x] orbit-station `ota` module: artifact store, REST (serve/build/announce),
   version-compare on connect + heartbeat, tmux-backed builds, release notes
 - [x] Console Updates tab: per-target cards, trigger buttons, live phase bar,
@@ -174,7 +174,7 @@ Legend: `[x]` done · `[~]` in progress · `[ ]` not started · `[?]` open quest
 > plane** is built (`orbit-station/`, Node/TS): one WebSocket, browser UI, and
 > modules — observability (agent-core trace ingest), config push, bodylink
 > console, `mind` stub, bench viewer (moved from `node-dock/app/bench`), ota
-> (self-update for body + app, [OTA.md](OTA.md)). See
+> (self-update for body + app, [ota.md](ota.md)). See
 > `orbit-station/README.md` + `TESTING.md` and decision log "orbit-station
 > split". The **media pipeline below** (WebRTC/STT/TTS) is a deferred separate
 > sidecar — the checkboxes still stand for that.
@@ -189,7 +189,7 @@ Legend: `[x]` done · `[~]` in progress · `[ ]` not started · `[?]` open quest
 - [x] Wire real producers: dock app (device) + ESP32 firmware dial the station
   over WS — both verified live (app reports build/heartbeat, ESP32 sends
   profile/state + obeys console commands)
-- [x] OTA module + Updates console tab (self-update for body + app, [OTA.md](OTA.md))
+- [x] OTA module + Updates console tab (self-update for body + app, [ota.md](ota.md))
 - [x] Config: flat global keys + per-peer interest push + build-time bake
 - [ ] `mind` gains triggers (rules, then maybe LLM supervisor)
 - [ ] HTTPS in real deployment; auth on the WS for non-LAN
@@ -237,7 +237,7 @@ Legend: `[x]` done · `[~]` in progress · `[ ]` not started · `[?]` open quest
 
 ## 4 · Behaviors (end-user-visible)
 
-Per `plan.md` Section 2 capability table:
+Per `PLAN.md` Section 2 capability table:
 
 - [ ] Always-on listen + speak in one room
 - [ ] Free-form conversation
@@ -254,7 +254,7 @@ Per `plan.md` Section 2 capability table:
 
 ## 5 · Backlog — features parked for later
 
-Features identified but deferred. See [`plan.md`](plan.md) §10 ("Where features
+Features identified but deferred. See [`PLAN.md`](PLAN.md) §10 ("Where features
 live") for the lens used to evaluate where each lives. Each is sized rough-T-shirt
 (S/M/L) and tagged with the most likely host: **dock**, **rover**, **plat**,
 or **shared**.
@@ -315,7 +315,7 @@ or **shared**.
 
 ---
 
-## 6 · Open questions (from plan.md Section 8)
+## 6 · Open questions (from PLAN.md Section 8)
 
 ### node-rover
 - [?] Cliff sensors — add proactively or defer until autonomy reveals need

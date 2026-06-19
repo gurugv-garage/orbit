@@ -87,7 +87,7 @@ Hardware lessons (the painful ones, in case they bite again): [body-firmware/doc
 | change the firmware | [body-firmware/dock_body_v0/progress.md](body-firmware/dock_body_v0/progress.md) |
 | work on the Android app (face, agent, LLM, perception) | [app/PLAN.md](app/PLAN.md) |
 | understand a turn (utterance → speech + motion; state machines) | [app/dock-agent-loop.md](app/dock-agent-loop.md) |
-| the agent model + vocabulary (session/turn/step) | [docs/AGENT-MODEL.md](../docs/AGENT-MODEL.md) |
+| the agent model + vocabulary (session/turn/step) | [docs/agent-model.md](../docs/agent-model.md) |
 | build / wire / 3D-print the physical dock | [hardware/README.md](hardware/README.md) |
 | compare LLMs as the dock brain (runnable harness) | [app/bench/README.md](app/bench/README.md) |
 
@@ -167,7 +167,7 @@ node-dock/
 │   ├── agent-core/             :agent-core — pure-JVM Gradle module: the agentic
 │   │                           runtime (loop + tools + sessions). No Android/Ktor;
 │   │                           independent + reusable. Owns the agent vocabulary —
-│   │                           see agent-core/AGENT-MODEL.md.
+│   │                           see ../docs/agent-model.md.
 │   ├── bench/                  :bench — runnable LLM benchmark harness (pure-JVM).
 │   │                           Drives models through the real transport + tool
 │   │                           schemas. See app/bench/README.md.

@@ -1,6 +1,6 @@
 /**
  * OTA artifact store — the on-disk source of truth for "what's the latest"
- * per target. See docs/OTA.md §2.1 + §3.3.
+ * per target. See docs/ota.md §2.1 + §3.3.
  *
  *   var/ota/
  *     body/  firmware.bin  meta.json
@@ -25,7 +25,7 @@ export interface OtaMeta {
   /** monotonic compare integer — the gate AND the device's wire identity. */
   build: number;
   /**
-   * Station-owned build metadata (devices never send these — docs/OTA.md §3):
+   * Station-owned build metadata (devices never send these — docs/ota.md §3):
    *   version — human label (SemVer-ish), optional
    *   notes   — release details entered at build time
    *   builtAt — ISO timestamp the artifact was produced

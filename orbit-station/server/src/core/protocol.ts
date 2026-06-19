@@ -10,7 +10,7 @@
  * announces itself with `hello`, then subscribes to topics. The hub fans out
  * `event` frames to every subscriber of a topic. Modules own their topics.
  *
- * ## Identity model (hello v2 — see docs/SERVER-BRAIN-IMPL.md §2)
+ * ## Identity model (hello v2 — see docs/decision-traces/server-brain-impl.md §2)
  *
  * A **dock** is the tenant: a named composition of components ("anne-bot" =
  * phone + body; the rover = a dock whose parts declare drive/nav). Four
@@ -39,7 +39,7 @@ export type Topic =
   | 'bodylink'     // body command path: set_target in, applied/state/digest out
   | 'mind'         // mind module's awareness/announcements (stub for now)
   | 'station'      // station-level: peer presence, dock directory, health
-  | 'ota'          // self-update: availability offers + progress/result (docs/OTA.md)
+  | 'ota'          // self-update: availability offers + progress/result (docs/ota.md)
   | 'media'        // WebRTC live A/V: SDP/ICE signaling for the in-process SFU
   | 'client'       // dock → station client facts (battery, on-device vad/face)
   | 'agent'        // the dock brain: transcripts/turns up, tool-calls/speak down
@@ -77,7 +77,7 @@ export interface HelloFrame {
   /** Optional human label for the console. */
   label?: string;
   /**
-   * OTA gate (docs/OTA.md §3): monotonic build number of the running artifact
+   * OTA gate (docs/ota.md §3): monotonic build number of the running artifact
    * (app: versionCode; firmware: BL_FW_BUILD). The ONLY version a device sends —
    * the station owns build→label metadata (release notes, build time) in its
    * meta.json. The ota module compares this against the latest artifact to
@@ -164,7 +164,7 @@ export interface DockComponent {
   ip?: string;
   /** ms epoch of the last frame seen from this component (incl. heartbeats). */
   lastSeen?: number;
-  /** OTA running build (docs/OTA.md §3) — the device's monotonic version. */
+  /** OTA running build (docs/ota.md §3) — the device's monotonic version. */
   build?: number;
   /** mesh links this component reports in its heartbeat. */
   links?: Record<string, boolean>;

@@ -4,9 +4,9 @@
 > order, how to verify each one, and how to exercise the whole perception→agent chain
 > end-to-end** — on the console and on a real phone. Plus what's still left to build.
 >
-> Design/decisions live elsewhere: the pipeline ([PERCEPTION-PIPELINE.md](PERCEPTION-PIPELINE.md)),
-> the agent plug-in ([PERCEPTION-TO-AGENT.md](PERCEPTION-TO-AGENT.md)), the SFU/tap
-> ([MEDIA-PROCESSING.md](MEDIA-PROCESSING.md)). This doc is "make it go + check it."
+> Design/decisions live elsewhere: the pipeline ([perception-pipeline.md](../perception-pipeline.md)),
+> the agent plug-in ([perception-to-agent.md](../perception-to-agent.md)), the SFU/tap
+> ([media-processing.md](../media-processing.md)). This doc is "make it go + check it."
 
 ---
 
@@ -243,7 +243,7 @@ Server-side Phases 1–5 are complete + tested. Outstanding:
   **segmentation** (what exact text a turn carries), and the gate's **conversation-relevance
   tier** (currently `signals.relevance` is always undefined). Plus **echo cancellation +
   voice barge-in** ship with it. Substantial app work; its own design pass —
-  see [PERCEPTION-TO-AGENT.md](PERCEPTION-TO-AGENT.md) Decision 2b/2c + Open questions.
+  see [perception-to-agent.md](../perception-to-agent.md) Decision 2b/2c + Open questions.
 - **Gate LLM-judge tier.** The gate is cheap-rules only (arrival/emotion). The pyramid's
   next tier is a small-LLM judge that decides "worth interjecting?" from richer context —
   upgrade over the rules, gated by A1 for the conversation half.
@@ -253,7 +253,7 @@ Server-side Phases 1–5 are complete + tested. Outstanding:
 - **Memory follow-up:** retention/rollup tiers (how long raw vs summaries; per-dock
   budgets); the **gallery → unified-store migration** (the face gallery still runs as its
   own JSON, coupled to the module but not yet a `type:'person'` view over the memory store
-  — [PERCEPTION-TO-AGENT.md](PERCEPTION-TO-AGENT.md) 4.5/4.6); grounding's memory-selection
+  — [perception-to-agent.md](../perception-to-agent.md) 4.5/4.6); grounding's memory-selection
   (which memories to inject by recency × relevance × confidence).
 - **Face-stream stability** (§5): the intermittent identity tap. A perception-pipeline fix,
   independent of the agent work.

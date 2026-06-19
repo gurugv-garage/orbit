@@ -1,6 +1,6 @@
 /**
  * The dock brain's tools — schemas from schemas.ts (the single model-facing
- * copy), execution wired per the placement table (docs/SERVER-BRAIN-IMPL.md §1):
+ * copy), execution wired per the placement table (docs/decision-traces/server-brain-impl.md §1):
  *
  *   set_face   phone RPC (it's the screen) + in-process gesture choreography
  *   move       in-process MotionExecutor → directed set_target to the body
@@ -98,7 +98,7 @@ function tool(
 }
 
 /**
- * Cross-dock tools, by GRANT (docs/SERVER-BRAIN-IMPL.md §2 "cross-dock
+ * Cross-dock tools, by GRANT (docs/decision-traces/server-brain-impl.md §2 "cross-dock
  * interactions"): tool exposure is policy, not possibility. `brainGrants`
  * (config, json) maps  { <thisDock>: { <targetDock>: [caps…] } } — a dock's
  * brain gets a `move_<target>` tool ONLY for targets granted 'servo'. The
@@ -215,7 +215,7 @@ function fmtMemory(m: MemoryRow): string {
 }
 
 /**
- * The MEMORY tools (docs/PERCEPTION-TO-AGENT.md 3.2 + Decision 4) — the agent's
+ * The MEMORY tools (docs/perception-to-agent.md 3.2 + Decision 4) — the agent's
  * discover/recall/inspect/mutate surface over its unified per-dock memory. Built
  * conditionally (empty when the memory facade isn't wired), mirroring the Slack/
  * WhatsApp tool sets. Every tool maps to a natural agent intent.
@@ -375,7 +375,7 @@ export function buildDockTools(deps: ToolDeps): AgentTool<any>[] {
       return textResult(`Recording ${seconds}s of video now — I'll share it${dest} when it's ready.`);
     }),
 
-    // PERCEPTION (docs/PERCEPTION-TO-AGENT.md 3.2). force_get_current: flush + a fresh
+    // PERCEPTION (docs/perception-to-agent.md 3.2). force_get_current: flush + a fresh
     // summary of the live moment. Offered only when the grounding facade is wired.
     ...(deps.getGrounding ? [
       tool('force_get_current', S.FORCE_GET_CURRENT_DESC, S.forceGetCurrentSchema, async () => {

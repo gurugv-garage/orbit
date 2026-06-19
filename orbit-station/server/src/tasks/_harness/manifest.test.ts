@@ -1,5 +1,5 @@
 /**
- * Manifest input-schema validation (docs/TASKS_V1.md §2, §6, §11.E) — required
+ * Manifest input-schema validation (docs/tasks.md §2, §6, §11.E) — required
  * presence, defaults, coarse type checks, duration parsing.
  */
 import { test } from 'node:test';

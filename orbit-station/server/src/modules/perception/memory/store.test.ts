@@ -1,5 +1,5 @@
 /**
- * MemoryStore (docs/PERCEPTION-TO-AGENT.md Decision 4) — the unified per-dock
+ * MemoryStore (docs/perception-to-agent.md Decision 4) — the unified per-dock
  * evolving memory. Tested against an in-memory sqlite + a deterministic fake
  * embedder (no file, no network): remember/get, revise→supersede chain (history
  * kept), forget, structured recall (type/subject/interval), semantic cosine

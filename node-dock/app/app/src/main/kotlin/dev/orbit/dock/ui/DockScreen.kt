@@ -105,7 +105,7 @@ fun DockScreen() {
             onTurnSettled = { wiringRef.value?.clearTranscript() },
         ).also { dev.orbit.dock.agent.ToolsTestController.tools = it }
     }
-    // OTA self-update (docs/OTA.md §5). Holds a forward ref so onOtaOffer below
+    // OTA self-update (docs/ota.md §5). Holds a forward ref so onOtaOffer below
     // can hand offers to it; the updater publishes progress/result back via the
     // station link. Silent install when the app is device-owner, else a system
     // confirm dialog.

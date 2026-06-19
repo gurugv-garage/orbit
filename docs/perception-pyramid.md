@@ -10,7 +10,7 @@
 >
 > The **as-built** tier-1 pipeline (the four snapshot streams + summarizer) and the
 > reasoning behind each component:
-> [docs/PERCEPTION-PIPELINE.md](PERCEPTION-PIPELINE.md).
+> [docs/perception-pipeline.md](perception-pipeline.md).
 
 ## The shift
 

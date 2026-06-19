@@ -1,8 +1,11 @@
+> **DECISION TRACE (historical).** Current canonical agent doc: [../agent-model.md](../agent-model.md).
+> pi-native extension surface (Skills, coding tools) — kept for detail.
+
 # Server brain — extension capabilities (pi-native)
 
 How the dock brain is *extended* — using **only the extension surface pi.dev
 documents** ([pi.dev/docs/latest](https://pi.dev/docs/latest)). This is the
-companion to [SERVER-BRAIN-IMPL.md](SERVER-BRAIN-IMPL.md) (the conversational/
+companion to [SERVER-BRAIN-IMPL.md](server-brain-impl.md) (the conversational/
 embodiment agent) and inherits its tenancy, grants, and lifecycle model.
 
 **Scope rule for this doc: nothing new is invented here.** Every capability
@@ -86,7 +89,7 @@ Everything below is one of those three. Nothing else.
 
 ## 1. The three exposable capabilities (pi-native), each grant-gated
 
-The `brainGrants` doctrine generalizes ([IMPL.md §2](SERVER-BRAIN-IMPL.md)):
+The `brainGrants` doctrine generalizes ([IMPL.md §2](server-brain-impl.md)):
 **exposure is policy, not possibility.** A new config family `brainExtensions`
 (json, default all-false per dock) gates each pi feature independently:
 

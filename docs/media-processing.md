@@ -151,7 +151,7 @@ Both implement the same `MediaTap` interface, so you can start in-process and mo
 to a sidecar later by swapping which tap `index.ts` constructs — the SFU,
 signaling, dock, and browser are untouched. This mirrors the module's own
 "process-portable" design (the whole `media` module can move to a sidecar too; see
-plan.md "Design rule").
+PLAN.md "Design rule").
 
 ---
 

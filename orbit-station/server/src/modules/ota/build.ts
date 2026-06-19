@@ -1,5 +1,5 @@
 /**
- * tmux-backed build runner. See docs/OTA.md §2.4.
+ * tmux-backed build runner. See docs/ota.md §2.4.
  *
  * A build is NOT a detached child of the Node process (a black box when it
  * hangs). It runs in a NAMED tmux session so a human can `tmux attach` to the
@@ -19,7 +19,7 @@ import { join } from 'node:path';
 import type { OtaTarget } from './store.js';
 
 const STATION_ROOT = fileURLToPath(new URL('../../../../', import.meta.url));
-/** The hook scripts the build sessions run. docs/OTA.md §2.3. */
+/** The hook scripts the build sessions run. docs/ota.md §2.3. */
 const HOOK = (target: OtaTarget) => join(STATION_ROOT, 'scripts', `build-${target}.sh`);
 
 export const sessionName = (target: OtaTarget) => `ota-build-${target}`;
@@ -47,7 +47,7 @@ async function hasSession(target: OtaTarget): Promise<boolean> {
 
 /**
  * True only if a build is ACTIVELY running. A finished build's session lingers
- * (it ends in `exec bash` so you can attach to debug — docs/OTA.md §2.4), so
+ * (it ends in `exec bash` so you can attach to debug — docs/ota.md §2.4), so
  * "session exists" alone over-reports. We treat a session whose tmux pane
  * already shows the "[exit N]" marker as NOT running — it's just lingering.
  */
@@ -105,7 +105,7 @@ export async function launchBuild(
   // The session: run the hook, tee to the log, then APPEND the exit marker to
   // the SAME log (not just the pane) — the watch loop tails the log for it.
   // Finally drop into a lingering shell so a failed build is inspectable on
-  // attach (docs/OTA.md §2.4).
+  // attach (docs/ota.md §2.4).
   const inner =
     `bash ${HOOK(target)} 2>&1 | tee ${logPath}; ` +
     `echo "[exit \${PIPESTATUS[0]}] — session stays open for inspection" | tee -a ${logPath}; ` +
