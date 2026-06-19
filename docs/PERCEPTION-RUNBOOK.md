@@ -47,6 +47,14 @@ summarizer + memory embeddings — needs `GEMINI_API_KEY` in `.env`).
 
 ### 2a. The two MLX sidecars (Apple Silicon)
 
+> **Easiest: the console.** Once the station is up, the **Perception Studio**
+> (`/#perception`) has a **⚙ Sidecars** bar at the top — a status pill per sidecar
+> (up/down + model + latency) with **▶ start / ↻ restart / ■ stop** buttons. It spawns/
+> kills the processes for you (resolves the real python interpreter; stops a hand-started
+> one by port). The CLI below is the equivalent if you'd rather not open the console.
+> Status + control also exposed as `GET /api/perception/sidecars` and
+> `POST /api/perception/sidecars/:name/{start,stop,restart}` (`:name` = `vision`|`speech`).
+
 ```bash
 cd /Users/guru/garage/orbit/models/perception-sidecar
 

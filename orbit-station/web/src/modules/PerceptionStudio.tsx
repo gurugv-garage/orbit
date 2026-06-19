@@ -65,6 +65,12 @@ interface TakeMeta {
   counts: { vision: number; speech: number; identity: number; emotion: number; bodymotion: number; keyframes: number };
 }
 
+/** GET /api/perception/sidecars — health of the two MLX apps. */
+interface SidecarHealth {
+  name: string; kind: string; url: string; up: boolean;
+  model?: string | null; latencyMs?: number; error?: string;
+}
+
 export function PerceptionStudio() {
   const client = useStationClient();
   const [publishing, setPublishing] = useState(false);
@@ -85,6 +91,10 @@ export function PerceptionStudio() {
   // Frozen-take A/B replay: saved bundles + which one is loaded (null = live).
   const [takes, setTakes] = useState<TakeMeta[]>([]);
   const [activeTake, setActiveTake] = useState<string | null>(null);
+  // Sidecar health (the two MLX apps — the only out-of-process pieces). Polled so
+  // the studio shows up/down + model, with start/stop/restart buttons.
+  const [sidecars, setSidecars] = useState<SidecarHealth[]>([]);
+  const [sidecarBusy, setSidecarBusy] = useState<string | null>(null); // "<name>:<op>"
 
   const pcRef = useRef<RTCPeerConnection | null>(null);
   const mediaRef = useRef<MediaStream | null>(null);
@@ -109,6 +119,28 @@ export function PerceptionStudio() {
     const t = setInterval(load, 1500);
     return () => { alive = false; clearInterval(t); };
   }, [activeTake]);
+
+  // Poll sidecar health (every 4s — a /health ping each; cheap).
+  useEffect(() => {
+    let alive = true;
+    const load = () => api.get<SidecarHealth[]>('/perception/sidecars')
+      .then((r) => { if (alive) setSidecars(r); }).catch(() => {});
+    load();
+    const t = setInterval(load, 4000);
+    return () => { alive = false; clearInterval(t); };
+  }, []);
+
+  // Start/stop/restart a sidecar, then refresh health (the new state shows after the
+  // model loads — qwen ~10s; the 4s poll will catch it, this nudges it faster).
+  const sidecarOp = useCallback(async (name: string, op: 'start' | 'stop' | 'restart') => {
+    setSidecarBusy(`${name}:${op}`);
+    try { await api.post(`/perception/sidecars/${name}/${op}`, {}); }
+    catch { /* surfaced via the next health poll */ }
+    finally {
+      setSidecarBusy(null);
+      try { setSidecars(await api.get<SidecarHealth[]>('/perception/sidecars')); } catch { /* */ }
+    }
+  }, []);
 
   useEffect(() => {
     if (autoScroll && feedRef.current) feedRef.current.scrollTop = feedRef.current.scrollHeight;
@@ -329,6 +361,36 @@ export function PerceptionStudio() {
         @keyframes perc-indeterminate { 0% { left: -30px; } 100% { left: 80px; } }
         .perc-indeterminate { animation: perc-indeterminate 1s ease-in-out infinite; }
       `}</style>
+      {/* SIDECARS: the two out-of-process MLX apps — status + start/stop/restart. */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap',
+        padding: '8px 12px', background: '#0b0e16', border: '1px solid #1c2233', borderRadius: 10 }}>
+        <span style={{ fontSize: 11, letterSpacing: '.12em', textTransform: 'uppercase', opacity: 0.6 }}>⚙ Sidecars</span>
+        {sidecars.length === 0 && <span style={{ fontSize: 12, opacity: 0.5 }}>checking…</span>}
+        {sidecars.map((s) => {
+          const busy = sidecarBusy?.startsWith(`${s.name}:`);
+          const btn = (op: 'start' | 'stop' | 'restart', label: string, color: string) => (
+            <button key={op} disabled={!!sidecarBusy} onClick={() => void sidecarOp(s.name, op)}
+              title={op} style={{ padding: '2px 8px', borderRadius: 6, fontSize: 11, cursor: sidecarBusy ? 'default' : 'pointer',
+                background: '#10182a', color, border: '1px solid #1c2233', opacity: sidecarBusy ? 0.5 : 1 }}>{label}</button>
+          );
+          return (
+            <div key={s.name} style={{ display: 'flex', alignItems: 'center', gap: 8,
+              padding: '4px 8px', background: '#10141f', borderRadius: 8, border: '1px solid #161c2b' }}>
+              <span style={{ width: 8, height: 8, borderRadius: '50%',
+                background: s.up ? '#3ad29f' : '#f6555a', boxShadow: s.up ? '0 0 6px #3ad29f' : 'none' }} />
+              <span style={{ fontSize: 12, fontWeight: 600, color: '#cfe' }}>{s.name === 'vision' ? '👁' : '🎙'} {s.name}</span>
+              <span style={{ fontSize: 11, opacity: 0.55 }}>
+                {busy ? <b style={{ color: '#ffc454' }}>{sidecarBusy!.split(':')[1]}…</b>
+                  : s.up ? `${(s.model ?? s.kind).split('/').pop()} · ${s.latencyMs}ms`
+                  : (s.error ?? 'down')}
+              </span>
+              {s.up
+                ? <>{btn('restart', '↻', '#9cd')}{btn('stop', '■', '#f88')}</>
+                : btn('start', '▶ start', '#6f6')}
+            </div>
+          );
+        })}
+      </div>
       {/* TOP: live video + publish | instruction + live captions */}
       <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap' }}>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8, width: 360 }}>

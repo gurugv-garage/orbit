@@ -30,6 +30,7 @@ import { SnapshotStore, isoIst, sampleEvenly } from './snapshots.js';
 import { TakeStore } from './takes.js';
 import { summarize } from './summarizer.js';
 import { buildGrounding, type LastSummary } from './grounding.js';
+import { SidecarSupervisor } from './sidecars.js';
 import { MemoryStore, type MemoryRow, type MemoryType, type RecallFilter, type LineageEdge } from './memory/store.js';
 import { geminiEmbedder } from './memory/embedder.js';
 import { startGateWatcher, type RaisedThought } from './attention/gate-watcher.js';
@@ -51,6 +52,38 @@ async function describeAllBase64(b64: string): Promise<DetectedFace[]> {
 function sideOf(cx: number): 'left' | 'center' | 'right' {
   return cx < 0.4 ? 'left' : cx > 0.6 ? 'right' : 'center';
 }
+/** The MLX sidecars (the only out-of-process perception pieces). Same URLs +
+ *  defaults the processors use (vision-snapshot.ts / stt-watch.ts). */
+const SIDECARS = [
+  { name: 'vision', kind: 'qwen2.5-VL temporal', modelField: 'temporal_model',
+    url: process.env.TEMPORAL_SIDECAR_URL ?? 'http://127.0.0.1:8080' },
+  { name: 'speech', kind: 'whisper small.en', modelField: 'stt_model',
+    url: process.env.PERCEPTION_SIDECAR_URL ?? 'http://127.0.0.1:8078' },
+] as const;
+
+export interface SidecarHealth {
+  name: string; kind: string; url: string; up: boolean;
+  model?: string | null; latencyMs?: number; error?: string;
+}
+
+/** Ping each sidecar's GET /health with a short timeout; never throws. */
+async function pingSidecars(): Promise<SidecarHealth[]> {
+  return Promise.all(SIDECARS.map(async (s): Promise<SidecarHealth> => {
+    const t0 = Date.now();
+    try {
+      const r = await fetch(`${s.url}/health`, { signal: AbortSignal.timeout(1500) });
+      const latencyMs = Date.now() - t0;
+      if (!r.ok) return { name: s.name, kind: s.kind, url: s.url, up: false, latencyMs, error: `HTTP ${r.status}` };
+      const body = (await r.json()) as Record<string, unknown>;
+      const model = (body[s.modelField] as string | undefined) ?? null;
+      return { name: s.name, kind: s.kind, url: s.url, up: true, model, latencyMs };
+    } catch (err) {
+      return { name: s.name, kind: s.kind, url: s.url, up: false,
+        error: err instanceof Error && err.name === 'TimeoutError' ? 'timeout' : 'unreachable' };
+    }
+  }));
+}
+
 /** The dock most of these records belong to (the store mixes docks; a summarize
  *  window is normally one dock's). Empty string if there are none. */
 function dominantDock(recs: { dockId: string }[]): string {
@@ -191,6 +224,7 @@ export function perceptionModule(getHub: () => ProcessingHub): StationModule {
   // The unified per-dock MEMORY store (Decision 4) — durable sqlite, gemini-embedded
   // for semantic recall. Backs the recall_memory/inspect/remember/update/forget tools.
   const memory = new MemoryStore(orbitDb(), geminiEmbedder());
+  const sidecars = new SidecarSupervisor(); // start/stop the MLX sidecars from the console
   let bus: Bus;
   const gallery = new Gallery(GALLERY_PATH);
   const face = faceRecognitionProcessor(gallery);
@@ -468,6 +502,31 @@ export function perceptionModule(getHub: () => ProcessingHub): StationModule {
 
       if (req.method === 'GET' && subPath === '/') {
         json(res, 200, state.all());
+        return true;
+      }
+      // ── SIDECAR HEALTH — the two MLX apps are the only out-of-process pieces
+      // (PERCEPTION-RUNBOOK §1). Ping each /health (short timeout) so the console
+      // can show up/down + which model is loaded, without anyone sshing in.
+      // GET /sidecars → [{ name, url, up, model?, latencyMs?, error? }, …]
+      if (req.method === 'GET' && subPath === '/sidecars') {
+        json(res, 200, await pingSidecars());
+        return true;
+      }
+      // Start/stop/restart a sidecar from the console (single-laptop dev convenience).
+      // POST /sidecars/:name/{start|stop|restart} → { ok, … } (liveness via the GET above)
+      const scm = subPath.match(/^\/sidecars\/(vision|speech)\/(start|stop|restart)$/);
+      if (scm && req.method === 'POST') {
+        const name = scm[1] as 'vision' | 'speech';
+        const op = scm[2] as 'start' | 'stop' | 'restart';
+        // start/restart refuse to double-bind: if the port already serves, treat as up.
+        if (op !== 'stop') {
+          const live = (await pingSidecars()).find((s) => s.name === name);
+          if (op === 'start' && live?.up) { json(res, 200, { ok: true, alreadyUp: true }); return true; }
+        }
+        const r = op === 'start' ? await sidecars.start(name)
+          : op === 'stop' ? await sidecars.stop(name)
+          : await sidecars.restart(name);
+        json(res, r.ok ? 200 : 500, r);
         return true;
       }
       // ── ATTENTION GATE (Phase 5) — the console's proactivity control (5c). ──
