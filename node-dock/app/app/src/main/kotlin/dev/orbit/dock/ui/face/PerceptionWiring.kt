@@ -62,11 +62,14 @@ class PerceptionWiring(
     // Auto-listen-on-face: arm a listening session once when a NEW face appears
     // (absent → present edge), unless the dock is speaking or already listening.
     @Volatile private var faceCurrentlyPresent = false   // for the arrival edge
-    @Volatile private var listeningActive = false        // a session is open
     @Volatile private var dockSpeaking = false           // TTS playing
-    // A1.2: guards the tap-but-no-speech case (no transcript ever comes → the
-    // Listening face would otherwise stick). Cancelled when a transcript resolves.
-    private var listenTimeout: kotlinx.coroutines.Job? = null
+    // The SINGLE owner of listening mode — prioritized holds (tap / follow-up /
+    // face-arrival) so a low-priority OFF can't cancel a high-priority ON.
+    private val arbiter = ListeningArbiter()
+    // last applied listening edge, so we drive face/beeps only on transitions.
+    @Volatile private var listeningActive = false
+    // a periodic tick prunes expired holds → produces the OFF edge.
+    private var arbiterTick: kotlinx.coroutines.Job? = null
     // Cool-off: after an auto-listen fires, suppress the next for this long so a
     // face flickering at the edge of detection doesn't keep re-arming listening.
     @Volatile private var lastAutoListenMs = 0L
@@ -85,7 +88,30 @@ class PerceptionWiring(
     private val wakeCooldownMs = 2000L           // suppress repeated triggers
     private val LISTEN_ACK_TIMEOUT_MS = 8_000L   // tap-but-no-speech → drop Listening
 
+    /** Reconcile the visible face + beeps to the arbiter's current state. Drives
+     *  the listen()/silence() + on/off beep ONLY on the on↔off edge. The agent
+     *  turn owns the face while Speaking/Engaged, so we don't fight it. */
+    private fun applyListening() {
+        val now = System.currentTimeMillis()
+        val on = arbiter.isListening(now)
+        if (on == listeningActive) return // no edge
+        listeningActive = on
+        if (on) {
+            Timber.i("listening ON (${arbiter.active(now)})")
+            BeepPlayer.listeningOn()
+            if (controller.state.value == FaceState.Idle) controller.listen()
+        } else {
+            Timber.i("listening OFF")
+            BeepPlayer.listeningOff()
+            if (controller.state.value == FaceState.Listening) controller.silence()
+        }
+    }
+
     fun attach(scope: CoroutineScope) {
+        // Tick the arbiter so expiring holds produce the OFF edge even with no event.
+        arbiterTick = scope.launch {
+            while (true) { kotlinx.coroutines.delay(500); applyListening() }
+        }
         PerceptionBus.events
             .onEach { event ->
                 when (event) {
@@ -95,9 +121,13 @@ class PerceptionWiring(
                         _audioLevel.value = event.level
                     }
                     is PerceptionEvent.VoiceActivity -> {
-                        // Only animates the speaker indicator; never triggers
-                        // listening (tap-only model).
                         controller.userVoice(event.active)
+                        // During the follow-up window, the user starting to talk
+                        // extends it so a slow follow-up isn't cut off mid-sentence.
+                        if (event.active) {
+                            arbiter.extendFollowup(System.currentTimeMillis())
+                            applyListening()
+                        }
                     }
                     is PerceptionEvent.SttListening -> {
                         // The mic's real moment-to-moment armed state. Track it
@@ -112,17 +142,24 @@ class PerceptionWiring(
                         }
                     }
                     is PerceptionEvent.StopListening -> {
-                        // Tap-to-stop. Pipeline tears down STT; face → idle here
-                        // too so UI + audio agree immediately.
+                        // Explicit user stop — clears the user hold (top priority).
                         _sttArmed.value = false
-                        listeningActive = false
-                        controller.silence()
+                        arbiter.clear(ListeningArbiter.Source.USER)
+                        arbiter.clear(ListeningArbiter.Source.FOLLOWUP)
+                        applyListening()
                     }
                     is PerceptionEvent.Speaking -> {
-                        // Track TTS state so auto-listen-on-face doesn't fire
-                        // while the dock is talking. Face speaking-state itself is
-                        // driven directly by the TTS callback (DockTts).
                         dockSpeaking = event.active
+                        // The dock JUST FINISHED replying → auto re-listen for a
+                        // hands-free follow-up (FOLLOWUP priority — a face-leave
+                        // can't cancel it; VAD activity extends it). On speak START,
+                        // nothing (we don't listen to our own voice — server AEC +
+                        // the turn owns the face).
+                        if (!event.active) {
+                            arbiter.hold(ListeningArbiter.Source.FOLLOWUP,
+                                System.currentTimeMillis(), ListeningArbiter.Cfg.FOLLOWUP_MS)
+                            applyListening()
+                        }
                     }
                     is PerceptionEvent.BargeIn -> {
                         // Voice barge-in is handled in DockScreen (stops TTS +
@@ -134,24 +171,22 @@ class PerceptionWiring(
                         // the Speaker). Nothing to do here; keeps when exhaustive.
                     }
                     is PerceptionEvent.WakeWord -> {
-                        // Tap = "addressed" (A1.2). Show the Listening face as an
-                        // ack; the sentence-end (final transcript) clears it. Guard
-                        // the tap-but-no-speech case with a timeout so it can't stick.
-                        Timber.i("listen (tap/addressed): ${event.label}")
-                        listeningActive = true
-                        controller.listen()
-                        BeepPlayer.listeningOn() // audible "I'm listening" cue
-                        _transcript.value = TranscriptState()
-                        listenTimeout?.cancel()
-                        listenTimeout = scope.launch {
-                            kotlinx.coroutines.delay(LISTEN_ACK_TIMEOUT_MS)
-                            if (controller.state.value == FaceState.Listening) {
-                                Timber.i("tap ack timed out (no speech) → Idle")
-                                listeningActive = false
-                                BeepPlayer.listeningOff() // listening closed (no speech)
-                                controller.silence()
-                            }
+                        // Tap / wake / face-arrival = a listening request. Route it
+                        // through the arbiter at the right priority; the face + beeps
+                        // come from applyListening on the edge. The USER hold expires
+                        // after USER_ACK_MS (the tap-but-no-speech guard); the
+                        // sentence-end (final transcript) clears it sooner.
+                        Timber.i("listen request: ${event.label}")
+                        val now = System.currentTimeMillis()
+                        if (event.label == "(face)") {
+                            arbiter.hold(ListeningArbiter.Source.FACE_ARRIVAL, now,
+                                ListeningArbiter.Cfg.FACE_ARRIVAL_MS)
+                        } else {
+                            arbiter.hold(ListeningArbiter.Source.USER, now,
+                                ListeningArbiter.Cfg.USER_ACK_MS)
                         }
+                        _transcript.value = TranscriptState()
+                        applyListening()
                         onWake()
                     }
                     is PerceptionEvent.Transcript -> {
@@ -164,16 +199,12 @@ class PerceptionWiring(
                         Timber.d("transcript (station): \"${event.text}\" final=${event.isFinal}")
                         _transcript.value = TranscriptState(event.text, event.isFinal)
                         if (event.isFinal) {
-                            val wasListening = listeningActive
-                            listeningActive = false
-                            listenTimeout?.cancel()
-                            // sentence-end: listening closes here (the server VAD
-                            // endpoint). Beep off only if we were actually listening.
-                            if (wasListening) BeepPlayer.listeningOff()
-                            // drop the Listening face back to Idle UNLESS an agent
-                            // turn already took over (Speaking/Engaged).
-                            val s = controller.state.value
-                            if (s == FaceState.Listening) controller.silence()
+                            // sentence-end (server VAD endpoint): clear the USER tap
+                            // hold. A FOLLOWUP hold (if the dock is mid-conversation)
+                            // survives so the next sentence is still addressed; the
+                            // agent turn drives Speaking. applyListening reconciles.
+                            arbiter.clear(ListeningArbiter.Source.USER)
+                            applyListening()
                             if (event.text.isNotBlank() && shouldWinkFor(event.text)) {
                                 Timber.i("wink keyword trigger: \"${event.text}\"")
                                 controller.wink()
@@ -191,6 +222,9 @@ class PerceptionWiring(
                             faceCurrentlyPresent = true
                             val now = System.currentTimeMillis()
                             val cooledDown = now - lastAutoListenMs >= autoListenCooldownMs
+                            // Only the LOW-priority face-arrival listen; it yields to
+                            // a tap/follow-up already in progress (the arbiter enforces
+                            // priority, but skipping here avoids a redundant beep).
                             if (!dockSpeaking && !listeningActive && cooledDown) {
                                 lastAutoListenMs = now
                                 Timber.i("auto-listen: new face appeared → start listening")
@@ -208,6 +242,13 @@ class PerceptionWiring(
                     is PerceptionEvent.FaceLost -> {
                         _facePresent.value = false
                         faceCurrentlyPresent = false  // re-arm for the next arrival
+                        // Leaving the camera releases ONLY the low-priority face hold
+                        // — it must NOT cancel a tap or the just-replied follow-up
+                        // window (your explicit conversational intent outranks a
+                        // glance away). The arbiter enforces this.
+                        arbiter.release(ListeningArbiter.Source.FACE_ARRIVAL.priority,
+                            System.currentTimeMillis())
+                        applyListening()
                         perception?.onFaceLost()
                         controller.setGaze(GazeOffset())
                     }
