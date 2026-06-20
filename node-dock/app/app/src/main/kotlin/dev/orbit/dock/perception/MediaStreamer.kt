@@ -163,6 +163,11 @@ class MediaStreamer(
         val videoTrack = factory.createVideoTrack("dock-video", vSource)
         connection.addTrack(videoTrack)
 
+        // Resume the ADM capture now that the new audio source/PC sink exists (it
+        // was paused in stop() to avoid the teardown race). Idempotent on a fresh
+        // ADM that's already recording.
+        WebRtcAudio.resumeRecording()
+
         // Offer → publish producer-offer.
         connection.createOffer(object : SdpAdapter("createOffer") {
             override fun onCreateSuccess(offer: SessionDescription?) {
@@ -201,13 +206,20 @@ class MediaStreamer(
         started = false
         faceTracker.onBitmapFrame = null
         capturer?.stop(); capturer = null
+        // CRITICAL ordering (fixes the AudioRecordThread SIGSEGV): the shared ADM's
+        // capture thread is always-on; if we dispose the audioSource/PeerConnection
+        // (the native sink nativeDataIsRecorded writes into) while it's still
+        // recording, the next in-flight buffer memcpys into freed memory → crash.
+        // Pause the ADM's capture FIRST, so no buffer is in flight during disposal,
+        // then dispose. start()/restart() resumes it after the rebuild.
+        WebRtcAudio.pauseRecording()
         try { pc?.close() } catch (_: Throwable) {}
         pc = null
         try { videoSource?.dispose() } catch (_: Throwable) {}
         videoSource = null
         try { audioSource?.dispose() } catch (_: Throwable) {}
         audioSource = null
-        Timber.d("MediaStreamer stopped")
+        Timber.d("MediaStreamer stopped (capture paused)")
     }
 
     // ── ICE JSON <-> webrtc IceCandidate ────────────────────────────────────────

@@ -152,6 +152,25 @@ object WebRtcAudio {
         Timber.d("WebRtcAudio capture released")
     }
 
+    /**
+     * Pause the ADM's AudioRecord capture thread (without releasing the ADM). MUST
+     * be called BEFORE disposing any audio source / PeerConnection that draws from
+     * the shared ADM (e.g. [MediaStreamer.stop]/[MediaStreamer.restart]): otherwise
+     * the still-running capture thread delivers a buffer into the freed native sink
+     * via nativeDataIsRecorded → SIGSEGV (the AudioRecordThread crash). Resume with
+     * [resumeRecording] after the native objects are gone + rebuilt. No-op if no ADM.
+     */
+    @Synchronized
+    fun pauseRecording() {
+        try { adm?.requestStopRecording() } catch (t: Throwable) { Timber.w(t, "pauseRecording failed") }
+    }
+
+    /** Resume the ADM's capture thread after a safe teardown/rebuild. */
+    @Synchronized
+    fun resumeRecording() {
+        try { adm?.requestStartRecording() } catch (t: Throwable) { Timber.w(t, "resumeRecording failed") }
+    }
+
     /** The shared EGL base (for video encoder + the capturer's SurfaceTextureHelper). */
     @Synchronized
     fun eglBase(context: Context): EglBase {

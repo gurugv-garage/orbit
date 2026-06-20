@@ -86,6 +86,11 @@ class RemoteBrain(
     private val _debugInfo = MutableStateFlow(DebugInfo())
     val debugInfo: StateFlow<DebugInfo> = _debugInfo.asStateFlow()
 
+    /** The STATION's conversation mode (idle/listening/thinking/speaking/followup).
+     *  The station is the sole owner; the phone renders this. */
+    private val _convMode = MutableStateFlow("idle")
+    val convMode: StateFlow<String> = _convMode.asStateFlow()
+
     // ── turn epoch ────────────────────────────────────────────────────────
     // currentTurnId gates inbound frames; lastTurnId outlives the turn so the
     // post-turn TTS tail's speech-status still lands on the right turn
@@ -183,6 +188,24 @@ class RemoteBrain(
         trace("ADDRESSED (tap) → station")
     }
 
+    // ── raw conversation events → the station (it owns the state machine) ──────
+    // The phone is a pure sensor here: report what happened; the station decides.
+
+    /** Voice activity detected — extends an open listening/followup window. */
+    fun sendVad() {
+        if (isConfigured) link.publish("agent", "vad", buildJsonObject {})
+    }
+
+    /** A new face arrived in view (low-priority listen request). */
+    fun sendFaceArrival() {
+        if (isConfigured) link.publish("agent", "face-arrival", buildJsonObject {})
+    }
+
+    /** A face left view (releases only a face listen window, never tap/followup). */
+    fun sendFaceLeft() {
+        if (isConfigured) link.publish("agent", "face-left", buildJsonObject {})
+    }
+
     fun stop() {
         // Silence is LOCAL FIRST — the user tapped to stop; the sound must die
         // this instant, not after a network round trip.
@@ -263,6 +286,14 @@ class RemoteBrain(
             "tool-call" -> onToolCall(payload)
             "speak" -> onSpeak(payload)
             "turn-status" -> onTurnStatus(payload)
+            "conversation" -> {
+                // The STATION is the sole owner of conversation state (listening/
+                // speaking/idle/followup). The phone is a pure RENDERER: reflect the
+                // mode it sends. (docs/findings/conversation-state-design.md)
+                val to = payload.str("to")
+                Timber.i("conversation → $to (${payload.str("reason")})")
+                _convMode.value = to
+            }
             "cancelled" -> trace("cancelled (station ack)")
             else -> Timber.d("RemoteBrain: unhandled agent frame '$kind'")
         }

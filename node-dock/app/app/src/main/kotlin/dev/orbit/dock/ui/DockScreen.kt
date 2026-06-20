@@ -299,11 +299,16 @@ fun DockScreen() {
                     agent.respond(text)
                 }
             },
-            // A1.2: a tap (wake event) marks the dock "addressed" — the station
-            // turns the next server-STT utterance into a turn. (Was: start a local
-            // recognizer; the recognizer is gone with the always-on-mic shift.)
+            // A1.2: a tap (wake event) TOGGLES the dock "addressed" listening — the
+            // station owns the state machine and emits the conversation mode back.
             onWake = { botSubtitle = ""; agent.addressed() },
             perception = perception,
+            // Report raw conversation events UP; the station decides + the phone
+            // renders the convMode it sends back (pure renderer).
+            sendVad = { agent.sendVad() },
+            sendFaceArrival = { agent.sendFaceArrival() },
+            sendFaceLeft = { agent.sendFaceLeft() },
+            convMode = agent.convMode,
         ).also { wiringRef.value = it }
     }
 

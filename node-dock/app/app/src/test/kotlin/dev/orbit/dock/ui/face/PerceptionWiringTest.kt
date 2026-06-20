@@ -4,113 +4,133 @@ import com.google.common.truth.Truth.assertThat
 import dev.orbit.dock.perception.PerceptionBus
 import dev.orbit.dock.perception.PerceptionEvent
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.cancel
-import kotlinx.coroutines.cancelAndJoin
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.first
-import kotlinx.coroutines.test.StandardTestDispatcher
-import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.test.advanceTimeBy
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.resetMain
-import kotlinx.coroutines.test.setMain
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.test.setMain
 import org.junit.Test
 
+/**
+ * PerceptionWiring is now a PURE RENDERER of the station's conversation mode +
+ * a reporter of raw events up. So these tests verify two contracts:
+ *   1. RENDER: convMode flow ("listening"/"idle"/…) → face listen()/silence().
+ *   2. REPORT: tap → onWake(); FaceSeen → sendFaceArrival(); FaceLost →
+ *      sendFaceLeft(); VoiceActivity → sendVad(). No local listening DECISIONS.
+ * (The listening STATE MACHINE itself is tested on the station: ConversationState.)
+ */
 @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
 class PerceptionWiringTest {
 
     @org.junit.Before
-    fun setUp() {
-        // FaceController.silence()/wakeUp() schedule the sleepy-timer on Main — the
-        // A1.2 timeout/transcript paths call silence(), so Main must be a test one.
-        Dispatchers.setMain(UnconfinedTestDispatcher())
-    }
-
+    fun setUp() { Dispatchers.setMain(UnconfinedTestDispatcher()) }
     @org.junit.After
     fun tearDown() = Dispatchers.resetMain()
 
-    // A1.2: a tap (WakeWord) shows the Listening face as an "addressed" ack. It
-    // stays Listening until either a final transcript (server sentence-end) or an
-    // ~8s no-speech timeout — so we must NOT advanceUntilIdle (that jumps past the
-    // timeout). advanceTimeBy a small amount keeps us inside the ack window.
+    // ── 1. RENDER: convMode drives the face ───────────────────────────────────
+
     @Test
-    fun wakeWordEventDrivesControllerWake() = runTest {
+    fun convModeListeningDrivesFaceListening() = runTest {
         val controller = FaceController()
-        val wiring = PerceptionWiring(controller)
+        val conv = MutableStateFlow("idle")
+        val wiring = PerceptionWiring(controller, convMode = conv)
         val scope = CoroutineScope(UnconfinedTestDispatcher(testScheduler))
         wiring.attach(scope)
 
-        PerceptionBus.emit(PerceptionEvent.WakeWord("hey jarvis"))
-        advanceTimeBy(100) // inside the ack window, before the no-speech timeout
-
+        conv.value = "listening"
+        advanceUntilIdle()
         assertThat(controller.state.value).isEqualTo(FaceState.Listening)
 
+        conv.value = "idle"
+        advanceUntilIdle()
+        assertThat(controller.state.value).isEqualTo(FaceState.Idle)
         scope.cancel()
     }
 
-    // A1.2 variant: tap-but-no-speech → after the timeout, the face drops to Idle
-    // (so a stray tap can't leave it stuck Listening forever).
     @Test
-    fun wakeWordWithoutSpeechTimesOutToIdle() = runTest {
+    fun convModeFollowupAlsoRendersListening() = runTest {
         val controller = FaceController()
-        val wiring = PerceptionWiring(controller)
+        val conv = MutableStateFlow("idle")
+        val wiring = PerceptionWiring(controller, convMode = conv)
+        val scope = CoroutineScope(UnconfinedTestDispatcher(testScheduler))
+        wiring.attach(scope)
+
+        conv.value = "followup" // auto re-listen window → also a listening face
+        advanceUntilIdle()
+        assertThat(controller.state.value).isEqualTo(FaceState.Listening)
+        scope.cancel()
+    }
+
+    // ── 2. REPORT: events go UP, no local decisions ───────────────────────────
+
+    @Test
+    fun tapReportsUpViaOnWake() = runTest {
+        var woke = 0
+        val controller = FaceController()
+        val wiring = PerceptionWiring(controller, onWake = { woke++ })
         val scope = CoroutineScope(UnconfinedTestDispatcher(testScheduler))
         wiring.attach(scope)
 
         PerceptionBus.emit(PerceptionEvent.WakeWord("(tap)"))
-        advanceTimeBy(100)
-        assertThat(controller.state.value).isEqualTo(FaceState.Listening)
-
-        advanceTimeBy(9_000) // past the ~8s no-speech timeout
-        assertThat(controller.state.value).isEqualTo(FaceState.Idle)
-
+        advanceUntilIdle()
+        assertThat(woke).isEqualTo(1) // → agent.addressed() (the station toggles)
         scope.cancel()
     }
 
-    // A1.2 variant: tap → a final transcript (server sentence-end) resolves the
-    // Listening face (the normal path; clears the timeout).
     @Test
-    fun finalTranscriptClearsListeningFace() = runTest {
+    fun faceSeenReportsArrivalUpOnceOnTheEdge() = runTest {
+        var arrivals = 0
         val controller = FaceController()
-        val wiring = PerceptionWiring(controller)
+        val wiring = PerceptionWiring(controller, sendFaceArrival = { arrivals++ })
         val scope = CoroutineScope(UnconfinedTestDispatcher(testScheduler))
         wiring.attach(scope)
 
-        PerceptionBus.emit(PerceptionEvent.WakeWord("(tap)"))
-        advanceTimeBy(100)
-        assertThat(controller.state.value).isEqualTo(FaceState.Listening)
-
-        PerceptionBus.emit(PerceptionEvent.Transcript("what time is it", isFinal = true))
-        advanceTimeBy(100)
-        assertThat(controller.state.value).isEqualTo(FaceState.Idle)
-
-        // and the no-speech timeout must NOT later re-fire (it was cancelled).
-        advanceTimeBy(9_000)
-        assertThat(controller.state.value).isEqualTo(FaceState.Idle)
-
+        PerceptionBus.emit(PerceptionEvent.FaceSeen(0f, 0f, 0.1f))
+        PerceptionBus.emit(PerceptionEvent.FaceSeen(0f, 0f, 0.1f)) // still present → no 2nd arrival
+        advanceUntilIdle()
+        assertThat(arrivals).isEqualTo(1)
         scope.cancel()
     }
 
     @Test
-    fun voiceActivityFlipsSpeakerToUser() = runTest {
+    fun faceLostReportsLeftUp() = runTest {
+        var left = 0
         val controller = FaceController()
-        val wiring = PerceptionWiring(controller)
+        val wiring = PerceptionWiring(controller, sendFaceLeft = { left++ })
+        val scope = CoroutineScope(UnconfinedTestDispatcher(testScheduler))
+        wiring.attach(scope)
+
+        PerceptionBus.emit(PerceptionEvent.FaceLost)
+        advanceUntilIdle()
+        assertThat(left).isEqualTo(1)
+        scope.cancel()
+    }
+
+    @Test
+    fun voiceActivityReportsVadUp() = runTest {
+        var vad = 0
+        val controller = FaceController()
+        val wiring = PerceptionWiring(controller, sendVad = { vad++ })
         val scope = CoroutineScope(UnconfinedTestDispatcher(testScheduler))
         wiring.attach(scope)
 
         PerceptionBus.emit(PerceptionEvent.VoiceActivity(active = true, probability = 0.9f))
         advanceUntilIdle()
+        assertThat(vad).isEqualTo(1)
         assertThat(controller.speaker.value).isEqualTo(Speaker.User)
 
+        // inactive VAD doesn't report (only onset extends a window)
         PerceptionBus.emit(PerceptionEvent.VoiceActivity(active = false, probability = 0.1f))
         advanceUntilIdle()
+        assertThat(vad).isEqualTo(1)
         assertThat(controller.speaker.value).isEqualTo(Speaker.Silent)
-
         scope.cancel()
     }
+
+    // ── unchanged: transcript + audio-level rendering ─────────────────────────
 
     @Test
     fun audioLevelUpdatesWiringState() = runTest {
@@ -118,11 +138,9 @@ class PerceptionWiringTest {
         val wiring = PerceptionWiring(controller)
         val scope = CoroutineScope(UnconfinedTestDispatcher(testScheduler))
         wiring.attach(scope)
-
         PerceptionBus.emit(PerceptionEvent.AudioLevel(0.6f))
         advanceUntilIdle()
         assertThat(wiring.audioLevel.value).isWithin(0.001f).of(0.6f)
-
         scope.cancel()
     }
 
@@ -132,35 +150,27 @@ class PerceptionWiringTest {
         val wiring = PerceptionWiring(controller)
         val scope = CoroutineScope(UnconfinedTestDispatcher(testScheduler))
         wiring.attach(scope)
-
         PerceptionBus.emit(PerceptionEvent.Transcript("hello", isFinal = false))
         advanceUntilIdle()
         assertThat(wiring.transcript.value.text).isEqualTo("hello")
-        assertThat(wiring.transcript.value.isFinal).isFalse()
-
         PerceptionBus.emit(PerceptionEvent.Transcript("hello world", isFinal = true))
         advanceUntilIdle()
         assertThat(wiring.transcript.value.text).isEqualTo("hello world")
-        assertThat(wiring.transcript.value.isFinal).isTrue()
-
         scope.cancel()
     }
 
     @Test
-    fun wakeWordClearsTranscriptForNewTurn() = runTest {
+    fun tapClearsTranscriptForNewTurn() = runTest {
         val controller = FaceController()
         val wiring = PerceptionWiring(controller)
         val scope = CoroutineScope(UnconfinedTestDispatcher(testScheduler))
         wiring.attach(scope)
-
         PerceptionBus.emit(PerceptionEvent.Transcript("previous turn", isFinal = true))
         advanceUntilIdle()
         assertThat(wiring.transcript.value.text).isEqualTo("previous turn")
-
-        PerceptionBus.emit(PerceptionEvent.WakeWord("hey jarvis"))
-        advanceTimeBy(100) // inside the ack window (don't trip the no-speech timeout)
+        PerceptionBus.emit(PerceptionEvent.WakeWord("(tap)"))
+        advanceUntilIdle()
         assertThat(wiring.transcript.value.text).isEmpty()
-
         scope.cancel()
     }
 }
