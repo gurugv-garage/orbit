@@ -190,11 +190,15 @@ VALIDATE notes below reference these by number.
 ## ── Reconnections (SEPARATE — needs a simulation harness) ──
 
 > Build a disconnect/reconnect SIM (drop the phone's WS, drop frames), then assert:
+> **DONE — `server/src/modules/brain/reconnection.test.ts`** drives the real session
+> reconnect path (hello → `notePhoneConnected` + `resendConversation`) and asserts
+> both the conversation snapshot AND the resync frame the phone receives. (The "WS
+> drop" = stop reading station→phone frames; reconnect = the hello.)
 - **R1. Lost "TTS finished":** speaking; never get `tts-end`; assert recovery —
-  `/conversation` leaves speaking by `SPEAK_MAX_MS` AND `reconcileConnected()`→idle.
-- **R2. Phone reconnect → clean slate:** any mode; reconnect → idle.
-- **R3. Disconnect mid-listening/followup:** window doesn't leak; reconciles.
-- **R4. Station restart / dock re-hello:** state re-established.
+  `/conversation` leaves speaking by `SPEAK_MAX_MS` AND `reconcileConnected()`→idle. ✅ sim
+- **R2. Phone reconnect → clean slate:** any mode; reconnect → idle + one resync frame. ✅ sim
+- **R3. Disconnect mid-listening/followup:** window doesn't leak; reconciles. ✅ sim (R3 + R3b)
+- **R4. Station restart / dock re-hello:** state re-established (fresh idle + resync). ✅ sim
 - **R5. CLEAN RESET on APP restart (user-requested):** the phone app restarts →
   reconnects → `hello` → reconcile → from ANY prior mode the conversation comes
   back CLEAN idle (no stale listening/speak window). UNIT: reconcile from every
@@ -206,8 +210,9 @@ VALIDATE notes below reference these by number.
   via hello (reconcile + resync frame). UNIT: a new instance is idle. LIVE:
   observed every `tsx watch` reload — phone reconnects, `/conversation` settles to
   idle (a live face window may briefly open, then expires → idle). VERIFIED.
-- **VALIDATE:** R1-R4 need a WS-drop sim (BAKE IN: a debug WS-drop trigger or a
-  scripted fake-peer). R5/R6 are unit-tested + live-verified now via `/conversation`
+- **VALIDATE:** R1-R4 done via the session-level sim (`reconnection.test.ts`, 6
+  cases) — a scripted session + frame capture, no real WS needed. R5/R6 are
+  unit-tested (`conversation-state.test.ts`) + live-verified via `/conversation`
   + the `[conv]` logs.
 
 ---
