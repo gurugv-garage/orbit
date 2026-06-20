@@ -1,0 +1,107 @@
+# Conversation UX flow — how talking to the dock works
+
+> The end-to-end conversational experience: what the user does, what the dock does,
+> the states it moves through, and every timing knob. This is the **as-built**
+> behaviour after the conversation-state rewrite. Implementation + decisions:
+> [findings/conversation-state-design.md](findings/conversation-state-design.md);
+> the spec/tests: [findings/conversation-state-test-cases.md](findings/conversation-state-test-cases.md).
+
+## The one-line model
+
+The mic is **always on**. "Listening" doesn't mean the mic — it means the dock is
+**attending to you for a turn** (an *addressed* window is open). The **station owns**
+this state; the **phone renders** it (face + beeps) and reports raw events up.
+
+## The states
+
+```
+            ┌──────────────── you ask (addressed utterance) ──────────────┐
+            ▼                                                              │
+  IDLE ──tap / face / wake──▶ LISTENING ──speech ends──▶ THINKING ─reply──┘
+   ▲   ◀──tap (toggle)───────┘  ▲  (no speech → times out)        │
+   │                            │                                 ▼
+   └──── follow-up expires ◀────┴──── FOLLOWUP ◀──────────── SPEAKING (TTS)
+                                       (auto re-listen)      tts ends ┘
+```
+
+| State | What the user sees/hears | Meaning |
+|---|---|---|
+| **idle** | neutral face, no beep | not in a conversation (mic still on, but ambient) |
+| **listening** | "listening" face + a rising **beep** on entry | an addressed window is open — your next sentence becomes a turn |
+| **thinking** | thinking face | a turn is running (the brain) |
+| **speaking** | speaking face, TTS plays | the dock is replying |
+| **followup** | "listening" face + rising **beep** | just replied → auto re-listening for a hands-free follow-up |
+
+A falling **beep** plays whenever listening closes (timeout / you tap off / sentence
+ends into a turn).
+
+## The happy path (a real conversation)
+
+1. **You tap** → *beep* + listening face. (The mic was already on; the tap says
+   "this is for you.")
+2. **You speak** → the station transcribes; at your sentence-end it runs a **turn**
+   (thinking face).
+3. **The dock replies** (speaking face + voice).
+4. **It auto re-listens** (*beep* + listening face) — the **follow-up** window. You
+   can **just keep talking, no tap** → it answers again. Repeat as long as you like.
+5. **You go quiet** → after the follow-up window the *beep* falls and it returns to
+   idle.
+
+Other ways listening opens: a **tap** (explicit), a **new face** arriving in the
+camera (low priority), or a wake word.
+
+## Priority — who wins when sources conflict
+
+Multiple things open/close listening; they don't fight, they're prioritized:
+
+| Source | Priority | Opens | A lower-priority "off" can't cancel it |
+|---|---|---|---|
+| **tap** | 100 (highest) | explicit listen (toggle) | — |
+| **follow-up** | 50 | after a reply | a face-leave can't end it |
+| **face arrival** | 10 (lowest) | a new face in view | — |
+
+Concretely:
+- **Glance away from the camera mid-conversation** → it **keeps listening** (your
+  follow-up/tap outranks the camera). You don't lose your turn.
+- A **new person walking into frame** during your conversation does **not** reset it.
+- **Tap is a toggle** — tap while listening turns it **off**.
+
+## Timings (all tunable; env in parens)
+
+| Knob | Default | What it controls |
+|---|---|---|
+| **LISTEN_MS** (`CONV_LISTEN_MS`) | 8 s | a tap with no speech → back to idle after this |
+| **FOLLOWUP_MS** (`CONV_FOLLOWUP_MS`) | **8 s** | the auto re-listen window after a reply (was 5 s — felt short) |
+| **VAD_EXTEND_MS** (`CONV_VAD_EXTEND_MS`) | 4 s | once you start talking, the window extends so you're not cut off |
+| **GRACE_MS** (`CONV_GRACE_MS`) | 2.5 s | tap-just-after-you-finish still counts (the ordering race) |
+| **FACE_ARRIVAL_MS** (`CONV_FACE_ARRIVAL_MS`) | 5 s | how long a face-arrival listen stays open |
+| **SPEAK_MAX_MS** (`CONV_SPEAK_MAX_MS`) | 30 s | safety cap so a lost "TTS done" can't wedge speaking |
+| **MIN_UTTERANCE_MS** (`STT_MIN_UTTERANCE_MS`) | 180 ms | shorter is dropped as noise — low enough that "hi"/"yes"/"ok" register |
+
+**On "feels short":** raise `FOLLOWUP_MS`. Note that **VAD extends it** — the moment
+you start talking within the window, it grows by `VAD_EXTEND_MS`, so the practical
+window is "8 s of silence, OR until you stop talking."
+
+## Edge cases the model handles
+
+- **Overheard speech** (you talk near the dock without tapping) → transcribed (for
+  the record) but **not answered**. Only an open window makes a turn.
+- **Short words** ("hi", "yes") → register (MIN_UTTERANCE_MS = 180 ms).
+- **Reconnect / app or station restart** → the conversation resets to **idle**
+  cleanly; the phone face re-syncs to the station (no stuck "listening").
+- **Lost "TTS done"** → speaking can't wedge forever (SPEAK_MAX_MS + reconnect).
+
+## Who owns what (station vs. phone)
+
+- **Station** = the single source of truth. Owns the state machine + the addressed
+  decision. Emits a `conversation` frame on every transition.
+- **Phone** = a pure **renderer + reporter**. Renders the mode (face + beeps);
+  reports raw events up (`tap`/`vad`/`face-arrival`/`face-left`/`tts-start`/`tts-end`/
+  `hello`). It makes **no** listening decisions itself — that's what keeps the two
+  sides from ever disagreeing.
+
+## Not yet built (see the spec)
+
+- **Voice barge-in** — talking *over* the dock's reply to interrupt it (today you
+  wait for it to finish, or tap). Design + cases pending review.
+- The **attention gate** acting on *overheard* speech (interjecting unprompted).

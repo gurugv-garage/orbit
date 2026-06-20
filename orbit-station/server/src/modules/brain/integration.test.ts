@@ -306,3 +306,58 @@ test('E2E addressed adoption (A1.2): a station-originated user turn is flagged a
   assert.ok(usr, 'the user turn was accepted');
   assert.notEqual(usr!.autonomous, true, 'a phone-started user turn is NOT autonomous');
 });
+
+// ── RECONNECT RESYNC (the user-reported "stuck listening" bug: repro → validate) ──
+// A station restart / app restart leaves the phone reconnecting. The bug: the phone
+// face stayed "listening" while the station reset to idle, so speech was overheard
+// (transcribed, not answered). The fix: on hello, the station reconciles to idle AND
+// re-sends the current conversation frame so the phone (a pure renderer) can't stay
+// stuck. These assert BOTH the state reset and that a frame reaches the phone.
+function convCaptureSession() {
+  const bus = new Bus();
+  const directory = new Directory(() => [phonePeer()], join(tmpdir(), `dir-${Math.random()}.json`));
+  const store = new SessionStore(mkdtempSync(join(tmpdir(), 'conv-e2e-')));
+  const motion = new MotionExecutor(bus, directory);
+  const cfg = { brainModel: 'openai-compatible/faux@http://test' } as Record<string, unknown>;
+  const convFrames: Array<{ to: string; reason: string }> = [];
+  bus.on('agent', (msg) => {
+    if (msg.kind === 'conversation') {
+      const p = msg.payload as { to: string; reason: string };
+      convFrames.push({ to: p.to, reason: p.reason });
+    }
+  });
+  const deps: SessionDeps = {
+    bus, directory, rpc: new RpcBroker(bus, directory), motion, store,
+    getFaces: () => undefined, config: (k) => cfg[k],
+    streamFn: (() => { const s = createAssistantMessageEventStream(); s.push({ type: 'start', partial: assistant('') }); s.push({ type: 'done', reason: 'stop', message: assistant('ok') }); s.end(); return s; }) as never,
+  };
+  return { session: new DockBrainSession(DOCK, deps), convFrames };
+}
+
+test('E2E reconnect: an active listening window → phone reconnect → station idle + a frame reaches the phone', async () => {
+  const { session, convFrames } = convCaptureSession();
+  session.tap(); // open a listening window
+  assert.equal(session.conversation().mode, 'listening');
+  convFrames.length = 0; // ignore the tap frame; focus on the reconnect
+
+  // phone reconnects (the hello path) → reconcile + resend.
+  session.notePhoneConnected();
+  session.resendConversation();
+  await tick();
+
+  assert.equal(session.conversation().mode, 'idle', 'reconciled to idle');
+  // the phone MUST receive a frame so a stuck "listening" face corrects to idle.
+  assert.ok(convFrames.some((f) => f.to === 'idle'), 'an idle conversation frame reached the phone');
+});
+
+test('E2E reconnect: when ALREADY idle, resend STILL sends a frame (fixes a stuck face)', async () => {
+  const { session, convFrames } = convCaptureSession();
+  // station already idle; the phone face might be stale-stuck on listening. The
+  // reconcile fires no transition (idle→idle), so RESEND must still send a frame.
+  session.notePhoneConnected();
+  convFrames.length = 0;
+  session.resendConversation();
+  await tick();
+  assert.ok(convFrames.some((f) => f.to === 'idle' && f.reason === 'resync'),
+    'resync frame sent even with no transition (so a stuck phone face corrects)');
+});

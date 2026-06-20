@@ -26,8 +26,10 @@ export type ConvMode = 'idle' | 'listening' | 'thinking' | 'speaking' | 'followu
 export const ConvCfg = {
   /** A tap with no speech yet drops back to idle after this (the ack timeout). */
   LISTEN_MS: Number(process.env.CONV_LISTEN_MS ?? 8_000),
-  /** Auto re-listen window after a reply (hands-free follow-up). */
-  FOLLOWUP_MS: Number(process.env.CONV_FOLLOWUP_MS ?? 5_000),
+  /** Auto re-listen window after a reply (hands-free follow-up). 8s — long enough
+   *  for a natural pause-then-follow-up; VAD activity extends it further. (Was 5s;
+   *  felt rushed.) Tune via CONV_FOLLOWUP_MS. */
+  FOLLOWUP_MS: Number(process.env.CONV_FOLLOWUP_MS ?? 8_000),
   /** VAD activity during listening/followup pushes the window out this far. */
   VAD_EXTEND_MS: Number(process.env.CONV_VAD_EXTEND_MS ?? 4_000),
   /** Grace for the tap↔utterance ordering race: an utterance ending this long
