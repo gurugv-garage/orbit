@@ -83,16 +83,31 @@ export class ConversationState {
 
   // ── events in ─────────────────────────────────────────────────────────────
 
-  /** Tap is a TOGGLE: open an explicit LISTENING window when idle/followup, or
-   *  close listening when already listening/followup. (D1) */
+  /** Tap is a TOGGLE / INTERRUPT:
+   *   - listening/followup → close (tap-off, D1);
+   *   - idle               → open an explicit LISTENING window;
+   *   - thinking/speaking  → INTERRUPT the in-flight reply: drop the speak window
+   *     and open a fresh listening window. The `*->listening` transition is the
+   *     signal the session uses to abort the active turn (tap-to-interrupt). This
+   *     is deliberate (a real tap), so it can't false-trigger like raw VAD would. */
   tap(now: number): void {
     this.#prune(now);
     if (this.#mode === 'listening' || this.#mode === 'followup') {
       this.#set('idle', now, 'tap-off'); this.#windowUntil = 0;
     } else if (this.#mode === 'idle') {
       this.#openWindow('tap', now + ConvCfg.LISTEN_MS, now, 'tap');
+    } else if (this.#mode === 'thinking' || this.#mode === 'speaking') {
+      this.#speakUntil = 0;
+      this.#openWindow('tap', now + ConvCfg.LISTEN_MS, now, 'tap-interrupt');
     }
-    // during thinking/speaking a tap is ignored (the turn owns the lane).
+  }
+
+  /** True if `tap()` at `now` would INTERRUPT an in-flight reply (mode thinking or
+   *  speaking) — the session checks this before tapping to know whether to abort
+   *  the active turn. Pure (prunes, no mutation). */
+  tapWouldInterrupt(now: number): boolean {
+    this.#prune(now);
+    return this.#mode === 'thinking' || this.#mode === 'speaking';
   }
 
   /** A NEW face arrived in view → a low-priority listen window (D3): yields to an
@@ -129,8 +144,13 @@ export class ConversationState {
     this.#set('speaking', now, 'tts-start');
   }
 
-  /** TTS finished → auto re-listen (FOLLOWUP, high priority — survives face-leave). */
+  /** TTS finished → auto re-listen (FOLLOWUP, high priority — survives face-leave).
+   *  No-op unless we're actually SPEAKING: a tts-end that arrives AFTER a tap-to-
+   *  interrupt already moved us to a tap LISTENING window must not clobber it with a
+   *  lower-priority followup window (the interrupt's deliberate tap wins). */
   speakEnd(now: number): void {
+    this.#prune(now);
+    if (this.#mode !== 'speaking') return; // already left speaking (e.g. tap-interrupt)
     this.#speakUntil = 0;
     this.#windowSrc = 'followup';
     this.#windowUntil = now + ConvCfg.FOLLOWUP_MS;

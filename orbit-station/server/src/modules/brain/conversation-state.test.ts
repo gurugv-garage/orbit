@@ -153,10 +153,36 @@ describe('ConversationState — D: priority / toggle', () => {
     cs.tap(100); assert.equal(cs.mode(100), 'idle');
   });
 
-  it('D1c: tap during thinking/speaking is ignored (turn owns the lane)', () => {
+  // D1c — tap-to-interrupt: a tap while thinking/speaking INTERRUPTS the in-flight
+  // reply → a fresh tap LISTENING window (the session aborts the turn on this edge).
+  it('D1c: tap during speaking → interrupt → listening (tap window)', () => {
+    const { cs, seq } = make();
+    cs.turnStart(0); cs.speakStart(10);
+    assert.equal(cs.mode(20), 'speaking');
+    assert.equal(cs.tapWouldInterrupt(30), true, 'tap here would interrupt');
+    cs.tap(30);
+    assert.equal(cs.mode(30), 'listening', 'interrupt opens a listening window');
+    assert.equal(cs.msToExpiry(30), L, 'a full LISTEN_MS tap window');
+    assert.deepEqual(seq().at(-1), 'speaking->listening');
+  });
+
+  it('D1d: tap during thinking → interrupt → listening', () => {
     const { cs } = make();
-    cs.turnStart(0); cs.tap(50); assert.equal(cs.mode(50), 'thinking');
-    cs.speakStart(60); cs.tap(70); assert.equal(cs.mode(70), 'speaking');
+    cs.turnStart(0);
+    assert.equal(cs.tapWouldInterrupt(50), true);
+    cs.tap(50);
+    assert.equal(cs.mode(50), 'listening', 'interrupt before any speech also listens');
+  });
+
+  // A late tts-end (the aborted turn's TTS stopping) must NOT clobber the tap window
+  // the interrupt opened with a lower-priority followup.
+  it('D1e: a tts-end after a tap-interrupt does not overwrite the tap window', () => {
+    const { cs } = make();
+    cs.turnStart(0); cs.speakStart(10);
+    cs.tap(30);                       // interrupt → listening (tap)
+    cs.speakEnd(40);                  // the aborted reply's TTS stops, arriving late
+    assert.equal(cs.mode(40), 'listening', 'still the tap listening window');
+    assert.equal(cs.msToExpiry(40), L - 10, 'tap window intact (not a followup window)');
   });
 });
 

@@ -291,8 +291,14 @@ export class DockBrainSession {
 
   // ── conversation events (the single state machine) ─────────────────────────
 
-  /** User tapped — TOGGLE the addressed listening window (D1). */
-  tap(now = Date.now()): void { this.#conv.tap(now); }
+  /** User tapped — TOGGLE the listening window (D1), or INTERRUPT an in-flight
+   *  reply (tap-to-interrupt): a tap while thinking/speaking aborts the active turn
+   *  (stops TTS) and opens a fresh listening window so the user can speak again. */
+  tap(now = Date.now()): void {
+    const interrupts = this.#conv.tapWouldInterrupt(now);
+    this.#conv.tap(now);
+    if (interrupts) this.cancel(); // abort the turn whose reply was just interrupted
+  }
 
   /** VAD activity from the phone — extends an open listening/followup window. */
   vadActivity(now = Date.now()): void { this.#conv.vadActivity(now); }

@@ -93,7 +93,7 @@ test('R2: phone reconnect from a live listening window → idle, resync sent', (
   assert.equal(session.conversation().mode, 'idle', 'reconnect → clean idle');
   const resync = convFrames(frames).filter((f) => f.reason === 'resync');
   assert.equal(resync.length, 1, 'exactly one resync frame to the phone');
-  assert.equal(resync[0].to, 'idle', 'resync reflects the reconciled idle mode');
+  assert.equal(resync[0]?.to, 'idle', 'resync reflects the reconciled idle mode');
 });
 
 // ── R3: disconnect mid-listening / mid-followup → window doesn't leak ───────────
