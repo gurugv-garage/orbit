@@ -65,6 +65,9 @@ import * as slack from '../../integrations/slack.js';
  *  same-instance signals (notify+finish) coalesce into one turn. Tiny vs. the
  *  settle gap + the model turn; imperceptible for delivery. */
 const COALESCE_WINDOW_MS = 60;
+/** How often to tick the conversation state while in a timed mode, so window/speak
+ *  expiries emit their transition promptly (phone beep-off/idle on time). */
+const CONV_TICK_MS = 500;
 
 export interface TurnRequest {
   turnId: string;
@@ -156,6 +159,7 @@ export class DockBrainSession {
   // correlation read it. Replaces the old #speaking/#listening flags + the external
   // addressedLatch Map. A transition callback emits obs + drives the phone renderer.
   #conv = new ConversationState((t) => this.#onConvTransition(t));
+  #convTick?: ReturnType<typeof setInterval>; // ticks while in a timed conv mode
 
   // ── per-turn state (reset in #runTurn) ────────────────────────────────────
   #activeTurnId?: string;
@@ -481,6 +485,17 @@ export class DockBrainSession {
     // a directed agent frame to the phone (the renderer reads it for face/beeps).
     try { this.#sendToVoice('conversation', { from: t.from, to: t.to, reason: t.reason, at: t.at }); }
     catch { /* transport optional in tests */ }
+    // Drive the tick only while in a TIMED mode (listening/followup/speaking), so
+    // a window/speak expiry fires its transition promptly (the phone gets beep-off
+    // / idle on time, not only at the next incoming event). Stop when idle/thinking
+    // (no pending expiry) — no idle timer.
+    const timed = t.to === 'listening' || t.to === 'followup' || t.to === 'speaking';
+    if (timed && !this.#convTick) {
+      this.#convTick = setInterval(() => this.#conv.tick(Date.now()), CONV_TICK_MS);
+      this.#convTick.unref?.();
+    } else if (!timed && this.#convTick) {
+      clearInterval(this.#convTick); this.#convTick = undefined;
+    }
   }
 
   /** Idle-close check (clock measured from last turn END — an active turn
@@ -533,6 +548,8 @@ export class DockBrainSession {
   endSession(reason: string): void {
     if (!this.#meta) return;
     if (this.#turnActive) this.cancel();
+    // session boundary → conversation back to idle (clears windows + the tick).
+    this.#conv.reconcileConnected(Date.now());
     const { sessionId } = this.#meta;
     const messages = this.#agent?.state.messages ?? this.#d.store.messages(this.dock, sessionId);
     // stop every task running under this conversation (the lifetime cascade, §5)

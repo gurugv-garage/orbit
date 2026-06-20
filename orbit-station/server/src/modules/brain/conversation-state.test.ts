@@ -56,6 +56,16 @@ describe('ConversationState — A: basic addressed turn', () => {
     assert.equal(cs.mode(200), 'idle');
   });
 
+  // CONSUME: an addressed utterance closes the window atomically → thinking, so a
+  // SECOND rapid utterance in the async gap can't double-fire a turn.
+  it('addressed utterance consumes the window (no double-fire)', () => {
+    const { cs } = make();
+    cs.tap(0);
+    assert.equal(cs.utteranceEnded(100, 200), true, 'first is addressed');
+    assert.equal(cs.mode(200), 'thinking', 'window consumed → thinking');
+    assert.equal(cs.utteranceEnded(250, 300), false, 'second in the gap is NOT addressed again');
+  });
+
   // A4 — tap before the sentence ends (started before tap, ends after) → addressed.
   it('A4: tap before the sentence ends → addressed', () => {
     const { cs } = make();

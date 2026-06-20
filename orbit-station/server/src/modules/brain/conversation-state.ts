@@ -86,10 +86,13 @@ export class ConversationState {
     // during thinking/speaking a tap is ignored (the turn owns the lane).
   }
 
-  /** A turn started (addressed utterance / self / task) → THINKING. */
+  /** A turn started (addressed utterance / self / task) → THINKING. Clears both
+   *  windows: from listening/followup (normal) OR from speaking (a barge-in
+   *  supersede starts a new turn mid-TTS). */
   turnStart(now: number): void {
     this.#prune(now);
     this.#windowUntil = 0;
+    this.#speakUntil = 0;
     this.#set('thinking', now, 'turn-start');
   }
 
@@ -116,15 +119,22 @@ export class ConversationState {
   }
 
   /**
-   * A finalized utterance that ended at `endedAt`. Returns whether it's ADDRESSED
-   * (→ the caller runs a turn via turnStart). Addressed iff a listening/followup
-   * window is open and the utterance ended at/after `now - GRACE` (the ordering
-   * race). Overheard utterances leave the state untouched.
+   * A finalized utterance that ended at `endedAt`. Returns whether it's ADDRESSED.
+   * Addressed iff a listening/followup window is open and the utterance ended
+   * at/after `now - GRACE` (the ordering race). Overheard utterances leave the
+   * state untouched.
+   *
+   * CONSUMES the window when addressed → moves straight to THINKING. This is
+   * atomic on purpose: the caller runs the turn ASYNC (handleTurnRequest), so if
+   * we left the window open a SECOND rapid utterance in that gap would double-fire
+   * (a spurious supersede). One window → one turn, enforced here, not by the caller.
    */
   utteranceEnded(endedAt: number, now: number): boolean {
     this.#prune(now);
     if (this.#mode !== 'listening' && this.#mode !== 'followup') return false;
     if (endedAt < now - ConvCfg.GRACE_MS) return false;
+    this.#windowUntil = 0;
+    this.#set('thinking', now, 'addressed-utterance');
     return true;
   }
 
@@ -134,6 +144,12 @@ export class ConversationState {
     this.#speakUntil = 0; this.#windowUntil = 0;
     this.#set('idle', now, 'reconnect');
   }
+
+  /** Advance time: fire any pending expiry transitions (followup/listen window,
+   *  speak safety) WITHOUT a read/event. The session calls this on a timer so the
+   *  phone gets beep-off/idle promptly, not only when the next event happens to
+   *  prune. Pure: just prunes at `now`. */
+  tick(now: number): void { this.#prune(now); }
 
   // ── internals ─────────────────────────────────────────────────────────────
 
