@@ -26,21 +26,27 @@ object BeepPlayer {
     private fun gen(): ToneGenerator? {
         tone?.let { return it }
         return try {
-            ToneGenerator(AudioManager.STREAM_MUSIC, 70).also { tone = it } // 0..100 volume
+            // STREAM_VOICE_CALL (not MUSIC): WebRTC holds an active VOICE_COMMUNICATION
+            // session which DUCKS media-stream audio to near-silence (the same reason
+            // TTS had to move off USAGE_ASSISTANT). Play the beep in the voice-comm
+            // world so it's actually audible. Max gain (100) — it's a brief blip.
+            ToneGenerator(AudioManager.STREAM_VOICE_CALL, 100).also { tone = it }
         } catch (t: Throwable) {
             Timber.w(t, "ToneGenerator unavailable — beeps disabled")
             null
         }
     }
 
-    /** Listening turned ON (tap → addressed). A short, higher rising cue. */
+    /** Listening turned ON (tap → addressed). A clear rising cue (~180 ms). */
     fun listeningOn() {
-        runCatching { gen()?.startTone(ToneGenerator.TONE_PROP_BEEP, 120) }
+        Timber.i("BeepPlayer: listening ON")
+        runCatching { gen()?.startTone(ToneGenerator.TONE_PROP_BEEP, 180) }
     }
 
-    /** Listening turned OFF (sentence-end / timeout). A short, lower falling cue. */
+    /** Listening turned OFF (sentence-end / timeout). A lower falling cue (~180 ms). */
     fun listeningOff() {
-        runCatching { gen()?.startTone(ToneGenerator.TONE_PROP_BEEP2, 120) }
+        Timber.i("BeepPlayer: listening OFF")
+        runCatching { gen()?.startTone(ToneGenerator.TONE_PROP_BEEP2, 180) }
     }
 
     fun release() {
