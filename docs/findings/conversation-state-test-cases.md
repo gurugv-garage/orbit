@@ -189,16 +189,27 @@ VALIDATE notes below reference these by number.
 
 ## ── Reconnections (SEPARATE — needs a simulation harness) ──
 
-> Build a disconnect/reconnect SIM (drop the phone's WS, drop frames), then assert:
-> **DONE — `server/src/modules/brain/reconnection.test.ts`** drives the real session
-> reconnect path (hello → `notePhoneConnected` + `resendConversation`) and asserts
-> both the conversation snapshot AND the resync frame the phone receives. (The "WS
-> drop" = stop reading station→phone frames; reconnect = the hello.)
+> Tested TWO ways: (1) **session-level sim** `server/src/modules/brain/reconnection.test.ts`
+> drives the real session reconnect path (hello → `notePhoneConnected` +
+> `resendConversation`) and asserts both the conversation snapshot AND the resync
+> frame the phone receives. (2) **LIVE on the real app** — actual WS drop via the
+> phone's wifi, real Android reconnect/backoff, real `peer-left` + re-hello.
+>
+> **LIVE PROCEDURE (real app, no fake peer; VERIFIED 2026-06-20):**
+> ```bash
+> P=anne-bot; D=78f5da3a   # dock name + adb device id
+> conv(){ curl -s localhost:8099/api/brain/$P/conversation; }
+> # 1. open a live window:  POST /api/brain/$P/debug/event {"event":"tap"} → conv.mode=listening
+> adb -s $D shell svc wifi disable      # 2. REAL WS drop → station: phone online=False,
+> #                                          conv reconciles to idle, window does NOT leak (R3)
+> adb -s $D shell svc wifi enable       # 3. app auto-reconnects (~10s) → re-hello
+> #    4. conv = clean idle, no stale window (R2/R4); roster phone online=True again
+> ```
 - **R1. Lost "TTS finished":** speaking; never get `tts-end`; assert recovery —
   `/conversation` leaves speaking by `SPEAK_MAX_MS` AND `reconcileConnected()`→idle. ✅ sim
-- **R2. Phone reconnect → clean slate:** any mode; reconnect → idle + one resync frame. ✅ sim
-- **R3. Disconnect mid-listening/followup:** window doesn't leak; reconciles. ✅ sim (R3 + R3b)
-- **R4. Station restart / dock re-hello:** state re-established (fresh idle + resync). ✅ sim
+- **R2. Phone reconnect → clean slate:** any mode; reconnect → idle + one resync frame. ✅ sim · ✅ LIVE
+- **R3. Disconnect mid-listening/followup:** window doesn't leak; reconciles. ✅ sim (R3 + R3b) · ✅ LIVE (wifi-drop)
+- **R4. Station restart / dock re-hello:** state re-established (fresh idle + resync). ✅ sim · ✅ LIVE (re-hello)
 - **R5. CLEAN RESET on APP restart (user-requested):** the phone app restarts →
   reconnects → `hello` → reconcile → from ANY prior mode the conversation comes
   back CLEAN idle (no stale listening/speak window). UNIT: reconcile from every
@@ -211,7 +222,8 @@ VALIDATE notes below reference these by number.
   observed every `tsx watch` reload — phone reconnects, `/conversation` settles to
   idle (a live face window may briefly open, then expires → idle). VERIFIED.
 - **VALIDATE:** R1-R4 done via the session-level sim (`reconnection.test.ts`, 6
-  cases) — a scripted session + frame capture, no real WS needed. R5/R6 are
+  cases) AND R2/R3/R4 confirmed LIVE on the real app via the wifi-drop procedure
+  above (real socket close + Android reconnect). R5/R6 are
   unit-tested (`conversation-state.test.ts`) + live-verified via `/conversation`
   + the `[conv]` logs.
 
