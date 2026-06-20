@@ -28,7 +28,6 @@ import type { RouteContext, StationModule } from '../../core/module.js';
 import type { Directory } from '../docks/directory.js';
 import type { MotionExecutor } from '../bodylink/motion.js';
 import { getFaceTools, getPerceptionGrounding, getMemoryApi, getGateApi, getTranscriptApi } from '../perception/index.js';
-import { newLatch, tap as tapLatch, decideAddressed, type AddressedLatch } from './addressed.js';
 import type { VideoRecorderApi } from '../perception/record/recorder.js';
 import { RpcBroker } from './rpc.js';
 import { DockBrainSession, type TurnRequest, keyStatusFor } from './session.js';
@@ -200,35 +199,26 @@ export function brainModule(w: BrainWiring): StationModule {
       // user turn-request. The latch clears at sentence-end (one tap → one turn).
       // Overheard (un-tapped) speech is ignored here — only the attention gate may
       // act on it (A1.5). See addressed.ts for the pure correlation + tests.
-      const addressedLatch = new Map<string, AddressedLatch>();
-      const latchOf = (dock: string): AddressedLatch =>
-        addressedLatch.get(dock) ?? newLatch();
-      // Run an addressed final transcript through the latch → maybe a turn. Shared
-      // by the real onFinal hook and the debug-inject route (so self-tests drive
-      // the EXACT same path without a live mic).
+      // A finalized utterance → ask the dock's conversation state if it's ADDRESSED
+      // (an open listening/followup window); if so, run it as a turn. The addressed
+      // decision now lives in the session's ConversationState (single owner) — no
+      // separate latch Map. Overheard utterances are ignored here (still transcribed
+      // upstream; the attention gate may act on them later).
       const onAddressedFinal = (t: { dockId: string; text: string; startedAt: number; endedAt: number }) => {
-        const { addressed, next } = decideAddressed(latchOf(t.dockId), {
-          startedAt: t.startedAt, endedAt: t.endedAt,
-        });
-        addressedLatch.set(t.dockId, next);
-        if (!addressed) return;
+        if (!session(t.dockId).utteranceAddressed(t.endedAt)) return;
         void session(t.dockId).handleTurnRequest({
           turnId: `addr-${randomUUID()}`,
           trigger: { kind: 'user', text: t.text },
           stationOriginated: true, // A1.2: the phone must ADOPT this (it didn't start it)
         }).catch((err) => console.error(`[brain] ${t.dockId}: addressed turn crashed`, err));
       };
-      // Debug self-test: simulate a TAPPED utterance (tap the latch, then feed a
-      // final transcript) so a turn always fires — drives the real addressed→turn→
-      // adopt path with NO live mic. Exposed via POST /:dock/debug/say.
+      // Debug self-test: tap (open the window) then feed a final utterance → a turn
+      // always fires. Drives the REAL addressed→turn→adopt path with NO live mic.
       injectAddressed = (dock, text) => {
-        const at = Date.now();
-        addressedLatch.set(dock, tapLatch(latchOf(dock), at));
-        onAddressedFinal({ dockId: dock, text, startedAt: at + 1, endedAt: at + 2 });
+        session(dock).tap();
+        onAddressedFinal({ dockId: dock, text, startedAt: Date.now(), endedAt: Date.now() });
       };
-      getTranscriptApi()?.onFinal((t) => {
-        onAddressedFinal(t);
-      });
+      getTranscriptApi()?.onFinal((t) => { onAddressedFinal(t); });
 
       bus.on('agent', (msg) => {
         if (msg.source === 'station') return;
@@ -244,6 +234,9 @@ export function brainModule(w: BrainWiring): StationModule {
         const p = msg.payload as Record<string, unknown> | null;
         switch (msg.kind) {
           case 'hello':
+            // A (re)connecting phone → reconcile conversation state to idle (clears
+            // anything a frame lost across a disconnect would have wedged).
+            session(dock).notePhoneConnected();
             // The deterministic half of the resync handshake: the peer-joined
             // push below can RACE the peer's subscribe frame (both arrive
             // back-to-back; the directed reply fans out before the topic
@@ -264,19 +257,17 @@ export function brainModule(w: BrainWiring): StationModule {
               console.error(`[brain] ${dock}: turn crashed`, err);
             });
             break;
-          case 'addressed': {
-            // A1.2: the dock tapped — mark it addressed so the next qualifying
-            // utterance (from the always-on server STT) becomes a turn.
-            //
-            // CRITICAL: stamp with the STATION clock (Date.now()), NOT the phone's
-            // `p.at`. The utterance windows from stt-watch are station-clock
-            // (`new Date()`); comparing a phone-clock tap against them breaks on
-            // even small clock skew (phone ahead → tap "after" the utterance →
-            // dropped → the intermittent "sometimes my speech doesn't register").
-            // The network hop (~tens of ms) is negligible vs. the skew it removes.
-            addressedLatch.set(dock, tapLatch(latchOf(dock), Date.now()));
+          case 'addressed':
+            // A tap — TOGGLE the dock's addressed listening window (D1). Stamped
+            // with the STATION clock so the utterance correlation (also station
+            // clock) is skew-free. Tap on = open window; tap again = close it.
+            session(dock).tap();
             break;
-          }
+          case 'vad':
+            // VAD activity from the phone — extends an open listening/followup
+            // window so a slow speaker isn't cut off mid-sentence.
+            session(dock).vadActivity();
+            break;
           case 'turn-cancel':
             session(dock).cancel(typeof p?.turnId === 'string' ? p.turnId : undefined);
             break;
@@ -403,6 +394,13 @@ export function brainModule(w: BrainWiring): StationModule {
         json(res, 200, { ok: true, listening: body.listening === true });
         return true;
       }
+      // GET /:dock/conversation — the live conversation state probe (the primary
+      // testability hook: { mode, windowUntil, speakUntil, msToExpiry }).
+      const cm = subPath.match(/^\/([^/]+)\/conversation$/);
+      if (cm && req.method === 'GET') {
+        json(res, 200, session(decodeURIComponent(cm[1]!)).conversation());
+        return true;
+      }
       let m = subPath.match(/^\/([^/]+)\/sessions$/);
       if (m && req.method === 'GET') {
         json(res, 200, store.sessions(decodeURIComponent(m[1]!)));
@@ -461,6 +459,36 @@ export function brainModule(w: BrainWiring): StationModule {
         if (!text) { json(res, 400, { error: 'body.text (the utterance) is required' }); return true; }
         injectAddressed(dock, text);
         json(res, 200, { ok: true, injected: text });
+        return true;
+      }
+      // POST /:dock/debug/event {event, [endedAt], [text]} — inject a RAW
+      // conversation event to drive any flow headless (no mic):
+      //   tap | vad | tts-start | tts-end | connected | utterance{text,endedAt}
+      // utterance runs the addressed path (→ a turn if a window is open).
+      m = subPath.match(/^\/([^/]+)\/debug\/event$/);
+      if (m && req.method === 'POST') {
+        const dock = decodeURIComponent(m[1]!);
+        const b = JSON.parse((await readBody(req)) || '{}') as { event?: string; text?: string; endedAt?: number };
+        const s = session(dock);
+        switch (b.event) {
+          case 'tap': s.tap(); break;
+          case 'vad': s.vadActivity(); break;
+          case 'tts-start': s.noteSpeech(true); break;
+          case 'tts-end': s.noteSpeech(false); break;
+          case 'connected': s.notePhoneConnected(); break;
+          case 'utterance': {
+            const endedAt = typeof b.endedAt === 'number' ? b.endedAt : Date.now();
+            const addressed = s.utteranceAddressed(endedAt);
+            if (addressed && b.text) {
+              void s.handleTurnRequest({ turnId: `addr-${randomUUID()}`, trigger: { kind: 'user', text: b.text.trim() }, stationOriginated: true })
+                .catch((err) => console.error(`[brain] ${dock}: debug utterance turn crashed`, err));
+            }
+            json(res, 200, { ok: true, addressed, conversation: s.conversation() });
+            return true;
+          }
+          default: json(res, 400, { error: 'event must be tap|vad|tts-start|tts-end|connected|utterance' }); return true;
+        }
+        json(res, 200, { ok: true, conversation: s.conversation() });
         return true;
       }
       // delete a specific session (transcript + index entry). Refuses the
