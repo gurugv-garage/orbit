@@ -79,6 +79,11 @@ import { MediaRecorder } from 'werift/nonstandard';
 > `worker_thread` (or move to a sidecar, §2). At the dock's envelope (~60 pkt/s)
 > a counter or a `worker.postMessage(buffer)` is free; an inline Whisper call is
 > not. See the "Load on the single Node thread" note in the plan.
+>
+> **Multiple docks / streams at once** — how N concurrent streams are sensed +
+> processed in parallel (singleton processors multiplexing per-stream state, with
+> the sidecar as the serialized inference bottleneck) is a **perception** concern:
+> see [perception-pipeline.md](perception-pipeline.md) §1a.
 
 ---
 

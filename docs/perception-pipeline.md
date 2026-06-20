@@ -42,6 +42,7 @@ Key REST routes (all under `/api/perception`): `GET /snapshots`, `POST /snapshot
 ## Contents
   - [Code map — key files + entry points](#code-map--key-files--entry-points)
 - [1. The shape: one stream in, four parallel "snapshot" streams out](#1-the-shape-one-stream-in-four-parallel-snapshot-streams-out)
+  - [1a. Multiple docks / streams at once — how N streams are sensed in parallel](#1a-multiple-docks--streams-at-once--how-n-streams-are-sensed-in-parallel)
 - [2. 👁 Vision — Qwen2.5-VL-3B (MLX 4-bit), latency-bound windows](#2--vision--qwen25-vl-3b-mlx-4-bit-latency-bound-windows)
 - [3. 🎙 Speech — Whisper small.en (MLX), VAD-endpointed](#3--speech--whisper-smallen-mlx-vad-endpointed)
 - [4. 👤 Identity — face-api (TF.js), enroll-then-match, debounced](#4--identity--face-api-tfjs-enroll-then-match-debounced)
@@ -107,6 +108,42 @@ automatically. The only per-kind logic is in the summarizer's stitcher, which ha
 it just gets richer treatment if you add a case (as identity/bodymotion did with
 span-collapsing). Graceful default + opt-in richness, not rigidity. (bodymotion,
 §5b, was added this way as the 5th stream — proof the seam holds.)
+
+### 1a. Multiple docks / streams at once — how N streams are sensed in parallel
+
+Several docks can stream simultaneously (different phones/clients). Here is
+**exactly** how that's modeled — the fact you need to reason about scaling, since
+it isn't obvious from the code.
+
+- **One WebRTC PeerConnection + one producer per dock** (the SFU keeps
+  `#producers: Map<streamId, Producer>` — "many stream at once"). `streamId` = the
+  producer's **unique peer id** (the dock app's appId), so two docks never collide;
+  the dock *name* is a display label only. 3 phones = 3 PeerConnections = 3
+  independent inbound RTP streams. (Transport: [media-processing.md](media-processing.md).)
+- **The tap fires per-stream, tagged by streamId** — `tap.onTrack(streamId, kind,
+  track)` → `onRtp(streamId, kind, rtp)`. Every packet carries which stream it's from.
+- **The 5 processors are SINGLETONS that MULTIPLEX, not per-stream instances.** Each
+  keeps **per-stream state** internally — e.g. `stt-watch` holds
+  `streams: Map<streamId, {detector,…}>`. `onStreamStart(ctx)` creates that stream's
+  state; `onRtp(streamId,…)` routes the packet to **that** stream's detector. So
+  "singleton" ≠ "one stream" — **one object running N independent per-stream
+  pipelines**, keyed by streamId. Every snapshot is tagged `dockId`/`streamId`.
+
+**How two streams actually EXECUTE (the part that's easy to get wrong):**
+
+| Layer | Behaviour with 2+ streams |
+|---|---|
+| **packet routing + VAD** | **Interleaved on Node's single event loop** — `onRtp` is an O(1) map lookup + a tiny `feed()` (decode 10 ms Opus, RMS, VAD). Microseconds/packet, so interleaving 2 or 10 streams is free. Effectively parallel, never blocking. |
+| **per-stream state** | **Fully independent** — a separate detector (own buffer/VAD) per stream. No mixing. |
+| **async dispatch** | An utterance endpoint fires `await transcribe()` (an HTTP call to the sidecar) WITHOUT blocking the loop, so two streams' transcribe requests are in flight concurrently. |
+| **actual ML inference** | **Serialized at the sidecar** — MLX/Metal isn't thread-safe, so the sidecar runs **one worker per model** (§8). Two transcribe requests **queue** there; the GPU does them one at a time. |
+
+**So:** adding more streams of the same type → processed **in parallel** at the
+routing/VAD layer (independent per-stream state), but the **heavy inference is a
+shared, serialized resource** (one sidecar worker). A *throughput* ceiling, not a
+correctness limit — nothing mixes or breaks; transcriptions just queue behind each
+other. **Scaling lever for many docks** (future, not built): more sidecar workers /
+per-dock sidecars / batched inference.
 
 ---
 
