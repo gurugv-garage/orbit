@@ -36,7 +36,13 @@ import { tapFromEnv, type MediaTap } from './tap.js';
  *   responsible for any sidecar forwarding. Omitted → fall back to tapFromEnv().
  *   This keeps `media` import-free of `perception` (main.ts wires the two).
  */
-export function mediaModule(getTap?: () => MediaTap | undefined): StationModule {
+export function mediaModule(
+  getTap?: () => MediaTap | undefined,
+  // Called once the SFU exists, handing back a stable streamId→label lookup so
+  // other modules (perception's resolveDock) can give a browser stream a stable
+  // identity (its published label) instead of its ephemeral WS peer id.
+  onSfuReady?: (labelOf: (streamId: string) => string | undefined) => void,
+): StationModule {
   let sfu: Sfu;
 
   return {
@@ -58,6 +64,7 @@ export function mediaModule(getTap?: () => MediaTap | undefined): StationModule 
           bus.publish({ topic: 'media', kind, payload, source: 'station', to }),
         tap,
       });
+      onSfuReady?.((streamId) => sfu.labelOf(streamId));
 
       bus.on('media', (msg) => {
         if (msg.source === 'station') return; // ignore our own emissions

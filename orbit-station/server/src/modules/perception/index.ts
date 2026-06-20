@@ -689,8 +689,13 @@ export function perceptionModule(getHub: () => ProcessingHub): StationModule {
       // Snapshot records (WebRTC vision + speech), shared format, ordered by start.
       // GET /snapshots[?limit=N]; POST /snapshots/clear wipes the ring.
       if (req.method === 'GET' && subPath === '/snapshots') {
-        const limit = Number(new URL(req.url ?? '', 'http://x').searchParams.get('limit') ?? 300);
-        json(res, 200, snapshots.list(limit));
+        const q = new URL(req.url ?? '', 'http://x').searchParams;
+        const limit = Number(q.get('limit') ?? 300);
+        // ?dock=X scopes to one dock/stream's snapshots (the console source selector);
+        // omitted/all = the merged feed across every producer.
+        const dock = q.get('dock');
+        const all = snapshots.list(limit);
+        json(res, 200, dock && dock !== 'all' ? all.filter((r) => r.dockId === dock) : all);
         return true;
       }
       if (req.method === 'POST' && subPath === '/snapshots/clear') {
@@ -733,7 +738,7 @@ export function perceptionModule(getHub: () => ProcessingHub): StationModule {
       if (req.method === 'POST' && subPath === '/snapshots/summarize') {
         const body = await parseBody<
           { windowMs?: number; fromIso?: string; toIso?: string;
-            withKeyframes?: boolean; maxKeyframes?: number; model?: string }>(req);
+            withKeyframes?: boolean; maxKeyframes?: number; model?: string; dock?: string }>(req);
         // Prefer EXPLICIT bounds (the client pins the window at click time so the
         // log and the LLM input agree exactly). Fall back to windowMs = [now-w, now]
         // for older callers. inWindowWithState = overlap + carried-in state streams.
@@ -742,7 +747,9 @@ export function perceptionModule(getHub: () => ProcessingHub): StationModule {
         // inWindowWithState carries forward the last identity/bodymotion BEFORE the
         // window, so the summary knows the camera/presence state it ENTERED with
         // (a pan or a person that last changed before the window isn't lost).
-        const recs = snapshots.inWindowWithState(fromIso, toIso);
+        // ?dock scopes the summary to one source (the console selector); else all.
+        const recs = snapshots.inWindowWithState(fromIso, toIso)
+          .filter((r) => !body.dock || body.dock === 'all' || r.dockId === body.dock);
         const keyframes = body.withKeyframes
           ? snapshots.keyframesInWindow(fromIso, toIso, body.maxKeyframes ?? 6) : undefined;
         const result = await summarize(recs, { keyframes, model: body.model });
