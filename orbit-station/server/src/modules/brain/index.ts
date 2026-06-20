@@ -235,8 +235,11 @@ export function brainModule(w: BrainWiring): StationModule {
         switch (msg.kind) {
           case 'hello':
             // A (re)connecting phone → reconcile conversation state to idle (clears
-            // anything a frame lost across a disconnect would have wedged).
+            // anything a frame lost across a disconnect would have wedged), then
+            // re-send the current mode so the phone (a pure renderer with no state
+            // of its own) shows the right thing immediately.
             session(dock).notePhoneConnected();
+            session(dock).resendConversation();
             // The deterministic half of the resync handshake: the peer-joined
             // push below can RACE the peer's subscribe frame (both arrive
             // back-to-back; the directed reply fans out before the topic
@@ -267,6 +270,15 @@ export function brainModule(w: BrainWiring): StationModule {
             // VAD activity from the phone — extends an open listening/followup
             // window so a slow speaker isn't cut off mid-sentence.
             session(dock).vadActivity();
+            break;
+          case 'face-arrival':
+            // a NEW face in view → low-priority listen (station decides; yields to
+            // an active tap/followup).
+            session(dock).faceArrival();
+            break;
+          case 'face-left':
+            // a face left → release ONLY a face listen window (never a tap/followup).
+            session(dock).faceLeft();
             break;
           case 'turn-cancel':
             session(dock).cancel(typeof p?.turnId === 'string' ? p.turnId : undefined);
@@ -473,6 +485,8 @@ export function brainModule(w: BrainWiring): StationModule {
         switch (b.event) {
           case 'tap': s.tap(); break;
           case 'vad': s.vadActivity(); break;
+          case 'face-arrival': s.faceArrival(); break;
+          case 'face-left': s.faceLeft(); break;
           case 'tts-start': s.noteSpeech(true); break;
           case 'tts-end': s.noteSpeech(false); break;
           case 'connected': s.notePhoneConnected(); break;
@@ -486,7 +500,7 @@ export function brainModule(w: BrainWiring): StationModule {
             json(res, 200, { ok: true, addressed, conversation: s.conversation() });
             return true;
           }
-          default: json(res, 400, { error: 'event must be tap|vad|tts-start|tts-end|connected|utterance' }); return true;
+          default: json(res, 400, { error: 'event must be tap|vad|face-arrival|face-left|tts-start|tts-end|connected|utterance' }); return true;
         }
         json(res, 200, { ok: true, conversation: s.conversation() });
         return true;

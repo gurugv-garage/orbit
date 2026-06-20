@@ -160,6 +160,55 @@ describe('ConversationState — D: priority / toggle', () => {
   });
 });
 
+describe('ConversationState — D2/D3: camera presence priority', () => {
+  // D3 — a face arriving opens a low-priority listen window when idle.
+  it('D3a: face arrival opens a listen window when idle', () => {
+    const { cs } = make();
+    cs.faceArrival(0);
+    assert.equal(cs.mode(0), 'listening');
+    assert.equal(cs.msToExpiry(0), ConvCfg.FACE_ARRIVAL_MS);
+  });
+
+  // D3 — a face arriving does NOT override an active tap/followup window.
+  it('D3b: face arrival during a tap window is ignored (no downgrade)', () => {
+    const { cs } = make();
+    cs.tap(0);                       // high-priority window, LISTEN_MS
+    cs.faceArrival(100);             // a new face shows up
+    assert.equal(cs.msToExpiry(100), L - 100, 'still the TAP window, not shortened to FACE');
+  });
+
+  // D2 — leaving the camera releases ONLY a face window...
+  it('D2a: face-left clears a FACE listen window', () => {
+    const { cs } = make();
+    cs.faceArrival(0);
+    cs.faceLeft(100);
+    assert.equal(cs.mode(100), 'idle', 'face window released on leave');
+  });
+
+  // D2 — ...but face-left does NOT cancel a tap.
+  it('D2b: face-left does NOT cancel a TAP window', () => {
+    const { cs } = make();
+    cs.tap(0);
+    cs.faceLeft(100);
+    assert.equal(cs.mode(100), 'listening', 'tap survives a glance away');
+  });
+
+  // D2 — ...nor a follow-up (the headline case: glance away mid-conversation).
+  it('D2c: face-left does NOT cancel a FOLLOWUP window', () => {
+    const { cs } = make();
+    cs.speakStart(0); cs.speakEnd(10);   // → followup
+    cs.faceLeft(100);
+    assert.equal(cs.mode(100), 'followup', 'follow-up survives leaving the camera');
+    assert.equal(cs.utteranceEnded(200, 300), true, 'and I can still follow up');
+  });
+
+  it('D2d: face-left when idle/thinking is a no-op', () => {
+    const { cs } = make();
+    cs.faceLeft(0); assert.equal(cs.mode(0), 'idle');
+    cs.turnStart(0); cs.faceLeft(50); assert.equal(cs.mode(50), 'thinking');
+  });
+});
+
 describe('ConversationState — robustness (unit; full reconnection sim separate)', () => {
   // R1 (unit) — lost tts-end: speaking can't wedge past SPEAK_MAX_MS.
   it('R1: a lost tts-end → leaves speaking by SPEAK_MAX_MS', () => {

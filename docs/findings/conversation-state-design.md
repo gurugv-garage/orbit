@@ -57,6 +57,27 @@ States (single enum, station-owned, per dock):
 The **addressed latch folds into this**: "are we LISTENING/FOLLOWUP?" IS the
 addressed decision. No separate Map.
 
+## Consequences of "station is sole authority" (added after review)
+
+Two things follow once the phone is a pure renderer:
+
+1. **Camera presence is a STATION input, not phone-local.** Face-arrival auto-listen
+   and the "face-leave can't cancel a follow-up" priority (D2) are DECISIONS — so
+   they move to the station. The phone sends `face-arrival` / `face-left` events up;
+   the station's ConversationState decides (arrival → low-priority listen; leave →
+   release only the face hold, never a tap/followup). The phone stops deciding
+   listening from faces locally.
+2. **Conversation state is PER-SESSION (the right unit — no persistence needed).**
+   It lives on the `DockBrainSession`, and a session IS "a continued conversation":
+   - **Reconnect while the SAME session is still open** (within the idle window) →
+     the state is already there (the session object persists); the station just
+     **re-sends the current `conversation` frame on `hello`** so the phone (a pure
+     renderer with no state of its own) re-renders the right mode.
+   - **New session** (after idle-close) → a fresh `ConversationState` (idle); the
+     prior conversational mode is irrelevant.
+   So NO persistence/resume machinery: the session lifecycle (continue-vs-new) +
+   reconcile-on-connect + re-send-frame is the whole story. Don't over-build this.
+
 ## Events IN (phone/perception → station state machine)
 
 - `tap` — user explicit → LISTENING (high priority).

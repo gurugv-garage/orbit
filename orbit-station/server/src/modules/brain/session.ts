@@ -297,6 +297,21 @@ export class DockBrainSession {
   /** VAD activity from the phone — extends an open listening/followup window. */
   vadActivity(now = Date.now()): void { this.#conv.vadActivity(now); }
 
+  /** A new face arrived in the dock's camera (low-priority listen). */
+  faceArrival(now = Date.now()): void { this.#conv.faceArrival(now); }
+
+  /** A face left the camera (releases only a low-priority face listen window —
+   *  never a tap/follow-up). */
+  faceLeft(now = Date.now()): void { this.#conv.faceLeft(now); }
+
+  /** Re-send the current conversation mode (e.g. to a (re)connecting phone, which
+   *  is a pure renderer with no state of its own). */
+  resendConversation(): void {
+    const m = this.#conv.mode(Date.now());
+    try { this.#sendToVoice('conversation', { from: m, to: m, reason: 'resync', at: Date.now() }); }
+    catch { /* transport optional */ }
+  }
+
   /**
    * A finalized utterance ended at `endedAt`. Returns whether it's ADDRESSED (the
    * caller then runs a turn). Folds in the old addressedLatch — "are we in an open

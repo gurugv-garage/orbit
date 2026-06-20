@@ -36,6 +36,8 @@ export const ConvCfg = {
   /** SPEAKING safety cap: if a tts-end is lost, SPEAKING can't wedge forever.
    *  Reconcile-on-connect is the primary recovery; this is the backstop. */
   SPEAK_MAX_MS: Number(process.env.CONV_SPEAK_MAX_MS ?? 30_000),
+  /** A face arriving in view opens a brief low-priority listen window. */
+  FACE_ARRIVAL_MS: Number(process.env.CONV_FACE_ARRIVAL_MS ?? 5_000),
 };
 
 /** A state transition, emitted for observability + the phone renderer. */
@@ -46,9 +48,15 @@ export interface ConvTransition {
   at: number;
 }
 
+/** Why a listening window is open — drives priority (a low-priority OFF signal
+ *  like face-leave can't cancel a higher one like a tap or follow-up). */
+export type WindowSource = 'face' | 'tap' | 'followup';
+const SRC_PRIORITY: Record<WindowSource, number> = { face: 10, followup: 50, tap: 100 };
+
 export class ConversationState {
   #mode: ConvMode = 'idle';
   #windowUntil = 0; // LISTENING/FOLLOWUP expiry (ms), or 0
+  #windowSrc: WindowSource = 'tap'; // why the current window is open (priority)
   #speakUntil = 0;  // SPEAKING safety expiry (ms), or 0
   #onTransition?: (t: ConvTransition) => void;
 
@@ -80,10 +88,27 @@ export class ConversationState {
     if (this.#mode === 'listening' || this.#mode === 'followup') {
       this.#set('idle', now, 'tap-off'); this.#windowUntil = 0;
     } else if (this.#mode === 'idle') {
-      this.#windowUntil = now + ConvCfg.LISTEN_MS;
-      this.#set('listening', now, 'tap');
+      this.#openWindow('tap', now + ConvCfg.LISTEN_MS, now, 'tap');
     }
     // during thinking/speaking a tap is ignored (the turn owns the lane).
+  }
+
+  /** A NEW face arrived in view → a low-priority listen window (D3): yields to an
+   *  active tap/followup (won't override a higher window), opens one when idle. */
+  faceArrival(now: number): void {
+    this.#prune(now);
+    if (this.#mode === 'idle') this.#openWindow('face', now + ConvCfg.FACE_ARRIVAL_MS, now, 'face-arrival');
+    // if already listening/followup/thinking/speaking → ignore (don't downgrade).
+  }
+
+  /** A face LEFT view → release ONLY a low-priority face window. It must NOT
+   *  cancel a tap or follow-up (D2: a glance away doesn't end your conversation). */
+  faceLeft(now: number): void {
+    this.#prune(now);
+    if ((this.#mode === 'listening' || this.#mode === 'followup') && this.#windowSrc === 'face') {
+      this.#windowUntil = 0;
+      this.#set('idle', now, 'face-left');
+    }
   }
 
   /** A turn started (addressed utterance / self / task) → THINKING. Clears both
@@ -102,9 +127,10 @@ export class ConversationState {
     this.#set('speaking', now, 'tts-start');
   }
 
-  /** TTS finished → auto re-listen (FOLLOWUP). */
+  /** TTS finished → auto re-listen (FOLLOWUP, high priority — survives face-leave). */
   speakEnd(now: number): void {
     this.#speakUntil = 0;
+    this.#windowSrc = 'followup';
     this.#windowUntil = now + ConvCfg.FOLLOWUP_MS;
     this.#set('followup', now, 'tts-end');
   }
@@ -168,6 +194,13 @@ export class ConversationState {
     }
   }
 
+  /** Open a listening window of a given source (priority) → listening. */
+  #openWindow(src: WindowSource, until: number, now: number, reason: string): void {
+    this.#windowSrc = src;
+    this.#windowUntil = until;
+    this.#set('listening', now, reason);
+  }
+
   #set(to: ConvMode, at: number, reason: string): void {
     if (to === this.#mode) return;
     const from = this.#mode;
@@ -175,3 +208,6 @@ export class ConversationState {
     this.#onTransition?.({ from, to, reason, at });
   }
 }
+// keep SRC_PRIORITY referenced (priority is encoded in faceLeft's source check;
+// exported map is available for future multi-source arbitration if needed).
+void SRC_PRIORITY;
