@@ -140,6 +140,7 @@ class PerceptionWiring(
                         Timber.i("listen (tap/addressed): ${event.label}")
                         listeningActive = true
                         controller.listen()
+                        BeepPlayer.listeningOn() // audible "I'm listening" cue
                         _transcript.value = TranscriptState()
                         listenTimeout?.cancel()
                         listenTimeout = scope.launch {
@@ -147,6 +148,7 @@ class PerceptionWiring(
                             if (controller.state.value == FaceState.Listening) {
                                 Timber.i("tap ack timed out (no speech) → Idle")
                                 listeningActive = false
+                                BeepPlayer.listeningOff() // listening closed (no speech)
                                 controller.silence()
                             }
                         }
@@ -162,10 +164,14 @@ class PerceptionWiring(
                         Timber.d("transcript (station): \"${event.text}\" final=${event.isFinal}")
                         _transcript.value = TranscriptState(event.text, event.isFinal)
                         if (event.isFinal) {
+                            val wasListening = listeningActive
                             listeningActive = false
                             listenTimeout?.cancel()
-                            // sentence-end: drop the Listening face back to Idle
-                            // UNLESS an agent turn already took over (Speaking/Engaged).
+                            // sentence-end: listening closes here (the server VAD
+                            // endpoint). Beep off only if we were actually listening.
+                            if (wasListening) BeepPlayer.listeningOff()
+                            // drop the Listening face back to Idle UNLESS an agent
+                            // turn already took over (Speaking/Engaged).
                             val s = controller.state.value
                             if (s == FaceState.Listening) controller.silence()
                             if (event.text.isNotBlank() && shouldWinkFor(event.text)) {

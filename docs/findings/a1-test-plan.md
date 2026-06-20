@@ -1,0 +1,157 @@
+# A1 conversation-flow test plan (deep)
+
+> The full A1 (always-on-mic) test suite, run **one case at a time**. Split into
+> **🤖 NO-HUMAN** (I drive headless via REST/`debug/say`/audio playback + assert
+> state & logs) and **👤 NEEDS-HUMAN** (your voice / ears / eyes on the tab).
+> Every case checks the **state machines and logs at each transition** — not just
+> the final result — so we catch mistimed/stuck states.
+>
+> Status: ✅ pass · ⚠️ verify · ❌ known-fail · ⬜ not run
+
+---
+
+## Artifacts (everything needed to run these)
+
+- **Test utterance WAVs:** `docs/findings/a1-test-audio/*.wav` (16 kHz mono PCM16,
+  station-ready). Play these at the dock mic (speaker held to it) for reproducible
+  speech, OR they document the exact phrases to say.
+  - `q-math.wav` "What is two plus two?" · `q-capital.wav` "…capital of France?"
+  - `q-time.wav` "What time is it right now?" · `greeting.wav` "Hey, can you hear me?"
+  - `barge-stop.wav` "Stop, what time is it?" (barge-in) · `followup.wav` "And what about the sun?"
+  - `long-story.wav` "Tell me a long story about the moon…" (long reply, for barge-in)
+- **No-mic injection:** `POST /api/brain/anne-bot/debug/say {"text":"…"}` — taps the
+  latch + injects a final transcript → drives the REAL addressed→turn→adopt→reply path.
+- **Tap:** `adb shell am broadcast -a dev.orbit.dock.debug.LISTEN`
+- **Trigger a reply (self):** `POST /api/brain/anne-bot/think {"text":"…"}`
+
+### State/log probes (use at EVERY transition)
+
+```bash
+# brain state (idle/listening/speaking/thinking + listening flag)
+curl -s localhost:8099/api/brain/anne-bot/profile | python3 -c \
+ "import sys,json;d=json.load(sys.stdin);print('brain:',d.get('state'),'listening=',d.get('listening'))"
+# speech snapshots (did station transcribe? self-transcribe?)
+curl -s "localhost:8099/api/perception/snapshots?dock=anne-bot" | python3 -c \
+ "import sys,json;d=json.load(sys.stdin);r=d if isinstance(d,list) else d.get('records',[]);\
+  s=[x for x in r if x.get('source',{}).get('kind')=='speech'];print('speech:',len(s),[t['payload']['text'] for t in s[-3:]])"
+# phone face/agent state + key events (adb)
+adb logcat -d --pid=$(adb shell pidof dev.orbit.dock) | grep -iE \
+ "FaceState|AgentState|turn-status|SPEAK|listen|Listening|Speaking|dropped stale|BeepPlayer|TtsAecLoopback"
+```
+
+---
+
+# 🤖 NO-HUMAN CASES (I run these headless)
+
+> Driven via `debug/say` / `think` / WAV playback + REST/log assertions. No mic, no
+> ears needed. These are my responsibility to keep green every change.
+
+## N1 — addressed turn → adopt → reply (the Test-1 bug path)
+- **Drive:** `POST /debug/say {"text":"What is two plus two?"}`
+- **Check (transitions):**
+  - during: brain state `thinking`; logs show `turn-status thinking`
+  - reply: logs `SPEAK "..."`, `TTS synth done`, **NO `dropped stale speak`**
+  - after: brain state back to `idle`
+- **Status:** ✅ (verified: replies, adopts, no drop).
+
+## N2 — overheard (un-tapped) → no turn
+- **Drive:** inject a transcript WITHOUT the tap (needs a `debug/overheard` variant —
+  TODO add, or assert via the addressed unit tests).
+- **Check:** speech snapshot present; brain state stays `idle`; no `SPEAK`.
+- **Status:** ✅ unit (`addressed.test.ts`); ⬜ live no-tap inject (add probe).
+
+## N3 — no self-transcribe during a reply (AEC, the loop)
+- **Drive:** `POST /think {"text":"Count from one to ten slowly."}`; baseline speech count.
+- **Check:** during the reply, speech snapshot count does NOT increase (dock not heard).
+- **Status:** ✅ (repeatedly 0 self-transcripts).
+
+## N4 — multi-sentence reply: speaking stays up the whole reply
+- **Drive:** `POST /think {"text":"Say three separate sentences."}`
+- **Check (transitions):** logs show multiple `SPEAK`; brain `speaking` stays true across
+  them (does NOT flap idle between sentences); `idle` only after the LAST one + tail.
+- **Status:** ✅ playback-clock fix (self-review); ⬜ assert the brain `speaking` edges live.
+
+## N5 — barge-in supersede (no audio): a 2nd addressed turn aborts the 1st
+- **Drive:** `POST /debug/say {"text":"first long thing"}` then immediately
+  `POST /debug/say {"text":"actually, what time is it"}`.
+- **Check:** the 2nd turn supersedes; the dock ends up answering the 2nd; logs show the
+  1st turn aborted (`turn-status` for the new turn).
+- **Status:** ✅ integration (4 variants); ⬜ live two-shot via debug/say.
+
+## N6 — auto-summarization keeps grounding fresh
+- **Drive:** app streaming; wait ~1 cadence (~60 s).
+- **Check:** `/profile` grounding gains a "last summary …" line with no manual /summarize.
+- **Status:** ✅ live.
+
+## N7 — beep cues fire on listening on/off
+- **Drive:** `adb ... debug.LISTEN` (on) then wait for the 8 s timeout (off).
+- **Check:** logcat `BeepPlayer` / tone; (audible only with a human, see H-cases).
+- **Status:** ⬜ (just built; assert the calls fire in logs).
+
+## N8 — regression (every change)
+- Server 178/178 · brain 108/108 · phone unit 128/128, repeated runs.
+- **Status:** ✅.
+
+---
+
+# 👤 NEEDS-HUMAN CASES (you + the tab)
+
+> Real mic / ears / eyes. I set up + check state/logs; you provide the human signal.
+
+## H1 — real-mic addressed reply (audible) ⭐
+- **Drive:** I fire tap → you play `q-math.wav` at the mic (or say it) → wait.
+- **Check (you + me):**
+  - you HEAR a "listening on" **beep** when I tap
+  - you HEAR the reply spoken; state probes: brain `thinking`→`speaking`→`idle`
+  - you HEAR a "listening off" beep at sentence-end
+  - logs: NO `dropped stale speak`
+- **Status:** ⬜ (the real-mic positive — `debug/say` proved the logic).
+
+## H2 — audio quality
+- **Check:** the spoken reply is clean (not grainy/slow/distorted), reasonable volume.
+- **Status:** ⚠️ "cleaner, not 100%".
+
+## H3 — face state through a full turn (the "states are off" item)
+- **Drive:** watch the on-screen face: tap → speak → reply.
+- **Check (transitions):** Idle → Listening (on tap, + beep) → clears at sentence-end
+  (beep) → Speaking (reply) → Idle. NO stuck-Listening, NO Idle flash mid-reply, face
+  matches what the dock is doing.
+- **Status:** ⬜ — **characterize FIRST; this is where you said "states are off".**
+
+## H4 — listening on/off beeps are audible + well-timed
+- **Check:** rising beep exactly when you tap; falling beep exactly when your sentence
+  ends (or on the no-speech timeout). Not too loud, not transcribed as speech.
+- **Status:** ⬜ (just built).
+
+## H5 — voice barge-in (the one true human-only test)
+- **Drive:** `POST /think {"text":"<long story>"}` (or play `long-story.wav` as a turn);
+  WHILE it speaks, (tap then) play `barge-stop.wav` / say "stop, what time is it?".
+- **Check:** TTS stops mid-sentence; your new utterance becomes the turn; dock answers it;
+  NO false self-barge when you stay silent.
+- **Status:** ⬜.
+
+## H6 — multi-turn conversation flow (the deep one)
+- **Drive:** a real back-and-forth: greeting → reply → follow-up → reply, ~3-4 turns.
+  (`greeting.wav` → … → `followup.wav` → …)
+- **Check (each turn):** beep on tap; clean reply; face Idle↔Listening↔Speaking correct;
+  brain state correct between turns; session summary accumulates sensibly; no stuck states
+  BETWEEN turns or AFTER the final response.
+- **Status:** ⬜ — the headline conversation-flow test.
+
+## H7 — proactive gate (no tap)
+- **Drive:** enable proactivity; step into the camera.
+- **Check:** the dock may proactively speak; gate decision logged.
+- **Status:** ⬜ (verified earlier in the project; re-confirm post-A1).
+
+---
+
+## Run order (when tab is back)
+1. **H3** — characterize face-state ("states are off") → I fix headless.
+2. **H1 + H2** — real-mic reply + audio quality.
+3. **H4** — beeps.
+4. **H5** — barge-in.
+5. **H6** — full multi-turn conversation flow (the deep test).
+6. H7 proactive.
+
+Between sessions, I keep all 🤖 N-cases green + extend them (add N2 no-tap probe,
+N4/N5/N7 live assertions) so the human session is short + high-signal.
