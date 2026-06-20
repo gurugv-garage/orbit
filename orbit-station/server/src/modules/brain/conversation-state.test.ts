@@ -225,4 +225,44 @@ describe('ConversationState — robustness (unit; full reconnection sim separate
     cs.reconcileConnected(100);
     assert.equal(cs.mode(100), 'idle');
   });
+
+  // ── clean reset: app-restart + server-restart (the user-requested cases) ──
+
+  // APP RESTART: the phone reconnects → hello → notePhoneConnected →
+  // reconcileConnected. From ANY mode the conversation comes back CLEAN idle (no
+  // stale window/speak leaks across the reconnect).
+  it('clean reset on app-restart (reconcile) from every mode → idle, no leaked window', () => {
+    for (const setup of [
+      (cs: ConversationState) => cs.tap(0),                         // listening
+      (cs: ConversationState) => cs.turnStart(0),                   // thinking
+      (cs: ConversationState) => cs.speakStart(0),                  // speaking
+      (cs: ConversationState) => { cs.speakStart(0); cs.speakEnd(5); }, // followup
+      (cs: ConversationState) => cs.faceArrival(0),                 // face listen
+    ]) {
+      const { cs } = make();
+      setup(cs);
+      cs.reconcileConnected(1000);
+      const snap = cs.snapshot(1000);
+      assert.equal(snap.mode, 'idle', 'reconnect → idle');
+      assert.equal(snap.windowUntil, 0, 'no leaked listening window');
+      assert.equal(snap.speakUntil, 0, 'no leaked speak window');
+    }
+  });
+
+  // SERVER RESTART: a fresh process means a brand-new ConversationState — it starts
+  // idle by construction. (The phone reconnects into it via hello → reconcile +
+  // resync frame; modelled here as "a new instance is idle".)
+  it('clean reset on server-restart (new instance) → idle by construction', () => {
+    const { cs } = make();
+    assert.equal(cs.mode(0), 'idle');
+    assert.equal(cs.msToExpiry(0), 0);
+  });
+
+  // A reconcile when ALREADY idle is a clean no-op (no spurious transition churn).
+  it('reconcile while idle stays idle', () => {
+    const { cs, seq } = make();
+    cs.reconcileConnected(0);
+    assert.equal(cs.mode(0), 'idle');
+    assert.deepEqual(seq(), [], 'no transition emitted (already idle)');
+  });
 });

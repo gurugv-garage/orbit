@@ -167,9 +167,20 @@ VALIDATE notes below reference these by number.
 - **R2. Phone reconnect → clean slate:** any mode; reconnect → idle.
 - **R3. Disconnect mid-listening/followup:** window doesn't leak; reconciles.
 - **R4. Station restart / dock re-hello:** state re-established.
-- **VALIDATE:** the sim drives WS connect/disconnect; assert via `/conversation`
-  (1) + the obs stream (2) + `[conv]` logs (4). BAKE IN: a debug WS-drop trigger or
-  a scripted fake-peer in the smoke harness.
+- **R5. CLEAN RESET on APP restart (user-requested):** the phone app restarts →
+  reconnects → `hello` → reconcile → from ANY prior mode the conversation comes
+  back CLEAN idle (no stale listening/speak window). UNIT: reconcile from every
+  mode → idle + windowUntil/speakUntil both 0 (conversation-state.test.ts). LIVE:
+  restart the app; `GET /conversation` shows idle; any live face presence then
+  opens its OWN window (which expires → idle), proving it's fresh not stale.
+- **R6. CLEAN RESET on SERVER restart (user-requested):** a fresh station process
+  is a new ConversationState → idle by construction; the phone reconnects into it
+  via hello (reconcile + resync frame). UNIT: a new instance is idle. LIVE:
+  observed every `tsx watch` reload — phone reconnects, `/conversation` settles to
+  idle (a live face window may briefly open, then expires → idle). VERIFIED.
+- **VALIDATE:** R1-R4 need a WS-drop sim (BAKE IN: a debug WS-drop trigger or a
+  scripted fake-peer). R5/R6 are unit-tested + live-verified now via `/conversation`
+  + the `[conv]` logs.
 
 ---
 

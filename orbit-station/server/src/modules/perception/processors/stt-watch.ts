@@ -42,8 +42,11 @@ const SILENCE_RMS = Number(process.env.STT_SILENCE_RMS ?? 0.02);
  *  mid-sentence pauses ("What time is the … meeting?") don't split a thought; the
  *  cost is ~0.6 s longer to commit after you actually stop. */
 const ENDPOINT_MS = Number(process.env.STT_ENDPOINT_MS ?? 1300);
-/** Ignore "utterances" shorter than this (clicks, stray noise). */
-const MIN_UTTERANCE_MS = Number(process.env.STT_MIN_UTTERANCE_MS ?? 350);
+/** Ignore "utterances" shorter than this (clicks, stray noise). 180ms (was 350)
+ *  so short real words — "hi", "yes", "no", "ok" — register as turns; 350 dropped
+ *  a bare "hi" as noise. Whisper's own confidence (no_speech_prob) still filters a
+ *  genuine click that sneaks past this. */
+const MIN_UTTERANCE_MS = Number(process.env.STT_MIN_UTTERANCE_MS ?? 180);
 /** Force-flush a monologue this long even without an endpoint. */
 const MAX_UTTERANCE_MS = Number(process.env.STT_MAX_UTTERANCE_MS ?? 15_000);
 /** Keep this much leading silence/onset before the first voiced frame (so we don't
