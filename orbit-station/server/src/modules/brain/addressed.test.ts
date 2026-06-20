@@ -34,14 +34,30 @@ describe('addressed-latch correlator (A1.2)', () => {
     assert.equal(addressed, true);
   });
 
-  it('stale utterance: one that ENDED before the tap is NOT addressed, and the latch stays armed', () => {
-    // The tap was meant for a LATER sentence; a sentence that already finished
-    // before the tap is the past (this is the deferred walk-back boundary —
-    // Decision 2b would grab it; the simple latch does not).
+  it('tap-just-after-speaking: an utterance ending shortly BEFORE the tap (within grace) IS addressed', () => {
+    // The common real case + the frame-ordering race: you finish the sentence,
+    // THEN tap a beat later. With the grace window that whole sentence is addressed.
     const l = tap(newLatch(), 2000);
-    const { addressed, next } = decideAddressed(l, utt(500, 1500));
+    const { addressed, next } = decideAddressed(l, utt(500, 1500)); // ended 500ms before tap
+    assert.equal(addressed, true);
+    assert.equal(next.tapAt, null, 'consumed');
+  });
+
+  it('genuinely-old utterance (beyond grace) is NOT addressed; latch stays armed', () => {
+    // A sentence that ended LONG before the tap is the past — the tap is for a
+    // later sentence. (Beyond TAP_GRACE_MS.)
+    const l = tap(newLatch(), 5000);
+    const { addressed, next } = decideAddressed(l, utt(500, 1500)); // ended 3.5s before tap
     assert.equal(addressed, false);
-    assert.equal(next.tapAt, 2000, 'latch NOT consumed by a stale utterance');
+    assert.equal(next.tapAt, 5000, 'latch NOT consumed by a genuinely-old utterance');
+  });
+
+  it('grace boundary: exactly at the edge of the grace window', () => {
+    const l = tap(newLatch(), 3000);
+    // ended exactly graceMs (2500) before the tap → still addressed (>= boundary).
+    assert.equal(decideAddressed(l, utt(0, 500), 2500).addressed, true);
+    // ended just past the grace window → not addressed.
+    assert.equal(decideAddressed(tap(newLatch(), 3000), utt(0, 499), 2500).addressed, false);
   });
 
   it('one tap → one turn: the next utterance (no new tap) is overheard', () => {

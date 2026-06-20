@@ -45,6 +45,16 @@ export function newLatch(): AddressedLatch {
   return { tapAt: null };
 }
 
+/**
+ * Grace window (ms) bridging the tap↔utterance ORDERING RACE. The tap frame
+ * (WS) and the utterance transcript (perception onFinal) reach the brain via
+ * independent async paths, and a person naturally taps a beat AFTER they finish
+ * the sentence ("…the sun? *tap*"). So an utterance that ended slightly BEFORE
+ * the tap is still the addressed one — not "the past". Without this, that common
+ * case is dropped (the intermittent "sometimes my speech doesn't register").
+ */
+export const TAP_GRACE_MS = 2_500;
+
 /** Record a tap at `at` (ms) — the dock is now addressed until the next endpoint. */
 export function tap(latch: AddressedLatch, at: number): AddressedLatch {
   // Keep the LATER tap if two arrive before an utterance consumes them.
@@ -56,22 +66,22 @@ export function tap(latch: AddressedLatch, at: number): AddressedLatch {
  * latch. Returns the decision AND the next latch state (the latch clears on a
  * consumed utterance — sentence-end ends the addressed window).
  *
- * Not addressed if there's no live tap, or the utterance ended before the tap
- * (it's older than the intent). Otherwise addressed: the tap fell at/before this
- * sentence's end and the sentence overlaps or follows the tap.
+ * Addressed iff there's a live tap AND the utterance ended at/after the tap, OR
+ * within `graceMs` BEFORE it (the tap-just-after-speaking / frame-ordering race).
+ * An utterance older than that is genuinely the past — keep the latch armed for
+ * the next sentence (the tap was meant for something still to come).
  */
 export function decideAddressed(
   latch: AddressedLatch,
   utterance: Utterance,
+  graceMs = TAP_GRACE_MS,
 ): { addressed: boolean; next: AddressedLatch } {
   const t = latch.tapAt;
   if (t == null) return { addressed: false, next: latch };
 
-  // The utterance is in the past relative to the tap → the tap was meant for a
-  // LATER sentence; keep the latch armed, don't consume it on this stale one.
-  if (utterance.endedAt < t) return { addressed: false, next: latch };
+  // Too old even with grace → the tap is for a later sentence; stay armed.
+  if (utterance.endedAt < t - graceMs) return { addressed: false, next: latch };
 
-  // The tap lands at/before this sentence's end, and the sentence overlaps or
-  // follows it → addressed. Consume the latch (clear at this endpoint).
+  // The utterance ends around or after the tap → addressed. Consume the latch.
   return { addressed: true, next: { tapAt: null } };
 }

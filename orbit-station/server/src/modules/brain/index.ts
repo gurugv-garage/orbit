@@ -266,10 +266,15 @@ export function brainModule(w: BrainWiring): StationModule {
             break;
           case 'addressed': {
             // A1.2: the dock tapped — mark it addressed so the next qualifying
-            // utterance (from the always-on server STT) becomes a turn. `at` is
-            // the tap time (ms epoch); default to now if absent.
-            const at = typeof p?.at === 'number' ? p.at : Date.now();
-            addressedLatch.set(dock, tapLatch(latchOf(dock), at));
+            // utterance (from the always-on server STT) becomes a turn.
+            //
+            // CRITICAL: stamp with the STATION clock (Date.now()), NOT the phone's
+            // `p.at`. The utterance windows from stt-watch are station-clock
+            // (`new Date()`); comparing a phone-clock tap against them breaks on
+            // even small clock skew (phone ahead → tap "after" the utterance →
+            // dropped → the intermittent "sometimes my speech doesn't register").
+            // The network hop (~tens of ms) is negligible vs. the skew it removes.
+            addressedLatch.set(dock, tapLatch(latchOf(dock), Date.now()));
             break;
           }
           case 'turn-cancel':
