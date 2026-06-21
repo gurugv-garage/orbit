@@ -26,6 +26,11 @@ import * as S from './schemas.js';
 import * as slack from '../../integrations/slack.js';
 import * as whatsapp from '../../integrations/whatsapp.js';
 
+/** force_get_current summarizes only this tight window around its fresh capture, so
+ *  "right now" means now — not the 60s background window (which the LLM already has
+ *  passively via grounding). Small enough that the just-captured frame dominates. */
+const FORCE_GET_WINDOW_MS = Number(process.env.FORCE_GET_WINDOW_MS ?? 6_000);
+
 /** Capture a live clip, then hand the finished file to a watcher. The session
  *  provides this; record_video kicks it off and returns immediately. */
 export interface RecordVideoDeps {
@@ -375,14 +380,20 @@ export function buildDockTools(deps: ToolDeps): AgentTool<any>[] {
       return textResult(`Recording ${seconds}s of video now — I'll share it${dest} when it's ready.`);
     }),
 
-    // PERCEPTION (docs/perception-to-brain.md 3.2). force_get_current: flush + a fresh
-    // summary of the live moment. Offered only when the grounding facade is wired.
+    // PERCEPTION (docs/perception-to-brain.md 3.2). force_get_current: a fresh read of
+    // THE LIVE MOMENT. It captures a new frame now, then summarizes only a TIGHT window
+    // around that capture (FORCE_GET_WINDOW_MS) — NOT the 60s background window. The
+    // tool's contract is "right now", and the minute-long "background sense" already
+    // rides along in grounding, so the LLM has both cleanly separated: passive 60s
+    // context vs. this on-demand instant. (Bug it fixes: a 60s summary drowned a
+    // just-held-up hand in a minute of "person at a laptop", so "what do you see now?"
+    // described the stale scene.) Offered only when the grounding facade is wired.
     ...(deps.getGrounding ? [
       tool('force_get_current', S.FORCE_GET_CURRENT_DESC, S.forceGetCurrentSchema, async () => {
         const g = deps.getGrounding!();
         if (!g) throw new Error('perception is not available right now');
         const streamId = deps.getTurnContext().streamId;
-        const r = await g.forceCurrent(deps.dock, streamId);
+        const r = await g.forceCurrent(deps.dock, streamId, FORCE_GET_WINDOW_MS);
         if (r.error) throw new Error(`couldn't get a fresh read: ${r.error}`);
         const from = r.window.from.slice(11, 19), to = r.window.to.slice(11, 19);
         return textResult(`Right now (${from}–${to} IST): ${r.summary || '(nothing notable)'}`);

@@ -378,7 +378,7 @@ export function perceptionModule(getHub: () => ProcessingHub): StationModule {
       // goes live). Shared by force_get_current, the console, and the A1.5
       // auto-summarizer. `flush` (default true) force-ends the in-flight tail first.
       const summarizeWindowAndCache = async (
-        dockId: string, opts?: { streamId?: string; windowMs?: number; flush?: boolean },
+        dockId: string, opts?: { streamId?: string; windowMs?: number; flush?: boolean; cache?: boolean },
       ): Promise<{ summary: string; error?: string; window: { from: string; to: string } }> => {
         if (opts?.flush !== false) {
           try { await stt.flushAll(); } catch { /* best-effort */ }
@@ -388,7 +388,11 @@ export function perceptionModule(getHub: () => ProcessingHub): StationModule {
         const fromIso = isoIst(new Date(Date.now() - (opts?.windowMs ?? 60_000)));
         const recs = snapshots.inWindowWithState(fromIso, toIso).filter((r) => r.dockId === dockId);
         const result = await summarize(recs);
-        if (result.summary && !result.error) {
+        // Only update the BACKGROUND grounding (lastSummary) when this is a background-
+        // scope summary. A tight "right now" read (force_get_current, ~6s window) must
+        // NOT overwrite the 60s background sense — it's a momentary answer, not the
+        // ongoing context — so it passes cache:false.
+        if (result.summary && !result.error && opts?.cache !== false) {
           lastSummary.set(dockId, {
             dockId, text: result.summary,
             window: { from: fromIso, to: toIso }, computedAt: Date.now(),
@@ -414,10 +418,11 @@ export function perceptionModule(getHub: () => ProcessingHub): StationModule {
           return block ?? undefined;
         },
         async forceCurrent(dockId, streamId, windowMs) {
-          // Flush the in-flight tail (so "right now" is captured), then summarize +
-          // cache the window. force_get_current is the deliberate, on-demand path;
-          // the A1.5 auto-summarizer uses the same helper on a cadence.
-          return summarizeWindowAndCache(dockId, { streamId, windowMs, flush: true });
+          // Flush the in-flight tail (so "right now" is captured), then summarize a TIGHT
+          // window around it. cache:false — this momentary read must not overwrite the
+          // 60s background sense (lastSummary). force_get_current is the deliberate,
+          // on-demand path; the A1.5 auto-summarizer caches via the same helper.
+          return summarizeWindowAndCache(dockId, { streamId, windowMs, flush: true, cache: false });
         },
       };
 

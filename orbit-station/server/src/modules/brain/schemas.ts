@@ -252,10 +252,11 @@ export const sendToWhatsAppSchema = {
 
 // Descriptions live next to the schemas so the model-facing surface is one place.
 export const TAKE_PHOTO_DESC =
-  'Take a photo with your camera RIGHT NOW (a still of what you currently see). ' +
-  'Use when the user asks you to take/snap a picture or photo, or to capture / show what you see. ' +
+  'Produce a PHOTO (an image artifact) with your camera right now and share it. ' +
+  'Use when the user wants the PICTURE itself — "take/snap a photo", "send a pic", "show me on Slack". ' +
   'With a Slack channel (or a configured default) it posts the photo there; otherwise it shows it on the dock. ' +
-  'This is immediate — it returns the moment the photo is captured.';
+  'This is immediate — it returns the moment the photo is captured. ' +
+  'NOT for answering "what do you see?" — to DESCRIBE the live moment in words, use force_get_current instead.';
 export const RECORD_VIDEO_DESC =
   'Record a SHORT video clip from your camera for a few seconds (1–30s, default 5). ' +
   'Use when the user asks you to record / take a video or capture a clip of what you see. ' +
