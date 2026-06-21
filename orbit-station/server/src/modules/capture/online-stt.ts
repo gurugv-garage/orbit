@@ -141,11 +141,24 @@ async function geminiAudio(audioPath: string, modelArg?: string): Promise<Online
     if (!r.ok) throw new Error(`gemini-audio ${r.status}: ${(await r.text()).slice(0, 200)}`);
     const data = await r.json() as { candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }> };
     const txt = data?.candidates?.[0]?.content?.parts?.[0]?.text ?? '{}';
-    for (const s of parseSegmentsLoose(txt)) {
-      const text = (s.text ?? '').trim();
-      if (!text) continue; // drop empty (loop residue)
-      out.push({ start: off + (s.start ?? 0), end: off + (s.end ?? s.start ?? 0), text, speaker: s.speaker });
-    }
+    const chunkSegs = parseSegmentsLoose(txt)
+      .map((s) => ({ ...s, text: (s.text ?? '').trim() }))
+      .filter((s) => s.text.length > 0); // drop empty (loop residue)
+
+    // Some models (esp. flash-lite) don't return usable per-segment times — they
+    // pile every segment at ~0 (or report a tiny sub-second span for the whole chunk).
+    // If the segments' time SPAN covers less than half the chunk we treat the times as
+    // degenerate and spread the segments EVENLY across the real chunk window instead.
+    const win = Math.min(CHUNK_SEC, (total || CHUNK_SEC) - off);
+    const starts = chunkSegs.map((s) => s.start ?? 0);
+    const span = chunkSegs.length > 1 ? Math.max(...starts) - Math.min(...starts) : win;
+    const degenerate = chunkSegs.length > 1 && span < win * 0.5;
+    chunkSegs.forEach((s, i) => {
+      const [start, end] = degenerate
+        ? [(i / chunkSegs.length) * win, ((i + 1) / chunkSegs.length) * win]
+        : [s.start ?? 0, s.end ?? s.start ?? 0];
+      out.push({ start: off + start, end: off + end, text: s.text, speaker: s.speaker });
+    });
     if (!total) break; // unknown duration → single chunk
   }
   return { model: `gemini-audio (${model})`, segments: out };
