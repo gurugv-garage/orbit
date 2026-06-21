@@ -53,11 +53,11 @@ export interface ReprocessRun {
  *  Returns a result run ready to append to the manifest. */
 export async function reprocessStt(opts: {
   audioPath: string; dockId: string; streamId: string;
-  startedAtEpoch: number; model?: string; prompt?: string; label: string;
+  startedAtEpoch: number; model?: string; prompt?: string; label: string; job?: string;
 }): Promise<ReprocessRun> {
   const { pcm, rate } = await readWav(opts.audioPath);
   const pcm_b64 = Buffer.from(pcm.buffer, pcm.byteOffset, pcm.byteLength).toString('base64');
-  const body = JSON.stringify({ pcm_b64, sample_rate: rate, model: opts.model, initial_prompt: opts.prompt });
+  const body = JSON.stringify({ pcm_b64, sample_rate: rate, model: opts.model, initial_prompt: opts.prompt, job: opts.job });
   const r = await fetch(`${SIDECAR_URL}/transcribe_file`, {
     method: 'POST', headers: { 'content-type': 'application/json' }, body,
   });
@@ -85,4 +85,14 @@ export async function reprocessStt(opts: {
   });
 
   return { label: opts.label, model: out.model, prompt: opts.prompt, createdAt: isoIst(new Date()), snapshots };
+}
+
+/** Current 0..1 progress of an in-flight reprocess `job` (proxied from the sidecar). */
+export async function reprocessProgress(job: string): Promise<number> {
+  try {
+    const r = await fetch(`${SIDECAR_URL}/progress?job=${encodeURIComponent(job)}`);
+    if (!r.ok) return 0;
+    const j = await r.json() as { progress?: number };
+    return j.progress ?? 0;
+  } catch { return 0; }
 }

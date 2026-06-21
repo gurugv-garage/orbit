@@ -36,6 +36,44 @@ import numpy as np
 # threaded (health checks stay responsive) but inference is funnelled here.
 MLX = ThreadPoolExecutor(max_workers=1, thread_name_prefix="mlx")
 
+# job-id → 0..1 progress for an in-flight whole-file transcription (GET /progress).
+# mlx-whisper transcribes in a single blocking call and imports tqdm LOCALLY (can't
+# monkeypatch its progress bar), so we ESTIMATE: a background ticker advances the bar
+# toward ~95% over the model's typical real-time factor (RTF) × audio duration, then
+# the transcribe call snaps it to 100% when it returns. Honest moving estimate, no
+# internals. RTF ≈ wall-seconds per audio-second on this box (small ~0.03, bigger more).
+PROGRESS: dict = {}
+import threading as _threading
+RTF = {  # rough wall-seconds per audio-second, per model size (tune as observed)
+    "tiny": 0.015, "base": 0.02, "small": 0.04, "medium": 0.09, "large": 0.18,
+}
+
+
+def _rtf_for(model: str) -> float:
+    m = (model or "").lower()
+    for k, v in RTF.items():
+        if k in m:
+            return v
+    return 0.05
+
+
+def _start_progress_ticker(job, audio_secs, model):
+    """Advance PROGRESS[job] toward 0.95 over the estimated transcription time, in a
+    daemon thread. Stops when PROGRESS[job] is set to 1.0 (or removed) by the caller."""
+    est = max(1.0, audio_secs * _rtf_for(model))
+    t0 = time.time()
+
+    def run():
+        while PROGRESS.get(job, 1.0) < 1.0:
+            frac = min(0.95, (time.time() - t0) / est)
+            cur = PROGRESS.get(job)
+            if cur is None or cur >= 1.0:
+                return
+            PROGRESS[job] = frac
+            time.sleep(0.4)
+    th = _threading.Thread(target=run, daemon=True)
+    th.start()
+
 
 class Stt:
     def __init__(self, model: str):
@@ -89,26 +127,36 @@ class Stt:
             "compression_ratio": comp,
         }
 
-    def transcribe_file(self, pcm_i16, sample_rate, model=None, initial_prompt=None):
+    def transcribe_file(self, pcm_i16, sample_rate, model=None, initial_prompt=None, job=None):
         """Whole-file transcription for the capture-judging REPROCESS path: hand the
         WHOLE recording to Whisper (its own segmentation), with an optional MODEL
         override and an optional INITIAL_PROMPT (context bias — names/domain terms,
         to test context-aware transcription). Returns per-segment text + timing +
-        Whisper's confidence metrics, so the console can tier + time-sync each segment."""
+        Whisper's confidence metrics, so the console can tier + time-sync each segment.
+
+        If `job` is given, reports % progress to PROGRESS[job] (the seek loop's
+        position / total frames) so the console can show a real progress bar."""
         audio = pcm_i16.astype(np.float32) / 32768.0
         if sample_rate != 16000:
             n = int(len(audio) * 16000 / sample_rate)
             audio = np.interp(np.linspace(0, len(audio), n, endpoint=False),
                               np.arange(len(audio)), audio).astype(np.float32)
         repo = model or self.model
-        r = MLX.submit(lambda: self._mlx_whisper.transcribe(
-            audio, path_or_hf_repo=repo,
-            initial_prompt=initial_prompt,
-            condition_on_previous_text=False,
-            no_speech_threshold=0.6,
-            logprob_threshold=-1.0,
-            temperature=0.0,
-        )).result()
+        if job:
+            PROGRESS[job] = 0.0
+            _start_progress_ticker(job, len(audio) / 16000.0, repo)
+        try:
+            r = MLX.submit(lambda: self._mlx_whisper.transcribe(
+                audio, path_or_hf_repo=repo,
+                initial_prompt=initial_prompt,
+                condition_on_previous_text=False,
+                no_speech_threshold=0.6,
+                logprob_threshold=-1.0,
+                temperature=0.0,
+            )).result()
+        finally:
+            if job:
+                PROGRESS[job] = 1.0  # snap to done (stops the ticker)
         segs = []
         for s in (r.get("segments") or []):
             segs.append({
@@ -199,6 +247,11 @@ def make_handler(stt: Stt, vision_holder: dict, temporal_holder: dict):
                 self._send(200, {"ok": True, "stt_model": stt.model if stt else None,
                                  "vision_model": v.model if v else None,
                                  "temporal_model": t.model if t else None})
+            elif self.path.startswith("/progress"):
+                # /progress?job=ID → 0..1 progress of an in-flight transcribe_file.
+                from urllib.parse import urlparse, parse_qs
+                job = (parse_qs(urlparse(self.path).query).get("job") or [None])[0]
+                self._send(200, {"job": job, "progress": PROGRESS.get(job, 0.0) if job else 0.0})
             else:
                 self._send(404, {"error": "not found"})
 
@@ -242,12 +295,17 @@ def make_handler(stt: Stt, vision_holder: dict, temporal_holder: dict):
                     self._send(400, {"error": f"bad request: {e}"})
                     return
                 t0 = time.perf_counter()
+                job = req.get("job")
                 try:
                     out = stt.transcribe_file(pcm, sr, model=req.get("model"),
-                                              initial_prompt=req.get("initial_prompt"))
+                                              initial_prompt=req.get("initial_prompt"), job=job)
                 except Exception as e:
+                    if job:
+                        PROGRESS.pop(job, None)
                     self._send(500, {"error": str(e)})
                     return
+                if job:
+                    PROGRESS.pop(job, None)  # done; drop the slot
                 out["latency_ms"] = (time.perf_counter() - t0) * 1e3
                 self._send(200, out)
                 return

@@ -58,6 +58,7 @@ export function Capture() {
   const [model, setModel] = useState('mlx-community/whisper-small.en-mlx');
   const [prompt, setPrompt] = useState('');
   const [reproc, setReproc] = useState(false);
+  const [progress, setProgress] = useState(0); // 0..1 while reprocessing
 
   const videoRef = useRef<HTMLVideoElement>(null);
   const audioRef = useRef<HTMLAudioElement>(null);
@@ -111,13 +112,20 @@ export function Capture() {
   const reprocess = async () => {
     if (!manifest) return;
     setReproc(true);
+    setProgress(0);
+    const job = `job-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+    // Poll the sidecar progress while the (awaited) transcription runs.
+    const poll = setInterval(() => {
+      api.get<{ progress: number }>(`/capture/progress?job=${job}`)
+        .then((r) => setProgress(r.progress ?? 0)).catch(() => {});
+    }, 700);
     try {
       const label = (model.split('/').pop() ?? 'run') + (prompt ? '+ctx' : '');
-      await api.post(`/capture/${manifest.id}/reprocess`, { model, prompt: prompt || undefined, label });
+      await api.post(`/capture/${manifest.id}/reprocess`, { model, prompt: prompt || undefined, label, job });
       const m = await api.get<Manifest>(`/capture/${manifest.id}`);
       setManifest(m);
       setRunIdx(m.runs.findIndex((r) => r.label === label)); // jump to the new run
-    } finally { setReproc(false); }
+    } finally { clearInterval(poll); setReproc(false); setProgress(0); }
   };
   const startEpoch = manifest?.startedAtEpoch ?? 0;
   // A snapshot is "active" if the playhead time falls within its interval.
@@ -231,8 +239,13 @@ export function Capture() {
                   <input value={prompt} onChange={(e) => setPrompt(e.target.value)} placeholder="context prompt (names, topic) — optional"
                     style={{ flex: 1, minWidth: 180, fontSize: 12, background: '#0b0e16', color: '#cfe', border: '1px solid #1c2233', borderRadius: 6, padding: '4px 8px' }} />
                   <button disabled={reproc} onClick={reprocess}
-                    style={{ padding: '5px 14px', borderRadius: 7, background: '#13243a', color: '#cfe', border: '1px solid #1c2233', cursor: 'pointer', fontWeight: 600 }}>
-                    {reproc ? '… transcribing' : '↻ Reprocess'}
+                    style={{ padding: '5px 14px', borderRadius: 7, position: 'relative', overflow: 'hidden',
+                      background: '#13243a', color: '#cfe', border: '1px solid #1c2233', cursor: reproc ? 'default' : 'pointer', fontWeight: 600, minWidth: 130 }}>
+                    {reproc && <span style={{ position: 'absolute', left: 0, top: 0, bottom: 0, width: `${Math.round(progress * 100)}%`,
+                      background: '#1d4ed8', opacity: 0.45, transition: 'width 0.3s' }} />}
+                    <span style={{ position: 'relative' }}>
+                      {reproc ? `… ${Math.round(progress * 100)}%` : '↻ Reprocess'}
+                    </span>
                   </button>
                 </div>
 

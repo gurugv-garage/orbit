@@ -34,7 +34,7 @@ import { getSnapshotsApi } from '../perception/index.js';
 import { isoIst } from '../perception/snapshots.js';
 import { startAudioRecording, type AudioRecordHandle } from './audio-recorder.js';
 import { startVideoRecording, type VideoRecordHandle } from './video-recorder.js';
-import { reprocessStt } from './reprocess.js';
+import { reprocessStt, reprocessProgress } from './reprocess.js';
 
 export interface CaptureWiring {
   getHub: () => ProcessingHub;
@@ -190,9 +190,15 @@ export function captureModule(w: CaptureWiring): StationModule {
       }
       // POST /:id/reprocess { model?, prompt?, label? } → re-run STT over the audio
       // with a chosen model + optional context prompt → append a result run.
+      // GET /progress?job=ID → 0..1 progress of an in-flight reprocess (sidecar proxy).
+      if (req.method === 'GET' && subPath.startsWith('/progress')) {
+        const job = new URL(req.url ?? '', 'http://x').searchParams.get('job');
+        json(res, 200, { progress: job ? await reprocessProgress(job) : 0 });
+        return true;
+      }
       m = subPath.match(/^\/([^/]+)\/reprocess$/);
       if (m && req.method === 'POST') {
-        const body = await readBody<{ model?: string; prompt?: string; label?: string }>();
+        const body = await readBody<{ model?: string; prompt?: string; label?: string; job?: string }>();
         const man = await readManifest(w.dir, m[1]!);
         if (!man) { json(res, 404, { error: 'not found' }); return true; }
         const label = body.label || body.model?.split('/').pop() || 'reprocess';
@@ -200,7 +206,7 @@ export function captureModule(w: CaptureWiring): StationModule {
           const run = await reprocessStt({
             audioPath: join(sessionDir(m[1]!), man.audio),
             dockId: man.dock, streamId: m[1]!, startedAtEpoch: man.startedAtEpoch,
-            model: body.model, prompt: body.prompt, label,
+            model: body.model, prompt: body.prompt, label, job: body.job,
           });
           // replace a same-label run if re-run, else append.
           man.runs = [...(man.runs ?? []).filter((r) => r.label !== label), run];
