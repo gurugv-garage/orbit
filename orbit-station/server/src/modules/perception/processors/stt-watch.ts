@@ -104,7 +104,7 @@ function concatFrames(frames: Int16Array[]): Int16Array {
   return pcm;
 }
 
-class UtteranceDetector {
+export class UtteranceDetector {
   #dec: OpusScript | null = null;
   #started = false;
   #carry = new Int16Array(0);  // leftover samples < one frame
@@ -143,6 +143,11 @@ class UtteranceDetector {
       this.#process(out);
     } catch { /* skip bad packet */ }
   }
+
+  /** Test-only: inject raw 16 kHz mono PCM straight into the VAD (bypasses the
+   *  Opus decode in feed()). Exercises the exact same framing + endpoint code
+   *  the production path runs, so local tests reflect real cut-off behavior. */
+  feedPcm(pcm: Int16Array): void { this.#process(pcm); }
 
   /** Append decoded PCM, slice into 30 ms frames, run VAD per frame. */
   #process(add: Int16Array): void {
