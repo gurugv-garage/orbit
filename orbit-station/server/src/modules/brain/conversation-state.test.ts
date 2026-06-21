@@ -235,6 +235,50 @@ describe('ConversationState — D2/D3: camera presence priority', () => {
   });
 });
 
+describe('ConversationState — face-presence anti-flap cooldown', () => {
+  const CD = ConvCfg.FACE_COOLDOWN_MS;
+  const FA = ConvCfg.FACE_ARRIVAL_MS;
+
+  // After a face window is RELEASED (left), a new arrival is ignored until cooldown.
+  it('a face-arrival right after a face-left is suppressed (no flap)', () => {
+    const { cs } = make();
+    cs.faceArrival(0);
+    assert.equal(cs.mode(0), 'listening', 'first presence opens');
+    cs.faceLeft(100);
+    assert.equal(cs.mode(100), 'idle', 'left → idle (cooldown armed)');
+    cs.faceArrival(200);                       // pacing back in immediately
+    assert.equal(cs.mode(200), 'idle', 'suppressed during cooldown — no re-open');
+  });
+
+  // Once cooldown passes, a face-arrival opens normally again.
+  it('a face-arrival AFTER the cooldown opens again', () => {
+    const { cs } = make();
+    cs.faceArrival(0);
+    cs.faceLeft(100);                          // cooldown until 100 + CD
+    cs.faceArrival(100 + CD + 1);
+    assert.equal(cs.mode(100 + CD + 1), 'listening', 'past cooldown → opens');
+  });
+
+  // A face window that TIMES OUT (no leave event) also arms the cooldown.
+  it('a timed-out face window also arms the cooldown', () => {
+    const { cs } = make();
+    cs.faceArrival(0);
+    assert.equal(cs.mode(FA), 'idle', 'face window expired to idle');
+    cs.faceArrival(FA + 50);                   // face still lingering in frame
+    assert.equal(cs.mode(FA + 50), 'idle', 'lingering face does not re-open (cooldown)');
+    cs.faceArrival(FA + CD + 1);
+    assert.equal(cs.mode(FA + CD + 1), 'listening', 'opens once cooldown clears');
+  });
+
+  // A TAP is never subject to the face cooldown — deliberate intent always wins.
+  it('a TAP ignores the face cooldown', () => {
+    const { cs } = make();
+    cs.faceArrival(0); cs.faceLeft(100);       // cooldown armed
+    cs.tap(200);
+    assert.equal(cs.mode(200), 'listening', 'a tap opens immediately despite cooldown');
+  });
+});
+
 describe('ConversationState — robustness (unit; full reconnection sim separate)', () => {
   // R1 (unit) — lost tts-end: speaking can't wedge past SPEAK_MAX_MS.
   it('R1: a lost tts-end → leaves speaking by SPEAK_MAX_MS', () => {

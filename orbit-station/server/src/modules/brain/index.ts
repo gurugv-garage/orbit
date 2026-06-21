@@ -48,6 +48,10 @@ const IDLE_SWEEP_MS = 60_000;
 /** How often to re-push the task-digest to live docks so the app HUD self-corrects
  *  even if a per-change push was missed (failproof running-tasks view). */
 const DIGEST_SWEEP_MS = 3_000;
+/** A face arriving after at least this long with no presence triggers a PROACTIVE
+ *  greeting ("haven't seen you in a while") — not on every walk-up, only after a
+ *  real absence. Tune via CONV_GREET_ABSENCE_MS. */
+const GREET_ABSENCE_MS = Number(process.env.CONV_GREET_ABSENCE_MS ?? 60 * 60_000);
 
 export interface BrainWiring {
   directory: Directory;
@@ -62,6 +66,9 @@ export interface BrainWiring {
 export function brainModule(w: BrainWiring): StationModule {
   const store = new SessionStore();
   const sessions = new Map<string, DockBrainSession>();
+  // Per-dock wall-clock of the last face-presence arrival, for the long-absence
+  // proactive greeting (GREET_ABSENCE_MS). Only a gap longer than that greets.
+  const lastFaceArrival = new Map<string, number>();
   // Set in init(): simulate a tapped addressed utterance (debug self-test seam).
   let injectAddressed: (dock: string, text: string) => void = () => {};
   const tasksRoot = defaultTasksRoot();
@@ -271,11 +278,29 @@ export function brainModule(w: BrainWiring): StationModule {
             // window so a slow speaker isn't cut off mid-sentence.
             session(dock).vadActivity();
             break;
-          case 'face-arrival':
+          case 'face-arrival': {
             // a NEW face in view → low-priority listen (station decides; yields to
             // an active tap/followup).
             session(dock).faceArrival();
+            // LONG-ABSENCE GREETING: if it's been a while since anyone was last in
+            // front of this dock, proactively greet (a self-thought turn; the LLM
+            // uses its perception grounding/identity to name them if known). Not on
+            // every walk-up — only after a real gap. Coalesced so a flicker of
+            // arrivals doesn't stack greetings.
+            const nowMs = Date.now();
+            const prev = lastFaceArrival.get(dock);
+            lastFaceArrival.set(dock, nowMs);
+            if (prev != null && nowMs - prev >= GREET_ABSENCE_MS) {
+              session(dock).enqueueAutonomousTurn({
+                turnId: `greet-${randomUUID()}`,
+                trigger: { kind: 'self', text:
+                  '[Someone just came into view after a long absence. If you recognise them, greet them warmly by name and note it\'s been a while; otherwise a friendly hello. Keep it to one short sentence.]' },
+                expiresAt: nowMs + 30_000,
+                coalesceKey: 'greet-arrival',
+              });
+            }
             break;
+          }
           case 'face-left':
             // a face left → release ONLY a face listen window (never a tap/followup).
             session(dock).faceLeft();

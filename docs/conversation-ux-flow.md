@@ -12,6 +12,7 @@
 - [The one-line model](#the-one-line-model)
 - [The states](#the-states)
 - [The happy path (a real conversation)](#the-happy-path-a-real-conversation)
+- [Camera presence — "a person settled in front of me", not motion through frame](#camera-presence--a-person-settled-in-front-of-me-not-motion-through-frame)
 - [Priority — who wins when sources conflict](#priority--who-wins-when-sources-conflict)
 - [Timings (all tunable; env in parens)](#timings-all-tunable-env-in-parens)
 - [Edge cases the model handles](#edge-cases-the-model-handles)
@@ -63,6 +64,39 @@ ends into a turn).
 
 Other ways listening opens: a **tap** (explicit), a **new face** arriving in the
 camera (low priority), or a wake word.
+
+## Camera presence — "a person settled in front of me", not motion through frame
+
+Raw face detection is twitchy: it fires for *any* face the instant it appears
+anywhere in frame and clears ~0.5 s after it's gone. Used directly, that made
+presence-listening **flap on-off-on-off** as someone moved around, walked past, or
+lingered in the far background. So a face only counts as a real **arrival** when it
+looks like a person *settling in to talk to the dock*, gated in two places:
+
+**Phone — `PresenceGate` (the "is a person here" filter):**
+
+| Gate | Constant (in `PresenceGate.Cfg`) | Default | Meaning |
+|---|---|---|---|
+| **Near** | `NEAR_MIN_SIZE` | 0.22 | face must fill ≥22 % of frame width — filters distant passers-by |
+| **Centered** | `CENTER_MAX_X` / `CENTER_MAX_Y` | 0.55 / 0.6 | face must be roughly mid-frame — filters edge/walk-by |
+| **Sustained** | `SUSTAIN_MS` | 1500 ms | must stay near+centered this long before arriving — debounces flicker |
+| **Leave grace** | `LEAVE_GRACE_MS` | 2000 ms | a brief look-away / drop-out doesn't end presence |
+
+**Station — anti-flap cooldown (`ConversationState`):**
+
+| Knob | Constant (env) | Default | Meaning |
+|---|---|---|---|
+| **Presence window** | `FACE_ARRIVAL_MS` (`CONV_FACE_ARRIVAL_MS`) | 5 s | how long a face-arrival listen stays open |
+| **Cooldown** | `FACE_COOLDOWN_MS` (`CONV_FACE_COOLDOWN_MS`) | 12 s | after a face window ends (leave *or* timeout), ignore new face-arrivals this long — pacing in/out can't re-trigger. A **tap** is exempt (deliberate intent always opens). |
+
+**Long-absence greeting:** when a face arrives after **`GREET_ABSENCE_MS`**
+(`CONV_GREET_ABSENCE_MS`, default **1 h**) with no prior presence, the dock
+proactively greets (a self-thought turn; it names the person if its perception
+grounding recognises them). Not on every walk-up — only after a real gap.
+
+Net effect: walking around, glancing away, or a passer-by in the background **don't**
+toggle listening; a person who comes and stays, centered and close, **does** — and if
+they've been away a long time, they get a "hey, it's been a while" instead of silence.
 
 ## Priority — who wins when sources conflict
 

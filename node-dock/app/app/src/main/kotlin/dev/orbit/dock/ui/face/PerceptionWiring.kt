@@ -68,8 +68,9 @@ class PerceptionWiring(
     private val _sttArmed = MutableStateFlow(false)
     val sttArmed: StateFlow<Boolean> = _sttArmed.asStateFlow()
 
-    // for the face arrival/leave edge (report-up only — the station decides).
-    @Volatile private var faceCurrentlyPresent = false
+    // Gates raw face detections into clean ARRIVE/LEAVE edges (near + centered +
+    // sustained) so presence-listening doesn't flap as people move through frame.
+    private val presenceGate = PresenceGate()
     // last rendered "listening" edge, so the face/beep fire only on transitions.
     @Volatile private var listeningRendered = false
 
@@ -155,12 +156,16 @@ class PerceptionWiring(
                     }
                     is PerceptionEvent.FaceSeen -> {
                         _facePresent.value = true
-                        // Report the NEW-face arrival edge UP — the station decides
-                        // whether to open a (low-priority) listen window. The phone
-                        // no longer auto-listens locally.
-                        if (!faceCurrentlyPresent) {
-                            faceCurrentlyPresent = true
-                            sendFaceArrival()
+                        // PRESENCE GATE: only report an arrival when a face is NEAR +
+                        // CENTERED + SUSTAINED — a person settling in front of the dock,
+                        // not someone walking past / lingering far / flickering at the
+                        // edge. The raw FaceSeen still drives gaze + the snapshot below
+                        // every frame; only the station-facing arrival/leave edge is
+                        // gated (kills the on-off-on-off presence flap).
+                        when (presenceGate.onFace(event.x, event.y, event.size, System.currentTimeMillis())) {
+                            PresenceGate.Edge.ARRIVE -> sendFaceArrival()
+                            PresenceGate.Edge.LEAVE -> sendFaceLeft()
+                            PresenceGate.Edge.NONE -> {}
                         }
                         perception?.onFaceSeen(event.x, event.y)
                         // Map face position to eye gaze. Damp the magnitude so
@@ -172,10 +177,12 @@ class PerceptionWiring(
                     }
                     is PerceptionEvent.FaceLost -> {
                         _facePresent.value = false
-                        faceCurrentlyPresent = false  // re-arm for the next arrival
-                        // Report the face-left UP — the station releases ONLY a face
-                        // listen window (never a tap/follow-up; D2 enforced there).
-                        sendFaceLeft()
+                        // Feed the gate a "no face" tick — it debounces into a LEAVE
+                        // only after the grace window (a brief look-away doesn't end
+                        // presence). The station releases ONLY a face window (D2).
+                        if (presenceGate.onNoFace(System.currentTimeMillis()) == PresenceGate.Edge.LEAVE) {
+                            sendFaceLeft()
+                        }
                         perception?.onFaceLost()
                         controller.setGaze(GazeOffset())
                     }

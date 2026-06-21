@@ -40,6 +40,13 @@ export const ConvCfg = {
   SPEAK_MAX_MS: Number(process.env.CONV_SPEAK_MAX_MS ?? 30_000),
   /** A face arriving in view opens a brief low-priority listen window. */
   FACE_ARRIVAL_MS: Number(process.env.CONV_FACE_ARRIVAL_MS ?? 5_000),
+  /** After a face-presence window ends, ignore a new face-arrival for this long.
+   *  Stops the on-off-on-off flap when someone paces in and out of frame: once a
+   *  presence window closes, the dock won't re-open one on camera presence until
+   *  the cooldown passes. (The phone-side PresenceGate already requires near +
+   *  centered + sustained; this is the station's backstop against rapid re-trigger.)
+   *  A TAP is never subject to this — a deliberate tap always opens immediately. */
+  FACE_COOLDOWN_MS: Number(process.env.CONV_FACE_COOLDOWN_MS ?? 12_000),
 };
 
 /** A state transition, emitted for observability + the phone renderer. */
@@ -60,6 +67,7 @@ export class ConversationState {
   #windowUntil = 0; // LISTENING/FOLLOWUP expiry (ms), or 0
   #windowSrc: WindowSource = 'tap'; // why the current window is open (priority)
   #speakUntil = 0;  // SPEAKING safety expiry (ms), or 0
+  #faceCooldownUntil = 0; // a face-arrival is ignored until this time (anti-flap)
   #onTransition?: (t: ConvTransition) => void;
 
   constructor(onTransition?: (t: ConvTransition) => void) {
@@ -111,19 +119,25 @@ export class ConversationState {
   }
 
   /** A NEW face arrived in view → a low-priority listen window (D3): yields to an
-   *  active tap/followup (won't override a higher window), opens one when idle. */
+   *  active tap/followup (won't override a higher window), opens one when idle.
+   *  Suppressed during the post-presence COOLDOWN so pacing in/out of frame can't
+   *  flap the dock on-off-on-off (the phone-side PresenceGate already requires the
+   *  face to be near + centered + sustained; this is the station's backstop). */
   faceArrival(now: number): void {
     this.#prune(now);
+    if (now < this.#faceCooldownUntil) return; // still cooling down from the last presence
     if (this.#mode === 'idle') this.#openWindow('face', now + ConvCfg.FACE_ARRIVAL_MS, now, 'face-arrival');
     // if already listening/followup/thinking/speaking → ignore (don't downgrade).
   }
 
   /** A face LEFT view → release ONLY a low-priority face window. It must NOT
-   *  cancel a tap or follow-up (D2: a glance away doesn't end your conversation). */
+   *  cancel a tap or follow-up (D2: a glance away doesn't end your conversation).
+   *  Starts the anti-flap cooldown so an immediate re-arrival doesn't re-trigger. */
   faceLeft(now: number): void {
     this.#prune(now);
     if ((this.#mode === 'listening' || this.#mode === 'followup') && this.#windowSrc === 'face') {
       this.#windowUntil = 0;
+      this.#faceCooldownUntil = now + ConvCfg.FACE_COOLDOWN_MS;
       this.#set('idle', now, 'face-left');
     }
   }
@@ -211,6 +225,9 @@ export class ConversationState {
     }
     if ((this.#mode === 'listening' || this.#mode === 'followup')
         && this.#windowUntil && now >= this.#windowUntil) {
+      // A face-presence window that times out also starts the anti-flap cooldown,
+      // so a face still lingering in frame doesn't immediately re-open it.
+      if (this.#windowSrc === 'face') this.#faceCooldownUntil = now + ConvCfg.FACE_COOLDOWN_MS;
       this.#windowUntil = 0;
       this.#set('idle', now, 'window-timeout');
     }
