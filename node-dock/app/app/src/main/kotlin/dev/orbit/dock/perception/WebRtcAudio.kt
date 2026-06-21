@@ -1,7 +1,9 @@
 package dev.orbit.dock.perception
 
 import android.content.Context
+import android.media.AudioManager
 import android.media.MediaRecorder
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import org.webrtc.DefaultVideoDecoderFactory
@@ -307,7 +309,14 @@ private class TtsAecLoopback(
                 // Moderate gain: high enough to be audible + a clean AEC reference,
                 // low enough not to overdrive/clip (10.0 was rough). Tune if quiet.
                 (r?.track() as? org.webrtc.AudioTrack)?.setVolume(2.0)
-                Timber.i("TtsAecLoopback: recv TTS track → rendering through production ADM")
+                // The production ADM plays TTS in the VOICE_COMMUNICATION world, which
+                // routes to the EARPIECE by default on devices that have one (fine on
+                // an earpiece-less tablet, wrong on a phone — the Redmi 6 Pro). Force
+                // the built-in SPEAKER. This changes only the OUTPUT DEVICE of the same
+                // ADM playout — the AEC reference (the rendered TTS) is untouched, so
+                // echo cancellation is unaffected. No-op on a device without an earpiece.
+                routeToSpeaker(ctx)
+                Timber.i("TtsAecLoopback: recv TTS track → rendering through production ADM (speaker-routed)")
             }
         }) ?: return
         val send = fSend.createPeerConnection(rtc, object : LoopObs("ttsSend") {
@@ -334,6 +343,29 @@ private class TtsAecLoopback(
                 }, o) }
             }
         }, MediaConstraints())
+    }
+
+    /** Route the VOICE_COMMUNICATION playout (the TTS) to the built-in SPEAKER, not
+     *  the earpiece. Idempotent + safe to call each utterance. On API 31+ uses the
+     *  modern setCommunicationDevice(BUILTIN_SPEAKER); older devices use the
+     *  (deprecated but functional) setSpeakerphoneOn. Earpiece-less devices: no-op. */
+    private fun routeToSpeaker(context: Context) {
+        val am = context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager ?: return
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                val speaker = am.availableCommunicationDevices.firstOrNull {
+                    it.type == android.media.AudioDeviceInfo.TYPE_BUILTIN_SPEAKER
+                }
+                if (speaker != null && am.communicationDevice?.type != speaker.type) {
+                    am.setCommunicationDevice(speaker)
+                }
+            } else {
+                @Suppress("DEPRECATION")
+                if (!am.isSpeakerphoneOn) am.isSpeakerphoneOn = true
+            }
+        } catch (t: Throwable) {
+            Timber.w(t, "routeToSpeaker failed (leaving default routing)")
+        }
     }
 
     private open class LoopObs(val n: String) : PeerConnection.Observer {
