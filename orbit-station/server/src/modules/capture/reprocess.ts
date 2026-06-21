@@ -12,6 +12,7 @@
 import { readFile } from 'node:fs/promises';
 import { isoIst } from '../perception/snapshots.js';
 import { confidenceTier } from '../perception/processors/stt-watch.js';
+import { isOnlineEngine, transcribeOnline } from './online-stt.js';
 
 const SIDECAR_URL = process.env.PERCEPTION_SIDECAR_URL ?? 'http://127.0.0.1:8078';
 
@@ -55,36 +56,53 @@ export async function reprocessStt(opts: {
   audioPath: string; dockId: string; streamId: string;
   startedAtEpoch: number; model?: string; prompt?: string; label: string; job?: string;
 }): Promise<ReprocessRun> {
-  const { pcm, rate } = await readWav(opts.audioPath);
-  const pcm_b64 = Buffer.from(pcm.buffer, pcm.byteOffset, pcm.byteLength).toString('base64');
-  const body = JSON.stringify({ pcm_b64, sample_rate: rate, model: opts.model, initial_prompt: opts.prompt, job: opts.job });
-  const r = await fetch(`${SIDECAR_URL}/transcribe_file`, {
-    method: 'POST', headers: { 'content-type': 'application/json' }, body,
-  });
-  if (!r.ok) throw new Error(`sidecar ${r.status}: ${await r.text()}`);
-  const out = await r.json() as { model: string; segments: SidecarSegment[] };
+  // Route ONLINE engines (deepgram / gemini-audio) vs the LOCAL whisper sidecar.
+  let modelName: string;
+  let endpoint: string;
+  let segs: Array<SidecarSegment & { speaker?: number | string }>;
+  if (opts.model && isOnlineEngine(opts.model)) {
+    const out = await transcribeOnline(opts.model, opts.audioPath);
+    modelName = out.model; endpoint = opts.model;
+    segs = out.segments.map((s) => ({
+      start: s.start, end: s.end, text: s.text, speaker: s.speaker,
+      avg_logprob: s.avg_logprob ?? null, no_speech_prob: s.no_speech_prob ?? null, compression_ratio: s.compression_ratio ?? null,
+    }));
+  } else {
+    const { pcm, rate } = await readWav(opts.audioPath);
+    const pcm_b64 = Buffer.from(pcm.buffer, pcm.byteOffset, pcm.byteLength).toString('base64');
+    const body = JSON.stringify({ pcm_b64, sample_rate: rate, model: opts.model, initial_prompt: opts.prompt, job: opts.job });
+    const r = await fetch(`${SIDECAR_URL}/transcribe_file`, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body,
+    });
+    if (!r.ok) throw new Error(`sidecar ${r.status}: ${await r.text()}`);
+    const out = await r.json() as { model: string; segments: SidecarSegment[] };
+    modelName = out.model; endpoint = SIDECAR_URL; segs = out.segments ?? [];
+  }
 
-  const snapshots = (out.segments ?? []).map((s) => {
+  const snapshots = segs.map((s) => {
     const from = new Date(opts.startedAtEpoch + s.start * 1000);
     const to = new Date(opts.startedAtEpoch + s.end * 1000);
     const tier = confidenceTier({
       avgLogprob: s.avg_logprob, noSpeechProb: s.no_speech_prob,
       compressionRatio: s.compression_ratio, text: s.text,
     });
+    // Prefix the text with a speaker tag when the engine diarized (Sn:).
+    const spk = s.speaker != null ? `S${s.speaker}: ` : '';
     return {
       ts: isoIst(from),
       source: { id: opts.streamId, kind: 'speech', device: 'reprocess', host: 'station' },
       dockId: opts.dockId,
-      model: { name: out.model, endpoint: SIDECAR_URL },
+      model: { name: modelName, endpoint },
       interval: { from: isoIst(from), to: isoIst(to), durationMs: Math.round((s.end - s.start) * 1000) },
       payload: {
-        text: s.text, confTier: tier, lowConfidence: tier !== 'good',
+        text: spk + s.text, confTier: tier, lowConfidence: tier !== 'good',
+        ...(s.speaker != null ? { speaker: s.speaker } : {}),
         avgLogprob: s.avg_logprob, noSpeechProb: s.no_speech_prob, compressionRatio: s.compression_ratio,
       },
     };
   });
 
-  return { label: opts.label, model: out.model, prompt: opts.prompt, createdAt: isoIst(new Date()), snapshots };
+  return { label: opts.label, model: modelName, prompt: opts.prompt, createdAt: isoIst(new Date()), snapshots };
 }
 
 /** Current 0..1 progress of an in-flight reprocess `job` (proxied from the sidecar). */
