@@ -94,6 +94,36 @@ describe('ConversationState — A: basic addressed turn', () => {
       'started long after the window → overheard, not addressed');
   });
 
+  // A1e — THE STALE-WINDOW LEAK (observed: "listening → watching, then it still
+  // replied"). A VAD hold pushes the most-recent-window expiry up to VAD_HOLD_MS into
+  // the future; when the window then TIMES OUT (UI flips to idle/"watching") without an
+  // utterance being consumed, that future value must NOT keep later speech "addressed".
+  it('A1e: speech after a VAD-held window times out is NOT addressed (stale-window leak)', () => {
+    const { cs } = make();
+    const HOLD = ConvCfg.VAD_HOLD_MS;
+    cs.tap(0);                          // window open
+    cs.vadActivity(100, true);          // VAD hold → lastWindowUntil ≈ 100 + HOLD (far future)
+    cs.tap(200);                        // tap-off: deliberately close (UI shows not-listening)
+    assert.equal(cs.mode(300), 'idle', 'window closed → idle');
+    // you speak 5s later, entirely AFTER the close — overheard, must not run a turn.
+    assert.equal(cs.utteranceEnded(5000, 5000, 4000), false,
+      'speech well after the closed window is overheard, not addressed');
+    // and even something inside the OLD stale hold horizon is not addressed.
+    assert.equal(cs.utteranceEnded(HOLD - 1000, HOLD - 1000, HOLD - 2000), false,
+      'inside the stale 30s hold horizon, but the window already closed → not addressed');
+  });
+
+  // A1f — same leak via a window TIMEOUT (not a tap-off): hold, let it expire, speak late.
+  it('A1f: speech after a held window auto-expires is NOT addressed', () => {
+    const { cs } = make();
+    cs.tap(0);
+    cs.vadActivity(100, true);          // hold far out
+    cs.vadActivity(200, false);         // speech ended → releases to a short endpoint
+    cs.mode(10_000);                    // long after → window-timeout prunes to idle
+    assert.equal(cs.utteranceEnded(20_000, 20_000, 19_000), false,
+      'speech 20s later, after the window expired → not addressed');
+  });
+
   // A4 — tap before the sentence ends (started before tap, ends after) → addressed.
   it('A4: tap before the sentence ends → addressed', () => {
     const { cs } = make();

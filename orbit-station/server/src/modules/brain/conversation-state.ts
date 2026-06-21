@@ -111,7 +111,9 @@ export class ConversationState {
   tap(now: number): void {
     this.#prune(now);
     if (this.#mode === 'listening' || this.#mode === 'followup') {
-      this.#set('idle', now, 'tap-off'); this.#windowUntil = 0;
+      // tap-off deliberately closes the window → clamp the long-utterance grace to now
+      // (see #prune) so later overheard speech isn't treated as addressed.
+      this.#set('idle', now, 'tap-off'); this.#windowUntil = 0; this.#lastWindowUntil = now;
     } else if (this.#mode === 'idle') {
       this.#openWindow('tap', now + ConvCfg.LISTEN_MS, now, 'tap');
     } else if (this.#mode === 'thinking' || this.#mode === 'speaking') {
@@ -147,6 +149,7 @@ export class ConversationState {
     this.#prune(now);
     if ((this.#mode === 'listening' || this.#mode === 'followup') && this.#windowSrc === 'face') {
       this.#windowUntil = 0;
+      this.#lastWindowUntil = now; // clamp the long-utterance grace to the actual close
       this.#faceCooldownUntil = now + ConvCfg.FACE_COOLDOWN_MS;
       this.#set('idle', now, 'face-left');
     }
@@ -264,6 +267,16 @@ export class ConversationState {
       // so a face still lingering in frame doesn't immediately re-open it.
       if (this.#windowSrc === 'face') this.#faceCooldownUntil = now + ConvCfg.FACE_COOLDOWN_MS;
       this.#windowUntil = 0;
+      // CLAMP the long-utterance grace to the ACTUAL close. #lastWindowUntil is
+      // monotonic (#setWindow only Math.max'es it) and a VAD hold pushes it up to
+      // VAD_HOLD_MS (30s) into the future. When the window TIMES OUT (the UI flips to
+      // "watching"/idle) without an utterance being consumed, a stale far-future
+      // #lastWindowUntil left utteranceEnded()'s `startedWhileOpen` true for ~30s — so
+      // speech said AFTER the indicator went off was still treated as addressed and
+      // got a reply (observed: "listening→watching, then it still answered"). Pin to
+      // `now` so only an utterance ending right as the window closed keeps the GRACE
+      // tail; anything later is correctly overheard.
+      this.#lastWindowUntil = now;
       this.#set('idle', now, 'window-timeout');
     }
   }
