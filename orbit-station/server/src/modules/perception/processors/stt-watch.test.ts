@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { UtteranceDetector } from './stt-watch.js';
+import { UtteranceDetector, isHallucination, isLowConfBackchannel } from './stt-watch.js';
 
 // Mirrors the detector's own constants. FRAME_MS=30 @ 16 kHz → 480 samples/frame.
 // ENDPOINT_MS=1300 → ~44 silent frames commit. MIN_UTTERANCE_MS=180 → ≥6 voiced
@@ -58,4 +58,30 @@ test('counting with short gaps = one utterance; long gaps = split per number', (
   const b = detector();
   for (let i = 0; i < 10; i++) { b.d.feedPcm(loud(frames(400))); b.d.feedPcm(quiet(frames(1600))); }
   assert.equal(b.ends.length, 10, 'long gaps: splits into one utterance per number');
+});
+
+// TURN-GATING: a Whisper silence-hallucination must NOT become an agent turn (the
+// "Thank you" → "You're very welcome!" phantom reply). Stock sign-offs are dropped
+// unconditionally; the snapshot still lands for the record.
+test('stock silence-hallucinations are blocked from becoming a turn', () => {
+  for (const p of ['Thank you', 'thank you for watching', 'Okay', 'Bye.', 'you', 'The end']) {
+    assert.equal(isHallucination(p), true, `"${p}" should be a hallucination`);
+  }
+  // real content is NOT a hallucination
+  for (const p of ['tell me a story', 'what is two plus two', 'set a timer for five minutes']) {
+    assert.equal(isHallucination(p), false, `"${p}" must pass through`);
+  }
+});
+
+// SHORT BACKCHANNELS are ambiguous: drop as a turn ONLY when Whisper is also unsure.
+test('short backchannels are gated on confidence, not dropped outright', () => {
+  // low-confidence "yeah" from near-silence → blocked
+  assert.equal(isLowConfBackchannel('yeah', true), true);
+  assert.equal(isLowConfBackchannel('Mm hmm.', true), true);
+  assert.equal(isLowConfBackchannel('one sec', true), true);
+  // a CONFIDENT "yeah" (a real answer to the dock's question) → still a turn
+  assert.equal(isLowConfBackchannel('yeah', false), false);
+  assert.equal(isLowConfBackchannel('yes', false), false);
+  // real content is never a backchannel, regardless of confidence
+  assert.equal(isLowConfBackchannel('yes please send it', true), false);
 });

@@ -59,10 +59,27 @@ const PREROLL_MS = 200;
 // --------------------------------------------------------------------------- //
 // Whisper silence-hallucination backstop (the VAD should pre-empt these).
 // --------------------------------------------------------------------------- //
+// Canonical Whisper silence outputs — stock sign-off / caption phrases it emits from
+// faint room noise. These are essentially NEVER real addressed speech, so they're
+// dropped from becoming a turn UNCONDITIONALLY (still kept as a lowConfidence snapshot
+// for the record). Observed live: "Thank you" → phantom "You're very welcome!".
 const HALLUCINATION_PHRASES = new Set([
   'you', 'thank you', 'thanks for watching', 'thank you for watching',
   "i'm sorry", 'bye', 'bye.', '.', 'so', 'okay', 'the end',
+  'thanks', 'thank you so much', 'thank you very much',
 ]);
+
+// Short backchannels ("yeah", "mm hmm", "oh", "aww", "one sec") are AMBIGUOUS: a real
+// confident "yeah" is a valid answer to the dock's question, but the same token from
+// near-silence is a hallucination. So these are dropped as a turn ONLY when Whisper is
+// also UNSURE (lowConfidence) — a voiced, confident "yeah" still becomes a turn.
+const SOFT_BACKCHANNELS = new Set([
+  'yeah', 'yep', 'mm', 'mm hmm', 'mhm', 'uh huh', 'hmm', 'oh', 'ah', 'aww', 'one sec',
+]);
+export function isLowConfBackchannel(text: string, lowConfidence: boolean): boolean {
+  if (!lowConfidence) return false;
+  return SOFT_BACKCHANNELS.has(text.toLowerCase().replace(/[.!?]+$/, '').replace(/\s+/g, ' ').trim());
+}
 
 /** The dock's listening on/off BEEP (a ToneGenerator blip) isn't an AEC reference
  *  (only TTS is rendered through the WebRTC loopback), so the mic hears it and
@@ -75,7 +92,7 @@ function isBeepArtifact(text: string): boolean {
   return norm.split(' ').every((w) => w === 'beep');
 }
 
-function isHallucination(text: string): boolean {
+export function isHallucination(text: string): boolean {
   const norm = text.toLowerCase().replace(/\s+/g, ' ').trim();
   if (HALLUCINATION_PHRASES.has(norm.replace(/[.!]+$/, ''))) return true;
   const words = norm.split(/\s+/).filter(Boolean);
@@ -413,9 +430,13 @@ export function sttWatchProcessor(
         ctx.emit({ kind: 'transcript', source: 'stt-watch', payload: { text: tr.text, isFinal: true }, confidence: conf });
         // A1.2: hand the final transcript + its utterance window to the brain's
         // addressed latch so a tapped utterance can become an agent turn — UNLESS
-        // it's the dock's own listening beep transcribed as "beep beep" (keep the
-        // snapshot above for the record, but never let it become a turn).
-        if (!isBeepArtifact(tr.text)) {
+        // it's the dock's own listening beep ("beep beep") or a Whisper silence-
+        // hallucination ("Thank you" / "Yeah" / "Okay" / "you" emitted from near-
+        // silence). Both still land as snapshots above for the record, but neither
+        // may become an agent turn — otherwise the dock answers things no one said
+        // (the "Thank you" → "You're very welcome!" phantom reply).
+        if (!isBeepArtifact(tr.text) && !isHallucination(tr.text)
+            && !isLowConfBackchannel(tr.text, lowConfidence)) {
           onFinal?.({
             dockId: ctx.dockId, streamId: ctx.streamId, text: tr.text,
             startedAt: startedAt.getTime(), endedAt: endedAt.getTime(), lowConfidence, confTier: tier,
