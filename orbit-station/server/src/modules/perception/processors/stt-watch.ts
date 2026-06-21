@@ -47,8 +47,11 @@ const ENDPOINT_MS = Number(process.env.STT_ENDPOINT_MS ?? 1300);
  *  a bare "hi" as noise. Whisper's own confidence (no_speech_prob) still filters a
  *  genuine click that sneaks past this. */
 const MIN_UTTERANCE_MS = Number(process.env.STT_MIN_UTTERANCE_MS ?? 180);
-/** Force-flush a monologue this long even without an endpoint. */
-const MAX_UTTERANCE_MS = Number(process.env.STT_MAX_UTTERANCE_MS ?? 15_000);
+/** Force-flush a monologue this long even without an endpoint — a safety cap so we
+ *  don't buffer audio forever, NOT a normal endpoint. 60s (was 15s, which chopped a
+ *  normal long sentence/count mid-thought). The real end is the VAD silence endpoint;
+ *  this only catches a runaway. */
+const MAX_UTTERANCE_MS = Number(process.env.STT_MAX_UTTERANCE_MS ?? 60_000);
 /** Keep this much leading silence/onset before the first voiced frame (so we don't
  *  clip the first phoneme). */
 const PREROLL_MS = 200;

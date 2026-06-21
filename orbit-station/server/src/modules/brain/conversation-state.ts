@@ -193,11 +193,17 @@ export class ConversationState {
     if (this.#mode !== 'listening' && this.#mode !== 'followup') return;
     if (active) {
       // hold open — far enough out that only a vad-end (or the keepalive lapsing on a
-      // disconnect) closes it. VAD_EXTEND_MS is the keepalive cadence's safety margin.
+      // disconnect) closes it.
       this.#setWindow(Math.max(this.#windowUntil, now + ConvCfg.VAD_HOLD_MS));
     } else {
-      // speech ended → close soon (short endpoint), unless something later re-extends.
-      this.#setWindow(now + ConvCfg.VAD_ENDPOINT_MS);
+      // speech ENDED → release to a short endpoint. BUT only shorten the window if it
+      // was actually HELD open by speech (a long hold). A vad-end arriving on a fresh
+      // tap window (before you've said anything — e.g. from the tap-beep) must NOT slam
+      // it shut early; only ever shorten, never lengthen, and never below now+endpoint.
+      const endpoint = now + ConvCfg.VAD_ENDPOINT_MS;
+      const wasHeld = this.#windowUntil > now + ConvCfg.LISTEN_MS; // only a hold exceeds LISTEN_MS
+      if (wasHeld) this.#setWindow(endpoint);
+      // else: leave the normal tap/followup window alone — you haven't started talking.
     }
   }
 
