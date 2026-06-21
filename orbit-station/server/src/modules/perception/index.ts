@@ -107,6 +107,12 @@ const GALLERY_PATH = fileURLToPath(new URL('../../../data/face-gallery.json', im
 const RECOGNIZE_FRAME_TRIES = Number(process.env.RECOGNIZE_FRAME_TRIES ?? 3);
 const RECOGNIZE_FRAME_GAP_MS = Number(process.env.RECOGNIZE_FRAME_GAP_MS ?? 120);
 
+// force_get_current consensus: how many fresh vision captures to take for an on-demand
+// "what do you see now?". The small VLM is capable but inconsistent frame-to-frame, so
+// several reads let the Gemini summarizer reconcile to the majority. 3 ≈ a few seconds
+// (captures serialize on the single MLX sidecar). Tune via env.
+const FORCE_GET_CAPTURES = Number(process.env.FORCE_GET_CAPTURES ?? 3);
+
 /** One recognized (or unrecognized) face, as the brain's tools consume it. */
 export interface RecognizedPerson {
   name: string | null;
@@ -378,14 +384,30 @@ export function perceptionModule(getHub: () => ProcessingHub): StationModule {
       // goes live). Shared by force_get_current, the console, and the A1.5
       // auto-summarizer. `flush` (default true) force-ends the in-flight tail first.
       const summarizeWindowAndCache = async (
-        dockId: string, opts?: { streamId?: string; windowMs?: number; flush?: boolean; cache?: boolean },
+        dockId: string, opts?: { streamId?: string; windowMs?: number; flush?: boolean; cache?: boolean; captures?: number },
       ): Promise<{ summary: string; error?: string; window: { from: string; to: string } }> => {
+        // Anchor the window START before the (possibly multi-second) captures, so the
+        // window is GUARANTEED to span every fresh read regardless of inference time.
+        const startedAt = Date.now();
         if (opts?.flush !== false) {
           try { await stt.flushAll(); } catch { /* best-effort */ }
-          if (opts?.streamId) { try { await vision.captureNow(opts.streamId); } catch { /* best-effort */ } }
+          if (opts?.streamId) {
+            // CONSENSUS: the small vision model is capable but INCONSISTENT frame-to-frame
+            // (a held mug read correctly on one frame, as "smartphone"/"ruler" on the next).
+            // For an on-demand "what do you see now?", take a few fresh captures so the
+            // summary window holds several independent reads — the Gemini summarizer then
+            // reconciles them (majority wins) instead of trusting one possibly-bad frame.
+            const n = Math.max(1, opts?.captures ?? 1);
+            for (let i = 0; i < n; i++) {
+              try { await vision.captureNow(opts.streamId); } catch { /* best-effort */ }
+            }
+          }
         }
         const toIso = isoIst(new Date());
-        const fromIso = isoIst(new Date(Date.now() - (opts?.windowMs ?? 60_000)));
+        // window = max(requested window, the span we just spent capturing) so all the
+        // fresh consensus reads are included even if inference ran long.
+        const windowMs = Math.max(opts?.windowMs ?? 60_000, Date.now() - startedAt + 1_000);
+        const fromIso = isoIst(new Date(Date.now() - windowMs));
         const recs = snapshots.inWindowWithState(fromIso, toIso).filter((r) => r.dockId === dockId);
         const result = await summarize(recs);
         // Only update the BACKGROUND grounding (lastSummary) when this is a background-
@@ -419,10 +441,14 @@ export function perceptionModule(getHub: () => ProcessingHub): StationModule {
         },
         async forceCurrent(dockId, streamId, windowMs) {
           // Flush the in-flight tail (so "right now" is captured), then summarize a TIGHT
-          // window around it. cache:false — this momentary read must not overwrite the
-          // 60s background sense (lastSummary). force_get_current is the deliberate,
-          // on-demand path; the A1.5 auto-summarizer caches via the same helper.
-          return summarizeWindowAndCache(dockId, { streamId, windowMs, flush: true, cache: false });
+          // window around it. captures:FORCE_GET_CAPTURES — take several fresh reads so the
+          // summarizer reconciles the inconsistent small-model object-ID (majority wins).
+          // cache:false — this momentary read must not overwrite the 60s background sense
+          // (lastSummary). force_get_current is the deliberate, on-demand path; the A1.5
+          // auto-summarizer caches via the same helper (single capture).
+          return summarizeWindowAndCache(dockId, {
+            streamId, windowMs, flush: true, cache: false, captures: FORCE_GET_CAPTURES,
+          });
         },
       };
 
