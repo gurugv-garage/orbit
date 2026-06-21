@@ -56,7 +56,7 @@ import { SentenceStreamer } from './sentence.js';
 import { SessionStore, type SessionMeta } from './store.js';
 import { loadDockSkills, type DockSkills } from './skills.js';
 import { buildFileTools, FILE_TOOLS_PROMPT } from './filetools.js';
-import { buildDockTools, buildGrantTools, buildSlackTools, buildWhatsAppTools, buildMemoryTools, type ToolTurnContext } from './tools.js';
+import { buildDockTools, buildGrantTools, buildSlackTools, buildWhatsAppTools, buildResearchTools, buildMemoryTools, type ToolTurnContext } from './tools.js';
 import type { MoveStep } from './schemas.js';
 import type { VideoRecorderApi } from '../perception/record/recorder.js';
 import * as slack from '../../integrations/slack.js';
@@ -705,6 +705,12 @@ export class DockBrainSession {
     // answer questions about its code AND modify itself) and mutations require
     // dock UI confirmation.
     const fileAccess = this.#d.config('brainFileAccess') === true;
+    // recent-research (last30days CLI): the integration gates on LAST30DAYS_SCRIPT;
+    // bridge the config key into the env each turn so a configured/cleared path
+    // applies next-turn (the tool is offered only when the script + a Python exist).
+    const researchScript = str(this.#d.config('brainResearchScript'));
+    if (researchScript) process.env.LAST30DAYS_SCRIPT = researchScript;
+    else delete process.env.LAST30DAYS_SCRIPT;
     const taskPrompt = this.#d.config('brainTaskMax') === 0 ? '' :
       'BACKGROUND TASKS — you can run long-running background jobs as supervised '
       + 'processes: anything that needs to keep working over time or react later. They '
@@ -754,6 +760,7 @@ export class DockBrainSession {
       ...buildGrantTools(this.dock, this.#grants(), this.#d.motion),
       ...buildSlackTools(), // send_to_slack — only when SLACK_BOT_TOKEN is set
       ...buildWhatsAppTools(), // send_to_whatsapp — only when WHATSAPP_TOKEN is set
+      ...buildResearchTools(), // research_recent — only when the last30days CLI is wired
       // memory tools (recall/inspect/remember/update/forget) — only when the dock's
       // memory facade is wired (docs/perception-to-brain.md Decision 4).
       ...(this.#d.getMemory ? buildMemoryTools(this.dock, this.#d.getMemory) : []),

@@ -250,7 +250,26 @@ export const sendToWhatsAppSchema = {
   required: ['text'],
 } as const;
 
+export const researchRecentSchema = {
+  type: 'object',
+  properties: {
+    topic: { type: 'string', description: 'what to research — a person, product, project, brand, or event (e.g. "Claude Code", "Nvidia earnings", "Peter Steinberger")' },
+    context: { type: 'string', description: 'optional disambiguating anchor for collision-prone names — the entity\'s company, role, or domain (e.g. "Digg founder" for Kevin Rose, "screen recording" for Tella). Omit when the name is globally unambiguous.' },
+    depth: { type: 'string', enum: ['quick', 'deep'], description: 'quick = faster, fewer items (default; good for a spoken reply); deep = higher-recall, slower (up to ~3 min)' },
+    days: { type: 'number', description: 'look back this many days instead of the default 30' },
+  },
+  required: ['topic'],
+} as const;
+
 // Descriptions live next to the schemas so the model-facing surface is one place.
+export const RESEARCH_RECENT_DESC =
+  'Research what people have been saying about a topic RECENTLY (the last ~30 days) across Reddit, ' +
+  'Hacker News, YouTube, GitHub, and prediction markets, ranked by real engagement (upvotes/views/odds). ' +
+  'Use for current-events / "what\'s the latest on…" / "what are people saying about…" / "how was X received" ' +
+  'questions where your own knowledge may be stale — it pulls fresh community discussion you don\'t have. ' +
+  'For a collision-prone name, pass a `context` anchor (the person\'s company/role) so it stays on-topic. ' +
+  'Returns a synthesized brief with citations; weave the findings into your answer naturally — do NOT read ' +
+  'the raw list back. Takes ~30s (quick) so tell the user you\'re looking it up.';
 export const TAKE_PHOTO_DESC =
   'Produce a PHOTO (an image artifact) with your camera right now and share it. ' +
   'Use when the user wants the PICTURE itself — "take/snap a photo", "send a pic", "show me on Slack". ' +

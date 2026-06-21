@@ -211,6 +211,11 @@ export const REGISTRY: ConfigEntry[] = [
     description: 'Give the brain FULL pi coding tools — read/write/edit any file + run shell commands on the station host, INCLUDING its own source. read_file is direct (ask it about its code); every write/edit/run requires user confirmation on the dock UI. Off by default; turning this on lets an LLM modify the running robot.',
   }),
   entry({
+    key: 'brainResearchScript', type: 'text', schema: z.string(), default: '', tags: ['station'],
+    label: 'Recent-research script',
+    description: 'Absolute path to last30days.py (mvanhorn/last30days-skill). When set (and a Python 3.12+ is on PATH), the brain gets a `research_recent` tool that pulls the last ~30 days of community discussion (Reddit/HN/YouTube/GitHub/Polymarket — no API keys) for a topic. Empty = tool off.',
+  }),
+  entry({
     key: 'brainAlwaysPaid', type: 'boolean', schema: z.boolean(), default: false, tags: ['station'],
     label: 'Always use paid key',
     description: 'For Google/Gemini: always use the paid-account key (GEMINI_API_KEY_PAID_ACC) instead of the free key. Off = use the free key and fall back to the paid one only when the free key hits a quota or overload (429/503). No effect if no paid key is set.',

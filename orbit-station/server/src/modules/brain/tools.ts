@@ -25,6 +25,7 @@ import { SafeCompute } from './safe-compute.js';
 import * as S from './schemas.js';
 import * as slack from '../../integrations/slack.js';
 import * as whatsapp from '../../integrations/whatsapp.js';
+import * as last30days from '../../integrations/last30days.js';
 
 /** force_get_current summarizes only this tight window around its fresh capture, so
  *  "right now" means now — not the 60s background window (which the LLM already has
@@ -207,6 +208,27 @@ export function buildWhatsAppTools(): AgentTool<any>[] {
       // Say WHO it went to only when the user named a recipient — otherwise just
       // "WhatsApp", so the model doesn't echo a raw default phone number back.
       return textResult(`Sent on WhatsApp${args.to ? ` to ${args.to}` : ''}.`);
+    }),
+  ];
+}
+
+/**
+ * The `research_recent` tool — only offered when the last30days CLI is wired
+ * (script path configured + a Python 3.12+ on PATH), so the model never claims
+ * an ability it can't perform. Appended conditionally next to Slack/WhatsApp.
+ */
+export function buildResearchTools(): AgentTool<any>[] {
+  if (!last30days.last30daysEnabled()) return [];
+  return [
+    tool('research_recent', S.RESEARCH_RECENT_DESC, S.researchRecentSchema, async (_id, args: { topic: string; context?: string; depth?: 'quick' | 'deep'; days?: number }) => {
+      try {
+        const brief = await last30days.research({ topic: args.topic, context: args.context, depth: args.depth, days: args.days });
+        return textResult(brief);
+      } catch (err) {
+        // A timeout / bad topic / CLI failure surfaces here; hand the reason to
+        // the brain to narrate rather than failing the whole turn silently.
+        return textResult(`Couldn't research that right now: ${err instanceof Error ? err.message : String(err)}`);
+      }
     }),
   ];
 }
