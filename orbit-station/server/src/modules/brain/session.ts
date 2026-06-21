@@ -323,8 +323,8 @@ export class DockBrainSession {
    * caller then runs a turn). Folds in the old addressedLatch — "are we in an open
    * listening window?" IS the decision.
    */
-  utteranceAddressed(endedAt: number, now = Date.now()): boolean {
-    return this.#conv.utteranceEnded(endedAt, now);
+  utteranceAddressed(endedAt: number, now = Date.now(), startedAt?: number): boolean {
+    return this.#conv.utteranceEnded(endedAt, now, startedAt);
   }
 
   /** Back-compat shim for the console 2c surface + tests. */

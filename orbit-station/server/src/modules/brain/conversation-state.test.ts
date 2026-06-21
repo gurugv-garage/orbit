@@ -66,6 +66,27 @@ describe('ConversationState — A: basic addressed turn', () => {
     assert.equal(cs.utteranceEnded(250, 300), false, 'second in the gap is NOT addressed again');
   });
 
+  // LONG-UTTERANCE: a sentence that STARTED while listening but runs past the window
+  // expiry is still addressed (you were talking the whole time — don't drop it).
+  it('A1c: a long utterance that ends after the window expired is still addressed', () => {
+    const { cs } = make();
+    cs.tap(0);                                    // window open [0, LISTEN_MS]
+    assert.equal(cs.mode(L + 100), 'idle', 'window expired to idle');
+    // you started speaking at L-500 (while open) and finished at L+1500 (after expiry).
+    assert.equal(cs.utteranceEnded(L + 1500, L + 1500, L - 500), true,
+      'started-while-open utterance is addressed despite ending late');
+    assert.equal(cs.mode(L + 1500), 'thinking', '→ runs the turn');
+  });
+
+  // ...but an utterance that STARTS after the window is long gone is NOT addressed.
+  it('A1d: an utterance that starts well after the window closed is NOT addressed', () => {
+    const { cs } = make();
+    cs.tap(0);
+    cs.mode(L + 100); // expire
+    assert.equal(cs.utteranceEnded(L + 10_000, L + 10_000, L + 9_000), false,
+      'started long after the window → overheard, not addressed');
+  });
+
   // A4 — tap before the sentence ends (started before tap, ends after) → addressed.
   it('A4: tap before the sentence ends → addressed', () => {
     const { cs } = make();

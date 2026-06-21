@@ -65,6 +65,9 @@ const SRC_PRIORITY: Record<WindowSource, number> = { face: 10, followup: 50, tap
 export class ConversationState {
   #mode: ConvMode = 'idle';
   #windowUntil = 0; // LISTENING/FOLLOWUP expiry (ms), or 0
+  #lastWindowUntil = 0; // expiry of the MOST RECENT window, kept after it closes — so a
+                        // long utterance that STARTED while listening still counts as
+                        // addressed even if it ENDS after the window expired (no cut-off).
   #windowSrc: WindowSource = 'tap'; // why the current window is open (priority)
   #speakUntil = 0;  // SPEAKING safety expiry (ms), or 0
   #faceCooldownUntil = 0; // a face-arrival is ignored until this time (anti-flap)
@@ -167,7 +170,7 @@ export class ConversationState {
     if (this.#mode !== 'speaking') return; // already left speaking (e.g. tap-interrupt)
     this.#speakUntil = 0;
     this.#windowSrc = 'followup';
-    this.#windowUntil = now + ConvCfg.FOLLOWUP_MS;
+    this.#setWindow(now + ConvCfg.FOLLOWUP_MS);
     this.#set('followup', now, 'tts-end');
   }
 
@@ -176,7 +179,7 @@ export class ConversationState {
   vadActivity(now: number): void {
     this.#prune(now);
     if (this.#mode === 'listening' || this.#mode === 'followup') {
-      this.#windowUntil = Math.max(this.#windowUntil, now + ConvCfg.VAD_EXTEND_MS);
+      this.#setWindow(Math.max(this.#windowUntil, now + ConvCfg.VAD_EXTEND_MS));
     }
   }
 
@@ -191,11 +194,19 @@ export class ConversationState {
    * we left the window open a SECOND rapid utterance in that gap would double-fire
    * (a spurious supersede). One window → one turn, enforced here, not by the caller.
    */
-  utteranceEnded(endedAt: number, now: number): boolean {
+  utteranceEnded(endedAt: number, now: number, startedAt?: number): boolean {
     this.#prune(now);
-    if (this.#mode !== 'listening' && this.#mode !== 'followup') return false;
-    if (endedAt < now - ConvCfg.GRACE_MS) return false;
+    const windowOpenNow = this.#mode === 'listening' || this.#mode === 'followup';
+    // LONG-UTTERANCE FIX: a sentence you BEGAN while the window was open is addressed,
+    // even if it ran long and ENDED after the window expired (you were talking the
+    // whole time — don't drop it / cut you off). Counts if the utterance started before
+    // the most-recent window's expiry (within GRACE) — OR the window is still open now.
+    const startedWhileOpen = startedAt != null && startedAt <= this.#lastWindowUntil + ConvCfg.GRACE_MS
+      && this.#lastWindowUntil > 0;
+    if (!windowOpenNow && !startedWhileOpen) return false;
+    if (windowOpenNow && endedAt < now - ConvCfg.GRACE_MS) return false;
     this.#windowUntil = 0;
+    this.#lastWindowUntil = 0; // consumed
     this.#set('thinking', now, 'addressed-utterance');
     return true;
   }
@@ -236,8 +247,15 @@ export class ConversationState {
   /** Open a listening window of a given source (priority) → listening. */
   #openWindow(src: WindowSource, until: number, now: number, reason: string): void {
     this.#windowSrc = src;
-    this.#windowUntil = until;
+    this.#setWindow(until);
     this.#set('listening', now, reason);
+  }
+
+  /** Set the window expiry, also recording it as the most-recent window expiry
+   *  (#lastWindowUntil) so a long utterance that started while open still counts. */
+  #setWindow(until: number): void {
+    this.#windowUntil = until;
+    this.#lastWindowUntil = Math.max(this.#lastWindowUntil, until);
   }
 
   #set(to: ConvMode, at: number, reason: string): void {

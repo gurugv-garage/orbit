@@ -223,7 +223,7 @@ export function brainModule(w: BrainWiring): StationModule {
         // is still kept (tagged) upstream; we just don't act on it. Shaky still runs —
         // a quiet "yes"/"ok" you addressed should work.
         if (t.confTier === 'garbage') return;
-        if (!session(t.dockId).utteranceAddressed(t.endedAt)) return;
+        if (!session(t.dockId).utteranceAddressed(t.endedAt, Date.now(), t.startedAt)) return;
         void session(t.dockId).handleTurnRequest({
           turnId: `addr-${randomUUID()}`,
           trigger: { kind: 'user', text: t.text },
