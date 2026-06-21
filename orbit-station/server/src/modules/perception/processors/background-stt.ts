@@ -21,14 +21,18 @@ function geminiKey(): string | undefined {
 export interface BgTranscript { text: string; speaker?: number }
 
 const PROMPT =
-  'Transcribe this short audio of a real conversation as accurately as you can. '
-  + 'If multiple people speak, diarize by prefixing each speaker turn with "S0:", "S1:", '
-  + '"S2:" (one prefix per speaker change). If a single speaker, no prefix is needed. '
-  + 'Return STRICT JSON: {"text":"<the cleaned transcript with the speaker prefixes>",'
-  + '"speaker":<the dominant speaker number as an integer, or 0>}. '
-  + 'Example: {"text":"S0: What are you making? S1: A cake.","speaker":0}. '
-  + 'Do NOT include timestamps, times, or any "00:01"-style markers in the text. '
-  + 'Do NOT invent words for unintelligible audio — return "" if you cannot make it out. JSON only.';
+  'You are a STRICT verbatim transcriber. Transcribe ONLY the words that are actually '
+  + 'spoken in this audio clip — nothing else. '
+  + 'CRITICAL RULES: '
+  + '(1) NEVER answer a question, complete a sentence, or continue the conversation — if '
+  + 'the audio contains a question, transcribe the question and STOP; do not write a reply. '
+  + '(2) NEVER add a speaker who is not audibly speaking in THIS clip. Only add an "S1:"/'
+  + '"S2:" prefix if you actually HEAR a different second voice in the audio. Most short '
+  + 'clips are ONE speaker → use no prefix at all. '
+  + '(3) Do NOT invent or guess words for unclear audio — return "" if you cannot make it out. '
+  + '(4) No timestamps or "00:01"-style markers. '
+  + 'Return STRICT JSON: {"text":"<exactly the spoken words>","speaker":<integer, 0 if one speaker>}. '
+  + 'Example (one speaker asking): {"text":"What is two plus two?","speaker":0}. JSON only.';
 
 /** True if `text` is mostly a regurgitation of the context (so it's a fabricated
  *  re-hearing of past conversation, not a transcript of the audio). Word-overlap:
