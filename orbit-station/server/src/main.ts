@@ -25,6 +25,7 @@ import { mediaModule } from './modules/media/index.js';
 import { ProcessingHub } from './modules/perception/hub.js';
 import { perceptionModule } from './modules/perception/index.js';
 import { buildVideoRecorder } from './modules/perception/record/recorder.js';
+import { captureModule } from './modules/capture/index.js';
 import { slackModule } from './modules/slack/index.js';
 import { benchModule } from './modules/bench/index.js';
 import { docksModule } from './modules/docks/index.js';
@@ -70,11 +71,15 @@ async function main() {
   //  - ProcessingHub: the SFU's media tap (perception processors).
   const configStore = new ConfigStore();
   let processingHub: ProcessingHub | undefined;
+  // SFU streamId→published-label lookup (set once the media module's SFU exists),
+  // so a browser stream resolves to its stable label (e.g. 'console-perception')
+  // for perception grouping instead of its ephemeral WS peer id.
+  let labelOf: ((streamId: string) => string | undefined) | undefined;
 
   const modules: StationModule[] = [
     observabilityModule(),
     configModule(configStore),
-    mediaModule(() => processingHub),   // WebRTC SFU; tap = the processing hub (or MEDIA_SINK fallback).
+    mediaModule(() => processingHub, (fn) => { labelOf = fn; }),   // WebRTC SFU; tap = the processing hub (or MEDIA_SINK fallback).
     slackModule(),                       // inbound Slack via Socket Mode (ingest only for now)
     benchModule(),
   ];
@@ -85,11 +90,20 @@ async function main() {
   // Roster-dependent wiring (needs the hub).
   const directory = new Directory(() => hub.roster());
   const motion = new MotionExecutor(bus, directory);
+  // resolveDock(streamId): the stable identity a snapshot is grouped under.
+  //  1. a dock WS peer → its dock name (e.g. 'anne-bot');
+  //  2. else the SFU producer's published label (a browser stream → 'console-perception');
+  //  3. else the raw streamId (last resort — an unlabelled/ephemeral source).
+  // Without (2) a browser stream landed under its random WS id (ui-xxxxx), so the
+  // console source selector (which filters by the stable label) never matched it.
   processingHub = new ProcessingHub(bus, (streamId) =>
-    hub.roster().find((p) => p.id === streamId)?.dock ?? streamId);
+    hub.roster().find((p) => p.id === streamId)?.dock
+      ?? labelOf?.(streamId)
+      ?? streamId);
   // record_video: capture a dock's live SFU stream to a WebM clip (under data/recordings/).
   const recordingsDir = fileURLToPath(new URL('../data/recordings', import.meta.url));
   const videoRecorder = buildVideoRecorder(processingHub, recordingsDir);
+  const captureDir = fileURLToPath(new URL('../data/captures', import.meta.url));
 
   modules.push(perceptionModule(() => processingHub!));
   modules.push(docksModule(directory, () => hub));
@@ -99,6 +113,8 @@ async function main() {
     config: (key) => configStore.get(key)?.value,
     recordVideo: videoRecorder,
   }));
+  // capture-judging harness: record a dock's A/V + snapshots for replay/judging.
+  modules.push(captureModule({ getHub: () => processingHub!, directory, dir: captureDir }));
   modules.push(otaModule(() => hub));   // OTA: version-compare against live roster
   // station meta module needs the registry + hub; add it last.
   modules.push(stationModule(() => modules, () => hub));

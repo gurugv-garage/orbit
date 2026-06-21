@@ -27,7 +27,8 @@ import { readFileSync } from 'node:fs';
 import type { RouteContext, StationModule } from '../../core/module.js';
 import type { Directory } from '../docks/directory.js';
 import type { MotionExecutor } from '../bodylink/motion.js';
-import { getFaceTools, getPerceptionGrounding, getMemoryApi, getGateApi } from '../perception/index.js';
+import { getFaceTools, getPerceptionGrounding, getMemoryApi, getGateApi, getTranscriptApi } from '../perception/index.js';
+import { isRecording } from '../capture/index.js';
 import type { VideoRecorderApi } from '../perception/record/recorder.js';
 import { RpcBroker } from './rpc.js';
 import { DockBrainSession, type TurnRequest, keyStatusFor } from './session.js';
@@ -48,6 +49,10 @@ const IDLE_SWEEP_MS = 60_000;
 /** How often to re-push the task-digest to live docks so the app HUD self-corrects
  *  even if a per-change push was missed (failproof running-tasks view). */
 const DIGEST_SWEEP_MS = 3_000;
+/** A face arriving after at least this long with no presence triggers a PROACTIVE
+ *  greeting ("haven't seen you in a while") — not on every walk-up, only after a
+ *  real absence. Tune via CONV_GREET_ABSENCE_MS. */
+const GREET_ABSENCE_MS = Number(process.env.CONV_GREET_ABSENCE_MS ?? 60 * 60_000);
 
 export interface BrainWiring {
   directory: Directory;
@@ -62,6 +67,11 @@ export interface BrainWiring {
 export function brainModule(w: BrainWiring): StationModule {
   const store = new SessionStore();
   const sessions = new Map<string, DockBrainSession>();
+  // Per-dock wall-clock of the last face-presence arrival, for the long-absence
+  // proactive greeting (GREET_ABSENCE_MS). Only a gap longer than that greets.
+  const lastFaceArrival = new Map<string, number>();
+  // Set in init(): simulate a tapped addressed utterance (debug self-test seam).
+  let injectAddressed: (dock: string, text: string) => void = () => {};
   const tasksRoot = defaultTasksRoot();
   const userTasks = userTasksRoot();
   const taskRoots = [
@@ -182,6 +192,7 @@ export function brainModule(w: BrainWiring): StationModule {
       // lane as tasks (user turns still win; it defers while listening/speaking). This
       // is the auto-raise replacement for the console's manual think-poke.
       getGateApi()?.onRaise((t) => {
+        if (isRecording(t.dockId)) return; // recording mode → dock stays silent
         session(t.dockId).enqueueAutonomousTurn({
           turnId: `self-${randomUUID()}`,
           trigger: { kind: 'self', text: t.text },
@@ -189,6 +200,43 @@ export function brainModule(w: BrainWiring): StationModule {
           coalesceKey: t.key, // dedup same-kind raises (e.g. 'arrival:guru')
         });
       });
+
+      // ADDRESSED TRANSCRIPT → TURN (A1.2, always-on-mic shift). The server STT
+      // hears EVERY utterance; a dock tap marks intent ("talking TO me"). Per dock
+      // we hold an addressed latch (tapped by the `addressed` agent frame below);
+      // when a final utterance qualifies (overlaps/follows the tap), it becomes a
+      // user turn-request. The latch clears at sentence-end (one tap → one turn).
+      // Overheard (un-tapped) speech is ignored here — only the attention gate may
+      // act on it (A1.5). See addressed.ts for the pure correlation + tests.
+      // A finalized utterance → ask the dock's conversation state if it's ADDRESSED
+      // (an open listening/followup window); if so, run it as a turn. The addressed
+      // decision now lives in the session's ConversationState (single owner) — no
+      // separate latch Map. Overheard utterances are ignored here (still transcribed
+      // upstream; the attention gate may act on them later).
+      const onAddressedFinal = (t: { dockId: string; text: string; startedAt: number; endedAt: number; confTier?: string }) => {
+        // RECORDING MODE: while this dock is being recorded for the capture harness,
+        // the dock must NOT respond (we want clean ambient perception). The mic/cam
+        // keep capturing + transcribing upstream; we just don't turn it into a reply.
+        if (isRecording(t.dockId)) return;
+        // GARBAGE STT: a far-field-mush / repetition-loop transcript must not become a
+        // confident agent turn (we'd reply to words that were never said). The snapshot
+        // is still kept (tagged) upstream; we just don't act on it. Shaky still runs —
+        // a quiet "yes"/"ok" you addressed should work.
+        if (t.confTier === 'garbage') return;
+        if (!session(t.dockId).utteranceAddressed(t.endedAt)) return;
+        void session(t.dockId).handleTurnRequest({
+          turnId: `addr-${randomUUID()}`,
+          trigger: { kind: 'user', text: t.text },
+          stationOriginated: true, // A1.2: the phone must ADOPT this (it didn't start it)
+        }).catch((err) => console.error(`[brain] ${t.dockId}: addressed turn crashed`, err));
+      };
+      // Debug self-test: tap (open the window) then feed a final utterance → a turn
+      // always fires. Drives the REAL addressed→turn→adopt path with NO live mic.
+      injectAddressed = (dock, text) => {
+        session(dock).tap();
+        onAddressedFinal({ dockId: dock, text, startedAt: Date.now(), endedAt: Date.now() });
+      };
+      getTranscriptApi()?.onFinal((t) => { onAddressedFinal(t); });
 
       bus.on('agent', (msg) => {
         if (msg.source === 'station') return;
@@ -204,6 +252,12 @@ export function brainModule(w: BrainWiring): StationModule {
         const p = msg.payload as Record<string, unknown> | null;
         switch (msg.kind) {
           case 'hello':
+            // A (re)connecting phone → reconcile conversation state to idle (clears
+            // anything a frame lost across a disconnect would have wedged), then
+            // re-send the current mode so the phone (a pure renderer with no state
+            // of its own) shows the right thing immediately.
+            session(dock).notePhoneConnected();
+            session(dock).resendConversation();
             // The deterministic half of the resync handshake: the peer-joined
             // push below can RACE the peer's subscribe frame (both arrive
             // back-to-back; the directed reply fans out before the topic
@@ -224,11 +278,52 @@ export function brainModule(w: BrainWiring): StationModule {
               console.error(`[brain] ${dock}: turn crashed`, err);
             });
             break;
+          case 'addressed':
+            // A tap — TOGGLE the dock's addressed listening window (D1). Stamped
+            // with the STATION clock so the utterance correlation (also station
+            // clock) is skew-free. Tap on = open window; tap again = close it.
+            session(dock).tap();
+            break;
+          case 'vad':
+            // VAD activity from the phone — extends an open listening/followup
+            // window so a slow speaker isn't cut off mid-sentence.
+            session(dock).vadActivity();
+            break;
+          case 'face-arrival': {
+            // a NEW face in view → low-priority listen (station decides; yields to
+            // an active tap/followup).
+            session(dock).faceArrival();
+            // LONG-ABSENCE GREETING: if it's been a while since anyone was last in
+            // front of this dock, proactively greet (a self-thought turn; the LLM
+            // uses its perception grounding/identity to name them if known). Not on
+            // every walk-up — only after a real gap. Coalesced so a flicker of
+            // arrivals doesn't stack greetings.
+            const nowMs = Date.now();
+            const prev = lastFaceArrival.get(dock);
+            lastFaceArrival.set(dock, nowMs);
+            if (prev != null && nowMs - prev >= GREET_ABSENCE_MS) {
+              session(dock).enqueueAutonomousTurn({
+                turnId: `greet-${randomUUID()}`,
+                trigger: { kind: 'self', text:
+                  '[Someone just came into view after a long absence. If you recognise them, greet them warmly by name and note it\'s been a while; otherwise a friendly hello. Keep it to one short sentence.]' },
+                expiresAt: nowMs + 30_000,
+                coalesceKey: 'greet-arrival',
+              });
+            }
+            break;
+          }
+          case 'face-left':
+            // a face left → release ONLY a face listen window (never a tap/followup).
+            session(dock).faceLeft();
+            break;
           case 'turn-cancel':
             session(dock).cancel(typeof p?.turnId === 'string' ? p.turnId : undefined);
             break;
           case 'speech-status':
             session(dock).noteSpeech(p?.speaking === true);
+            // A1.2 echo-gate: tell the STT processor to drop audio while our TTS
+            // plays, so the station doesn't transcribe the dock's own voice.
+            getTranscriptApi()?.setSpeaking(dock, p?.speaking === true);
             break;
           // 'tool-result' is consumed by the RpcBroker's own subscription
           default:
@@ -347,6 +442,13 @@ export function brainModule(w: BrainWiring): StationModule {
         json(res, 200, { ok: true, listening: body.listening === true });
         return true;
       }
+      // GET /:dock/conversation — the live conversation state probe (the primary
+      // testability hook: { mode, windowUntil, speakUntil, msToExpiry }).
+      const cm = subPath.match(/^\/([^/]+)\/conversation$/);
+      if (cm && req.method === 'GET') {
+        json(res, 200, session(decodeURIComponent(cm[1]!)).conversation());
+        return true;
+      }
       let m = subPath.match(/^\/([^/]+)\/sessions$/);
       if (m && req.method === 'GET') {
         json(res, 200, store.sessions(decodeURIComponent(m[1]!)));
@@ -390,6 +492,53 @@ export function brainModule(w: BrainWiring): StationModule {
           coalesceKey: `self:${kind}`,
         });
         json(res, 200, { ok: true });
+        return true;
+      }
+      // ── debug: simulate an ADDRESSED utterance (A1.2 self-test, no live mic) ──
+      // POST /:dock/debug/say {text} → taps the latch + feeds `text` as a final
+      // transcript, driving the real addressed→turn→adopt path. Lets the loop be
+      // tested end-to-end (incl. the phone adopting the station-originated turn)
+      // without anyone speaking. The dock will reply through DockTts as usual.
+      m = subPath.match(/^\/([^/]+)\/debug\/say$/);
+      if (m && req.method === 'POST') {
+        const dock = decodeURIComponent(m[1]!);
+        const body = JSON.parse((await readBody(req)) || '{}') as { text?: string };
+        const text = typeof body.text === 'string' ? body.text.trim() : '';
+        if (!text) { json(res, 400, { error: 'body.text (the utterance) is required' }); return true; }
+        injectAddressed(dock, text);
+        json(res, 200, { ok: true, injected: text });
+        return true;
+      }
+      // POST /:dock/debug/event {event, [endedAt], [text]} — inject a RAW
+      // conversation event to drive any flow headless (no mic):
+      //   tap | vad | tts-start | tts-end | connected | utterance{text,endedAt}
+      // utterance runs the addressed path (→ a turn if a window is open).
+      m = subPath.match(/^\/([^/]+)\/debug\/event$/);
+      if (m && req.method === 'POST') {
+        const dock = decodeURIComponent(m[1]!);
+        const b = JSON.parse((await readBody(req)) || '{}') as { event?: string; text?: string; endedAt?: number };
+        const s = session(dock);
+        switch (b.event) {
+          case 'tap': s.tap(); break;
+          case 'vad': s.vadActivity(); break;
+          case 'face-arrival': s.faceArrival(); break;
+          case 'face-left': s.faceLeft(); break;
+          case 'tts-start': s.noteSpeech(true); break;
+          case 'tts-end': s.noteSpeech(false); break;
+          case 'connected': s.notePhoneConnected(); break;
+          case 'utterance': {
+            const endedAt = typeof b.endedAt === 'number' ? b.endedAt : Date.now();
+            const addressed = s.utteranceAddressed(endedAt);
+            if (addressed && b.text) {
+              void s.handleTurnRequest({ turnId: `addr-${randomUUID()}`, trigger: { kind: 'user', text: b.text.trim() }, stationOriginated: true })
+                .catch((err) => console.error(`[brain] ${dock}: debug utterance turn crashed`, err));
+            }
+            json(res, 200, { ok: true, addressed, conversation: s.conversation() });
+            return true;
+          }
+          default: json(res, 400, { error: 'event must be tap|vad|face-arrival|face-left|tts-start|tts-end|connected|utterance' }); return true;
+        }
+        json(res, 200, { ok: true, conversation: s.conversation() });
         return true;
       }
       // delete a specific session (transcript + index entry). Refuses the

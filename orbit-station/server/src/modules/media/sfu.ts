@@ -174,6 +174,13 @@ export class Sfu {
     this.#dropAllViewers(peerId);
   }
 
+  /** The stable display label a producer published with (e.g. 'console-perception',
+   *  'anne-bot'), or undefined if no such producer. Used to give a browser stream a
+   *  stable identity for perception grouping instead of its ephemeral WS peer id. */
+  labelOf(streamId: string): string | undefined {
+    return this.#producers.get(streamId)?.label;
+  }
+
   status() {
     return {
       producers: [...this.#producers.values()].map((p) => ({

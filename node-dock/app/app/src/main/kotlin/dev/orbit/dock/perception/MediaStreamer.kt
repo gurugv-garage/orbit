@@ -49,6 +49,7 @@ class MediaStreamer(
 ) {
     private var pc: PeerConnection? = null
     private var videoSource: VideoSource? = null
+    private var audioSource: org.webrtc.AudioSource? = null
     private var capturer: FaceFrameCapturer? = null
     @Volatile private var started = false
 
@@ -138,19 +139,20 @@ class MediaStreamer(
         }
         pc = connection
 
-        // Audio: AEC'd mic via the shared ADM (the factory's audio device module).
-        // For a *monitoring* stream we want ambient/room audio to be audible, but
-        // the ADM's VOICE_COMMUNICATION + hardware NS gates steady noise to near
-        // silence (that's its job for calls). Counter it on the STREAM's source
-        // VIDEO-ONLY stream. We deliberately do NOT add a mic audio track: a WebRTC
-        // audio source opens a SECOND VOICE_COMMUNICATION capture session on the
-        // shared ADM, which conflicts with the voice pipeline's exclusive mic
-        // handoff to Android SpeechRecognizer (STT) — two sessions starve SR and it
-        // returns "no match" on every utterance, and VAD/wake degrade. The mic
-        // stays exclusively owned by the perception pipeline. (Streaming mic audio
-        // to the console can return later via the proper shared-PCM path — feed
-        // both STT and the stream from the one ADM, no second capture; see the
-        // perception plan's "Option B′".)
+        // Audio: AEC'd mic, published over WebRTC to the station's always-on STT
+        // (A1, the always-on-mic shift — docs/perception-to-brain.md). This is now
+        // safe because the on-device Android SpeechRecognizer is GONE: the mic is
+        // no longer time-shared, so the shared ADM captures continuously and the
+        // audio source draws from that one capture (Option B′ — one ADM feeds both
+        // the local perception pipeline and this track; NO second
+        // VOICE_COMMUNICATION session). The track carries the hardware-AEC'd
+        // VOICE_COMMUNICATION mic, so the station won't transcribe the dock's own
+        // TTS. createAudioSource() with no extra constraints — the ADM already
+        // applies HW AEC/NS; we don't want WebRTC's software NS gating room audio.
+        val audioSource = factory.createAudioSource(MediaConstraints())
+        this.audioSource = audioSource
+        val audioTrack = factory.createAudioTrack("dock-audio", audioSource)
+        connection.addTrack(audioTrack)
 
         // Video: FaceTracker frames pushed into a VideoSource (~1 Hz slideshow).
         val vSource = factory.createVideoSource(false)
@@ -160,6 +162,11 @@ class MediaStreamer(
         faceTracker.onBitmapFrame = { bmp -> cap.onFrame(bmp) }
         val videoTrack = factory.createVideoTrack("dock-video", vSource)
         connection.addTrack(videoTrack)
+
+        // Resume the ADM capture now that the new audio source/PC sink exists (it
+        // was paused in stop() to avoid the teardown race). Idempotent on a fresh
+        // ADM that's already recording.
+        WebRtcAudio.resumeRecording()
 
         // Offer → publish producer-offer.
         connection.createOffer(object : SdpAdapter("createOffer") {
@@ -199,11 +206,20 @@ class MediaStreamer(
         started = false
         faceTracker.onBitmapFrame = null
         capturer?.stop(); capturer = null
+        // CRITICAL ordering (fixes the AudioRecordThread SIGSEGV): the shared ADM's
+        // capture thread is always-on; if we dispose the audioSource/PeerConnection
+        // (the native sink nativeDataIsRecorded writes into) while it's still
+        // recording, the next in-flight buffer memcpys into freed memory → crash.
+        // Pause the ADM's capture FIRST, so no buffer is in flight during disposal,
+        // then dispose. start()/restart() resumes it after the rebuild.
+        WebRtcAudio.pauseRecording()
         try { pc?.close() } catch (_: Throwable) {}
         pc = null
         try { videoSource?.dispose() } catch (_: Throwable) {}
         videoSource = null
-        Timber.d("MediaStreamer stopped")
+        try { audioSource?.dispose() } catch (_: Throwable) {}
+        audioSource = null
+        Timber.d("MediaStreamer stopped (capture paused)")
     }
 
     // ── ICE JSON <-> webrtc IceCandidate ────────────────────────────────────────

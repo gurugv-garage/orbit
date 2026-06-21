@@ -25,8 +25,9 @@ import { faceRecognitionProcessor } from './processors/face-recognition.js';
 import { visionSnapshotProcessor } from './processors/vision-snapshot.js';
 import { identitySnapshotProcessor } from './processors/identity-snapshot.js';
 import { sttWatchProcessor } from './processors/stt-watch.js';
+import { backgroundTranscribe } from './processors/background-stt.js';
 import { bodyMotionWatchProcessor, type MotionCommand } from './processors/bodymotion-watch.js';
-import { SnapshotStore, isoIst, sampleEvenly } from './snapshots.js';
+import { SnapshotStore, isoIst, sampleEvenly, type SnapshotRecord } from './snapshots.js';
 import { TakeStore } from './takes.js';
 import { summarize } from './summarizer.js';
 import { buildGrounding, type LastSummary } from './grounding.js';
@@ -34,6 +35,7 @@ import { SidecarSupervisor } from './sidecars.js';
 import { MemoryStore, type MemoryRow, type MemoryType, type RecallFilter, type LineageEdge } from './memory/store.js';
 import { geminiEmbedder } from './memory/embedder.js';
 import { startGateWatcher, type RaisedThought } from './attention/gate-watcher.js';
+import { startAutoSummarizer } from './auto-summarizer.js';
 import { DEFAULT_GATE_CONFIG, type GateConfig, type GateOutcome } from './attention/gate.js';
 import { orbitDb } from '../../core/db.js';
 import { setVisionExtra, getVisionExtra, visionBase } from './vision-instruction.js';
@@ -213,10 +215,59 @@ export function getGateApi(): GateApi | undefined {
   return gateRef.current;
 }
 
+/**
+ * Final-transcript hook (A1.2, the always-on-mic shift). The server STT
+ * (stt-watch) emits one final transcript per endpointed utterance; the brain
+ * registers `onFinal` to receive each with its utterance window, so it can decide
+ * — via the addressed latch — whether that utterance becomes an agent turn.
+ * Mirrors GateApi.onRaise (a single consumer, set once at brain init).
+ */
+export interface FinalTranscript {
+  dockId: string;
+  streamId: string;
+  text: string;
+  /** the utterance's VAD window (ms epoch) — drives the addressed correlation. */
+  startedAt: number;
+  endedAt: number;
+  /** Whisper's own confidence flag (a gasp/low-conf word is tagged, not dropped). */
+  lowConfidence: boolean;
+  /** graded confidence: 'good' | 'shaky' | 'garbage'. A 'garbage' addressed utterance
+   *  (far-field mush / repetition-loop) should not become a confident agent turn. */
+  confTier?: 'good' | 'shaky' | 'garbage';
+}
+export interface TranscriptApi {
+  /** the brain calls this once to receive final transcripts. */
+  onFinal(fn: (t: FinalTranscript) => void): void;
+  /** A1.2 echo-gate: the brain reports when the dock's OWN TTS is playing, so
+   *  the STT processor drops audio then (no self-transcribe). Mirrors the brain's
+   *  noteSpeech signal (the phone's speech-status frames). */
+  setSpeaking(dockId: string, speaking: boolean): void;
+}
+const transcriptRef: { current?: TranscriptApi } = {};
+/** The live TranscriptApi (set when the perception module inits). */
+export function getTranscriptApi(): TranscriptApi | undefined {
+  return transcriptRef.current;
+}
+
+/** Read-only access to the snapshot store for other modules (the capture/judging
+ *  harness needs the snapshots produced during a recorded window). */
+export interface SnapshotsApi {
+  /** Snapshots whose interval overlaps [fromIso, toIso], optionally one dock. */
+  inWindow(fromIso: string, toIso: string, dockId?: string): SnapshotRecord[];
+}
+const snapshotsRef: { current?: SnapshotsApi } = {};
+export function getSnapshotsApi(): SnapshotsApi | undefined {
+  return snapshotsRef.current;
+}
+
 
 export function perceptionModule(getHub: () => ProcessingHub): StationModule {
   let state: PerceptionState;
   const snapshots = new SnapshotStore(); // WebRTC vision+speech snapshot records
+  snapshotsRef.current = {
+    inWindow: (fromIso, toIso, dockId) =>
+      snapshots.inWindow(fromIso, toIso).filter((r) => !dockId || r.dockId === dockId),
+  };
   const takes = new TakeStore();         // frozen snapshot bundles for A/B replay
   // Latest produced summary PER DOCK — the head of perception grounding (3.1). Set
   // on each successful /snapshots/summarize; read synchronously by the brain facade.
@@ -228,7 +279,61 @@ export function perceptionModule(getHub: () => ProcessingHub): StationModule {
   let bus: Bus;
   const gallery = new Gallery(GALLERY_PATH);
   const face = faceRecognitionProcessor(gallery);
-  const stt = sttWatchProcessor(snapshots);        // 🎙 speech (exposes flushAll)
+  // A1.2: the brain registers onFinal (via TranscriptApi) to receive each final
+  // utterance; we hold the single handler and forward stt-watch's events to it.
+  // It also reports `speaking` per dock (echo-gate) — stt-watch drops audio then.
+  let finalHandler: ((t: FinalTranscript) => void) | undefined;
+  // Echo-gate: a dock is "speaking" while its TTS plays AND for a short tail after
+  // (TTS reverb + AEC settle still leak into the mic just after speech-status off).
+  // Map dockId → epoch ms until which it counts as speaking.
+  //
+  // CRITICAL: the deadline is ALWAYS FINITE and self-healing. `speaking:true` does
+  // NOT latch forever — it sets a bounded window that each subsequent frame extends.
+  // If a `speaking:false` (or a long TTS's repeated keepalives) is ever lost, the
+  // gate auto-recovers when the window lapses instead of stranding the station
+  // permanently deaf (the stuck-mute bug). A real long reply re-sends speech-status
+  // as it streams sentences, so the window keeps extending while TTS actually plays.
+  const SPEAK_ON_WINDOW_MS = 6_000; // a single speech-status:true holds the mute this long…
+  const SPEAK_TAIL_MS = 800;        // …and a speech-status:false leaves this much tail.
+  const speakingUntil = new Map<string, number>();
+  transcriptRef.current = {
+    onFinal: (fn) => { finalHandler = fn; },
+    setSpeaking: (dockId, on) => {
+      speakingUntil.set(dockId, Date.now() + (on ? SPEAK_ON_WINDOW_MS : SPEAK_TAIL_MS));
+    },
+  };
+  // BACKGROUND STT (production split, docs/findings/recall-reliability.md): when
+  // PERCEPTION_BG_STT_MODEL is set (e.g. 'gemini-2.5-flash-lite'), each VAD-gated
+  // utterance is async re-transcribed online to UPGRADE the snapshot with a better,
+  // diarized transcript for recall. The live addressed-turn path stays local Whisper.
+  // Off by default (env unset) → local-Whisper-only, exactly as before.
+  const bgSttModel = process.env.PERCEPTION_BG_STT_MODEL;
+  // CONTEXT-AWARE: assemble the recent-discussion context for a dock (rolling summary
+  // + who's present) so Gemini disambiguates names/topic/homophones. Cheap (a few
+  // hundred chars; audio dominates the cost).
+  const bgContext = (dockId: string): string => {
+    const parts: string[] = [];
+    const sum = lastSummary.get(dockId)?.text;
+    if (sum) parts.push(`Recent: ${sum.slice(0, 600)}`);
+    const names = [...new Set(
+      snapshots.list().filter((r) => r.dockId === dockId && r.source.kind === 'identity')
+        .slice(-8)
+        .flatMap((r) => ((r.payload.faces as Array<{ name?: string | null }> | undefined) ?? [])
+          .map((f) => f.name).filter((n): n is string => !!n)),
+    )];
+    if (names.length) parts.push(`People present: ${names.join(', ')}.`);
+    return parts.join('\n');
+  };
+  const bgStt = bgSttModel
+    ? (pcm: Int16Array, rate: number, dockId: string) =>
+        backgroundTranscribe(pcm, rate, bgSttModel, bgContext(dockId))
+    : undefined;
+  const stt = sttWatchProcessor(
+    snapshots,
+    (e) => finalHandler?.(e),
+    (dockId) => Date.now() < (speakingUntil.get(dockId) ?? 0),
+    bgStt,
+  ); // 🎙 speech (exposes flushAll)
   // Vision reuses the face processor's decoded frame (ONE ffmpeg per dock, not two).
   const vision = visionSnapshotProcessor(snapshots, (sid) => face.currentFrame(sid)); // 👁 vision (captureNow)
   const bodymotion = bodyMotionWatchProcessor(snapshots); // 🤖 ego-motion (setMotion seam)
@@ -263,6 +368,29 @@ export function perceptionModule(getHub: () => ProcessingHub): StationModule {
         (sid) => face.recognizeAllCurrent(sid),
         (sid) => bodymotion.current(sid))); // ego-aware: don't drop people mid-move
 
+      // Summarize a dock's recent window and cache it as `lastSummary` (so grounding
+      // goes live). Shared by force_get_current, the console, and the A1.5
+      // auto-summarizer. `flush` (default true) force-ends the in-flight tail first.
+      const summarizeWindowAndCache = async (
+        dockId: string, opts?: { streamId?: string; windowMs?: number; flush?: boolean },
+      ): Promise<{ summary: string; error?: string; window: { from: string; to: string } }> => {
+        if (opts?.flush !== false) {
+          try { await stt.flushAll(); } catch { /* best-effort */ }
+          if (opts?.streamId) { try { await vision.captureNow(opts.streamId); } catch { /* best-effort */ } }
+        }
+        const toIso = isoIst(new Date());
+        const fromIso = isoIst(new Date(Date.now() - (opts?.windowMs ?? 60_000)));
+        const recs = snapshots.inWindowWithState(fromIso, toIso).filter((r) => r.dockId === dockId);
+        const result = await summarize(recs);
+        if (result.summary && !result.error) {
+          lastSummary.set(dockId, {
+            dockId, text: result.summary,
+            window: { from: fromIso, to: toIso }, computedAt: Date.now(),
+          });
+        }
+        return { summary: result.summary, error: result.error, window: { from: fromIso, to: toIso } };
+      };
+
       // Perception grounding facade for the brain (3.1): synchronously build the
       // per-turn context block for a dock — last summary (with staleness) + the raw
       // stream since it, from this dock's records. No network; the brain injects it.
@@ -280,26 +408,10 @@ export function perceptionModule(getHub: () => ProcessingHub): StationModule {
           return block ?? undefined;
         },
         async forceCurrent(dockId, streamId, windowMs) {
-          // 1) FLUSH the in-flight tail so "right now" is captured (mirrors the
-          //    console's Summarize flush): force-end open utterances + a one-shot
-          //    vision capture, both awaited before we pin the window.
-          try { await stt.flushAll(); } catch { /* best-effort */ }
-          if (streamId) { try { await vision.captureNow(streamId); } catch { /* best-effort */ } }
-          // 2) PIN the window NOW (after the flush committed) and summarize it.
-          const toIso = isoIst(new Date());
-          const fromIso = isoIst(new Date(Date.now() - (windowMs ?? 60_000)));
-          const recs = snapshots.inWindowWithState(fromIso, toIso)
-            .filter((r) => r.dockId === dockId); // this dock only
-          const result = await summarize(recs);
-          // 3) CACHE as the dock's last summary so grounding (3.1) goes live — the
-          //    first real producer of summaries (the console click is the only other).
-          if (result.summary && !result.error) {
-            lastSummary.set(dockId, {
-              dockId, text: result.summary,
-              window: { from: fromIso, to: toIso }, computedAt: Date.now(),
-            });
-          }
-          return { summary: result.summary, error: result.error, window: { from: fromIso, to: toIso } };
+          // Flush the in-flight tail (so "right now" is captured), then summarize +
+          // cache the window. force_get_current is the deliberate, on-demand path;
+          // the A1.5 auto-summarizer uses the same helper on a cadence.
+          return summarizeWindowAndCache(dockId, { streamId, windowMs, flush: true });
         },
       };
 
@@ -336,6 +448,32 @@ export function perceptionModule(getHub: () => ProcessingHub): StationModule {
         if (decisions.length > 50) decisions.splice(0, decisions.length - 50);
       };
       startGateWatcher(snapshots, () => gateCfg, (t) => raiseHandler?.(t), noteDecision);
+
+      // A1.5 auto-summarizer: keep grounding's lastSummary fresh without a manual
+      // /summarize. Per active dock (those with recent records), on a debounced
+      // cadence, fuse the recent window + cache it. Cheap: skips idle docks +
+      // throttles busy ones (shouldSummarize). OFF if PERCEPTION_AUTO_SUMMARY=0.
+      if (process.env.PERCEPTION_AUTO_SUMMARY !== '0') {
+        // Count records per dock from one store scan, memoized for a beat so the
+        // auto-summarizer's activeDocks()+countFor(d)×N calls in a single tick
+        // share ONE pass over snapshots (instead of rescanning per dock).
+        let countCache: { at: number; map: Map<string, number> } | null = null;
+        const dockCounts = (): Map<string, number> => {
+          const now = Date.now();
+          if (countCache && now - countCache.at < 1_000) return countCache.map;
+          const m = new Map<string, number>();
+          for (const r of snapshots.list()) m.set(r.dockId, (m.get(r.dockId) ?? 0) + 1);
+          countCache = { at: now, map: m };
+          return m;
+        };
+        startAutoSummarizer({
+          store: snapshots,
+          activeDocks: () => [...dockCounts().keys()],
+          countFor: (d) => dockCounts().get(d) ?? 0,
+          summarizeAndCache: async (d) => { await summarizeWindowAndCache(d, { flush: true }); },
+          log: (m) => console.log(m),
+        });
+      }
       gateRef.current = {
         setEnabled: (on) => { gateCfg.enabled = on; },
         isEnabled: () => gateCfg.enabled,
@@ -597,8 +735,13 @@ export function perceptionModule(getHub: () => ProcessingHub): StationModule {
       // Snapshot records (WebRTC vision + speech), shared format, ordered by start.
       // GET /snapshots[?limit=N]; POST /snapshots/clear wipes the ring.
       if (req.method === 'GET' && subPath === '/snapshots') {
-        const limit = Number(new URL(req.url ?? '', 'http://x').searchParams.get('limit') ?? 300);
-        json(res, 200, snapshots.list(limit));
+        const q = new URL(req.url ?? '', 'http://x').searchParams;
+        const limit = Number(q.get('limit') ?? 300);
+        // ?dock=X scopes to one dock/stream's snapshots (the console source selector);
+        // omitted/all = the merged feed across every producer.
+        const dock = q.get('dock');
+        const all = snapshots.list(limit);
+        json(res, 200, dock && dock !== 'all' ? all.filter((r) => r.dockId === dock) : all);
         return true;
       }
       if (req.method === 'POST' && subPath === '/snapshots/clear') {
@@ -641,7 +784,7 @@ export function perceptionModule(getHub: () => ProcessingHub): StationModule {
       if (req.method === 'POST' && subPath === '/snapshots/summarize') {
         const body = await parseBody<
           { windowMs?: number; fromIso?: string; toIso?: string;
-            withKeyframes?: boolean; maxKeyframes?: number; model?: string }>(req);
+            withKeyframes?: boolean; maxKeyframes?: number; model?: string; dock?: string }>(req);
         // Prefer EXPLICIT bounds (the client pins the window at click time so the
         // log and the LLM input agree exactly). Fall back to windowMs = [now-w, now]
         // for older callers. inWindowWithState = overlap + carried-in state streams.
@@ -650,7 +793,9 @@ export function perceptionModule(getHub: () => ProcessingHub): StationModule {
         // inWindowWithState carries forward the last identity/bodymotion BEFORE the
         // window, so the summary knows the camera/presence state it ENTERED with
         // (a pan or a person that last changed before the window isn't lost).
-        const recs = snapshots.inWindowWithState(fromIso, toIso);
+        // ?dock scopes the summary to one source (the console selector); else all.
+        const recs = snapshots.inWindowWithState(fromIso, toIso)
+          .filter((r) => !body.dock || body.dock === 'all' || r.dockId === body.dock);
         const keyframes = body.withKeyframes
           ? snapshots.keyframesInWindow(fromIso, toIso, body.maxKeyframes ?? 6) : undefined;
         const result = await summarize(recs, { keyframes, model: body.model });

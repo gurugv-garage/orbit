@@ -8,6 +8,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.launchIn
 import kotlinx.coroutines.flow.onEach
+import kotlinx.coroutines.launch
 import timber.log.Timber
 
 /** Live transcript snapshot for the subtitle band. */
@@ -32,6 +33,15 @@ class PerceptionWiring(
      *  same FaceSeen/FaceLost/UserEmotion events that drive gaze + mirroring,
      *  so the LLM's "what do you see?" is grounded. */
     private val perception: dev.orbit.dock.agent.PerceptionSnapshot? = null,
+    // ── conversation: the STATION owns the state machine; the phone REPORTS raw
+    // events up and RENDERS the mode it sends back. These are the report-up hooks
+    // (wired to RemoteBrain.sendVad/sendFaceArrival/sendFaceLeft in DockScreen).
+    private val sendVad: () -> Unit = {},
+    private val sendFaceArrival: () -> Unit = {},
+    private val sendFaceLeft: () -> Unit = {},
+    /** The station's conversation mode flow (idle/listening/thinking/speaking/
+     *  followup) — the phone renders this; it does NOT decide listening locally. */
+    private val convMode: StateFlow<String>? = null,
 ) {
     private val _audioLevel = MutableStateFlow(0f)
     val audioLevel: StateFlow<Float> = _audioLevel.asStateFlow()
@@ -58,29 +68,35 @@ class PerceptionWiring(
     private val _sttArmed = MutableStateFlow(false)
     val sttArmed: StateFlow<Boolean> = _sttArmed.asStateFlow()
 
-    // Auto-listen-on-face: arm a listening session once when a NEW face appears
-    // (absent → present edge), unless the dock is speaking or already listening.
-    @Volatile private var faceCurrentlyPresent = false   // for the arrival edge
-    @Volatile private var listeningActive = false        // a session is open
-    @Volatile private var dockSpeaking = false           // TTS playing
-    // Cool-off: after an auto-listen fires, suppress the next for this long so a
-    // face flickering at the edge of detection doesn't keep re-arming listening.
-    @Volatile private var lastAutoListenMs = 0L
-    private val autoListenCooldownMs = 8_000L
+    // Gates raw face detections into clean ARRIVE/LEAVE edges (near + centered +
+    // sustained) so presence-listening doesn't flap as people move through frame.
+    private val presenceGate = PresenceGate()
+    // last rendered "listening" edge, so the face/beep fire only on transitions.
+    @Volatile private var listeningRendered = false
 
-    @Volatile private var lastFaceMs = 0L
-    @Volatile private var lastVoiceMs = 0L
-    @Volatile private var lastGazeVoiceWakeMs = 0L
-    @Volatile private var audioAboveCount = 0
-    // Tunables — these are conservative defaults so the trigger doesn't
-    // misfire on background TV chatter / passing footsteps. Tighten with
-    // user feedback once we've lived with it for a bit.
-    private val audioWakeThreshold = 0.05f       // RMS [0..1]
-    private val audioWakeRequiredFrames = 2      // consecutive frames above threshold
-    private val faceFreshnessMs = 3500L          // face must have been seen within
-    private val wakeCooldownMs = 2000L           // suppress repeated triggers
+    /** RENDER the station's conversation mode onto the face + beeps. The station is
+     *  the sole owner of listening/speaking/idle — the phone just reflects it. The
+     *  on↔off "listening" edge drives the beep; we don't fight the agent turn while
+     *  it's Speaking/Engaged (that's driven by the TTS callback). */
+    private fun renderConvMode(mode: String) {
+        val on = mode == "listening" || mode == "followup"
+        if (on != listeningRendered) {
+            listeningRendered = on
+            if (on) {
+                BeepPlayer.listeningOn()
+                if (controller.state.value == FaceState.Idle) controller.listen()
+            } else {
+                BeepPlayer.listeningOff()
+                if (controller.state.value == FaceState.Listening) controller.silence()
+            }
+        }
+    }
 
     fun attach(scope: CoroutineScope) {
+        // Render the station's conversation mode (the phone is a pure renderer).
+        convMode?.let { flow ->
+            flow.onEach { renderConvMode(it) }.launchIn(scope)
+        }
         PerceptionBus.events
             .onEach { event ->
                 when (event) {
@@ -90,34 +106,24 @@ class PerceptionWiring(
                         _audioLevel.value = event.level
                     }
                     is PerceptionEvent.VoiceActivity -> {
-                        // Only animates the speaker indicator; never triggers
-                        // listening (tap-only model).
                         controller.userVoice(event.active)
+                        // Report VAD up — the station extends an open listening/
+                        // followup window so a slow speaker isn't cut off.
+                        if (event.active) sendVad()
                     }
                     is PerceptionEvent.SttListening -> {
-                        // The mic's real moment-to-moment armed state. Track it
-                        // so the UI hint can honestly say "I'm listening" vs.
-                        // "one sec…" each re-arm cycle. The FACE state stays
-                        // Listening across the whole session (only the session-
-                        // end Status drops it to Idle) — that's what avoids the
-                        // jarring face flicker — but the text reflects reality.
+                        // legacy local-STT signal; the station owns listening now.
                         _sttArmed.value = event.armed
-                        if (event.armed) {
-                            controller.listen()
-                        }
                     }
                     is PerceptionEvent.StopListening -> {
-                        // Tap-to-stop. Pipeline tears down STT; face → idle here
-                        // too so UI + audio agree immediately.
+                        // Explicit user stop = a tap (the station toggles listening off).
                         _sttArmed.value = false
-                        listeningActive = false
-                        controller.silence()
+                        onWake() // → agent.addressed() (tap toggle)
                     }
                     is PerceptionEvent.Speaking -> {
-                        // Track TTS state so auto-listen-on-face doesn't fire
-                        // while the dock is talking. Face speaking-state itself is
-                        // driven directly by the TTS callback (DockTts).
-                        dockSpeaking = event.active
+                        // The station drives speaking/followup from the TTS speech-
+                        // status frames (RemoteBrain.setSpeaking) → it emits the
+                        // conversation mode we render. Nothing to decide here.
                     }
                     is PerceptionEvent.BargeIn -> {
                         // Voice barge-in is handled in DockScreen (stops TTS +
@@ -129,50 +135,37 @@ class PerceptionWiring(
                         // the Speaker). Nothing to do here; keeps when exhaustive.
                     }
                     is PerceptionEvent.WakeWord -> {
-                        // Fired by tap-to-start OR auto-listen-on-face. Begin a
-                        // listening session.
-                        Timber.i("listen: ${event.label}")
-                        listeningActive = true
-                        controller.listen()
+                        // Tap (or a debug/dev wake) = the user TOGGLING addressed
+                        // listening. Report it up (onWake → agent.addressed()); the
+                        // STATION toggles + emits the conversation mode we render.
+                        // (Face-arrival no longer routes through here — FaceSeen
+                        // reports face-arrival up directly.)
+                        Timber.i("tap → station: ${event.label}")
                         _transcript.value = TranscriptState()
                         onWake()
                     }
                     is PerceptionEvent.Transcript -> {
-                        Timber.d("transcript: \"${event.text}\" final=${event.isFinal}")
+                        // Transcripts arrive FROM the station's always-on STT. Just
+                        // render the words; the station owns turn-building + the face
+                        // mode (no local listening decisions here).
+                        Timber.d("transcript (station): \"${event.text}\" final=${event.isFinal}")
                         _transcript.value = TranscriptState(event.text, event.isFinal)
-                        // A final transcript ends the listening session (the
-                        // pipeline clears its own flag the same way). Without
-                        // this, an action-only turn (no TTS → no re-arm → no
-                        // session_ended) left the flag stuck true and
-                        // auto-listen-on-face dead until the next manual tap.
-                        if (event.isFinal) listeningActive = false
-                        if (!event.isFinal && controller.state.value == FaceState.Engaged) {
-                            controller.listen()
-                        }
-                        if (event.isFinal && event.text.isNotBlank()) {
-                            if (shouldWinkFor(event.text)) {
-                                Timber.i("wink keyword trigger: \"${event.text}\"")
-                                controller.wink()
-                            }
-                            onUserUtterance(event.text)
+                        if (event.isFinal && event.text.isNotBlank() && shouldWinkFor(event.text)) {
+                            controller.wink()
                         }
                     }
                     is PerceptionEvent.FaceSeen -> {
-                        lastFaceMs = System.currentTimeMillis()
                         _facePresent.value = true
-                        // Auto-listen-on-face: on the absent→present edge (a NEW
-                        // face arrival), start a listening session once — unless
-                        // the dock is speaking or already listening. Re-arms only
-                        // after the face leaves (FaceLost) and returns.
-                        if (!faceCurrentlyPresent) {
-                            faceCurrentlyPresent = true
-                            val now = System.currentTimeMillis()
-                            val cooledDown = now - lastAutoListenMs >= autoListenCooldownMs
-                            if (!dockSpeaking && !listeningActive && cooledDown) {
-                                lastAutoListenMs = now
-                                Timber.i("auto-listen: new face appeared → start listening")
-                                PerceptionBus.emit(PerceptionEvent.WakeWord(label = "(face)"))
-                            }
+                        // PRESENCE GATE: only report an arrival when a face is NEAR +
+                        // CENTERED + SUSTAINED — a person settling in front of the dock,
+                        // not someone walking past / lingering far / flickering at the
+                        // edge. The raw FaceSeen still drives gaze + the snapshot below
+                        // every frame; only the station-facing arrival/leave edge is
+                        // gated (kills the on-off-on-off presence flap).
+                        when (presenceGate.onFace(event.x, event.y, event.size, System.currentTimeMillis())) {
+                            PresenceGate.Edge.ARRIVE -> sendFaceArrival()
+                            PresenceGate.Edge.LEAVE -> sendFaceLeft()
+                            PresenceGate.Edge.NONE -> {}
                         }
                         perception?.onFaceSeen(event.x, event.y)
                         // Map face position to eye gaze. Damp the magnitude so
@@ -184,7 +177,12 @@ class PerceptionWiring(
                     }
                     is PerceptionEvent.FaceLost -> {
                         _facePresent.value = false
-                        faceCurrentlyPresent = false  // re-arm for the next arrival
+                        // Feed the gate a "no face" tick — it debounces into a LEAVE
+                        // only after the grace window (a brief look-away doesn't end
+                        // presence). The station releases ONLY a face window (D2).
+                        if (presenceGate.onNoFace(System.currentTimeMillis()) == PresenceGate.Edge.LEAVE) {
+                            sendFaceLeft()
+                        }
                         perception?.onFaceLost()
                         controller.setGaze(GazeOffset())
                     }
@@ -221,25 +219,9 @@ class PerceptionWiring(
                         Timber.d("station presence: ${event.present}")
                     }
                     is PerceptionEvent.Status -> {
+                        // Pipeline status text only. The station owns the face mode
+                        // now (rendered from convMode), so no local silence here.
                         _pipelineStatus.value = event.message
-                        Timber.d("perception status: ${event.source} - ${event.message}")
-                        // Only "session_ended" returns the face to Idle. A
-                        // per-shot "final" (SpeechRecognizer ended one attempt)
-                        // is NOT session end — the pipeline re-arms for
-                        // continuous listening, so silencing here would make
-                        // the face flicker Idle↔Listening every ~5s. The
-                        // pipeline emits "session_ended" exactly once when the
-                        // whole listening session is truly over (timeout /
-                        // tap-stop / transcript handed off).
-                        if (event.message == "session_ended") {
-                            _sttArmed.value = false
-                            listeningActive = false
-                            val s = controller.state.value
-                            if (s == FaceState.Listening || s == FaceState.Engaged) {
-                                Timber.i("listening session ended → face back to Idle")
-                                controller.silence()
-                            }
-                        }
                     }
                     is PerceptionEvent.Error -> {
                         // Per-shot STT errors (no_match etc.) are normal during

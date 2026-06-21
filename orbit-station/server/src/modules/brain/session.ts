@@ -49,6 +49,7 @@ import type { FaceToolsApi, PerceptionGroundingApi, MemoryApi } from '../percept
 import { gesturesFromConfig } from '../bodylink/motion.js';
 import { buildSystemPrompt, isVisionIntent } from './prompt.js';
 import { decideThought, type SessionState } from './thought-router.js';
+import { ConversationState, type ConvTransition } from './conversation-state.js';
 import { MAX_HISTORY_MESSAGES, SESSION_IDLE_MIN, VISION_GATE } from './constants.js';
 import { RpcBroker } from './rpc.js';
 import { SentenceStreamer } from './sentence.js';
@@ -64,6 +65,9 @@ import * as slack from '../../integrations/slack.js';
  *  same-instance signals (notify+finish) coalesce into one turn. Tiny vs. the
  *  settle gap + the model turn; imperceptible for delivery. */
 const COALESCE_WINDOW_MS = 60;
+/** How often to tick the conversation state while in a timed mode, so window/speak
+ *  expiries emit their transition promptly (phone beep-off/idle on time). */
+const CONV_TICK_MS = 500;
 
 export interface TurnRequest {
   turnId: string;
@@ -74,6 +78,12 @@ export interface TurnRequest {
   /** for autonomous (task) turns: drop the turn if it can't start before this
    *  wall-clock (stale news is not spoken — docs/tasks.md §7a). */
   expiresAt?: number;
+  /** A1.2: this turn was STARTED BY THE STATION (not the phone) even though its
+   *  trigger.kind is 'user' (an addressed always-on-mic utterance). The phone must
+   *  ADOPT it (autonomous:true) so its speak frames aren't dropped as stale — it
+   *  never set currentTurnId locally. Distinct from trigger.kind, which still
+   *  frames the prompt as a user utterance. */
+  stationOriginated?: boolean;
 }
 
 export interface SessionDeps {
@@ -143,18 +153,21 @@ export class DockBrainSession {
   #autoDrainTimer: ReturnType<typeof setTimeout> | undefined;
   #draining = false;
 
-  // ── attention-gate state (docs/perception-to-brain.md 2.2) ────────────────
-  // The coarse session state the ThoughtRouter reads. `#speaking` is latched by
-  // noteSpeech (TTS playing our last answer). `#listening` (user mid-utterance)
-  // has NO real signal yet — the Android recognizer owns the mic — so it is a
-  // STUB set only via setListening() (tests + the future always-on-mic wire).
-  #speaking = false;
-  #listening = false;
+  // ── conversation state (the SINGLE owner — docs/findings/conversation-state-*) ─
+  // idle/listening/thinking/speaking/followup + the addressed decision, in one
+  // place. tap/utterance/vad/tts/connect events drive it; state() + the addressed
+  // correlation read it. Replaces the old #speaking/#listening flags + the external
+  // addressedLatch Map. A transition callback emits obs + drives the phone renderer.
+  #conv = new ConversationState((t) => this.#onConvTransition(t));
+  #convTick?: ReturnType<typeof setInterval>; // ticks while in a timed conv mode
 
   // ── per-turn state (reset in #runTurn) ────────────────────────────────────
   #activeTurnId?: string;
   #triggerText = '';
   #triggerKind = 'user';
+  // A1.2: a station-originated user turn (an addressed always-on-mic utterance) —
+  // the phone must adopt it even though its trigger.kind is 'user'.
+  #stationOriginated = false;
   #cancelled = false;
   #timedOut = false;
   #spokeThisTurn = false;
@@ -260,25 +273,66 @@ export class DockBrainSession {
    * else `idle`. A self-thought/task never barges a turn that's already in flight.
    */
   state(): SessionState {
+    // a running turn is the authoritative "thinking" (the real execution lane);
+    // otherwise the conversation state machine owns it.
     if (this.#running || this.#turnActive) return 'thinking';
-    if (this.#speaking) return 'speaking';
-    if (this.#listening) return 'listening';
+    const m = this.#conv.mode(Date.now());
+    // ConvMode 'followup' maps to 'listening' for the thought-router (both are
+    // open addressed windows it must defer behind).
+    if (m === 'speaking') return 'speaking';
+    if (m === 'listening' || m === 'followup') return 'listening';
     return 'idle';
   }
 
+  /** Live conversation snapshot (the GET /:dock/conversation probe). */
+  conversation(): ReturnType<ConversationState['snapshot']> {
+    return this.#conv.snapshot(Date.now());
+  }
+
+  // ── conversation events (the single state machine) ─────────────────────────
+
+  /** User tapped — TOGGLE the listening window (D1), or INTERRUPT an in-flight
+   *  reply (tap-to-interrupt): a tap while thinking/speaking aborts the active turn
+   *  (stops TTS) and opens a fresh listening window so the user can speak again. */
+  tap(now = Date.now()): void {
+    const interrupts = this.#conv.tapWouldInterrupt(now);
+    this.#conv.tap(now);
+    if (interrupts) this.cancel(); // abort the turn whose reply was just interrupted
+  }
+
+  /** VAD activity from the phone — extends an open listening/followup window. */
+  vadActivity(now = Date.now()): void { this.#conv.vadActivity(now); }
+
+  /** A new face arrived in the dock's camera (low-priority listen). */
+  faceArrival(now = Date.now()): void { this.#conv.faceArrival(now); }
+
+  /** A face left the camera (releases only a low-priority face listen window —
+   *  never a tap/follow-up). */
+  faceLeft(now = Date.now()): void { this.#conv.faceLeft(now); }
+
+  /** Re-send the current conversation mode (e.g. to a (re)connecting phone, which
+   *  is a pure renderer with no state of its own). */
+  resendConversation(): void {
+    const m = this.#conv.mode(Date.now());
+    try { this.#sendToVoice('conversation', { from: m, to: m, reason: 'resync', at: Date.now() }); }
+    catch { /* transport optional */ }
+  }
+
   /**
-   * Set the `listening` flag — user is mid-utterance. STUB seam: today nothing
-   * calls this with a real signal (the phone owns the mic and sends only finalized
-   * utterances). It exists so the gate is wired + unit-testable now; the real
-   * signal lands with the always-on-mic shift (perception-to-brain.md caveat).
+   * A finalized utterance ended at `endedAt`. Returns whether it's ADDRESSED (the
+   * caller then runs a turn). Folds in the old addressedLatch — "are we in an open
+   * listening window?" IS the decision.
    */
+  utteranceAddressed(endedAt: number, now = Date.now()): boolean {
+    return this.#conv.utteranceEnded(endedAt, now);
+  }
+
+  /** Back-compat shim for the console 2c surface + tests. */
   setListening(listening: boolean): void {
-    this.#listening = listening;
+    if (listening) this.#conv.tap(Date.now());
+    else this.#conv.reconcileConnected(Date.now());
   }
-  /** The stubbed listening flag (for the console's 2c test surface). */
-  isListening(): boolean {
-    return this.#listening;
-  }
+  isListening(): boolean { return this.#conv.isListening(Date.now()); }
 
   /** Pre-warm on streamed transcript partials: open/load the session and
    *  resolve the profile so the LLM call fires the instant the final lands. */
@@ -428,11 +482,41 @@ export class DockBrainSession {
    *  when the TTS tail drains after the loop closed — the end of the whole
    *  user-perceived turn). */
   noteSpeech(speaking: boolean): void {
-    // latch the `speaking` attention state so the thought gate defers behind our
-    // own TTS (state() reads #speaking; the drain re-checks after it drains).
-    this.#speaking = speaking;
+    // TTS start/end drives the conversation state machine: speaking → SPEAKING;
+    // end → FOLLOWUP (auto re-listen). The machine bounds SPEAKING (SPEAK_MAX_MS)
+    // so a lost end-frame can't wedge it, and reconcileConnected clears it on
+    // reconnect — the two real recoveries (no blind latch).
+    if (speaking) this.#conv.speakStart(Date.now());
+    else this.#conv.speakEnd(Date.now());
     this.#shipObsMarker(speaking ? 'SpeakStart' : 'SpeakEnd');
     if (!speaking && !this.#turnActive) this.#shipObsMarker('TurnSettled');
+  }
+
+  /** The phone (re)connected → reconcile the conversation state to idle. A fresh
+   *  phone has no in-flight speech/listening; this clears anything a lost frame
+   *  across a disconnect would otherwise have wedged (the stuck-speaking bug). */
+  notePhoneConnected(): void {
+    this.#conv.reconcileConnected(Date.now());
+  }
+
+  /** Emit a conversation transition on the obs stream (for tests + the phone
+   *  renderer) + a structured log line. */
+  #onConvTransition(t: ConvTransition): void {
+    this.#d.log?.(`[conv] ${this.dock} ${t.from}->${t.to} (${t.reason})`);
+    // a directed agent frame to the phone (the renderer reads it for face/beeps).
+    try { this.#sendToVoice('conversation', { from: t.from, to: t.to, reason: t.reason, at: t.at }); }
+    catch { /* transport optional in tests */ }
+    // Drive the tick only while in a TIMED mode (listening/followup/speaking), so
+    // a window/speak expiry fires its transition promptly (the phone gets beep-off
+    // / idle on time, not only at the next incoming event). Stop when idle/thinking
+    // (no pending expiry) — no idle timer.
+    const timed = t.to === 'listening' || t.to === 'followup' || t.to === 'speaking';
+    if (timed && !this.#convTick) {
+      this.#convTick = setInterval(() => this.#conv.tick(Date.now()), CONV_TICK_MS);
+      this.#convTick.unref?.();
+    } else if (!timed && this.#convTick) {
+      clearInterval(this.#convTick); this.#convTick = undefined;
+    }
   }
 
   /** Idle-close check (clock measured from last turn END — an active turn
@@ -485,6 +569,8 @@ export class DockBrainSession {
   endSession(reason: string): void {
     if (!this.#meta) return;
     if (this.#turnActive) this.cancel();
+    // session boundary → conversation back to idle (clears windows + the tick).
+    this.#conv.reconcileConnected(Date.now());
     const { sessionId } = this.#meta;
     const messages = this.#agent?.state.messages ?? this.#d.store.messages(this.dock, sessionId);
     // stop every task running under this conversation (the lifetime cascade, §5)
@@ -567,10 +653,14 @@ export class DockBrainSession {
   async #runTurn(req: TurnRequest): Promise<void> {
     const agent = this.#ensureSession();
 
+    // conversation: a turn is running → THINKING (closes any listening window).
+    this.#conv.turnStart(Date.now());
+
     // reset per-turn state
     this.#activeTurnId = req.turnId;
     this.#triggerText = req.trigger.text;
     this.#triggerKind = req.trigger.kind || 'user';
+    this.#stationOriginated = req.stationOriginated === true;
     this.#cancelled = false;
     this.#timedOut = false;
     this.#spokeThisTurn = false;
@@ -701,7 +791,9 @@ export class DockBrainSession {
     this.#sendToVoice('turn-status', {
       turnId: req.turnId,
       state: 'accepted',
-      ...(this.#triggerKind !== 'user' ? { autonomous: true } : {}),
+      // autonomous (phone must ADOPT) iff the phone didn't start it: any non-user
+      // trigger (task/self) OR a station-originated user turn (A1.2 addressed mic).
+      ...(this.#triggerKind !== 'user' || this.#stationOriginated ? { autonomous: true } : {}),
     });
 
     const timeoutMs = num(this.#d.config('brainTurnTimeoutMs'), 60_000);

@@ -98,6 +98,17 @@ export class SnapshotStore {
     for (const l of this.#listeners) { try { l(r); } catch { /* */ } }
   }
 
+  /** Patch a record's payload in place (e.g. the background STT upgrade replacing the
+   *  live Whisper text with a better diarized transcript). Re-notifies listeners. No-op
+   *  if the record already rolled off the ring. Returns whether it was found. */
+  update(rec: SnapshotRecord, patch: Partial<SnapshotRecord['payload']>): boolean {
+    const r = this.#recs.find((x) => x === rec);
+    if (!r) return false;
+    r.payload = { ...r.payload, ...patch };
+    for (const l of this.#listeners) { try { l(r); } catch { /* */ } }
+    return true;
+  }
+
   /** Vision processor stashes one representative frame per window (for the test). */
   addKeyframe(k: Keyframe): void {
     this.#keyframes.push(k);

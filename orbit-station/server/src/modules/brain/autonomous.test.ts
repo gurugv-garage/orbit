@@ -278,9 +278,9 @@ test('a self-thought DEFERS while the user is mid-utterance (listening), then ru
   assert.deepEqual(speakText(frames), ['Want a hand with that?']);
 });
 
-test('a self-thought DEFERS while TTS is playing (speaking), then runs', async () => {
+test('a self-thought DEFERS while TTS is playing (speaking) and through the follow-up window, then runs', async () => {
   const { session, frames } = makeSession([say('Good news for you.')]);
-  // robot is mid-speech (its own TTS) — noteSpeech latches the speaking state.
+  // robot is mid-speech (its own TTS) — noteSpeech drives the SPEAKING state.
   session.noteSpeech(true);
   assert.equal(session.state(), 'speaking');
   session.enqueueAutonomousTurn({
@@ -290,7 +290,16 @@ test('a self-thought DEFERS while TTS is playing (speaking), then runs', async (
   for (let i = 0; i < 8; i++) await tick();
   assert.deepEqual(speakText(frames), [], 'held while our own TTS plays');
 
-  session.noteSpeech(false); // TTS drained
+  // TTS drains → the dock enters the FOLLOWUP (auto re-listen) window, which reads
+  // as `listening` — a self-thought still defers behind it (the user might follow
+  // up). Once the follow-up window is over (reconcile = the simplest way to end it
+  // deterministically in a test), the deferred thought runs.
+  session.noteSpeech(false);
+  assert.equal(session.state(), 'listening', 'follow-up window after the reply');
+  for (let i = 0; i < 8; i++) await tick();
+  assert.deepEqual(speakText(frames), [], 'still held during the follow-up window');
+
+  session.notePhoneConnected(); // ends the follow-up window (→ idle)
   for (let i = 0; i < 50 && speakText(frames).length === 0; i++) await tick();
   assert.deepEqual(speakText(frames), ['Good news for you.']);
 });

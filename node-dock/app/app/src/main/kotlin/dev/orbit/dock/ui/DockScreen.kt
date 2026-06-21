@@ -169,6 +169,16 @@ fun DockScreen() {
                         val present = prim(inner, "present")?.content?.toBooleanStrictOrNull() ?: false
                         dev.orbit.dock.perception.PerceptionEvent.RemotePresence(present)
                     }
+                    // A1.2 (always-on-mic shift): STT now runs SERVER-SIDE, so the
+                    // user's transcript arrives here (not from a local recognizer).
+                    // Surface it in the subtitle band via the same Transcript event
+                    // the UI already renders. Server STT is utterance-final only.
+                    "transcript" -> {
+                        val text = prim(inner, "text")?.takeIf { it.isString }?.content ?: ""
+                        if (text.isNotBlank())
+                            dev.orbit.dock.perception.PerceptionEvent.Transcript(text, isFinal = true)
+                        else null
+                    }
                     // Reconnect snapshot: the whole DockWorldState is the payload
                     // (no inner wrapper). Re-ground identity + presence from it.
                     "snapshot" -> {
@@ -289,8 +299,16 @@ fun DockScreen() {
                     agent.respond(text)
                 }
             },
-            onWake = { botSubtitle = "" },
+            // A1.2: a tap (wake event) TOGGLES the dock "addressed" listening — the
+            // station owns the state machine and emits the conversation mode back.
+            onWake = { botSubtitle = ""; agent.addressed() },
             perception = perception,
+            // Report raw conversation events UP; the station decides + the phone
+            // renders the convMode it sends back (pure renderer).
+            sendVad = { agent.sendVad() },
+            sendFaceArrival = { agent.sendFaceArrival() },
+            sendFaceLeft = { agent.sendFaceLeft() },
+            convMode = agent.convMode,
         ).also { wiringRef.value = it }
     }
 
@@ -328,14 +346,10 @@ fun DockScreen() {
     // them. The dock still never sleeps (FLAG_KEEP_SCREEN_ON) — it just rests dark.
     IdleDimmer(controller = controller, idleAfterMs = 60_000L, dimBrightness = 0.03f)
 
-    // Stream STT transcripts (partials + finals) to the brain so it pre-warms
-    // the session while the user is still talking. Pre-warm only — the turn
-    // trigger stays onUserUtterance above.
-    LaunchedEffect(agent) {
-        PerceptionBus.events.collect { ev ->
-            if (ev is PerceptionEvent.Transcript) agent.noteTranscript(ev.text, ev.isFinal)
-        }
-    }
+    // (A1.2) The local STT pre-warm is GONE: with the always-on-mic shift, STT
+    // runs server-side and Transcript events now arrive FROM the station (rendered
+    // in the subtitle band via onPerceptionFrame). Forwarding them back up as
+    // pre-warm would loop, and the station already owns the transcript.
 
     // Pre-turn recollect: the moment STT arms (the user is about to speak,
     // facing the dock), capture a fresh still and fire one recognize-request.

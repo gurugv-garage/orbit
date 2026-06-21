@@ -81,6 +81,12 @@ export function PerceptionStudio() {
   const [micLevel, setMicLevel] = useState(0);
   const [resolution, setResolution] = useState<320 | 512>(512);
   const [snaps, setSnaps] = useState<Snapshot[]>([]);
+  // Which SOURCE the whole tab is scoped to (feed + summarize): 'all' = merged feed
+  // across every producer, or a specific dock/stream (e.g. 'anne-bot' = the phone,
+  // 'console-perception' = this browser's own cam/mic stream). The processors always
+  // run on EVERY live stream (perception-pipeline §1a) — this just focuses the view.
+  const [source, setSource] = useState<string>('all');
+  const [producers, setProducers] = useState<{ streamId: string; label: string; tracks: { audio: boolean; video: boolean } }[]>([]);
   const [showVision, setShowVision] = useState(true);
   const [showSpeech, setShowSpeech] = useState(true);
   const [showIdentity, setShowIdentity] = useState(true);
@@ -113,12 +119,24 @@ export function PerceptionStudio() {
   useEffect(() => {
     if (activeTake) return; // showing frozen data; don't clobber it
     let alive = true;
-    const load = () => api.get<Snapshot[]>('/perception/snapshots?limit=400')
+    const q = `limit=400${source !== 'all' ? `&dock=${encodeURIComponent(source)}` : ''}`;
+    const load = () => api.get<Snapshot[]>(`/perception/snapshots?${q}`)
       .then((r) => { if (alive) setSnaps(r); }).catch(() => {});
     load();
     const t = setInterval(load, 1500);
     return () => { alive = false; clearInterval(t); };
-  }, [activeTake]);
+  }, [activeTake, source]);
+
+  // Poll the live producers (the sources to choose from): every dock streaming +
+  // this console's own browser stream if started. (perception-pipeline §1a)
+  useEffect(() => {
+    let alive = true;
+    const load = () => api.get<{ producers?: { streamId: string; label: string; tracks: { audio: boolean; video: boolean } }[] }>('/media/status')
+      .then((r) => { if (alive) setProducers(r.producers ?? []); }).catch(() => {});
+    load();
+    const t = setInterval(load, 3000);
+    return () => { alive = false; clearInterval(t); };
+  }, []);
 
   // Poll sidecar health (every 4s — a /health ping each; cheap).
   useEffect(() => {
@@ -275,7 +293,7 @@ export function PerceptionStudio() {
         const to = istIso(0), from = istIso(sumWindow);
         setPinnedWindow({ from, to });
         r = await api.post<SummaryResult>('/perception/snapshots/summarize',
-          { fromIso: from, toIso: to, withKeyframes: sumKeyframes, maxKeyframes: 6, model: sumModel });
+          { fromIso: from, toIso: to, withKeyframes: sumKeyframes, maxKeyframes: 6, model: sumModel, dock: source });
       }
       setSumResult(r);
     } catch (e) { setSumResult({ summary: '', error: String(e), model: '', withKeyframes: false,
@@ -577,8 +595,29 @@ export function PerceptionStudio() {
 
       {/* OUTPUT: the single snapshot timeline (vision + speech, by start, IST) */}
       <div>
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
-          <div className="side-section-label">Snapshots ({filtered.length}) · ordered by start · IST</div>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8, flexWrap: 'wrap', gap: 8 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <div className="side-section-label">Snapshots ({filtered.length}) · by start · IST</div>
+            {/* SOURCE selector — scope the feed + summarize to one producer. Every
+                live dock + this console's own browser stream. Processors run on ALL
+                streams regardless (perception-pipeline §1a); this just focuses the view. */}
+            <select value={source} onChange={(e) => setSource(e.target.value)} title="Which source to view + summarize"
+              style={{ fontSize: 12, background: '#10141f', color: '#cfe', border: '1px solid #1c2233', borderRadius: 7, padding: '3px 6px' }}>
+              <option value="all">🌐 all sources</option>
+              {producers.map((p) => {
+                // The SFU rekeys streamId to the ephemeral WS id, so identify this
+                // console's own stream by its stable LABEL, not the streamId.
+                const isWeb = p.label === STREAM_ID;
+                return (
+                  <option key={p.streamId} value={p.label}>
+                    {isWeb ? '🖥 ' : '📱 '}{p.label}{isWeb ? ' (web)' : ''} {p.tracks.audio ? '🎙' : ''}{p.tracks.video ? '📹' : ''}
+                  </option>
+                );
+              })}
+            </select>
+            {source !== 'all' && producers.every((p) => p.label !== source) &&
+              <span style={{ fontSize: 11, color: '#ffc454' }} title="The selected source isn't producing right now">⚠ offline</span>}
+          </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 14, fontSize: 12, opacity: 0.85 }}>
             <label style={{ display: 'flex', alignItems: 'center', gap: 5, cursor: 'pointer' }}>
               <input type="checkbox" checked={showVision} onChange={(e) => setShowVision(e.target.checked)} /> 👁 vision
