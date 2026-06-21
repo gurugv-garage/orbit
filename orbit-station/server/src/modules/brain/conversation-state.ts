@@ -30,9 +30,14 @@ export const ConvCfg = {
    *  for a natural pause-then-follow-up; VAD activity extends it further. (Was 5s;
    *  felt rushed.) Tune via CONV_FOLLOWUP_MS. */
   FOLLOWUP_MS: Number(process.env.CONV_FOLLOWUP_MS ?? 8_000),
-  /** VAD activity during listening/followup pushes the window out this far. 6s (was 4s)
-   *  so a normal MID-SENTENCE PAUSE (you stop to think for a couple seconds, then keep
-   *  going) doesn't drain the window and cut you off before you finish. */
+  /** While VAD says you're TALKING, hold the window open this far out (re-pushed by the
+   *  phone's VAD keepalive every ~0.8s). Large = no ceiling: talk as long as you want;
+   *  only a vad-END (or a disconnect lapsing the keepalive) closes it. */
+  VAD_HOLD_MS: Number(process.env.CONV_VAD_HOLD_MS ?? 30_000),
+  /** After VAD says speech ENDED (a real ~1.5s silence on the phone), keep the window
+   *  this much longer before committing — a short endpoint tail. */
+  VAD_ENDPOINT_MS: Number(process.env.CONV_VAD_ENDPOINT_MS ?? 1_500),
+  /** (legacy) fixed per-VAD extend — kept for back-compat / tests. */
   VAD_EXTEND_MS: Number(process.env.CONV_VAD_EXTEND_MS ?? 6_000),
   /** Grace for the tap↔utterance ordering race: an utterance ending this long
    *  before `now` (while a window is open) still counts (finish, then tap). */
@@ -176,12 +181,23 @@ export class ConversationState {
     this.#set('followup', now, 'tts-end');
   }
 
-  /** VAD activity — extend an open listening/followup window so a slow speaker
-   *  isn't cut off. No-op if no window is open. */
-  vadActivity(now: number): void {
+  /** VAD edge — make the listening window FOLLOW voice activity (endpoint-based, not a
+   *  fixed timeout):
+   *   - active=true  → HOLD the window open with no ceiling while you're talking (push
+   *     expiry far out; re-pushed by the phone's keepalive). Talk as long as you like.
+   *   - active=false → a real END of speech (the phone only sends this after ~1.5s
+   *     sustained silence): release to a short ENDPOINT so the utterance commits soon.
+   *  No-op if no window is open. Back-compat: a call with no arg = active (old phones). */
+  vadActivity(now: number, active = true): void {
     this.#prune(now);
-    if (this.#mode === 'listening' || this.#mode === 'followup') {
-      this.#setWindow(Math.max(this.#windowUntil, now + ConvCfg.VAD_EXTEND_MS));
+    if (this.#mode !== 'listening' && this.#mode !== 'followup') return;
+    if (active) {
+      // hold open — far enough out that only a vad-end (or the keepalive lapsing on a
+      // disconnect) closes it. VAD_EXTEND_MS is the keepalive cadence's safety margin.
+      this.#setWindow(Math.max(this.#windowUntil, now + ConvCfg.VAD_HOLD_MS));
+    } else {
+      // speech ended → close soon (short endpoint), unless something later re-extends.
+      this.#setWindow(now + ConvCfg.VAD_ENDPOINT_MS);
     }
   }
 

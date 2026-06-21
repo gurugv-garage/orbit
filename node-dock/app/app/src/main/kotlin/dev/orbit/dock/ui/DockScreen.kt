@@ -305,7 +305,7 @@ fun DockScreen() {
             perception = perception,
             // Report raw conversation events UP; the station decides + the phone
             // renders the convMode it sends back (pure renderer).
-            sendVad = { agent.sendVad() },
+            sendVad = { active -> agent.sendVad(active) },
             sendFaceArrival = { agent.sendFaceArrival() },
             sendFaceLeft = { agent.sendFaceLeft() },
             convMode = agent.convMode,

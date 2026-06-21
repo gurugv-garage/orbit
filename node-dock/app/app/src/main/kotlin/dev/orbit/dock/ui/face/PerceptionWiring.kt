@@ -36,7 +36,7 @@ class PerceptionWiring(
     // ── conversation: the STATION owns the state machine; the phone REPORTS raw
     // events up and RENDERS the mode it sends back. These are the report-up hooks
     // (wired to RemoteBrain.sendVad/sendFaceArrival/sendFaceLeft in DockScreen).
-    private val sendVad: () -> Unit = {},
+    private val sendVad: (active: Boolean) -> Unit = {},
     private val sendFaceArrival: () -> Unit = {},
     private val sendFaceLeft: () -> Unit = {},
     /** The station's conversation mode flow (idle/listening/thinking/speaking/
@@ -107,9 +107,11 @@ class PerceptionWiring(
                     }
                     is PerceptionEvent.VoiceActivity -> {
                         controller.userVoice(event.active)
-                        // Report VAD up — the station extends an open listening/
-                        // followup window so a slow speaker isn't cut off.
-                        if (event.active) sendVad()
+                        // Report BOTH VAD edges up: active=true HOLDS the listening window
+                        // open (no ceiling while you talk), active=false (a real ~1.5s
+                        // silence end) RELEASES it to a short endpoint. The station's window
+                        // follows VAD instead of a fixed timeout — talk as long as you like.
+                        sendVad(event.active)
                     }
                     is PerceptionEvent.SttListening -> {
                         // legacy local-STT signal; the station owns listening now.

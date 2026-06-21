@@ -191,9 +191,10 @@ class RemoteBrain(
     // ── raw conversation events → the station (it owns the state machine) ──────
     // The phone is a pure sensor here: report what happened; the station decides.
 
-    /** Voice activity detected — extends an open listening/followup window. */
-    fun sendVad() {
-        if (isConfigured) link.publish("agent", "vad", buildJsonObject {})
+    /** Voice activity edge — active=true HOLDS the listening window open (no ceiling
+     *  while talking); active=false (a real silence end) releases it to a short endpoint. */
+    fun sendVad(active: Boolean) {
+        if (isConfigured) link.publish("agent", "vad", buildJsonObject { put("active", active) })
     }
 
     /** A new face arrived in view (low-priority listen request). */

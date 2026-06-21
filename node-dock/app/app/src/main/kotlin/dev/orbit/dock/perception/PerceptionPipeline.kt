@@ -210,7 +210,12 @@ class PerceptionPipeline(private val appContext: Context) {
         } else if (p < 0.02f) {
             belowCount++
             aboveCount = 0
-            if (vadActive && belowCount >= 10) {
+            // VAD goes inactive only after SUSTAINED silence (a real end of speech),
+            // not a brief word-gap. ENDPOINT_SILENCE_FRAMES × 32ms ≈ 1.5s. This is what
+            // lets the station treat "talking" as continuous through normal pauses, so
+            // the listening window can stay open with NO ceiling while you speak, and
+            // close only when you actually stop. (Was 10 frames ≈ 320ms — too eager.)
+            if (vadActive && belowCount >= ENDPOINT_SILENCE_FRAMES) {
                 vadActive = false
                 PerceptionBus.emit(PerceptionEvent.VoiceActivity(false, p))
             }
@@ -240,5 +245,9 @@ class PerceptionPipeline(private val appContext: Context) {
         // high while speaking — a 2s interval drifted the window down toward expiry on
         // quieter speech; 800ms keeps it pinned near the top.
         const val VAD_KEEPALIVE_MS = 800L
+        // Frames of silence (×32ms @ 16kHz/512) before VAD declares speech ENDED. ~1.5s
+        // — long enough that normal mid-sentence pauses don't end the utterance, so the
+        // station can keep listening with no ceiling while you talk.
+        const val ENDPOINT_SILENCE_FRAMES = 47
     }
 }

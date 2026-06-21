@@ -301,7 +301,7 @@ export class DockBrainSession {
   }
 
   /** VAD activity from the phone — extends an open listening/followup window. */
-  vadActivity(now = Date.now()): void { this.#conv.vadActivity(now); }
+  vadActivity(active = true, now = Date.now()): void { this.#conv.vadActivity(now, active); }
 
   /** A new face arrived in the dock's camera (low-priority listen). */
   faceArrival(now = Date.now()): void { this.#conv.faceArrival(now); }

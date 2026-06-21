@@ -28,16 +28,23 @@ describe('ConversationState — A: basic addressed turn', () => {
     assert.deepEqual(seq(), ['idle->listening', 'listening->thinking', 'thinking->speaking', 'speaking->followup']);
   });
 
-  it('A1b: VAD activity extends the listening window past the original LISTEN_MS', () => {
+  // VAD now FOLLOWS speech (endpoint-based): active HOLDS the window open with no
+  // ceiling; an explicit vad-END releases it to a short endpoint.
+  it('A1b: VAD active holds the window open with no ceiling (talk as long as you like)', () => {
     const { cs } = make();
+    const HOLD = ConvCfg.VAD_HOLD_MS;
+    const EP = ConvCfg.VAD_ENDPOINT_MS;
     cs.tap(0);
-    // VAD late in the window (when VAD_EXTEND pushes BEYOND what's left) extends it.
-    cs.vadActivity(L - 100);
-    assert.equal(cs.msToExpiry(L - 100), V, 'window now lives VAD_EXTEND_MS from the VAD tick');
-    // so it survives past the original LISTEN_MS.
-    assert.equal(cs.mode(L + 100), 'listening', 'kept alive by VAD past LISTEN_MS');
-    // ...and still expires VAD_EXTEND_MS after the last VAD.
-    assert.equal(cs.mode(L - 100 + V), 'idle');
+    cs.vadActivity(L - 100, true);                    // still talking late in the window
+    assert.equal(cs.msToExpiry(L - 100), HOLD, 'held open VAD_HOLD_MS from the VAD tick');
+    assert.equal(cs.mode(L + 5_000), 'listening', 'still listening well past LISTEN_MS');
+    // keep re-asserting active (the phone keepalive) → stays open far beyond any fixed timeout
+    cs.vadActivity(L + 5_000, true);
+    assert.equal(cs.mode(L + 9_000), 'listening', 'no ceiling while talking');
+    // a vad-END → closes after the short endpoint, not the full hold.
+    cs.vadActivity(L + 9_000, false);
+    assert.equal(cs.mode(L + 9_000 + EP - 1), 'listening', 'endpoint tail');
+    assert.equal(cs.mode(L + 9_000 + EP), 'idle', 'closes shortly after speech ends');
   });
 
   // A2 — tap, no speech → idle after LISTEN_MS.

@@ -285,9 +285,10 @@ export function brainModule(w: BrainWiring): StationModule {
             session(dock).tap();
             break;
           case 'vad':
-            // VAD activity from the phone — extends an open listening/followup
-            // window so a slow speaker isn't cut off mid-sentence.
-            session(dock).vadActivity();
+            // VAD edge from the phone — active=true HOLDS the window open (no ceiling
+            // while talking), active=false (a real silence end) releases to a short
+            // endpoint. Default true for old phones that only sent on speech onset.
+            session(dock).vadActivity(p?.active !== false);
             break;
           case 'face-arrival': {
             // a NEW face in view → low-priority listen (station decides; yields to
