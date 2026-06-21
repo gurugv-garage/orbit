@@ -223,6 +223,10 @@ export function brainModule(w: BrainWiring): StationModule {
         // is still kept (tagged) upstream; we just don't act on it. Shaky still runs —
         // a quiet "yes"/"ok" you addressed should work.
         if (t.confTier === 'garbage') return;
+        // CONTENT-FREE backstop: a transcript with no real words ("!", ".", "?!") must
+        // never run a turn even if it slips the upstream filter (observed: a lone "!"
+        // → the dock replied). <2 alphanumerics = no words.
+        if (t.text.replace(/[^a-z0-9]/gi, '').length < 2) return;
         if (!session(t.dockId).utteranceAddressed(t.endedAt, Date.now(), t.startedAt)) return;
         void session(t.dockId).handleTurnRequest({
           turnId: `addr-${randomUUID()}`,

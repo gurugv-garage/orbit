@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { UtteranceDetector, isHallucination, isLowConfBackchannel } from './stt-watch.js';
+import { UtteranceDetector, isHallucination, isLowConfBackchannel, hasNoWords } from './stt-watch.js';
 
 // Mirrors the detector's own constants. FRAME_MS=30 @ 16 kHz → 480 samples/frame.
 // ENDPOINT_MS=1300 → ~44 silent frames commit. MIN_UTTERANCE_MS=180 → ≥6 voiced
@@ -84,4 +84,16 @@ test('short backchannels are gated on confidence, not dropped outright', () => {
   assert.equal(isLowConfBackchannel('yes', false), false);
   // real content is never a backchannel, regardless of confidence
   assert.equal(isLowConfBackchannel('yes please send it', true), false);
+});
+
+// CONTENT-FREE transcripts ("!", ".", "") must never become a turn (observed live:
+// a lone "!" → the dock replied "Is there something you'd like to tell me?").
+test('punctuation-only / empty transcripts have no words (blocked from a turn)', () => {
+  for (const p of ['!', '.', '?!', '...', '  ', '', '-']) {
+    assert.equal(hasNoWords(p), true, `"${p}" must be treated as wordless`);
+  }
+  // a real (even short) utterance is NOT wordless
+  for (const p of ['hi', 'ok', 'yes', 'no', 'go', 'tell me a story']) {
+    assert.equal(hasNoWords(p), false, `"${p}" must pass as real words`);
+  }
 });

@@ -92,6 +92,16 @@ function isBeepArtifact(text: string): boolean {
   return norm.split(' ').every((w) => w === 'beep');
 }
 
+/** A transcript with no actual WORDS — pure punctuation / whitespace / a stray token
+ *  like "!", ".", "?!". Whisper emits these on a brief unvoiced blip. They carry zero
+ *  content, so they must NEVER become an agent turn (observed: a lone "!" → the dock
+ *  replied "Is there something you'd like to tell me?"). Kept as a snapshot upstream;
+ *  just never addressed. Threshold <2 alphanumerics (so "!" / "." / "" are out, but a
+ *  real one-letter token like "I" / a quiet "ok" still passes via the word filters). */
+export function hasNoWords(text: string): boolean {
+  return text.replace(/[^a-z0-9]/gi, '').length < 2;
+}
+
 export function isHallucination(text: string): boolean {
   const norm = text.toLowerCase().replace(/\s+/g, ' ').trim();
   if (HALLUCINATION_PHRASES.has(norm.replace(/[.!]+$/, ''))) return true;
@@ -436,7 +446,7 @@ export function sttWatchProcessor(
         // may become an agent turn — otherwise the dock answers things no one said
         // (the "Thank you" → "You're very welcome!" phantom reply).
         if (!isBeepArtifact(tr.text) && !isHallucination(tr.text)
-            && !isLowConfBackchannel(tr.text, lowConfidence)) {
+            && !isLowConfBackchannel(tr.text, lowConfidence) && !hasNoWords(tr.text)) {
           onFinal?.({
             dockId: ctx.dockId, streamId: ctx.streamId, text: tr.text,
             startedAt: startedAt.getTime(), endedAt: endedAt.getTime(), lowConfidence, confTier: tier,
