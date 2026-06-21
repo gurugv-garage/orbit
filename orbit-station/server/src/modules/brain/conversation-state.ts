@@ -266,17 +266,16 @@ export class ConversationState {
       // A face-presence window that times out also starts the anti-flap cooldown,
       // so a face still lingering in frame doesn't immediately re-open it.
       if (this.#windowSrc === 'face') this.#faceCooldownUntil = now + ConvCfg.FACE_COOLDOWN_MS;
+      // CLAMP the long-utterance grace to the window's ACTUAL EXPIRY (#windowUntil),
+      // NOT `now`. #prune runs lazily — usually inside utteranceEnded() at the new
+      // utterance's `now`, which can be many seconds after the window really expired.
+      // Clamping to `now` therefore left the grace covering speech spoken long after
+      // the window closed (the bug: trace showed mode=idle msToExpiry=0, yet a fresh
+      // "Can you hear this?" — startedAt ~2s before now — still passed startedWhileOpen
+      // because we'd just set #lastWindowUntil=now). Pin to the real expiry instead, so
+      // only an utterance that was ending AS the window closed keeps the GRACE tail.
+      this.#lastWindowUntil = this.#windowUntil;
       this.#windowUntil = 0;
-      // CLAMP the long-utterance grace to the ACTUAL close. #lastWindowUntil is
-      // monotonic (#setWindow only Math.max'es it) and a VAD hold pushes it up to
-      // VAD_HOLD_MS (30s) into the future. When the window TIMES OUT (the UI flips to
-      // "watching"/idle) without an utterance being consumed, a stale far-future
-      // #lastWindowUntil left utteranceEnded()'s `startedWhileOpen` true for ~30s — so
-      // speech said AFTER the indicator went off was still treated as addressed and
-      // got a reply (observed: "listening→watching, then it still answered"). Pin to
-      // `now` so only an utterance ending right as the window closed keeps the GRACE
-      // tail; anything later is correctly overheard.
-      this.#lastWindowUntil = now;
       this.#set('idle', now, 'window-timeout');
     }
   }

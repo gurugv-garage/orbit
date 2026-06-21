@@ -124,6 +124,29 @@ describe('ConversationState — A: basic addressed turn', () => {
       'speech 20s later, after the window expired → not addressed');
   });
 
+  // A1g — THE EXACT LIVE TRACE: a followup window (after a reply) is VAD-held, then
+  // NOTHING prunes until the next utterance arrives (#prune runs lazily). The window
+  // really expired at #windowUntil, but prune doesn't run until the utterance's `now`,
+  // many seconds later. Clamping the grace to `now` (the bug) left this addressed;
+  // clamping to the real expiry (#windowUntil) correctly drops it. No mode() read
+  // before the utterance — that's what makes prune lazy, mirroring production.
+  it('A1g: lazy-prune — speech long after a held followup expired is NOT addressed', () => {
+    const { cs } = make();
+    const HOLD = ConvCfg.VAD_HOLD_MS;
+    cs.tap(0);
+    assert.equal(cs.utteranceEnded(100, 200), true);   // a turn → consume
+    cs.speakStart(300);
+    cs.speakEnd(400);                                   // reply done → followup window opens
+    cs.vadActivity(500, true);                          // VAD hold → lastWindowUntil ≈ 500+HOLD
+    cs.vadActivity(600, false);                         // speech ended → endpoint (short)
+    // NO prune here. The endpoint window expires ~600+VAD_ENDPOINT_MS, but nothing reads
+    // state until the utterance below at t≈HOLD (e.g. 30s later) — prune fires THEN.
+    const t = HOLD; // ~30s later, well past the real expiry
+    assert.equal(cs.utteranceEnded(t, t, t - 2000), false,
+      'overheard speech 30s after the followup window expired → NOT addressed');
+    assert.notEqual(cs.mode(t), 'thinking', 'sanity: the turn was not run');
+  });
+
   // A4 — tap before the sentence ends (started before tap, ends after) → addressed.
   it('A4: tap before the sentence ends → addressed', () => {
     const { cs } = make();

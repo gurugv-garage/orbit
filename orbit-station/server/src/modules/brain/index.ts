@@ -70,6 +70,10 @@ export function brainModule(w: BrainWiring): StationModule {
   // Per-dock wall-clock of the last face-presence arrival, for the long-absence
   // proactive greeting (GREET_ABSENCE_MS). Only a gap longer than that greets.
   const lastFaceArrival = new Map<string, number>();
+  // TEMP DIAGNOSTIC: ring of recent addressed-utterance decisions (GET /:dock/debug/addressed).
+  // Captures text + the mode/window at decision time + the decision, so a live repro of
+  // "replied after listening went off" shows EXACTLY which gate let it through.
+  const addrTrace: Array<Record<string, unknown>> = [];
   // Set in init(): simulate a tapped addressed utterance (debug self-test seam).
   let injectAddressed: (dock: string, text: string) => void = () => {};
   const tasksRoot = defaultTasksRoot();
@@ -214,20 +218,29 @@ export function brainModule(w: BrainWiring): StationModule {
       // separate latch Map. Overheard utterances are ignored here (still transcribed
       // upstream; the attention gate may act on them later).
       const onAddressedFinal = (t: { dockId: string; text: string; startedAt: number; endedAt: number; confTier?: string }) => {
+        // snapshot the conversation state BEFORE any decision consumes the window.
+        const pre = session(t.dockId).conversation();
+        const trace = (decision: string) => {
+          addrTrace.push({ at: Date.now(), dock: t.dockId, text: t.text, tier: t.confTier ?? '?',
+            decision, mode: pre.mode, windowUntil: pre.windowUntil, msToExpiry: pre.msToExpiry,
+            startedAt: t.startedAt, endedAt: t.endedAt });
+          if (addrTrace.length > 50) addrTrace.shift();
+        };
         // RECORDING MODE: while this dock is being recorded for the capture harness,
         // the dock must NOT respond (we want clean ambient perception). The mic/cam
         // keep capturing + transcribing upstream; we just don't turn it into a reply.
-        if (isRecording(t.dockId)) return;
+        if (isRecording(t.dockId)) { trace('skip:recording'); return; }
         // GARBAGE STT: a far-field-mush / repetition-loop transcript must not become a
         // confident agent turn (we'd reply to words that were never said). The snapshot
         // is still kept (tagged) upstream; we just don't act on it. Shaky still runs —
         // a quiet "yes"/"ok" you addressed should work.
-        if (t.confTier === 'garbage') return;
+        if (t.confTier === 'garbage') { trace('skip:garbage'); return; }
         // CONTENT-FREE backstop: a transcript with no real words ("!", ".", "?!") must
         // never run a turn even if it slips the upstream filter (observed: a lone "!"
         // → the dock replied). <2 alphanumerics = no words.
-        if (t.text.replace(/[^a-z0-9]/gi, '').length < 2) return;
-        if (!session(t.dockId).utteranceAddressed(t.endedAt, Date.now(), t.startedAt)) return;
+        if (t.text.replace(/[^a-z0-9]/gi, '').length < 2) { trace('skip:no-words'); return; }
+        if (!session(t.dockId).utteranceAddressed(t.endedAt, Date.now(), t.startedAt)) { trace('skip:not-addressed'); return; }
+        trace('RAN-TURN');
         void session(t.dockId).handleTurnRequest({
           turnId: `addr-${randomUUID()}`,
           trigger: { kind: 'user', text: t.text },
@@ -452,6 +465,13 @@ export function brainModule(w: BrainWiring): StationModule {
       const cm = subPath.match(/^\/([^/]+)\/conversation$/);
       if (cm && req.method === 'GET') {
         json(res, 200, session(decodeURIComponent(cm[1]!)).conversation());
+        return true;
+      }
+      // TEMP DIAGNOSTIC: GET /:dock/debug/addressed — recent addressed-decisions ring.
+      const am = subPath.match(/^\/([^/]+)\/debug\/addressed$/);
+      if (am && req.method === 'GET') {
+        const dock = decodeURIComponent(am[1]!);
+        json(res, 200, addrTrace.filter((e) => e.dock === dock));
         return true;
       }
       let m = subPath.match(/^\/([^/]+)\/sessions$/);
