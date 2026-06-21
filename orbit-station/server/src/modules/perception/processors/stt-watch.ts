@@ -345,7 +345,7 @@ export function sttWatchProcessor(
    *  better DIARIZED transcript (online, e.g. Gemini flash-lite) to replace the live
    *  Whisper text in the snapshot. Async + best-effort — the live path never waits on
    *  it. Undefined = local-Whisper-only (the default). */
-  backgroundStt?: (pcm: Int16Array, sampleRate: number) => Promise<{ text: string; speaker?: number } | null>,
+  backgroundStt?: (pcm: Int16Array, sampleRate: number, dockId: string) => Promise<{ text: string; speaker?: number } | null>,
 ): StreamProcessor & {
   /** Force-commit any in-progress utterance on EVERY stream now, awaiting the
    *  transcription. Used by the Summarize flush so a mid-sentence is captured. */
@@ -390,7 +390,7 @@ export function sttWatchProcessor(
         // utterance with the better diarized model and PATCH the snapshot in place.
         // Best-effort — never blocks the live addressed-turn path below.
         if (backgroundStt) {
-          void backgroundStt(pcm, SAMPLE_RATE).then((up) => {
+          void backgroundStt(pcm, SAMPLE_RATE, ctx.dockId).then((up) => {
             if (up?.text) {
               store.update(rec, {
                 text: up.text,

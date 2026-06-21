@@ -27,6 +27,7 @@ const PROMPT =
   + 'Return STRICT JSON: {"text":"<the cleaned transcript with the speaker prefixes>",'
   + '"speaker":<the dominant speaker number as an integer, or 0>}. '
   + 'Example: {"text":"S0: What are you making? S1: A cake.","speaker":0}. '
+  + 'Do NOT include timestamps, times, or any "00:01"-style markers in the text. '
   + 'Do NOT invent words for unintelligible audio — return "" if you cannot make it out. JSON only.';
 
 /** Build a minimal WAV (16-bit mono) around PCM-16 samples for the audio payload. */
@@ -44,20 +45,25 @@ function wav(pcm: Int16Array, rate: number): Buffer {
 
 /**
  * Re-transcribe one utterance's PCM with the background model. `model` is a Gemini
- * model id (e.g. 'gemini-2.5-flash-lite'). Returns null on any failure (the caller
- * keeps the Whisper snapshot) — background STT must never break the live path.
+ * model id (e.g. 'gemini-2.5-flash-lite'). `context` (optional) is recent-discussion
+ * grounding — the rolling summary + who's present — which Gemini uses to disambiguate
+ * names, topic, and homophones (context-aware transcription). Returns null on any
+ * failure (the caller keeps the Whisper snapshot) — bg STT must never break live.
  */
 export async function backgroundTranscribe(
-  pcm: Int16Array, sampleRate: number, model: string,
+  pcm: Int16Array, sampleRate: number, model: string, context?: string,
 ): Promise<BgTranscript | null> {
   const key = geminiKey();
   if (!key) return null;
   const b64 = wav(pcm, sampleRate).toString('base64');
+  const ctxBlock = context?.trim()
+    ? `Context (the ongoing situation — use it to get names/terms right, do NOT transcribe it):\n${context.trim()}\n\n`
+    : '';
   try {
     const r = await fetch(`${GEMINI_BASE}/${model}:generateContent?key=${key}`, {
       method: 'POST', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
-        contents: [{ parts: [{ text: PROMPT }, { inline_data: { mime_type: 'audio/wav', data: b64 } }] }],
+        contents: [{ parts: [{ text: ctxBlock + PROMPT }, { inline_data: { mime_type: 'audio/wav', data: b64 } }] }],
         generationConfig: { responseMimeType: 'application/json', temperature: 0.1, maxOutputTokens: 1024 },
       }),
       signal: AbortSignal.timeout(30_000),

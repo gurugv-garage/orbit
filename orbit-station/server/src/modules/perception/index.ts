@@ -308,8 +308,25 @@ export function perceptionModule(getHub: () => ProcessingHub): StationModule {
   // diarized transcript for recall. The live addressed-turn path stays local Whisper.
   // Off by default (env unset) → local-Whisper-only, exactly as before.
   const bgSttModel = process.env.PERCEPTION_BG_STT_MODEL;
+  // CONTEXT-AWARE: assemble the recent-discussion context for a dock (rolling summary
+  // + who's present) so Gemini disambiguates names/topic/homophones. Cheap (a few
+  // hundred chars; audio dominates the cost).
+  const bgContext = (dockId: string): string => {
+    const parts: string[] = [];
+    const sum = lastSummary.get(dockId)?.text;
+    if (sum) parts.push(`Recent: ${sum.slice(0, 600)}`);
+    const names = [...new Set(
+      snapshots.list().filter((r) => r.dockId === dockId && r.source.kind === 'identity')
+        .slice(-8)
+        .flatMap((r) => ((r.payload.faces as Array<{ name?: string | null }> | undefined) ?? [])
+          .map((f) => f.name).filter((n): n is string => !!n)),
+    )];
+    if (names.length) parts.push(`People present: ${names.join(', ')}.`);
+    return parts.join('\n');
+  };
   const bgStt = bgSttModel
-    ? (pcm: Int16Array, rate: number) => backgroundTranscribe(pcm, rate, bgSttModel)
+    ? (pcm: Int16Array, rate: number, dockId: string) =>
+        backgroundTranscribe(pcm, rate, bgSttModel, bgContext(dockId))
     : undefined;
   const stt = sttWatchProcessor(
     snapshots,
