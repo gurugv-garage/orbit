@@ -49,6 +49,7 @@ class PerceptionPipeline(private val appContext: Context) {
     private var vadActive = false
     private var aboveCount = 0
     private var belowCount = 0
+    private var lastVadEmitMs = 0L  // last time we sent a VAD-active (for the keepalive)
     private var frameIndex = 0
 
     // True while the dock is speaking (TTS). When the (echo-cancelled) VAD goes
@@ -195,6 +196,15 @@ class PerceptionPipeline(private val appContext: Context) {
             belowCount = 0
             if (!vadActive && aboveCount >= 3) {
                 vadActive = true
+                lastVadEmitMs = System.currentTimeMillis()
+                PerceptionBus.emit(PerceptionEvent.VoiceActivity(true, p))
+            } else if (vadActive && System.currentTimeMillis() - lastVadEmitMs >= VAD_KEEPALIVE_MS) {
+                // KEEPALIVE: re-emit VAD active periodically WHILE the user keeps talking,
+                // so the station keeps extending the listening window (it extends by
+                // VAD_EXTEND_MS per event). Without this, one onset event lets the window
+                // expire mid-sentence — the listening indicator turns off while you're
+                // still speaking. Re-firing every VAD_KEEPALIVE_MS keeps it alive.
+                lastVadEmitMs = System.currentTimeMillis()
                 PerceptionBus.emit(PerceptionEvent.VoiceActivity(true, p))
             }
         } else if (p < 0.02f) {
@@ -224,5 +234,9 @@ class PerceptionPipeline(private val appContext: Context) {
         const val BARGE_GRACE_MS = 400L     // ignore barge-in this long after TTS start
         const val BARGE_VAD_THRESH = 0.6f   // prob must exceed this (well above residual)
         const val BARGE_VAD_FRAMES = 5      // sustained ~150 ms (vs brief residual spikes)
+        // Re-emit VAD-active every this-many ms WHILE the user keeps talking, so the
+        // station's listening window (extended VAD_EXTEND_MS=4s per event) never lapses
+        // mid-sentence. 2s < 4s, so the window stays continuously open while speaking.
+        const val VAD_KEEPALIVE_MS = 2_000L
     }
 }
