@@ -15,14 +15,30 @@
 import { spawn } from 'node:child_process';
 
 /** Downsample a WAV to 16 kHz mono (much smaller upload; online STT wants 16k anyway).
+ *  Optionally extract a [start, start+dur] window (seconds) for chunked processing.
  *  Returns the converted bytes via ffmpeg → stdout. */
-async function to16kMonoWav(path: string): Promise<Buffer> {
+async function to16kMonoWav(path: string, startSec?: number, durSec?: number): Promise<Buffer> {
+  const args = ['-loglevel', 'error'];
+  if (startSec != null) args.push('-ss', String(startSec));
+  if (durSec != null) args.push('-t', String(durSec));
+  args.push('-i', path, '-ar', '16000', '-ac', '1', '-f', 'wav', 'pipe:1');
   return await new Promise((resolve, reject) => {
-    const ff = spawn('ffmpeg', ['-loglevel', 'error', '-i', path, '-ar', '16000', '-ac', '1', '-f', 'wav', 'pipe:1']);
+    const ff = spawn('ffmpeg', args);
     const chunks: Buffer[] = [];
     ff.stdout.on('data', (c) => chunks.push(c as Buffer));
     ff.on('error', reject);
     ff.on('exit', (code) => code === 0 ? resolve(Buffer.concat(chunks)) : reject(new Error(`ffmpeg exit ${code}`)));
+  });
+}
+
+/** Audio duration in seconds via ffprobe. */
+async function durationSec(path: string): Promise<number> {
+  return await new Promise((resolve) => {
+    const ff = spawn('ffprobe', ['-v', 'error', '-show_entries', 'format=duration', '-of', 'default=nw=1:nk=1', path]);
+    let out = '';
+    ff.stdout.on('data', (c) => { out += c; });
+    ff.on('error', () => resolve(0));
+    ff.on('exit', () => resolve(parseFloat(out.trim()) || 0));
   });
 }
 
@@ -90,36 +106,46 @@ function parseSegmentsLoose(txt: string): Array<{ start: number; end: number; sp
 }
 
 // ── Gemini-audio (transcribe directly + speaker labels via prompt) ──────────────
+// CHUNKED: split the audio into ~CHUNK_SEC windows and transcribe each. Long audio in
+// one call makes Gemini tail into a repetition-loop hallucination (blank "S2:" segments)
+// AND blows up output tokens (→ ~10× the cost). Chunks keep each call short, accurate,
+// and cheap; we offset each chunk's segment times back to absolute.
+const CHUNK_SEC = Number(process.env.CAPTURE_GEMINI_CHUNK_SEC ?? 90);
+
+const GEMINI_PROMPT =
+  'Transcribe this audio of a real multi-speaker conversation as accurately as you can. '
+  + 'Diarize: label speakers as 0,1,2,… Return STRICT JSON: '
+  + '{"segments":[{"start":<sec>,"end":<sec>,"speaker":<int>,"text":"…"}]}. '
+  + 'start/end are seconds from the START OF THIS CLIP. Split into natural utterance '
+  + 'segments. Do not invent words for unintelligible parts — omit them. JSON only.';
+
 async function geminiAudio(audioPath: string): Promise<OnlineResult> {
   const key = process.env.GEMINI_API_KEY_PAID_ACC || process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
   if (!key) throw new Error('no GEMINI_API_KEY');
   const model = process.env.CAPTURE_GEMINI_AUDIO_MODEL ?? 'gemini-2.5-flash';
-  const wav = await to16kMonoWav(audioPath); // 16k mono — smaller inline payload
-  const b64 = wav.toString('base64');
-  const prompt =
-    'Transcribe this audio of a real multi-speaker conversation as accurately as you can. '
-    + 'Diarize: label speakers as 0,1,2,… Return STRICT JSON: '
-    + '{"segments":[{"start":<sec>,"end":<sec>,"speaker":<int>,"text":"…"}]}. '
-    + 'start/end are seconds from the beginning of the audio. Split into natural utterance '
-    + 'segments. Do not invent words for unintelligible parts — omit them. JSON only.';
-  const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${key}`, {
-    method: 'POST', headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({
-      contents: [{ parts: [{ text: prompt }, { inline_data: { mime_type: 'audio/wav', data: b64 } }] }],
-      generationConfig: { responseMimeType: 'application/json', temperature: 0.1, maxOutputTokens: 65536 },
-    }),
-    signal: AbortSignal.timeout(300_000), // long audio → Gemini can take minutes
-  });
-  if (!r.ok) throw new Error(`gemini-audio ${r.status}: ${(await r.text()).slice(0, 200)}`);
-  const data = await r.json() as { candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }> };
-  const txt = data?.candidates?.[0]?.content?.parts?.[0]?.text ?? '{}';
-  const segs = parseSegmentsLoose(txt);
-  return {
-    model: `gemini-audio (${model})`,
-    // Drop empty-text segments — Gemini can tail into a repetition loop of blank
-    // "S2:" segments after the real content ends; those aren't speech.
-    segments: segs
-      .map((s) => ({ start: s.start, end: s.end, text: (s.text ?? '').trim(), speaker: s.speaker }))
-      .filter((s) => s.text.length > 0),
-  };
+  const total = await durationSec(audioPath);
+  const out: OnlineSeg[] = [];
+
+  for (let off = 0; off < (total || CHUNK_SEC); off += CHUNK_SEC) {
+    const wav = await to16kMonoWav(audioPath, off, CHUNK_SEC);
+    const b64 = wav.toString('base64');
+    const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${key}`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        contents: [{ parts: [{ text: GEMINI_PROMPT }, { inline_data: { mime_type: 'audio/wav', data: b64 } }] }],
+        generationConfig: { responseMimeType: 'application/json', temperature: 0.1, maxOutputTokens: 8192 },
+      }),
+      signal: AbortSignal.timeout(120_000),
+    });
+    if (!r.ok) throw new Error(`gemini-audio ${r.status}: ${(await r.text()).slice(0, 200)}`);
+    const data = await r.json() as { candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }> };
+    const txt = data?.candidates?.[0]?.content?.parts?.[0]?.text ?? '{}';
+    for (const s of parseSegmentsLoose(txt)) {
+      const text = (s.text ?? '').trim();
+      if (!text) continue; // drop empty (loop residue)
+      out.push({ start: off + (s.start ?? 0), end: off + (s.end ?? s.start ?? 0), text, speaker: s.speaker });
+    }
+    if (!total) break; // unknown duration → single chunk
+  }
+  return { model: `gemini-audio (${model})`, segments: out };
 }
