@@ -101,6 +101,12 @@ import { classifyDistance, TENTATIVE_THRESHOLD } from './face/gallery.js';
 // Gallery persists next to the server's data (alongside the db). One file.
 const GALLERY_PATH = fileURLToPath(new URL('../../../data/face-gallery.json', import.meta.url));
 
+// recollect_face frame sampling: how many of the grabber's latest frames to try
+// before declaring "no one", and the gap between tries (so we sample DIFFERENT live
+// frames). Tolerates a single blurred/dropped/blink frame. Tune via env.
+const RECOGNIZE_FRAME_TRIES = Number(process.env.RECOGNIZE_FRAME_TRIES ?? 3);
+const RECOGNIZE_FRAME_GAP_MS = Number(process.env.RECOGNIZE_FRAME_GAP_MS ?? 120);
+
 /** One recognized (or unrecognized) face, as the brain's tools consume it. */
 export interface RecognizedPerson {
   name: string | null;
@@ -502,8 +508,20 @@ export function perceptionModule(getHub: () => ProcessingHub): StationModule {
           if (photo) {
             faces = await describeAllBase64(photo);
           } else if (streamId) {
-            const buf = face.currentFrame(streamId);
-            if (buf) { try { faces = await describeAllFaces(buf); } catch { faces = []; } }
+            // FLICKER TOLERANCE: a single live frame is unreliable — face-api misses a
+            // face on a blurred / dropped / mid-blink frame, which made recollect_face
+            // hard-return "No one is in front of you" even though the DEBOUNCED identity
+            // stream (CONFIRM/DROP hysteresis) confidently showed the person present —
+            // the "I see you, but I don't see you" greeting. Sample up to a few of the
+            // grabber's latest frames a beat apart and take the first that has a face,
+            // so one bad frame no longer reads as "no one". (grabber.latest() refreshes
+            // continuously from the SFU, so successive reads are genuinely new frames.)
+            for (let attempt = 0; attempt < RECOGNIZE_FRAME_TRIES; attempt++) {
+              const buf = face.currentFrame(streamId);
+              if (buf) { try { faces = await describeAllFaces(buf); } catch { faces = []; } }
+              if (faces.length > 0) break;
+              if (attempt < RECOGNIZE_FRAME_TRIES - 1) await new Promise((r) => setTimeout(r, RECOGNIZE_FRAME_GAP_MS));
+            }
           }
           const people = faces.map((f) => {
             const m = gallery.match(f.descriptor, TENTATIVE_THRESHOLD);
