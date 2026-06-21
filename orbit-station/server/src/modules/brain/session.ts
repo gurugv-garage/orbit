@@ -289,6 +289,9 @@ export class DockBrainSession {
     return this.#conv.snapshot(Date.now());
   }
 
+  /** TEMP DIAGNOSTIC: the long-utterance grace horizon (#lastWindowUntil). */
+  convLastWindowUntil(): number { return this.#conv.lastWindowUntil; }
+
   // ── conversation events (the single state machine) ─────────────────────────
 
   /** User tapped — TOGGLE the listening window (D1), or INTERRUPT an in-flight

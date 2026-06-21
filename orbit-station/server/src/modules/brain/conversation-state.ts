@@ -221,14 +221,24 @@ export class ConversationState {
    * we left the window open a SECOND rapid utterance in that gap would double-fire
    * (a spurious supersede). One window → one turn, enforced here, not by the caller.
    */
+  /** TEMP DIAGNOSTIC: expose #lastWindowUntil so the addressed-trace shows the real
+   *  grace horizon that let an utterance through. */
+  get lastWindowUntil(): number { return this.#lastWindowUntil; }
+
   utteranceEnded(endedAt: number, now: number, startedAt?: number): boolean {
     this.#prune(now);
     const windowOpenNow = this.#mode === 'listening' || this.#mode === 'followup';
     // LONG-UTTERANCE FIX: a sentence you BEGAN while the window was open is addressed,
     // even if it ran long and ENDED after the window expired (you were talking the
-    // whole time — don't drop it / cut you off). Counts if the utterance started before
-    // the most-recent window's expiry (within GRACE) — OR the window is still open now.
-    const startedWhileOpen = startedAt != null && startedAt <= this.#lastWindowUntil + ConvCfg.GRACE_MS
+    // whole time — don't drop it / cut you off). The qualifying condition is that the
+    // utterance STARTED at/before the window's real close — NOT within GRACE of it.
+    // GRACE is for the tap↔utterance ENDING ordering race (finish, then tap a beat
+    // later — applied to endedAt below), NOT the start: adding it here let an utterance
+    // that STARTED up to GRACE(2.5s) AFTER the window closed still count as addressed,
+    // so the dock replied to speech begun seconds after the indicator went to
+    // "watching" (proven from the trace: startedAt was 0.6s AFTER lastWindowUntil, yet
+    // inside lastWindowUntil+GRACE). Start strictly at/before the real close.
+    const startedWhileOpen = startedAt != null && startedAt <= this.#lastWindowUntil
       && this.#lastWindowUntil > 0;
     if (!windowOpenNow && !startedWhileOpen) return false;
     if (windowOpenNow && endedAt < now - ConvCfg.GRACE_MS) return false;

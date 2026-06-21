@@ -219,11 +219,12 @@ export function brainModule(w: BrainWiring): StationModule {
       // upstream; the attention gate may act on them later).
       const onAddressedFinal = (t: { dockId: string; text: string; startedAt: number; endedAt: number; confTier?: string }) => {
         // snapshot the conversation state BEFORE any decision consumes the window.
+        const preLastWin = session(t.dockId).convLastWindowUntil(); // BEFORE snapshot prunes
         const pre = session(t.dockId).conversation();
         const trace = (decision: string) => {
           addrTrace.push({ at: Date.now(), dock: t.dockId, text: t.text, tier: t.confTier ?? '?',
             decision, mode: pre.mode, windowUntil: pre.windowUntil, msToExpiry: pre.msToExpiry,
-            startedAt: t.startedAt, endedAt: t.endedAt });
+            lastWindowUntil: preLastWin, startedAt: t.startedAt, endedAt: t.endedAt });
           if (addrTrace.length > 50) addrTrace.shift();
         };
         // RECORDING MODE: while this dock is being recorded for the capture harness,

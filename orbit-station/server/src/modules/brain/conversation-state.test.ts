@@ -147,6 +147,33 @@ describe('ConversationState — A: basic addressed turn', () => {
     assert.notEqual(cs.mode(t), 'thinking', 'sanity: the turn was not run');
   });
 
+  // A1h — THE EXACT LIVE NUMBERS: window closed; the utterance STARTED ~0.6s AFTER the
+  // close but within GRACE of it. The old `startedAt <= lastWindowUntil + GRACE` let it
+  // through ("Now can you hear me?" while idle); it must not — an utterance that BEGAN
+  // after the window closed is overheard, GRACE is only for the ENDING race.
+  it('A1h: an utterance that STARTED just after the window closed is NOT addressed', () => {
+    const { cs } = make();
+    cs.tap(0);
+    assert.equal(cs.utteranceEnded(100, 200), true); // consume the tap window
+    cs.speakStart(300); cs.speakEnd(400);            // reply → followup window opens
+    // followup closes at 400+FOLLOWUP_MS. Speak STARTING after that, ending a beat later.
+    const close = 400 + ConvCfg.FOLLOWUP_MS;
+    const start = close + 600;                        // started 0.6s AFTER close (within GRACE)
+    assert.equal(cs.utteranceEnded(start + 1900, start + 1900, start), false,
+      'started after the window closed → overheard, even though within GRACE of the close');
+  });
+
+  // A1i — but a sentence that STARTED at/before the close and ran over IS still addressed
+  // (the legit long-utterance case must keep working after tightening the start check).
+  it('A1i: a sentence started before the close, ending after, is still addressed', () => {
+    const { cs } = make();
+    cs.tap(0);
+    const close = ConvCfg.LISTEN_MS;                  // tap window closes at LISTEN_MS
+    // started 1s BEFORE close, ended 1.5s after → straddles the edge → addressed.
+    assert.equal(cs.utteranceEnded(close + 1500, close + 1500, close - 1000), true,
+      'started while open, ended late → addressed (long-utterance grace intact)');
+  });
+
   // A4 — tap before the sentence ends (started before tap, ends after) → addressed.
   it('A4: tap before the sentence ends → addressed', () => {
     const { cs } = make();
