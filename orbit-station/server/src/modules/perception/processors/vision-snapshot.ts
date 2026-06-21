@@ -29,6 +29,7 @@ interface StreamState {
   ctx: StreamContext;
   running: boolean;  // the steady loop is active
   busy: boolean;     // a capture (loop cycle OR flush) is mid-inference
+  inflight?: Promise<boolean>; // the in-flight capture, so captureNow can await it
 }
 
 /** Run one inference; return the text + the sidecar round-trip latency (inferMs). */
@@ -64,11 +65,17 @@ export function visionSnapshotProcessor(store: SnapshotStore, getFrame: GetFrame
    *  Guarded by `s.busy` so the loop and a flush never run two concurrent
    *  inferences against the single-threaded MLX sidecar (callers check busy first). */
   async function captureOnce(s: StreamState, n: number, gapMs: number): Promise<boolean> {
+    // Serialize all captures (steady loop + on-demand one-shots) on the single-threaded
+    // MLX sidecar: if one is already running, chain after it rather than overlap.
+    while (s.inflight) { try { await s.inflight; } catch { /* prior failed; we still run */ } }
     s.busy = true;
+    const p = doCapture(s, n, gapMs);
+    s.inflight = p;
     try {
-      return await doCapture(s, n, gapMs);
+      return await p;
     } finally {
       s.busy = false;
+      if (s.inflight === p) s.inflight = undefined;
     }
   }
 
@@ -116,13 +123,15 @@ export function visionSnapshotProcessor(store: SnapshotStore, getFrame: GetFrame
     captureNow: async (streamId: string) => {
       const s = streams.get(streamId);
       if (!s) return false;
-      // If the steady loop is mid-inference, don't fire a SECOND concurrent MLX call
-      // (it would just queue behind the first on the single-threaded sidecar and
-      // double flush latency). The loop is about to commit a fresh frame anyway, so
-      // riding it is as good as a one-shot. Only run our own when the loop is idle.
-      if (s.busy) return false;
-      // Snappy one-shot: 2 recent frames ~250ms apart (enough for "what's happening
-      // now"; the heavier 5-frame motion window is for the steady loop).
+      // An explicit "look right now" (force_get_current) MUST deliver a genuinely fresh
+      // frame. captureOnce serializes on the single-threaded sidecar — so this chains
+      // AFTER any in-flight steady-loop cycle, then samples NEW frames. Previously this
+      // returned false when busy ("the loop will commit soon"), but the loop's frame was
+      // sampled BEFORE the user acted — so "what do you see now?" described the stale
+      // pre-action scene (a held-up hand read as "typing on a laptop"). The wait for one
+      // queued inference (a couple seconds) is the right cost for an on-demand look.
+      // Snappy one-shot: 2 recent frames ~250ms apart (the heavier 5-frame motion window
+      // is for the steady loop).
       return captureOnce(s, 2, 250);
     },
     id: 'vision-snapshot',
