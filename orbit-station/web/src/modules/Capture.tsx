@@ -33,12 +33,13 @@ const KIND_ICON: Record<string, string> = {
 };
 const istClock = (iso: string) => (iso || '').slice(11, 19);
 
-/** Group speech snapshots by their start-second → second → snapshots in that second. */
-function bucketBySecond(snaps: Snapshot[], startSec: (s: Snapshot) => number): Map<number, Snapshot[]> {
+/** Group speech snapshots into time BINS of `binSec` seconds (bin index = floor(sec/binSec)).
+ *  Wider bins line up sparse-segmenting models (medium) against dense ones (small). */
+function bucketBySecond(snaps: Snapshot[], startSec: (s: Snapshot) => number, binSec = 1): Map<number, Snapshot[]> {
   const m = new Map<number, Snapshot[]>();
   for (const s of snaps) {
-    const sec = startSec(s);
-    (m.get(sec) ?? m.set(sec, []).get(sec)!).push(s);
+    const bin = Math.floor(startSec(s) / binSec) * binSec;
+    (m.get(bin) ?? m.set(bin, []).get(bin)!).push(s);
   }
   return m;
 }
@@ -55,6 +56,7 @@ export function Capture() {
   const [runIdx, setRunIdx] = useState(0); // which result run to show on the single timeline
   const [compareAll, setCompareAll] = useState(true); // per-second grid of ALL runs
   const [hiddenRuns, setHiddenRuns] = useState<Set<string>>(new Set()); // toggled-off columns
+  const [binSec, setBinSec] = useState(1); // grid row granularity (s) — widen to align sparse runs
   const [model, setModel] = useState('mlx-community/whisper-small.en-mlx');
   const [prompt, setPrompt] = useState('');
   const [reproc, setReproc] = useState(false);
@@ -145,7 +147,7 @@ export function Capture() {
   const speechRuns = (manifest?.runs ?? [])
     .filter((r) => !hiddenRuns.has(r.label))
     .map((r) => ({
-      ...r, byScond: bucketBySecond(r.snapshots.filter((s) => s.source.kind === 'speech'), startSec),
+      ...r, byScond: bucketBySecond(r.snapshots.filter((s) => s.source.kind === 'speech'), startSec, binSec),
     }));
   const allSeconds = Array.from(new Set(speechRuns.flatMap((r) => [...r.byScond.keys()]))).sort((a, b) => a - b);
 
@@ -265,8 +267,20 @@ export function Capture() {
                   <span className="side-section-label">Transcript</span>
                   <label style={{ fontSize: 12, display: 'flex', gap: 5, cursor: 'pointer' }}>
                     <input type="checkbox" checked={compareAll} onChange={(e) => setCompareAll(e.target.checked)} />
-                    compare all runs (per-second)
+                    compare all runs
                   </label>
+                  {compareAll && (
+                    <label style={{ fontSize: 12, display: 'flex', gap: 5, alignItems: 'center', opacity: 0.8 }}>
+                      bin
+                      <select value={binSec} onChange={(e) => setBinSec(Number(e.target.value))}
+                        style={{ fontSize: 11, background: '#0b0e16', color: '#cfe', border: '1px solid #1c2233', borderRadius: 6, padding: '2px 5px' }}>
+                        <option value={1}>1s</option>
+                        <option value={2}>2s</option>
+                        <option value={5}>5s</option>
+                        <option value={10}>10s</option>
+                      </select>
+                    </label>
+                  )}
                   {compareAll
                     ? /* COLUMN toggles: click a run to show/hide its column */
                       (manifest.runs ?? []).map((r) => {
@@ -300,9 +314,16 @@ export function Capture() {
                       <div style={{ display: 'grid', gridTemplateColumns: `54px repeat(${speechRuns.length}, 1fr)`,
                         position: 'sticky', top: 0, background: '#0b0e16', borderBottom: '1px solid #1c2233', zIndex: 1 }}>
                         <div style={{ fontSize: 11, opacity: 0.5, padding: '6px 8px' }}>time</div>
-                        {speechRuns.map((r) => (
-                          <div key={r.label} style={{ fontSize: 11, fontWeight: 600, color: '#9cf', padding: '6px 8px' }}>{r.label}</div>
-                        ))}
+                        {speechRuns.map((r) => {
+                          const secs = [...r.byScond.keys()].sort((a, b) => a - b);
+                          const span = secs.length ? `${Math.floor(secs[0]! / 60)}:${String(secs[0]! % 60).padStart(2, '0')}–${Math.floor(secs[secs.length - 1]! / 60)}:${String(secs[secs.length - 1]! % 60).padStart(2, '0')}` : 'no speech';
+                          return (
+                            <div key={r.label} style={{ fontSize: 11, padding: '6px 8px' }}>
+                              <div style={{ fontWeight: 600, color: '#9cf' }}>{r.label}</div>
+                              <div style={{ opacity: 0.4, fontSize: 10 }}>{r.snapshots.filter((s) => s.source.kind === 'speech').length} segs · {span}</div>
+                            </div>
+                          );
+                        })}
                       </div>
                       {allSeconds.map((sec) => {
                         const active = Math.floor(playMs / 1000) === sec;
@@ -317,6 +338,7 @@ export function Capture() {
                               const cell = r.byScond.get(sec) ?? [];
                               return (
                                 <div key={r.label} style={{ padding: '5px 8px', fontSize: 12.5, borderLeft: '1px solid #11151f' }}>
+                                  {cell.length === 0 && <span style={{ opacity: 0.12 }}>·</span>}
                                   {cell.map((s, j) => {
                                     const tier = s.payload.confTier ?? 'good';
                                     const ts = TIER_STYLE[tier] ?? TIER_STYLE.good!;
