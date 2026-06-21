@@ -251,8 +251,9 @@ export function Capture() {
                     <option value="mlx-community/whisper-base.en-mlx">whisper base.en</option>
                     <option value="mlx-community/whisper-medium.en-mlx">whisper medium.en</option>
                     <option value="mlx-community/whisper-large-v3-mlx">whisper large-v3</option>
-                    <option value="deepgram">☁ Deepgram (nova-3, diarized)</option>
-                    <option value="gemini-audio">☁ Gemini audio (diarized)</option>
+                    <option value="deepgram">☁ Deepgram (nova-2, diarized)</option>
+                    <option value="gemini-audio">☁ Gemini audio flash (diarized)</option>
+                    <option value="gemini-audio-lite">☁ Gemini audio flash-lite (cheap)</option>
                   </select>
                   <input value={prompt} onChange={(e) => setPrompt(e.target.value)} placeholder="context prompt (names, topic) — optional"
                     style={{ flex: 1, minWidth: 180, fontSize: 12, background: '#0b0e16', color: '#cfe', border: '1px solid #1c2233', borderRadius: 6, padding: '4px 8px' }} />

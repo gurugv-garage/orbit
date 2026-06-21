@@ -20,6 +20,8 @@
 - [How we measure CAPTURE — real A/V, recorded + replayed](#how-we-measure-capture--real-av-recorded--replayed)
   - [The judging console (the human-in-the-loop tool)](#the-judging-console-the-human-in-the-loop-tool)
 - [Cost of online STT for BACKGROUND capture](#cost-of-online-stt-for-background-capture)
+  - [Benchmark result (on the 7.5-min far-field multi-speaker recording)](#benchmark-result-on-the-75-min-far-field-multi-speaker-recording)
+  - [What about silence? (do we pay for it?)](#what-about-silence-do-we-pay-for-it)
 - [How we measure RECALL — known facts, in isolation](#how-we-measure-recall--known-facts-in-isolation)
 - [Build order](#build-order)
 - [Open (discuss as we build)](#open-discuss-as-we-build)
@@ -124,6 +126,33 @@ is how our pipeline already works — discrete utterance PCM).
 | Light (1 hr) | ~$8/mo | ~$11/mo | ~$29/mo |
 | Medium (3 hr) | ~$23/mo | ~$32/mo | ~$86/mo |
 | **Heavy (6 hr)** | **~$47/mo** | **~$65/mo** | **~$173/mo** |
+
+### Benchmark result (on the 7.5-min far-field multi-speaker recording)
+
+Ran all engines through the Capture harness — a genuinely HARD clip (a meeting heard
+across a room via a phone mic):
+
+| Engine | Behavior | Diarization | $/mo (6 hr/day) |
+|---|---|---|---|
+| Local Whisper | high recall, low precision — hallucinates to fill gaps | none | $0 |
+| Deepgram nova-2 | high precision, low recall — silent on unclear audio (~22 words) | found 1 spkr | ~$47 |
+| **Gemini flash** | **best — coherent + contextual + correct S0/S1/S2** | ✅ real | ~$13 |
+| **Gemini flash-lite** | **~same quality as flash** (less punctuation) | ✅ real | **~$3** |
+
+**Winner: Gemini-audio (flash-lite).** Best transcription + diarization on hard audio,
+cheapest paid option, on the key we already have. (Notes: it needs **chunking** — one
+long call loops into a repetition hallucination; flash-lite also piles per-segment
+timestamps at the chunk start, a minor alignment bug. Deepgram's conservatism may win
+on *cleaner* audio — worth a re-test.)
+
+### What about silence? (do we pay for it?)
+
+**No — as long as we send VAD-gated utterances, not raw time-chunks.** Most of a day is
+silence; chunking 24/7 blindly would cost ~2–4× more (flash-lite ~$8/mo with silence vs
+~$3/mo speech-only). The fix is the local VAD we already have: `UtteranceDetector` only
+emits detected *utterances*, so **silence never becomes data, never leaves the box, and
+is never billed.** (The benchmark harness chunks the whole recording for comparison —
+that's not how production runs.)
 
 **Architecture: VAD stays LOCAL.** The endpointing (`UtteranceDetector`) runs on the
 station/device for free — only the detected utterance PCM is sent to the online STT.

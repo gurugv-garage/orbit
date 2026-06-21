@@ -49,12 +49,13 @@ export interface OnlineSeg {
 export interface OnlineResult { model: string; segments: OnlineSeg[] }
 
 export function isOnlineEngine(model: string): boolean {
-  return model === 'deepgram' || model === 'gemini-audio';
+  return model === 'deepgram' || model === 'gemini-audio' || model === 'gemini-audio-lite';
 }
 
 export async function transcribeOnline(engine: string, audioPath: string): Promise<OnlineResult> {
   if (engine === 'deepgram') return deepgram(audioPath);
-  if (engine === 'gemini-audio') return geminiAudio(audioPath);
+  if (engine === 'gemini-audio') return geminiAudio(audioPath, 'gemini-2.5-flash');
+  if (engine === 'gemini-audio-lite') return geminiAudio(audioPath, 'gemini-2.5-flash-lite');
   throw new Error(`unknown online engine: ${engine}`);
 }
 
@@ -119,10 +120,10 @@ const GEMINI_PROMPT =
   + 'start/end are seconds from the START OF THIS CLIP. Split into natural utterance '
   + 'segments. Do not invent words for unintelligible parts — omit them. JSON only.';
 
-async function geminiAudio(audioPath: string): Promise<OnlineResult> {
+async function geminiAudio(audioPath: string, modelArg?: string): Promise<OnlineResult> {
   const key = process.env.GEMINI_API_KEY_PAID_ACC || process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
   if (!key) throw new Error('no GEMINI_API_KEY');
-  const model = process.env.CAPTURE_GEMINI_AUDIO_MODEL ?? 'gemini-2.5-flash';
+  const model = modelArg ?? process.env.CAPTURE_GEMINI_AUDIO_MODEL ?? 'gemini-2.5-flash';
   const total = await durationSec(audioPath);
   const out: OnlineSeg[] = [];
 
