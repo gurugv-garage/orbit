@@ -14,8 +14,14 @@ interface SessionRow { id: string; dock: string; startedAt: string; durationMs: 
 interface Snapshot {
   source: { kind: string; ids?: string[] };
   interval: { from: string; to: string; durationMs: number };
-  payload: { text?: string; caption?: string; label?: string } & Record<string, unknown>;
+  payload: { text?: string; caption?: string; label?: string; confTier?: string; avgLogprob?: number; noSpeechProb?: number; compressionRatio?: number } & Record<string, unknown>;
 }
+
+const TIER_STYLE: Record<string, { color: string; tag: string }> = {
+  garbage: { color: '#f87171', tag: '🗑 unclear' },
+  shaky: { color: '#fbbf24', tag: '~ shaky' },
+  good: { color: '#cfe', tag: '' },
+};
 interface Run { label: string; model?: string; createdAt: string; snapshots: Snapshot[] }
 interface Manifest {
   id: string; dock: string; startedAt: string; startedAtEpoch: number;
@@ -179,15 +185,25 @@ export function Capture() {
                     {(run?.snapshots ?? []).map((s, i) => {
                       const active = snapAtPlayhead(s);
                       const tMs = new Date(s.interval.from).getTime() - startEpoch;
+                      const tier = s.source.kind === 'speech' ? (s.payload.confTier ?? 'good') : 'good';
+                      const ts = TIER_STYLE[tier] ?? TIER_STYLE.good!;
+                      const metrics = s.source.kind === 'speech' && s.payload.avgLogprob != null
+                        ? `lp ${s.payload.avgLogprob.toFixed(2)} · ns ${(s.payload.noSpeechProb ?? 0).toFixed(2)} · cr ${(s.payload.compressionRatio ?? 0).toFixed(1)}`
+                        : '';
                       return (
                         <div key={i} onClick={() => { if (videoRef.current) videoRef.current.currentTime = Math.max(0, tMs / 1000); }}
+                          title={metrics}
                           style={{ display: 'flex', gap: 8, fontSize: 13, padding: '3px 6px', borderRadius: 6, cursor: 'pointer',
                             background: active ? '#13243a' : 'transparent', border: `1px solid ${active ? '#2a4a6a' : 'transparent'}` }}>
                           <span style={{ opacity: 0.5, fontVariantNumeric: 'tabular-nums', width: 54 }}>
                             {(Math.max(0, tMs) / 1000).toFixed(1)}s
                           </span>
                           <span>{KIND_ICON[s.source.kind] ?? '•'}</span>
-                          <span style={{ flex: 1 }}>{snapText(s)}</span>
+                          <span style={{ flex: 1, color: ts.color, opacity: tier === 'garbage' ? 0.7 : 1 }}>
+                            {tier === 'garbage' ? <em>{snapText(s)}</em> : snapText(s)}
+                            {ts.tag && <span style={{ fontSize: 11, marginLeft: 6, opacity: 0.8 }}>{ts.tag}</span>}
+                          </span>
+                          {metrics && <span style={{ fontSize: 10, opacity: 0.4, fontVariantNumeric: 'tabular-nums' }}>{metrics}</span>}
                         </div>
                       );
                     })}

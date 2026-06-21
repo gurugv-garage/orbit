@@ -230,6 +230,9 @@ export interface FinalTranscript {
   endedAt: number;
   /** Whisper's own confidence flag (a gasp/low-conf word is tagged, not dropped). */
   lowConfidence: boolean;
+  /** graded confidence: 'good' | 'shaky' | 'garbage'. A 'garbage' addressed utterance
+   *  (far-field mush / repetition-loop) should not become a confident agent turn. */
+  confTier?: 'good' | 'shaky' | 'garbage';
 }
 export interface TranscriptApi {
   /** the brain calls this once to receive final transcripts. */

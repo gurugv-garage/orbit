@@ -213,11 +213,16 @@ export function brainModule(w: BrainWiring): StationModule {
       // decision now lives in the session's ConversationState (single owner) — no
       // separate latch Map. Overheard utterances are ignored here (still transcribed
       // upstream; the attention gate may act on them later).
-      const onAddressedFinal = (t: { dockId: string; text: string; startedAt: number; endedAt: number }) => {
+      const onAddressedFinal = (t: { dockId: string; text: string; startedAt: number; endedAt: number; confTier?: string }) => {
         // RECORDING MODE: while this dock is being recorded for the capture harness,
         // the dock must NOT respond (we want clean ambient perception). The mic/cam
         // keep capturing + transcribing upstream; we just don't turn it into a reply.
         if (isRecording(t.dockId)) return;
+        // GARBAGE STT: a far-field-mush / repetition-loop transcript must not become a
+        // confident agent turn (we'd reply to words that were never said). The snapshot
+        // is still kept (tagged) upstream; we just don't act on it. Shaky still runs —
+        // a quiet "yes"/"ok" you addressed should work.
+        if (t.confTier === 'garbage') return;
         if (!session(t.dockId).utteranceAddressed(t.endedAt)) return;
         void session(t.dockId).handleTurnRequest({
           turnId: `addr-${randomUUID()}`,

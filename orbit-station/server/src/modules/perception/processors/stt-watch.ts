@@ -272,6 +272,48 @@ function isLowConfidence(t: Transcription): boolean {
   return isHallucination(t.text) || t.text.replace(/[^a-z0-9]/gi, '').length < 3;
 }
 
+/** GARBAGE tier — a transcript so unreliable its WORDS should not be presented to
+ *  the brain as content (far-field mush, a repetition-loop hallucination like
+ *  "I am a child. I am a child. …", pure noise). Distinct from merely "shaky": we
+ *  still KEEP the record (tagged, raw text intact for the console/ring), but the
+ *  grounding renders it as "[unclear speech]" so nothing downstream treats the
+ *  garbled words as a fact. Tunable from the playground. */
+// The RELIABLE garbage tell is a REPETITION LOOP (high compression ratio): Whisper
+// emitting the same clause over and over on unclear audio. That caught every real
+// hallucination in the captured data with zero false positives. Raw logprob/noSpeech
+// alone are too aggressive (they nuke short legit utterances like "Thank you" / "Okay"
+// that are quiet) — so they only escalate to GARBAGE when BOTH are bad together.
+const GARBAGE_COMPRESSION = Number(process.env.STT_GARBAGE_COMPRESSION ?? 3.0); // repetition loop
+const GARBAGE_LOGPROB = Number(process.env.STT_GARBAGE_LOGPROB ?? -1.15); // very unsure (combined only)
+const GARBAGE_NOSPEECH = Number(process.env.STT_GARBAGE_NOSPEECH ?? 0.6); // likely not speech (combined only)
+
+export type ConfTier = 'good' | 'shaky' | 'garbage';
+export function confidenceTier(t: {
+  avgLogprob: number | null; noSpeechProb: number | null; compressionRatio: number | null; text: string;
+}): ConfTier {
+  // GARBAGE: a repetition loop (the clearest tell), OR very-unsure AND very-non-speech
+  // together (a single bad metric isn't enough — short quiet words read as both).
+  const loop = isRepetitionLoop(t.text)
+    || (t.compressionRatio != null && t.compressionRatio >= GARBAGE_COMPRESSION);
+  const veryUnsure = t.avgLogprob != null && t.avgLogprob <= GARBAGE_LOGPROB
+    && t.noSpeechProb != null && t.noSpeechProb >= GARBAGE_NOSPEECH;
+  if (loop || veryUnsure) return 'garbage';
+  if (isLowConfidence(t as Transcription)) return 'shaky';
+  return 'good';
+}
+
+/** A repetition-loop hallucination: the same short clause repeated many times
+ *  ("I am a child. I am a child. …", "sir, sir, sir, …"). Whisper does this on
+ *  unclear/far audio. Compression ratio usually catches it, but check text too. */
+function isRepetitionLoop(text: string): boolean {
+  const norm = text.toLowerCase().replace(/[^a-z\s]/g, ' ').replace(/\s+/g, ' ').trim();
+  const words = norm.split(' ').filter(Boolean);
+  if (words.length < 8) return false;
+  // unique words / total — a loop has very few unique words for its length.
+  const uniq = new Set(words).size;
+  return uniq / words.length < 0.35;
+}
+
 interface StreamState {
   ctx: StreamContext;
   detector: UtteranceDetector;
@@ -287,6 +329,7 @@ export interface FinalTranscriptEvent {
   startedAt: number;
   endedAt: number;
   lowConfidence: boolean;
+  confTier?: ConfTier;
 }
 
 export function sttWatchProcessor(
@@ -322,14 +365,15 @@ export function sttWatchProcessor(
         // signal. TAG them lowConfidence (from Whisper's own logprob/no-speech/
         // compression metrics, falling back to text heuristics) and let the
         // summarizer LLM decide noise vs signal.
-        const lowConfidence = isLowConfidence(tr);
+        const tier = confidenceTier(tr);
+        const lowConfidence = tier !== 'good'; // back-compat flag (shaky OR garbage)
         store.add(makeSnapshot({
           dockId: ctx.dockId,
           source: { id: ctx.streamId, kind: 'speech', device: 'dock-webrtc', host: 'station' },
           model: { name: 'whisper-small.en-mlx', endpoint: SIDECAR_URL },
           from: startedAt, to: endedAt,
           payload: {
-            text: tr.text, lowConfidence,
+            text: tr.text, lowConfidence, confTier: tier,
             // keep the raw metrics on the record for the playground to inspect/tune
             avgLogprob: tr.avgLogprob, noSpeechProb: tr.noSpeechProb, compressionRatio: tr.compressionRatio,
             inferMs: tr.inferMs,
@@ -345,7 +389,7 @@ export function sttWatchProcessor(
         if (!isBeepArtifact(tr.text)) {
           onFinal?.({
             dockId: ctx.dockId, streamId: ctx.streamId, text: tr.text,
-            startedAt: startedAt.getTime(), endedAt: endedAt.getTime(), lowConfidence,
+            startedAt: startedAt.getTime(), endedAt: endedAt.getTime(), lowConfidence, confTier: tier,
           });
         }
       };

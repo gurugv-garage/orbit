@@ -143,8 +143,18 @@ export function stitch(records: SnapshotRecord[]): string {
       // this utterance? Look at identity records overlapping the utterance time.
       const speaker = activeSpeaker(sorted, r);
       const tag = speaker ? ` [likely ${speaker}]` : '';
-      const conf = (r.payload as { lowConfidence?: boolean }).lowConfidence ? ' [low-confidence]' : '';
-      lines.push(`${t} SPEECH  ${r.payload.text}${tag}${conf}`);
+      const tier = (r.payload as { confTier?: string }).confTier
+        ?? ((r.payload as { lowConfidence?: boolean }).lowConfidence ? 'shaky' : 'good');
+      if (tier === 'garbage') {
+        // GARBAGE tier: words unreliable (far-field mush / a Whisper repetition-loop).
+        // Do NOT present the garbled text as content — the brain must not treat it as
+        // something that was said. Render the FACT of unclear speech + its duration.
+        const secs = Math.round((r.interval.durationMs ?? 0) / 1000);
+        lines.push(`${t} SPEECH  [unclear speech${secs ? `, ~${secs}s` : ''}]${tag}`);
+      } else {
+        const conf = tier === 'shaky' ? ' [low-confidence]' : '';
+        lines.push(`${t} SPEECH  ${r.payload.text}${tag}${conf}`);
+      }
     } else {
       flushRuns();
       lines.push(`${t} ${r.source.kind.toUpperCase().padEnd(8)} ${r.payload.text}`);
