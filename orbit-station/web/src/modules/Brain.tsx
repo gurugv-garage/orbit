@@ -42,6 +42,8 @@ interface TurnDebug {
   model?: string;
   thinkingLevel?: string;
   historyMessages?: number;
+  /** STT confidence for a HEARD turn (Whisper's own metrics — why it was trusted). */
+  stt?: { confTier?: string; avgLogprob?: number | null; noSpeechProb?: number | null; compressionRatio?: number | null };
   startedAt: number;
   steps: StepDebug[];
   streamText: string;
@@ -267,7 +269,7 @@ export function Brain() {
       case 'turn-start':
         t = {
           turnId: p.turnId, text: p.text ?? '', model: p.model, thinkingLevel: p.thinkingLevel,
-          historyMessages: p.historyMessages, startedAt: p.ts,
+          historyMessages: p.historyMessages, stt: p.stt, startedAt: p.ts,
           steps: [], streamText: '', thinkingText: '', speaks: [],
         };
         turns.current.set(p.turnId, t);
@@ -919,6 +921,7 @@ export function Brain() {
               <div className="br-insp-head">
                 <span className="mono br-turnid">{sel.turnId}</span>
                 <span className="dim">{sel.model} · think:{sel.thinkingLevel} · {sel.historyMessages} msg history</span>
+                {sel.stt && <SttBadge stt={sel.stt} />}
               </div>
               <Timeline turn={sel} />
               <table className="br-steps">
@@ -1165,6 +1168,20 @@ function DockContext({ p, onPatchConfig, onInstallSkill, onRemoveSkill }: {
 
 function KV({ k, v }: { k: string; v: string }) {
   return <div className="br-kv"><span className="br-kv-k">{k}</span><span className="br-kv-v mono">{v}</span></div>;
+}
+
+/** STT confidence for a HEARD turn — Whisper's own metrics, so the inspector shows
+ *  WHY a heard transcript was trusted/flagged. Colored by tier (good/shaky/garbage). */
+function SttBadge({ stt }: { stt: NonNullable<TurnDebug['stt']> }) {
+  const tier = stt.confTier ?? '?';
+  const color = tier === 'good' ? '#5fd38d' : tier === 'shaky' ? '#e6c34d' : tier === 'garbage' ? '#e06c6c' : '#888';
+  const n = (x: number | null | undefined, d = 2) => (x == null ? '—' : x.toFixed(d));
+  return (
+    <span className="dim mono" title="Whisper STT confidence — avg_logprob (token certainty), no_speech_prob (P silence/noise), compression_ratio (repetition)">
+      {' · '}heard:<span style={{ color, fontWeight: 600 }}>{tier}</span>
+      {' '}logprob={n(stt.avgLogprob)} noSpeech={n(stt.noSpeechProb)} comp={n(stt.compressionRatio)}
+    </span>
+  );
 }
 
 /** Expanded detail for one step: timings, each tool (name + args + result or
