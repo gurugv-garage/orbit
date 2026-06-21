@@ -61,6 +61,7 @@ export function Capture() {
   const [prompt, setPrompt] = useState('');
   const [reproc, setReproc] = useState(false);
   const [progress, setProgress] = useState(0); // 0..1 while reprocessing
+  const [cleaning, setCleaning] = useState(''); // "<run>:<mode>" while an LLM clean runs
 
   const videoRef = useRef<HTMLVideoElement>(null);
   const audioRef = useRef<HTMLAudioElement>(null);
@@ -129,6 +130,19 @@ export function Capture() {
       setRunIdx(m.runs.findIndex((r) => r.label === label)); // jump to the new run
     } finally { clearInterval(poll); setReproc(false); setProgress(0); }
   };
+
+  // LLM-clean a raw run → a cleaned run (drop low-conf, or keep+score).
+  const clean = async (sourceRun: string, mode: 'scored' | 'drop') => {
+    if (!manifest || cleaning) return;
+    setCleaning(`${sourceRun}:${mode}`);
+    try {
+      const r = await api.post<{ label?: string; error?: string }>(`/capture/${manifest.id}/clean`, { sourceRun, mode });
+      const m = await api.get<Manifest>(`/capture/${manifest.id}`);
+      setManifest(m);
+      if (r.label) setRunIdx(m.runs.findIndex((x) => x.label === r.label));
+    } finally { setCleaning(''); }
+  };
+
   const startEpoch = manifest?.startedAtEpoch ?? 0;
   // A snapshot is "active" if the playhead time falls within its interval.
   const snapAtPlayhead = (s: Snapshot) => {
@@ -251,15 +265,32 @@ export function Capture() {
                   </button>
                 </div>
 
-                {/* RUNS — each run's model + the ctx prompt it used (so it's judgeable) */}
+                {/* RUNS — each run's model + ctx prompt + an LLM-clean control per raw run */}
                 <div style={{ marginTop: 12, display: 'flex', flexDirection: 'column', gap: 4 }}>
-                  {(manifest.runs ?? []).map((r) => (
-                    <div key={r.label} style={{ fontSize: 12, display: 'flex', gap: 8, alignItems: 'baseline' }}>
-                      <span style={{ fontWeight: 600, color: '#cfe', minWidth: 110 }}>{r.label}</span>
-                      <span style={{ opacity: 0.5 }}>{r.model?.split('/').pop() ?? '—'} · {r.snapshots.filter((s) => s.source.kind === 'speech').length} speech</span>
-                      {r.prompt && <span style={{ opacity: 0.7, color: '#9cf', fontStyle: 'italic' }}>ctx: "{r.prompt}"</span>}
-                    </div>
-                  ))}
+                  {(manifest.runs ?? []).map((r) => {
+                    const isClean = r.label.includes('→clean');
+                    return (
+                      <div key={r.label} style={{ fontSize: 12, display: 'flex', gap: 8, alignItems: 'baseline', flexWrap: 'wrap' }}>
+                        <span style={{ fontWeight: 600, color: isClean ? '#9f9' : '#cfe', minWidth: 130 }}>{isClean ? '🧹 ' : ''}{r.label}</span>
+                        <span style={{ opacity: 0.5 }}>{r.model?.split('/').pop() ?? '—'} · {r.snapshots.filter((s) => s.source.kind === 'speech').length} speech</span>
+                        {r.prompt && <span style={{ opacity: 0.7, color: '#9cf', fontStyle: 'italic' }}>ctx: "{r.prompt}"</span>}
+                        {!isClean && (
+                          <span style={{ display: 'flex', gap: 5 }}>
+                            <button disabled={!!cleaning} onClick={() => clean(r.label, 'drop')} title="LLM clean — drop what it can't confidently reconstruct"
+                              style={{ fontSize: 10.5, padding: '1px 7px', borderRadius: 10, cursor: cleaning ? 'default' : 'pointer',
+                                background: cleaning === `${r.label}:drop` ? '#1d4ed8' : '#11202e', color: '#9cf', border: '1px solid #1c3344' }}>
+                              {cleaning === `${r.label}:drop` ? '… cleaning' : '🧹 clean (drop)'}
+                            </button>
+                            <button disabled={!!cleaning} onClick={() => clean(r.label, 'scored')} title="LLM clean — keep all + a confidence score per segment"
+                              style={{ fontSize: 10.5, padding: '1px 7px', borderRadius: 10, cursor: cleaning ? 'default' : 'pointer',
+                                background: cleaning === `${r.label}:scored` ? '#1d4ed8' : '#11202e', color: '#9cf', border: '1px solid #1c3344' }}>
+                              {cleaning === `${r.label}:scored` ? '… cleaning' : '🧹 clean (scored)'}
+                            </button>
+                          </span>
+                        )}
+                      </div>
+                    );
+                  })}
                 </div>
 
                 {/* VIEW TOGGLE + COLUMN TOGGLES */}

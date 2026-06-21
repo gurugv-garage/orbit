@@ -35,6 +35,7 @@ import { isoIst } from '../perception/snapshots.js';
 import { startAudioRecording, type AudioRecordHandle } from './audio-recorder.js';
 import { startVideoRecording, type VideoRecordHandle } from './video-recorder.js';
 import { reprocessStt, reprocessProgress } from './reprocess.js';
+import { cleanRun } from './clean.js';
 
 export interface CaptureWiring {
   getHub: () => ProcessingHub;
@@ -212,6 +213,29 @@ export function captureModule(w: CaptureWiring): StationModule {
           man.runs = [...(man.runs ?? []).filter((r) => r.label !== label), run];
           await writeFile(join(sessionDir(m[1]!), 'session.json'), JSON.stringify(man, null, 2));
           json(res, 200, { ok: true, label, segments: run.snapshots.length, model: run.model });
+        } catch (e) {
+          json(res, 500, { error: String(e) });
+        }
+        return true;
+      }
+      // POST /:id/clean { sourceRun, mode } → LLM-clean a raw run → append a cleaned run.
+      m = subPath.match(/^\/([^/]+)\/clean$/);
+      if (m && req.method === 'POST') {
+        const body = await readBody<{ sourceRun?: string; mode?: 'scored' | 'drop' }>();
+        const man = await readManifest(w.dir, m[1]!);
+        if (!man) { json(res, 404, { error: 'not found' }); return true; }
+        const src = (man.runs ?? []).find((r) => r.label === body.sourceRun);
+        if (!src) { json(res, 404, { error: `no run "${body.sourceRun}"` }); return true; }
+        const mode = body.mode === 'scored' ? 'scored' : 'drop';
+        const segs = (src.snapshots as Array<{ source?: { kind?: string; id?: string }; interval?: { from: string; to: string }; payload?: { text?: string }; dockId?: string }>)
+          .filter((s) => s.source?.kind === 'speech' && s.payload?.text)
+          .map((s) => ({ from: s.interval!.from, to: s.interval!.to, text: s.payload!.text!, dockId: s.dockId, streamId: s.source?.id }));
+        try {
+          const run = await cleanRun({ sourceLabel: src.label, segments: segs, mode });
+          if (run.error) { json(res, 502, { error: run.error }); return true; }
+          man.runs = [...(man.runs ?? []).filter((r) => r.label !== run.label), run];
+          await writeFile(join(sessionDir(m[1]!), 'session.json'), JSON.stringify(man, null, 2));
+          json(res, 200, { ok: true, label: run.label, segments: run.snapshots.length });
         } catch (e) {
           json(res, 500, { error: String(e) });
         }
