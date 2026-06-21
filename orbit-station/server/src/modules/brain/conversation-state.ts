@@ -30,8 +30,10 @@ export const ConvCfg = {
    *  for a natural pause-then-follow-up; VAD activity extends it further. (Was 5s;
    *  felt rushed.) Tune via CONV_FOLLOWUP_MS. */
   FOLLOWUP_MS: Number(process.env.CONV_FOLLOWUP_MS ?? 8_000),
-  /** VAD activity during listening/followup pushes the window out this far. */
-  VAD_EXTEND_MS: Number(process.env.CONV_VAD_EXTEND_MS ?? 4_000),
+  /** VAD activity during listening/followup pushes the window out this far. 6s (was 4s)
+   *  so a normal MID-SENTENCE PAUSE (you stop to think for a couple seconds, then keep
+   *  going) doesn't drain the window and cut you off before you finish. */
+  VAD_EXTEND_MS: Number(process.env.CONV_VAD_EXTEND_MS ?? 6_000),
   /** Grace for the tap↔utterance ordering race: an utterance ending this long
    *  before `now` (while a window is open) still counts (finish, then tap). */
   GRACE_MS: Number(process.env.CONV_GRACE_MS ?? 2_500),
