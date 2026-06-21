@@ -217,12 +217,14 @@ export function brainModule(w: BrainWiring): StationModule {
       // decision now lives in the session's ConversationState (single owner) — no
       // separate latch Map. Overheard utterances are ignored here (still transcribed
       // upstream; the attention gate may act on them later).
-      const onAddressedFinal = (t: { dockId: string; text: string; startedAt: number; endedAt: number; confTier?: string }) => {
+      const onAddressedFinal = (t: { dockId: string; text: string; startedAt: number; endedAt: number; confTier?: string;
+          avgLogprob?: number | null; noSpeechProb?: number | null; compressionRatio?: number | null }) => {
         // snapshot the conversation state BEFORE any decision consumes the window.
         const preLastWin = session(t.dockId).convLastWindowUntil(); // BEFORE snapshot prunes
         const pre = session(t.dockId).conversation();
         const trace = (decision: string) => {
           addrTrace.push({ at: Date.now(), dock: t.dockId, text: t.text, tier: t.confTier ?? '?',
+            avgLogprob: t.avgLogprob, noSpeechProb: t.noSpeechProb, compressionRatio: t.compressionRatio,
             decision, mode: pre.mode, windowUntil: pre.windowUntil, msToExpiry: pre.msToExpiry,
             lastWindowUntil: preLastWin, startedAt: t.startedAt, endedAt: t.endedAt });
           if (addrTrace.length > 50) addrTrace.shift();
@@ -246,6 +248,9 @@ export function brainModule(w: BrainWiring): StationModule {
           turnId: `addr-${randomUUID()}`,
           trigger: { kind: 'user', text: t.text },
           stationOriginated: true, // A1.2: the phone must ADOPT this (it didn't start it)
+          // STT confidence → observability turn trace (why this heard utterance ran).
+          stt: { confTier: t.confTier, avgLogprob: t.avgLogprob, noSpeechProb: t.noSpeechProb,
+            compressionRatio: t.compressionRatio },
         }).catch((err) => console.error(`[brain] ${t.dockId}: addressed turn crashed`, err));
       };
       // Debug self-test: tap (open the window) then feed a final utterance → a turn

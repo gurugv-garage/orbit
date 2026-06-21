@@ -84,6 +84,9 @@ export interface TurnRequest {
    *  never set currentTurnId locally. Distinct from trigger.kind, which still
    *  frames the prompt as a user utterance. */
   stationOriginated?: boolean;
+  /** STT confidence for an addressed (heard) turn — surfaced in observability so the
+   *  trace shows WHY a heard utterance was trusted/flagged (Whisper's own metrics). */
+  stt?: { confTier?: string; avgLogprob?: number | null; noSpeechProb?: number | null; compressionRatio?: number | null };
 }
 
 export interface SessionDeps {
@@ -763,6 +766,8 @@ export class DockBrainSession {
       model: `${agent.state.model.provider}/${agent.state.model.id}`,
       thinkingLevel: agent.state.thinkingLevel,
       historyMessages: agent.state.messages.length,
+      // STT confidence for a heard turn (observability: why this transcript was trusted).
+      ...(req.stt ? { stt: req.stt } : {}),
     });
 
     // vision gate (brain-side). Image source, in order: the phone-attached

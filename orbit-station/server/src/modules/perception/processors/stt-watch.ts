@@ -318,9 +318,18 @@ function isLowConfidence(t: Transcription): boolean {
 // hallucination in the captured data with zero false positives. Raw logprob/noSpeech
 // alone are too aggressive (they nuke short legit utterances like "Thank you" / "Okay"
 // that are quiet) — so they only escalate to GARBAGE when BOTH are bad together.
-const GARBAGE_COMPRESSION = Number(process.env.STT_GARBAGE_COMPRESSION ?? 3.0); // repetition loop
-const GARBAGE_LOGPROB = Number(process.env.STT_GARBAGE_LOGPROB ?? -1.15); // very unsure (combined only)
-const GARBAGE_NOSPEECH = Number(process.env.STT_GARBAGE_NOSPEECH ?? 0.6); // likely not speech (combined only)
+//
+// The combined (logprob AND no_speech) condition is WHISPER'S OWN silence/hallucination
+// rule — OpenAI's transcribe.py marks a segment as silence only when
+// `no_speech_prob > no_speech_threshold AND avg_logprob < logprob_threshold` (both),
+// to avoid false-positives on confident speech that happens to have a high no-speech
+// prob. We align our GARBAGE thresholds to Whisper's documented defaults: logprob -1.0,
+// no_speech 0.6, compression 2.4. (Previously -1.15 logprob, which was stricter than
+// Whisper's default and let borderline hallucinations like "I think" (-1.12, 0.59)
+// through as a turn.) Env-tunable; the perception playground replays recordings to tune.
+const GARBAGE_COMPRESSION = Number(process.env.STT_GARBAGE_COMPRESSION ?? 3.0); // repetition loop (> Whisper's 2.4: only flag a clear loop)
+const GARBAGE_LOGPROB = Number(process.env.STT_GARBAGE_LOGPROB ?? -1.0);  // Whisper's logprob_threshold (combined only)
+const GARBAGE_NOSPEECH = Number(process.env.STT_GARBAGE_NOSPEECH ?? 0.6); // Whisper's no_speech_threshold (combined only)
 
 export type ConfTier = 'good' | 'shaky' | 'garbage';
 export function confidenceTier(t: {
@@ -365,6 +374,11 @@ export interface FinalTranscriptEvent {
   endedAt: number;
   lowConfidence: boolean;
   confTier?: ConfTier;
+  /** Whisper's own confidence metrics, carried through so observability shows WHY a
+   *  transcript was tagged (and the addressed-decision trace can record them). */
+  avgLogprob?: number | null;
+  noSpeechProb?: number | null;
+  compressionRatio?: number | null;
 }
 
 export function sttWatchProcessor(
@@ -450,6 +464,7 @@ export function sttWatchProcessor(
           onFinal?.({
             dockId: ctx.dockId, streamId: ctx.streamId, text: tr.text,
             startedAt: startedAt.getTime(), endedAt: endedAt.getTime(), lowConfidence, confTier: tier,
+            avgLogprob: tr.avgLogprob, noSpeechProb: tr.noSpeechProb, compressionRatio: tr.compressionRatio,
           });
         }
       };
