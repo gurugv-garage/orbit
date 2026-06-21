@@ -18,6 +18,8 @@
   - [CAPTURE — is what we perceive accurate?  ← FOCUS FIRST](#capture--is-what-we-perceive-accurate---focus-first)
   - [RECALL — given accurate facts, can it retrieve + answer?](#recall--given-accurate-facts-can-it-retrieve--answer)
 - [How we measure CAPTURE — real A/V, recorded + replayed](#how-we-measure-capture--real-av-recorded--replayed)
+  - [The judging console (the human-in-the-loop tool)](#the-judging-console-the-human-in-the-loop-tool)
+- [Cost of online STT for BACKGROUND capture](#cost-of-online-stt-for-background-capture)
 - [How we measure RECALL — known facts, in isolation](#how-we-measure-recall--known-facts-in-isolation)
 - [Build order](#build-order)
 - [Open (discuss as we build)](#open-discuss-as-we-build)
@@ -95,6 +97,54 @@ reality *right here*."
   same timeline next to model A's for the same instant.
 - Lives alongside the existing Perception Studio (`/#perception`) — same snapshot
   format, just time-synced to recorded A/V instead of live.
+
+## Cost of online STT for BACKGROUND capture
+
+The dock's STT is **VAD-gated** (it transcribes detected *utterances*, not 24/7 wall-
+clock — Whisper never sees pure silence). So online STT is billed on **speech-seconds**,
+not connection time. This is what makes it affordable; a naive always-on *streaming*
+connection (24h/day) would be ~$190–700/mo even on cheap providers — **don't use a
+connection-priced streaming API for background; use batch/async per-utterance** (which
+is how our pipeline already works — discrete utterance PCM).
+
+**Per-hour-of-speech (async/batch, late-2025/2026 list prices, approx):**
+
+| Provider | $/hr speech | Diarization |
+|---|---|---|
+| Deepgram Nova | ~$0.26 | included, cheap |
+| OpenAI gpt-4o-transcribe | ~$0.36 | no (separate) |
+| AssemblyAI | ~$0.37 | included |
+| Google Chirp / STT v2 | ~$0.96 (+~50% w/ diarization) | extra |
+| Azure | ~$1.00 | extra |
+
+**Monthly, by how much speech the dock actually hears (heavy = our target, ~6 hr/day):**
+
+| Speech/day | Deepgram | OpenAI | Google |
+|---|---|---|---|
+| Light (1 hr) | ~$8/mo | ~$11/mo | ~$29/mo |
+| Medium (3 hr) | ~$23/mo | ~$32/mo | ~$86/mo |
+| **Heavy (6 hr)** | **~$47/mo** | **~$65/mo** | **~$173/mo** |
+
+**Architecture: VAD stays LOCAL.** The endpointing (`UtteranceDetector`) runs on the
+station/device for free — only the detected utterance PCM is sent to the online STT.
+So we pay only for speech-seconds, never silence or connection time, and the silence
+never leaves the box (privacy). This is a backend swap, not a rearchitecture: today
+`UtteranceDetector` (local VAD) → `transcribe()` (local Whisper); going online just
+points `transcribe()` at Deepgram's batch API with the *same* VAD-gated PCM.
+
+**Takeaways:**
+- At heavy volume the provider choice swings cost **3–4×** — Deepgram/AssemblyAI (diarization
+  included) are far cheaper than Google/Azure.
+- **Diarization** (the multi-speaker fix) is the reason to go online at all — local Whisper
+  can't do it. Included on Deepgram/AssemblyAI; a surcharge elsewhere.
+- **The split (decided): real-time local, background online.** The addressed/listening
+  path — when you talk TO the dock and it must respond fast — stays **local Whisper**
+  (low-latency, free, private). Only the **background processing** (ambient perception
+  for recall — accuracy + diarization matter, latency doesn't) goes to **online STT**.
+  So the responsive conversation costs nothing extra; you pay online only for the
+  background ambient speech (the ~6 hr/day figure above is *that*, not the interaction).
+- **Measure before paying:** wire online STT as a *reprocess engine* in the Capture
+  console and compare accuracy + speaker labels on the REAL recordings first.
 
 ## How we measure RECALL — known facts, in isolation
 
