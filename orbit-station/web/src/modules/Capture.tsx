@@ -54,6 +54,7 @@ export function Capture() {
   const [playMs, setPlayMs] = useState(0); // ms since recording start (the sync clock)
   const [runIdx, setRunIdx] = useState(0); // which result run to show on the single timeline
   const [compareAll, setCompareAll] = useState(true); // per-second grid of ALL runs
+  const [hiddenRuns, setHiddenRuns] = useState<Set<string>>(new Set()); // toggled-off columns
   const [model, setModel] = useState('mlx-community/whisper-small.en-mlx');
   const [prompt, setPrompt] = useState('');
   const [reproc, setReproc] = useState(false);
@@ -133,9 +134,11 @@ export function Capture() {
 
   // PER-SECOND COMPARISON GRID: rows = each second any run has SPEECH; one column
   // per run. Each cell shows that run's text at that second + its confidence score.
-  const speechRuns = (manifest?.runs ?? []).map((r) => ({
-    ...r, byScond: bucketBySecond(r.snapshots.filter((s) => s.source.kind === 'speech'), startSec),
-  }));
+  const speechRuns = (manifest?.runs ?? [])
+    .filter((r) => !hiddenRuns.has(r.label))
+    .map((r) => ({
+      ...r, byScond: bucketBySecond(r.snapshots.filter((s) => s.source.kind === 'speech'), startSec),
+    }));
   const allSeconds = Array.from(new Set(speechRuns.flatMap((r) => [...r.byScond.keys()]))).sort((a, b) => a - b);
 
   return (
@@ -244,21 +247,38 @@ export function Capture() {
                   ))}
                 </div>
 
-                {/* VIEW TOGGLE */}
-                <div style={{ marginTop: 12, display: 'flex', alignItems: 'center', gap: 10 }}>
+                {/* VIEW TOGGLE + COLUMN TOGGLES */}
+                <div style={{ marginTop: 12, display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
                   <span className="side-section-label">Transcript</span>
                   <label style={{ fontSize: 12, display: 'flex', gap: 5, cursor: 'pointer' }}>
                     <input type="checkbox" checked={compareAll} onChange={(e) => setCompareAll(e.target.checked)} />
                     compare all runs (per-second)
                   </label>
-                  {!compareAll && (manifest.runs ?? []).map((r, i) => (
-                    <button key={r.label} onClick={() => setRunIdx(i)}
-                      style={{ fontSize: 11, padding: '2px 9px', borderRadius: 12, cursor: 'pointer',
-                        background: i === runIdx ? '#13243a' : 'transparent', color: i === runIdx ? '#cfe' : '#89a',
-                        border: `1px solid ${i === runIdx ? '#2a4a6a' : '#1c2233'}` }}>
-                      {r.label}
-                    </button>
-                  ))}
+                  {compareAll
+                    ? /* COLUMN toggles: click a run to show/hide its column */
+                      (manifest.runs ?? []).map((r) => {
+                        const shown = !hiddenRuns.has(r.label);
+                        return (
+                          <button key={r.label} onClick={() => setHiddenRuns((h) => {
+                            const n = new Set(h); if (n.has(r.label)) n.delete(r.label); else n.add(r.label); return n;
+                          })}
+                            title={shown ? 'click to hide this column' : 'click to show this column'}
+                            style={{ fontSize: 11, padding: '2px 9px', borderRadius: 12, cursor: 'pointer',
+                              background: shown ? '#13243a' : 'transparent', color: shown ? '#cfe' : '#566',
+                              border: `1px solid ${shown ? '#2a4a6a' : '#1c2233'}`, textDecoration: shown ? 'none' : 'line-through' }}>
+                            {shown ? '' : '🚫 '}{r.label}
+                          </button>
+                        );
+                      })
+                    : /* SINGLE-run picker */
+                      (manifest.runs ?? []).map((r, i) => (
+                        <button key={r.label} onClick={() => setRunIdx(i)}
+                          style={{ fontSize: 11, padding: '2px 9px', borderRadius: 12, cursor: 'pointer',
+                            background: i === runIdx ? '#13243a' : 'transparent', color: i === runIdx ? '#cfe' : '#89a',
+                            border: `1px solid ${i === runIdx ? '#2a4a6a' : '#1c2233'}` }}>
+                          {r.label}
+                        </button>
+                      ))}
                 </div>
 
                 {compareAll
