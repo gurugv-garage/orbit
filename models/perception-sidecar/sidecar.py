@@ -89,6 +89,37 @@ class Stt:
             "compression_ratio": comp,
         }
 
+    def transcribe_file(self, pcm_i16, sample_rate, model=None, initial_prompt=None):
+        """Whole-file transcription for the capture-judging REPROCESS path: hand the
+        WHOLE recording to Whisper (its own segmentation), with an optional MODEL
+        override and an optional INITIAL_PROMPT (context bias — names/domain terms,
+        to test context-aware transcription). Returns per-segment text + timing +
+        Whisper's confidence metrics, so the console can tier + time-sync each segment."""
+        audio = pcm_i16.astype(np.float32) / 32768.0
+        if sample_rate != 16000:
+            n = int(len(audio) * 16000 / sample_rate)
+            audio = np.interp(np.linspace(0, len(audio), n, endpoint=False),
+                              np.arange(len(audio)), audio).astype(np.float32)
+        repo = model or self.model
+        r = MLX.submit(lambda: self._mlx_whisper.transcribe(
+            audio, path_or_hf_repo=repo,
+            initial_prompt=initial_prompt,
+            condition_on_previous_text=False,
+            no_speech_threshold=0.6,
+            logprob_threshold=-1.0,
+            temperature=0.0,
+        )).result()
+        segs = []
+        for s in (r.get("segments") or []):
+            segs.append({
+                "start": s.get("start", 0.0), "end": s.get("end", 0.0),
+                "text": (s.get("text") or "").strip(),
+                "avg_logprob": s.get("avg_logprob"),
+                "no_speech_prob": s.get("no_speech_prob"),
+                "compression_ratio": s.get("compression_ratio"),
+            })
+        return {"model": repo, "text": (r.get("text") or "").strip(), "segments": segs}
+
 
 class Vision:
     """moondream3 (MLX) vision — reuses the benched MD3 runner so they can't drift.
@@ -144,7 +175,17 @@ def make_handler(stt: Stt, vision_holder: dict, temporal_holder: dict):
             pass
 
         def _send(self, code, obj):
-            body = _json.dumps(obj).encode()
+            # NaN/Inf (Whisper sometimes returns NaN logprobs) are invalid JSON for
+            # strict parsers (JS JSON.parse). Emit null instead of a bare NaN token.
+            def _clean(o):
+                if isinstance(o, float):
+                    return o if o == o and o not in (float("inf"), float("-inf")) else None
+                if isinstance(o, dict):
+                    return {k: _clean(v) for k, v in o.items()}
+                if isinstance(o, list):
+                    return [_clean(v) for v in o]
+                return o
+            body = _json.dumps(_clean(obj)).encode()
             self.send_response(code)
             self.send_header("content-type", "application/json")
             self.send_header("content-length", str(len(body)))
@@ -182,6 +223,28 @@ def make_handler(stt: Stt, vision_holder: dict, temporal_holder: dict):
                 t0 = time.perf_counter()
                 try:
                     out = stt.transcribe(pcm, sr)
+                except Exception as e:
+                    self._send(500, {"error": str(e)})
+                    return
+                out["latency_ms"] = (time.perf_counter() - t0) * 1e3
+                self._send(200, out)
+                return
+
+            # Whole-file reprocess (capture-judging): optional model + initial_prompt.
+            if self.path == "/transcribe_file":
+                if stt is None:
+                    self._send(503, {"error": "stt not loaded (vision-only process)"})
+                    return
+                try:
+                    pcm = np.frombuffer(base64.b64decode(req["pcm_b64"]), dtype=np.int16)
+                    sr = int(req.get("sample_rate", 16000))
+                except Exception as e:
+                    self._send(400, {"error": f"bad request: {e}"})
+                    return
+                t0 = time.perf_counter()
+                try:
+                    out = stt.transcribe_file(pcm, sr, model=req.get("model"),
+                                              initial_prompt=req.get("initial_prompt"))
                 except Exception as e:
                     self._send(500, {"error": str(e)})
                     return

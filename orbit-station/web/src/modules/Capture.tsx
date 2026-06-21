@@ -42,6 +42,10 @@ export function Capture() {
   const [manifest, setManifest] = useState<Manifest | null>(null);
   const [busy, setBusy] = useState(false);
   const [playMs, setPlayMs] = useState(0); // ms since recording start (the sync clock)
+  const [runIdx, setRunIdx] = useState(0); // which result run to show on the timeline
+  const [model, setModel] = useState('mlx-community/whisper-small.en-mlx');
+  const [prompt, setPrompt] = useState('');
+  const [reproc, setReproc] = useState(false);
 
   const videoRef = useRef<HTMLVideoElement>(null);
   const audioRef = useRef<HTMLAudioElement>(null);
@@ -63,6 +67,7 @@ export function Capture() {
   // Load a session's manifest when one is opened.
   useEffect(() => {
     if (!openId) { setManifest(null); return; }
+    setRunIdx(0);
     api.get<Manifest>(`/capture/${openId}`).then(setManifest).catch(() => setManifest(null));
   }, [openId]);
 
@@ -88,8 +93,20 @@ export function Capture() {
   const play = () => { videoRef.current?.play(); audioRef.current?.play(); };
   const pause = () => { videoRef.current?.pause(); audioRef.current?.pause(); };
 
-  // The run we're judging (first run = 'live' for now).
-  const run = manifest?.runs?.[0];
+  // The run we're judging (selectable; defaults to the first).
+  const run = manifest?.runs?.[Math.min(runIdx, (manifest?.runs?.length ?? 1) - 1)];
+
+  const reprocess = async () => {
+    if (!manifest) return;
+    setReproc(true);
+    try {
+      const label = (model.split('/').pop() ?? 'run') + (prompt ? '+ctx' : '');
+      await api.post(`/capture/${manifest.id}/reprocess`, { model, prompt: prompt || undefined, label });
+      const m = await api.get<Manifest>(`/capture/${manifest.id}`);
+      setManifest(m);
+      setRunIdx(m.runs.findIndex((r) => r.label === label)); // jump to the new run
+    } finally { setReproc(false); }
+  };
   const startEpoch = manifest?.startedAtEpoch ?? 0;
   // A snapshot is "active" if the playhead time falls within its interval.
   const snapAtPlayhead = (s: Snapshot) => {
@@ -175,10 +192,37 @@ export function Capture() {
                   </div>
                 </div>
 
-                {/* TIMELINE — every snapshot as a marker; the active one highlights */}
-                <div style={{ marginTop: 14 }}>
-                  <div className="side-section-label" style={{ marginBottom: 6 }}>
-                    Snapshot timeline ({run?.snapshots.length ?? 0}) · run: {run?.label ?? '—'}
+                {/* REPROCESS BAR — re-run STT with a chosen model + context prompt */}
+                <div style={{ marginTop: 14, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap',
+                  background: '#10141f', border: '1px solid #1c2233', borderRadius: 10, padding: '8px 12px' }}>
+                  <span style={{ fontSize: 12, opacity: 0.7 }}>Re-transcribe with</span>
+                  <select value={model} onChange={(e) => setModel(e.target.value)}
+                    style={{ fontSize: 12, background: '#0b0e16', color: '#cfe', border: '1px solid #1c2233', borderRadius: 6, padding: '3px 6px' }}>
+                    <option value="mlx-community/whisper-small.en-mlx">whisper small.en</option>
+                    <option value="mlx-community/whisper-base.en-mlx">whisper base.en</option>
+                    <option value="mlx-community/whisper-medium.en-mlx">whisper medium.en</option>
+                    <option value="mlx-community/whisper-large-v3-mlx">whisper large-v3</option>
+                  </select>
+                  <input value={prompt} onChange={(e) => setPrompt(e.target.value)} placeholder="context prompt (names, topic) — optional"
+                    style={{ flex: 1, minWidth: 180, fontSize: 12, background: '#0b0e16', color: '#cfe', border: '1px solid #1c2233', borderRadius: 6, padding: '4px 8px' }} />
+                  <button disabled={reproc} onClick={reprocess}
+                    style={{ padding: '5px 14px', borderRadius: 7, background: '#13243a', color: '#cfe', border: '1px solid #1c2233', cursor: 'pointer', fontWeight: 600 }}>
+                    {reproc ? '… transcribing' : '↻ Reprocess'}
+                  </button>
+                </div>
+
+                {/* TIMELINE — run selector (compare) + every snapshot as a marker */}
+                <div style={{ marginTop: 12 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6, flexWrap: 'wrap' }}>
+                    <span className="side-section-label">Snapshot timeline ({run?.snapshots.length ?? 0})</span>
+                    {(manifest.runs ?? []).map((r, i) => (
+                      <button key={r.label} onClick={() => setRunIdx(i)}
+                        style={{ fontSize: 11, padding: '2px 9px', borderRadius: 12, cursor: 'pointer',
+                          background: i === runIdx ? '#13243a' : 'transparent', color: i === runIdx ? '#cfe' : '#89a',
+                          border: `1px solid ${i === runIdx ? '#2a4a6a' : '#1c2233'}` }}>
+                        {r.label} ({r.snapshots.length})
+                      </button>
+                    ))}
                   </div>
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 3, maxHeight: 320, overflowY: 'auto',
                     background: '#0b0e16', borderRadius: 10, padding: 10 }}>

@@ -34,6 +34,7 @@ import { getSnapshotsApi } from '../perception/index.js';
 import { isoIst } from '../perception/snapshots.js';
 import { startAudioRecording, type AudioRecordHandle } from './audio-recorder.js';
 import { startVideoRecording, type VideoRecordHandle } from './video-recorder.js';
+import { reprocessStt } from './reprocess.js';
 
 export interface CaptureWiring {
   getHub: () => ProcessingHub;
@@ -184,6 +185,29 @@ export function captureModule(w: CaptureWiring): StationModule {
         if (!ok) { json(res, 404, { error: 'not found' }); return true; }
         res.writeHead(200, { 'content-type': m[2] === 'video' ? 'video/webm' : 'audio/wav' });
         createReadStream(path).pipe(res);
+        return true;
+      }
+      // POST /:id/reprocess { model?, prompt?, label? } → re-run STT over the audio
+      // with a chosen model + optional context prompt → append a result run.
+      m = subPath.match(/^\/([^/]+)\/reprocess$/);
+      if (m && req.method === 'POST') {
+        const body = await readBody<{ model?: string; prompt?: string; label?: string }>();
+        const man = await readManifest(w.dir, m[1]!);
+        if (!man) { json(res, 404, { error: 'not found' }); return true; }
+        const label = body.label || body.model?.split('/').pop() || 'reprocess';
+        try {
+          const run = await reprocessStt({
+            audioPath: join(sessionDir(m[1]!), man.audio),
+            dockId: man.dock, streamId: m[1]!, startedAtEpoch: man.startedAtEpoch,
+            model: body.model, prompt: body.prompt, label,
+          });
+          // replace a same-label run if re-run, else append.
+          man.runs = [...(man.runs ?? []).filter((r) => r.label !== label), run];
+          await writeFile(join(sessionDir(m[1]!), 'session.json'), JSON.stringify(man, null, 2));
+          json(res, 200, { ok: true, label, segments: run.snapshots.length, model: run.model });
+        } catch (e) {
+          json(res, 500, { error: String(e) });
+        }
         return true;
       }
       m = subPath.match(/^\/([^/]+)\/judge$/);
