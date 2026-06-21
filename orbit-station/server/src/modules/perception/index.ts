@@ -26,7 +26,7 @@ import { visionSnapshotProcessor } from './processors/vision-snapshot.js';
 import { identitySnapshotProcessor } from './processors/identity-snapshot.js';
 import { sttWatchProcessor } from './processors/stt-watch.js';
 import { bodyMotionWatchProcessor, type MotionCommand } from './processors/bodymotion-watch.js';
-import { SnapshotStore, isoIst, sampleEvenly } from './snapshots.js';
+import { SnapshotStore, isoIst, sampleEvenly, type SnapshotRecord } from './snapshots.js';
 import { TakeStore } from './takes.js';
 import { summarize } from './summarizer.js';
 import { buildGrounding, type LastSummary } from './grounding.js';
@@ -245,10 +245,25 @@ export function getTranscriptApi(): TranscriptApi | undefined {
   return transcriptRef.current;
 }
 
+/** Read-only access to the snapshot store for other modules (the capture/judging
+ *  harness needs the snapshots produced during a recorded window). */
+export interface SnapshotsApi {
+  /** Snapshots whose interval overlaps [fromIso, toIso], optionally one dock. */
+  inWindow(fromIso: string, toIso: string, dockId?: string): SnapshotRecord[];
+}
+const snapshotsRef: { current?: SnapshotsApi } = {};
+export function getSnapshotsApi(): SnapshotsApi | undefined {
+  return snapshotsRef.current;
+}
+
 
 export function perceptionModule(getHub: () => ProcessingHub): StationModule {
   let state: PerceptionState;
   const snapshots = new SnapshotStore(); // WebRTC vision+speech snapshot records
+  snapshotsRef.current = {
+    inWindow: (fromIso, toIso, dockId) =>
+      snapshots.inWindow(fromIso, toIso).filter((r) => !dockId || r.dockId === dockId),
+  };
   const takes = new TakeStore();         // frozen snapshot bundles for A/B replay
   // Latest produced summary PER DOCK — the head of perception grounding (3.1). Set
   // on each successful /snapshots/summarize; read synchronously by the brain facade.

@@ -28,6 +28,7 @@ import type { RouteContext, StationModule } from '../../core/module.js';
 import type { Directory } from '../docks/directory.js';
 import type { MotionExecutor } from '../bodylink/motion.js';
 import { getFaceTools, getPerceptionGrounding, getMemoryApi, getGateApi, getTranscriptApi } from '../perception/index.js';
+import { isRecording } from '../capture/index.js';
 import type { VideoRecorderApi } from '../perception/record/recorder.js';
 import { RpcBroker } from './rpc.js';
 import { DockBrainSession, type TurnRequest, keyStatusFor } from './session.js';
@@ -191,6 +192,7 @@ export function brainModule(w: BrainWiring): StationModule {
       // lane as tasks (user turns still win; it defers while listening/speaking). This
       // is the auto-raise replacement for the console's manual think-poke.
       getGateApi()?.onRaise((t) => {
+        if (isRecording(t.dockId)) return; // recording mode → dock stays silent
         session(t.dockId).enqueueAutonomousTurn({
           turnId: `self-${randomUUID()}`,
           trigger: { kind: 'self', text: t.text },
@@ -212,6 +214,10 @@ export function brainModule(w: BrainWiring): StationModule {
       // separate latch Map. Overheard utterances are ignored here (still transcribed
       // upstream; the attention gate may act on them later).
       const onAddressedFinal = (t: { dockId: string; text: string; startedAt: number; endedAt: number }) => {
+        // RECORDING MODE: while this dock is being recorded for the capture harness,
+        // the dock must NOT respond (we want clean ambient perception). The mic/cam
+        // keep capturing + transcribing upstream; we just don't turn it into a reply.
+        if (isRecording(t.dockId)) return;
         if (!session(t.dockId).utteranceAddressed(t.endedAt)) return;
         void session(t.dockId).handleTurnRequest({
           turnId: `addr-${randomUUID()}`,
