@@ -236,7 +236,9 @@ class PerceptionPipeline(private val appContext: Context) {
         const val BARGE_VAD_FRAMES = 5      // sustained ~150 ms (vs brief residual spikes)
         // Re-emit VAD-active every this-many ms WHILE the user keeps talking, so the
         // station's listening window (extended VAD_EXTEND_MS=4s per event) never lapses
-        // mid-sentence. 2s < 4s, so the window stays continuously open while speaking.
-        const val VAD_KEEPALIVE_MS = 2_000L
+        // mid-sentence. Kept SHORT (well under the 4s extend) so the window stays solidly
+        // high while speaking — a 2s interval drifted the window down toward expiry on
+        // quieter speech; 800ms keeps it pinned near the top.
+        const val VAD_KEEPALIVE_MS = 800L
     }
 }
