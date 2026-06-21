@@ -31,6 +31,31 @@ async function to16kMonoWav(path: string, startSec?: number, durSec?: number): P
   });
 }
 
+/** Collapse a REPETITION LOOP — a run of consecutive (near-)identical segments that an
+ *  STT/LLM emits on unclear audio ("S0: in the same" ×310). Keep the FIRST of each run,
+ *  stretch its end to the last duplicate's end, drop the rest. A long loop (≥ LOOP_MIN)
+ *  is dropped entirely — it's not real speech, just degeneration. Applies to all engines. */
+const LOOP_MIN = 5;
+function collapseLoops(segs: OnlineSeg[]): OnlineSeg[] {
+  const norm = (t: string) => t.toLowerCase().replace(/^s\d+:\s*/, '').replace(/[^a-z0-9 ]/g, '').trim();
+  const out: OnlineSeg[] = [];
+  let i = 0;
+  while (i < segs.length) {
+    let j = i + 1;
+    while (j < segs.length && norm(segs[j]!.text) === norm(segs[i]!.text) && norm(segs[i]!.text)) j++;
+    const runLen = j - i;
+    if (runLen >= LOOP_MIN) {
+      // pure degeneration — drop the whole run (it's noise, not something said)
+    } else {
+      const first = { ...segs[i]! };
+      if (runLen > 1) first.end = segs[j - 1]!.end; // collapse a short repeat into one span
+      out.push(first);
+    }
+    i = j;
+  }
+  return out;
+}
+
 /** Audio duration in seconds via ffprobe. */
 async function durationSec(path: string): Promise<number> {
   return await new Promise((resolve) => {
@@ -81,11 +106,11 @@ async function deepgram(audioPath: string): Promise<OnlineResult> {
   const utts = data.results?.utterances ?? [];
   return {
     model: `deepgram-${model}`,
-    segments: utts.map((u) => ({
+    segments: collapseLoops(utts.map((u) => ({
       start: u.start, end: u.end, text: u.transcript.trim(), speaker: u.speaker,
       // Deepgram confidence (0..1) → an avg_logprob-shaped value so the tierer reuses.
       avg_logprob: u.confidence != null ? u.confidence - 1 : null,
-    })),
+    }))),
   };
 }
 
@@ -141,9 +166,13 @@ async function geminiAudio(audioPath: string, modelArg?: string): Promise<Online
     if (!r.ok) throw new Error(`gemini-audio ${r.status}: ${(await r.text()).slice(0, 200)}`);
     const data = await r.json() as { candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }> };
     const txt = data?.candidates?.[0]?.content?.parts?.[0]?.text ?? '{}';
-    const chunkSegs = parseSegmentsLoose(txt)
-      .map((s) => ({ ...s, text: (s.text ?? '').trim() }))
+    const rawSegs = parseSegmentsLoose(txt)
+      .map((s) => ({ start: s.start ?? 0, end: s.end ?? s.start ?? 0, text: (s.text ?? '').trim(), speaker: s.speaker }))
       .filter((s) => s.text.length > 0); // drop empty (loop residue)
+    // Collapse repetition loops PER CHUNK first (flash-lite can loop "in the same" ×310
+    // within one chunk) — before the time-spread, so the spread distributes only real
+    // segments and a long loop is dropped entirely.
+    const chunkSegs = collapseLoops(rawSegs);
 
     // Some models (esp. flash-lite) don't return usable per-segment times — they
     // pile every segment at ~0 (or report a tiny sub-second span for the whole chunk).
