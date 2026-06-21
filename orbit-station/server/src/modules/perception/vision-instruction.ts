@@ -16,10 +16,19 @@
 // produced. Too-strict prompts collapse to "the person is present" (useless).
 const BASE =
   'In one short sentence, describe what the person is doing — their action and ' +
-  'posture — and any object they are clearly holding or using (e.g. "typing on a ' +
-  'laptop", "drinking from a cup", "standing and looking at the screen"). ' +
-  'Use "they"/"the person"; do not guess gender, age, or name. State only what is ' +
-  'clearly visible — do NOT describe the background or invent details or other people.';
+  'posture — and any object they are clearly holding or using. ' +
+  'Use "they"/"the person"; do not guess gender, age, or name. ' +
+  'Look at the object ITSELF and name what it actually is; if you are not sure what ' +
+  'the object is, say "an object" rather than guessing a common one. ' +
+  'Do NOT default to "laptop" or "phone" — only say so if you clearly see one. ' +
+  'State only what is clearly visible — do NOT describe the background or invent ' +
+  'details or other people.';
+// NOTE: the examples ("typing on a laptop"…) were removed deliberately. qwen2.5-VL is
+// small and ANCHORS on the first in-prompt example when a 320×240 frame is ambiguous —
+// it was reading a held-up mug/cup as "typing on a laptop" (the seeded example) because
+// the desk scene is its strong prior. Resolution (≥512px) is the real fix for the
+// flicker (see memory: perception-hallucination-knobs); this removes the prompt's
+// contribution to the wrong fallback.
 
 let extra = '';
 
