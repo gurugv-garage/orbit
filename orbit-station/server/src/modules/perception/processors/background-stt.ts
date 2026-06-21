@@ -22,9 +22,11 @@ export interface BgTranscript { text: string; speaker?: number }
 
 const PROMPT =
   'Transcribe this short audio of a real conversation as accurately as you can. '
-  + 'If multiple people speak, diarize: label each speaker 0,1,2,…. '
-  + 'Return STRICT JSON {"text":"<best transcript, with \\"Sn: \\" speaker prefixes if '
-  + 'multiple speakers>","speaker":<the dominant speaker index, or 0>}. '
+  + 'If multiple people speak, diarize by prefixing each speaker turn with "S0:", "S1:", '
+  + '"S2:" (one prefix per speaker change). If a single speaker, no prefix is needed. '
+  + 'Return STRICT JSON: {"text":"<the cleaned transcript with the speaker prefixes>",'
+  + '"speaker":<the dominant speaker number as an integer, or 0>}. '
+  + 'Example: {"text":"S0: What are you making? S1: A cake.","speaker":0}. '
   + 'Do NOT invent words for unintelligible audio — return "" if you cannot make it out. JSON only.';
 
 /** Build a minimal WAV (16-bit mono) around PCM-16 samples for the audio payload. */
