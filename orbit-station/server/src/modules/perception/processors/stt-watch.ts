@@ -341,6 +341,11 @@ export function sttWatchProcessor(
    *  drop audio then so the station never transcribes the dock's own voice (the
    *  self-transcribe feedback loop). Defaults to never-speaking. */
   isSpeaking?: (dockId: string) => boolean,
+  /** PRODUCTION background STT upgrade: given a finished utterance's PCM, return a
+   *  better DIARIZED transcript (online, e.g. Gemini flash-lite) to replace the live
+   *  Whisper text in the snapshot. Async + best-effort — the live path never waits on
+   *  it. Undefined = local-Whisper-only (the default). */
+  backgroundStt?: (pcm: Int16Array, sampleRate: number) => Promise<{ text: string; speaker?: number } | null>,
 ): StreamProcessor & {
   /** Force-commit any in-progress utterance on EVERY stream now, awaiting the
    *  transcription. Used by the Summarize flush so a mid-sentence is captured. */
@@ -367,7 +372,7 @@ export function sttWatchProcessor(
         // summarizer LLM decide noise vs signal.
         const tier = confidenceTier(tr);
         const lowConfidence = tier !== 'good'; // back-compat flag (shaky OR garbage)
-        store.add(makeSnapshot({
+        const rec = makeSnapshot({
           dockId: ctx.dockId,
           source: { id: ctx.streamId, kind: 'speech', device: 'dock-webrtc', host: 'station' },
           model: { name: 'whisper-small.en-mlx', endpoint: SIDECAR_URL },
@@ -378,7 +383,23 @@ export function sttWatchProcessor(
             avgLogprob: tr.avgLogprob, noSpeechProb: tr.noSpeechProb, compressionRatio: tr.compressionRatio,
             inferMs: tr.inferMs,
           },
-        }));
+        });
+        store.add(rec);
+        // BACKGROUND UPGRADE (production split): the snapshot lands NOW with Whisper
+        // text (fast); if a background engine is wired, async re-transcribe this
+        // utterance with the better diarized model and PATCH the snapshot in place.
+        // Best-effort — never blocks the live addressed-turn path below.
+        if (backgroundStt) {
+          void backgroundStt(pcm, SAMPLE_RATE).then((up) => {
+            if (up?.text) {
+              store.update(rec, {
+                text: up.text,
+                ...(up.speaker != null ? { speaker: up.speaker } : {}),
+                bgModel: true, // marks this snapshot as background-upgraded
+              });
+            }
+          }).catch(() => { /* keep the Whisper text */ });
+        }
         // confidence rides along so downstream sees Whisper's certainty, not a constant
         const conf = tr.avgLogprob != null ? Math.max(0, Math.min(1, 1 + tr.avgLogprob)) : 0.8;
         ctx.emit({ kind: 'transcript', source: 'stt-watch', payload: { text: tr.text, isFinal: true }, confidence: conf });

@@ -25,6 +25,7 @@ import { faceRecognitionProcessor } from './processors/face-recognition.js';
 import { visionSnapshotProcessor } from './processors/vision-snapshot.js';
 import { identitySnapshotProcessor } from './processors/identity-snapshot.js';
 import { sttWatchProcessor } from './processors/stt-watch.js';
+import { backgroundTranscribe } from './processors/background-stt.js';
 import { bodyMotionWatchProcessor, type MotionCommand } from './processors/bodymotion-watch.js';
 import { SnapshotStore, isoIst, sampleEvenly, type SnapshotRecord } from './snapshots.js';
 import { TakeStore } from './takes.js';
@@ -301,10 +302,20 @@ export function perceptionModule(getHub: () => ProcessingHub): StationModule {
       speakingUntil.set(dockId, Date.now() + (on ? SPEAK_ON_WINDOW_MS : SPEAK_TAIL_MS));
     },
   };
+  // BACKGROUND STT (production split, docs/findings/recall-reliability.md): when
+  // PERCEPTION_BG_STT_MODEL is set (e.g. 'gemini-2.5-flash-lite'), each VAD-gated
+  // utterance is async re-transcribed online to UPGRADE the snapshot with a better,
+  // diarized transcript for recall. The live addressed-turn path stays local Whisper.
+  // Off by default (env unset) → local-Whisper-only, exactly as before.
+  const bgSttModel = process.env.PERCEPTION_BG_STT_MODEL;
+  const bgStt = bgSttModel
+    ? (pcm: Int16Array, rate: number) => backgroundTranscribe(pcm, rate, bgSttModel)
+    : undefined;
   const stt = sttWatchProcessor(
     snapshots,
     (e) => finalHandler?.(e),
     (dockId) => Date.now() < (speakingUntil.get(dockId) ?? 0),
+    bgStt,
   ); // 🎙 speech (exposes flushAll)
   // Vision reuses the face processor's decoded frame (ONE ffmpeg per dock, not two).
   const vision = visionSnapshotProcessor(snapshots, (sid) => face.currentFrame(sid)); // 👁 vision (captureNow)
