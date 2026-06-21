@@ -30,6 +30,17 @@ const PROMPT =
   + 'Do NOT include timestamps, times, or any "00:01"-style markers in the text. '
   + 'Do NOT invent words for unintelligible audio — return "" if you cannot make it out. JSON only.';
 
+/** True if `text` is mostly a regurgitation of the context (so it's a fabricated
+ *  re-hearing of past conversation, not a transcript of the audio). Word-overlap:
+ *  if ≥70% of the transcript's words appear in the context, treat it as an echo. */
+function echoesContext(text: string, context: string): boolean {
+  const words = (s: string) => s.toLowerCase().replace(/s\d+:/g, ' ').replace(/[^a-z0-9 ]/g, ' ').split(/\s+/).filter((w) => w.length > 2);
+  const tw = words(text); if (tw.length < 3) return false;
+  const ctx = new Set(words(context));
+  const hit = tw.filter((w) => ctx.has(w)).length;
+  return hit / tw.length >= 0.7;
+}
+
 /** Build a minimal WAV (16-bit mono) around PCM-16 samples for the audio payload. */
 function wav(pcm: Int16Array, rate: number): Buffer {
   const dataBytes = pcm.length * 2;
@@ -56,14 +67,24 @@ export async function backgroundTranscribe(
   const key = geminiKey();
   if (!key) return null;
   const b64 = wav(pcm, sampleRate).toString('base64');
-  const ctxBlock = context?.trim()
-    ? `Context (the ongoing situation — use it to get names/terms right, do NOT transcribe it):\n${context.trim()}\n\n`
-    : '';
+  const ctx = context?.trim();
+  // Context goes AFTER the prompt+audio, clearly fenced as REFERENCE-ONLY. (Putting it
+  // first led Gemini to echo the context as the transcript when the audio was unclear.)
+  const parts: Array<Record<string, unknown>> = [
+    { text: PROMPT },
+    { inline_data: { mime_type: 'audio/wav', data: b64 } },
+  ];
+  if (ctx) {
+    parts.push({ text:
+      '\n\n--- BACKGROUND REFERENCE (NOT audio — never output any of this text; only use '
+      + 'it to spell names/terms heard in the AUDIO correctly. If the audio does not '
+      + `clearly contain words, return "") ---\n${ctx}` });
+  }
   try {
     const r = await fetch(`${GEMINI_BASE}/${model}:generateContent?key=${key}`, {
       method: 'POST', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
-        contents: [{ parts: [{ text: ctxBlock + PROMPT }, { inline_data: { mime_type: 'audio/wav', data: b64 } }] }],
+        contents: [{ parts }],
         generationConfig: { responseMimeType: 'application/json', temperature: 0.1, maxOutputTokens: 1024 },
       }),
       signal: AbortSignal.timeout(30_000),
@@ -74,6 +95,10 @@ export async function backgroundTranscribe(
     const parsed = JSON.parse(txt) as { text?: string; speaker?: number };
     const text = (parsed.text ?? '').trim();
     if (!text) return null;
+    // ECHO GUARD: when the audio is unclear, Gemini sometimes regurgitates the context
+    // reference as the transcript. Reject a result that is mostly contained in the
+    // context (a fabricated re-hearing of past conversation) — keep the Whisper snapshot.
+    if (ctx && echoesContext(text, ctx)) return null;
     return { text, speaker: typeof parsed.speaker === 'number' ? parsed.speaker : undefined };
   } catch {
     return null; // network/timeout/parse → keep the local Whisper snapshot
