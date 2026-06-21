@@ -284,8 +284,16 @@ private class TtsAecLoopback(
     private var senderFactory: PeerConnectionFactory? = null
     private var pcSend: PeerConnection? = null
     private var pcRecv: PeerConnection? = null
+    // Re-pins TTS to the speaker whenever the OS drifts routing off it (API 31+).
+    private var commDeviceListener: AudioManager.OnCommunicationDeviceChangedListener? = null
 
     fun start() {
+        // Pin speaker routing for the LIFE of the session, not just once on the first
+        // TTS track. setCommunicationDevice(SPEAKER) is not sticky: a later mic-focus /
+        // AEC re-init / presence re-listen silently reverts comm-audio to the earpiece
+        // (the Redmi default), so TTS "drifts" quiet over a session. A listener snaps it
+        // back the moment it moves off the speaker — self-healing, no per-utterance hook.
+        pinSpeakerRouting(ctx)
         val senderAdm = JavaAudioDeviceModule.builder(ctx)
             .setSampleRate(WebRtcAudio.SAMPLE_RATE)
             .setUseHardwareAcousticEchoCanceler(false)
@@ -309,13 +317,10 @@ private class TtsAecLoopback(
                 // Moderate gain: high enough to be audible + a clean AEC reference,
                 // low enough not to overdrive/clip (10.0 was rough). Tune if quiet.
                 (r?.track() as? org.webrtc.AudioTrack)?.setVolume(2.0)
-                // The production ADM plays TTS in the VOICE_COMMUNICATION world, which
-                // routes to the EARPIECE by default on devices that have one (fine on
-                // an earpiece-less tablet, wrong on a phone — the Redmi 6 Pro). Force
-                // the built-in SPEAKER. This changes only the OUTPUT DEVICE of the same
-                // ADM playout — the AEC reference (the rendered TTS) is untouched, so
-                // echo cancellation is unaffected. No-op on a device without an earpiece.
-                routeToSpeaker(ctx)
+                // Speaker routing is pinned for the whole session in start()/pinSpeakerRouting
+                // (a listener re-asserts it if the OS drifts back to the earpiece). Assert
+                // once more here in case the track arrives after a routing change.
+                assertSpeaker(ctx)
                 Timber.i("TtsAecLoopback: recv TTS track → rendering through production ADM (speaker-routed)")
             }
         }) ?: return
@@ -345,11 +350,32 @@ private class TtsAecLoopback(
         }, MediaConstraints())
     }
 
-    /** Route the VOICE_COMMUNICATION playout (the TTS) to the built-in SPEAKER, not
-     *  the earpiece. Idempotent + safe to call each utterance. On API 31+ uses the
-     *  modern setCommunicationDevice(BUILTIN_SPEAKER); older devices use the
-     *  (deprecated but functional) setSpeakerphoneOn. Earpiece-less devices: no-op. */
-    private fun routeToSpeaker(context: Context) {
+    /** Assert speaker routing once AND register a listener that re-asserts it whenever
+     *  the OS drifts comm-audio off the built-in speaker (the root cause of TTS going
+     *  quiet mid-session: setCommunicationDevice is not sticky). Idempotent — the
+     *  listener is registered at most once. Earpiece-less devices: effectively a no-op. */
+    private fun pinSpeakerRouting(context: Context) {
+        val am = context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager ?: return
+        assertSpeaker(context)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && commDeviceListener == null) {
+            val l = AudioManager.OnCommunicationDeviceChangedListener { dev ->
+                // If routing moved off the speaker (e.g. back to the earpiece), snap it back.
+                if (dev?.type != android.media.AudioDeviceInfo.TYPE_BUILTIN_SPEAKER) {
+                    Timber.i("TtsAecLoopback: comm routing drifted to ${dev?.type} → re-pinning speaker")
+                    assertSpeaker(context)
+                }
+            }
+            try {
+                am.addOnCommunicationDeviceChangedListener({ main.post(it) }, l)
+                commDeviceListener = l
+            } catch (t: Throwable) { Timber.w(t, "addOnCommunicationDeviceChangedListener failed") }
+        }
+    }
+
+    /** Force the VOICE_COMMUNICATION playout (the TTS) to the built-in SPEAKER, not the
+     *  earpiece. On API 31+ uses setCommunicationDevice(BUILTIN_SPEAKER); older devices
+     *  use the (deprecated but functional) setSpeakerphoneOn. No-op if already on speaker. */
+    private fun assertSpeaker(context: Context) {
         val am = context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager ?: return
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
@@ -364,7 +390,19 @@ private class TtsAecLoopback(
                 if (!am.isSpeakerphoneOn) am.isSpeakerphoneOn = true
             }
         } catch (t: Throwable) {
-            Timber.w(t, "routeToSpeaker failed (leaving default routing)")
+            Timber.w(t, "assertSpeaker failed (leaving default routing)")
+        }
+    }
+
+    /** Unregister the comm-device listener. Call when the loopback is torn down. */
+    fun releaseSpeakerPin() {
+        val l = commDeviceListener ?: return
+        commDeviceListener = null
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            try {
+                val am = ctx.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
+                am?.removeOnCommunicationDeviceChangedListener(l)
+            } catch (t: Throwable) { Timber.w(t, "removeOnCommunicationDeviceChangedListener failed") }
         }
     }
 
