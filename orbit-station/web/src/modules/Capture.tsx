@@ -22,7 +22,7 @@ const TIER_STYLE: Record<string, { color: string; tag: string }> = {
   shaky: { color: '#fbbf24', tag: '~ shaky' },
   good: { color: '#cfe', tag: '' },
 };
-interface Run { label: string; model?: string; createdAt: string; snapshots: Snapshot[] }
+interface Run { label: string; model?: string; prompt?: string; createdAt: string; snapshots: Snapshot[] }
 interface Manifest {
   id: string; dock: string; startedAt: string; startedAtEpoch: number;
   endedAt: string; durationMs: number; video: string; audio: string; runs: Run[];
@@ -33,6 +33,16 @@ const KIND_ICON: Record<string, string> = {
 };
 const istClock = (iso: string) => (iso || '').slice(11, 19);
 
+/** Group speech snapshots by their start-second → second → snapshots in that second. */
+function bucketBySecond(snaps: Snapshot[], startSec: (s: Snapshot) => number): Map<number, Snapshot[]> {
+  const m = new Map<number, Snapshot[]>();
+  for (const s of snaps) {
+    const sec = startSec(s);
+    (m.get(sec) ?? m.set(sec, []).get(sec)!).push(s);
+  }
+  return m;
+}
+
 export function Capture() {
   const [producers, setProducers] = useState<Producer[]>([]);
   const [dock, setDock] = useState<string>('');
@@ -42,7 +52,8 @@ export function Capture() {
   const [manifest, setManifest] = useState<Manifest | null>(null);
   const [busy, setBusy] = useState(false);
   const [playMs, setPlayMs] = useState(0); // ms since recording start (the sync clock)
-  const [runIdx, setRunIdx] = useState(0); // which result run to show on the timeline
+  const [runIdx, setRunIdx] = useState(0); // which result run to show on the single timeline
+  const [compareAll, setCompareAll] = useState(true); // per-second grid of ALL runs
   const [model, setModel] = useState('mlx-community/whisper-small.en-mlx');
   const [prompt, setPrompt] = useState('');
   const [reproc, setReproc] = useState(false);
@@ -115,6 +126,17 @@ export function Capture() {
     return playMs >= from - 200 && playMs <= to + 800; // small grace
   };
   const snapText = (s: Snapshot) => s.payload.text ?? s.payload.caption ?? s.payload.label ?? JSON.stringify(s.payload).slice(0, 80);
+  // A 0..1 confidence score from Whisper's avg logprob (lp 0 → 1.0, lp -1 → 0).
+  const confScore = (s: Snapshot): number | null =>
+    s.payload.avgLogprob != null ? Math.max(0, Math.min(1, 1 + s.payload.avgLogprob)) : null;
+  const startSec = (s: Snapshot) => Math.max(0, Math.round((new Date(s.interval.from).getTime() - startEpoch) / 1000));
+
+  // PER-SECOND COMPARISON GRID: rows = each second any run has SPEECH; one column
+  // per run. Each cell shows that run's text at that second + its confidence score.
+  const speechRuns = (manifest?.runs ?? []).map((r) => ({
+    ...r, byScond: bucketBySecond(r.snapshots.filter((s) => s.source.kind === 'speech'), startSec),
+  }));
+  const allSeconds = Array.from(new Set(speechRuns.flatMap((r) => [...r.byScond.keys()]))).sort((a, b) => a - b);
 
   return (
     <div className="view">
@@ -211,48 +233,104 @@ export function Capture() {
                   </button>
                 </div>
 
-                {/* TIMELINE — run selector (compare) + every snapshot as a marker */}
-                <div style={{ marginTop: 12 }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6, flexWrap: 'wrap' }}>
-                    <span className="side-section-label">Snapshot timeline ({run?.snapshots.length ?? 0})</span>
-                    {(manifest.runs ?? []).map((r, i) => (
-                      <button key={r.label} onClick={() => setRunIdx(i)}
-                        style={{ fontSize: 11, padding: '2px 9px', borderRadius: 12, cursor: 'pointer',
-                          background: i === runIdx ? '#13243a' : 'transparent', color: i === runIdx ? '#cfe' : '#89a',
-                          border: `1px solid ${i === runIdx ? '#2a4a6a' : '#1c2233'}` }}>
-                        {r.label} ({r.snapshots.length})
-                      </button>
-                    ))}
-                  </div>
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: 3, maxHeight: 320, overflowY: 'auto',
-                    background: '#0b0e16', borderRadius: 10, padding: 10 }}>
-                    {(run?.snapshots ?? []).map((s, i) => {
-                      const active = snapAtPlayhead(s);
-                      const tMs = new Date(s.interval.from).getTime() - startEpoch;
-                      const tier = s.source.kind === 'speech' ? (s.payload.confTier ?? 'good') : 'good';
-                      const ts = TIER_STYLE[tier] ?? TIER_STYLE.good!;
-                      const metrics = s.source.kind === 'speech' && s.payload.avgLogprob != null
-                        ? `lp ${s.payload.avgLogprob.toFixed(2)} · ns ${(s.payload.noSpeechProb ?? 0).toFixed(2)} · cr ${(s.payload.compressionRatio ?? 0).toFixed(1)}`
-                        : '';
-                      return (
-                        <div key={i} onClick={() => { if (videoRef.current) videoRef.current.currentTime = Math.max(0, tMs / 1000); }}
-                          title={metrics}
-                          style={{ display: 'flex', gap: 8, fontSize: 13, padding: '3px 6px', borderRadius: 6, cursor: 'pointer',
-                            background: active ? '#13243a' : 'transparent', border: `1px solid ${active ? '#2a4a6a' : 'transparent'}` }}>
-                          <span style={{ opacity: 0.5, fontVariantNumeric: 'tabular-nums', width: 54 }}>
-                            {(Math.max(0, tMs) / 1000).toFixed(1)}s
-                          </span>
-                          <span>{KIND_ICON[s.source.kind] ?? '•'}</span>
-                          <span style={{ flex: 1, color: ts.color, opacity: tier === 'garbage' ? 0.7 : 1 }}>
-                            {tier === 'garbage' ? <em>{snapText(s)}</em> : snapText(s)}
-                            {ts.tag && <span style={{ fontSize: 11, marginLeft: 6, opacity: 0.8 }}>{ts.tag}</span>}
-                          </span>
-                          {metrics && <span style={{ fontSize: 10, opacity: 0.4, fontVariantNumeric: 'tabular-nums' }}>{metrics}</span>}
-                        </div>
-                      );
-                    })}
-                  </div>
+                {/* RUNS — each run's model + the ctx prompt it used (so it's judgeable) */}
+                <div style={{ marginTop: 12, display: 'flex', flexDirection: 'column', gap: 4 }}>
+                  {(manifest.runs ?? []).map((r) => (
+                    <div key={r.label} style={{ fontSize: 12, display: 'flex', gap: 8, alignItems: 'baseline' }}>
+                      <span style={{ fontWeight: 600, color: '#cfe', minWidth: 110 }}>{r.label}</span>
+                      <span style={{ opacity: 0.5 }}>{r.model?.split('/').pop() ?? '—'} · {r.snapshots.filter((s) => s.source.kind === 'speech').length} speech</span>
+                      {r.prompt && <span style={{ opacity: 0.7, color: '#9cf', fontStyle: 'italic' }}>ctx: "{r.prompt}"</span>}
+                    </div>
+                  ))}
                 </div>
+
+                {/* VIEW TOGGLE */}
+                <div style={{ marginTop: 12, display: 'flex', alignItems: 'center', gap: 10 }}>
+                  <span className="side-section-label">Transcript</span>
+                  <label style={{ fontSize: 12, display: 'flex', gap: 5, cursor: 'pointer' }}>
+                    <input type="checkbox" checked={compareAll} onChange={(e) => setCompareAll(e.target.checked)} />
+                    compare all runs (per-second)
+                  </label>
+                  {!compareAll && (manifest.runs ?? []).map((r, i) => (
+                    <button key={r.label} onClick={() => setRunIdx(i)}
+                      style={{ fontSize: 11, padding: '2px 9px', borderRadius: 12, cursor: 'pointer',
+                        background: i === runIdx ? '#13243a' : 'transparent', color: i === runIdx ? '#cfe' : '#89a',
+                        border: `1px solid ${i === runIdx ? '#2a4a6a' : '#1c2233'}` }}>
+                      {r.label}
+                    </button>
+                  ))}
+                </div>
+
+                {compareAll
+                  ? /* PER-SECOND COMPARISON GRID — rows=seconds, columns=runs, conf-scored */
+                    <div style={{ marginTop: 8, maxHeight: 420, overflowY: 'auto', background: '#0b0e16', borderRadius: 10 }}>
+                      <div style={{ display: 'grid', gridTemplateColumns: `54px repeat(${speechRuns.length}, 1fr)`,
+                        position: 'sticky', top: 0, background: '#0b0e16', borderBottom: '1px solid #1c2233', zIndex: 1 }}>
+                        <div style={{ fontSize: 11, opacity: 0.5, padding: '6px 8px' }}>time</div>
+                        {speechRuns.map((r) => (
+                          <div key={r.label} style={{ fontSize: 11, fontWeight: 600, color: '#9cf', padding: '6px 8px' }}>{r.label}</div>
+                        ))}
+                      </div>
+                      {allSeconds.map((sec) => {
+                        const active = Math.floor(playMs / 1000) === sec;
+                        return (
+                          <div key={sec} onClick={() => { if (videoRef.current) videoRef.current.currentTime = sec; }}
+                            style={{ display: 'grid', gridTemplateColumns: `54px repeat(${speechRuns.length}, 1fr)`, cursor: 'pointer',
+                              background: active ? '#13243a' : 'transparent', borderBottom: '1px solid #11151f' }}>
+                            <div style={{ fontSize: 11, opacity: 0.5, padding: '5px 8px', fontVariantNumeric: 'tabular-nums' }}>
+                              {Math.floor(sec / 60)}:{String(sec % 60).padStart(2, '0')}
+                            </div>
+                            {speechRuns.map((r) => {
+                              const cell = r.byScond.get(sec) ?? [];
+                              return (
+                                <div key={r.label} style={{ padding: '5px 8px', fontSize: 12.5, borderLeft: '1px solid #11151f' }}>
+                                  {cell.map((s, j) => {
+                                    const tier = s.payload.confTier ?? 'good';
+                                    const ts = TIER_STYLE[tier] ?? TIER_STYLE.good!;
+                                    const sc = confScore(s);
+                                    return (
+                                      <div key={j} title={s.payload.avgLogprob != null ? `lp ${s.payload.avgLogprob.toFixed(2)} · ns ${(s.payload.noSpeechProb ?? 0).toFixed(2)} · cr ${(s.payload.compressionRatio ?? 0).toFixed(1)}` : ''}>
+                                        <span style={{ color: ts.color, opacity: tier === 'garbage' ? 0.7 : 1 }}>
+                                          {tier === 'garbage' ? <em>{snapText(s)}</em> : snapText(s)}
+                                        </span>
+                                        {sc != null && <span style={{ fontSize: 10, opacity: 0.45, marginLeft: 5, fontVariantNumeric: 'tabular-nums' }}>
+                                          {Math.round(sc * 100)}%{ts.tag ? ` ${ts.tag}` : ''}
+                                        </span>}
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+                              );
+                            })}
+                          </div>
+                        );
+                      })}
+                      {allSeconds.length === 0 && <div className="empty" style={{ fontSize: 12, padding: 12 }}>No speech in any run.</div>}
+                    </div>
+                  : /* SINGLE-RUN timeline (all snapshot kinds) */
+                    <div style={{ marginTop: 8, display: 'flex', flexDirection: 'column', gap: 3, maxHeight: 420, overflowY: 'auto',
+                      background: '#0b0e16', borderRadius: 10, padding: 10 }}>
+                      {(run?.snapshots ?? []).map((s, i) => {
+                        const active = snapAtPlayhead(s);
+                        const tMs = new Date(s.interval.from).getTime() - startEpoch;
+                        const tier = s.source.kind === 'speech' ? (s.payload.confTier ?? 'good') : 'good';
+                        const ts = TIER_STYLE[tier] ?? TIER_STYLE.good!;
+                        const sc = s.source.kind === 'speech' ? confScore(s) : null;
+                        return (
+                          <div key={i} onClick={() => { if (videoRef.current) videoRef.current.currentTime = Math.max(0, tMs / 1000); }}
+                            style={{ display: 'flex', gap: 8, fontSize: 13, padding: '3px 6px', borderRadius: 6, cursor: 'pointer',
+                              background: active ? '#13243a' : 'transparent', border: `1px solid ${active ? '#2a4a6a' : 'transparent'}` }}>
+                            <span style={{ opacity: 0.5, fontVariantNumeric: 'tabular-nums', width: 54 }}>{(Math.max(0, tMs) / 1000).toFixed(1)}s</span>
+                            <span>{KIND_ICON[s.source.kind] ?? '•'}</span>
+                            <span style={{ flex: 1, color: ts.color, opacity: tier === 'garbage' ? 0.7 : 1 }}>
+                              {tier === 'garbage' ? <em>{snapText(s)}</em> : snapText(s)}
+                              {ts.tag && <span style={{ fontSize: 11, marginLeft: 6, opacity: 0.8 }}>{ts.tag}</span>}
+                            </span>
+                            {sc != null && <span style={{ fontSize: 10, opacity: 0.45, fontVariantNumeric: 'tabular-nums' }}>{Math.round(sc * 100)}%</span>}
+                          </div>
+                        );
+                      })}
+                    </div>}
               </div>}
         </div>
       </div>

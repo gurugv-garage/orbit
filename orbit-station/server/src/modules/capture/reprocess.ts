@@ -42,6 +42,8 @@ async function readWav(path: string): Promise<{ pcm: Int16Array; rate: number }>
 export interface ReprocessRun {
   label: string;
   model?: string;
+  /** the context/bias prompt this run was transcribed with (so it's judgeable). */
+  prompt?: string;
   createdAt: string;
   snapshots: unknown[];
 }
@@ -82,5 +84,5 @@ export async function reprocessStt(opts: {
     };
   });
 
-  return { label: opts.label, model: out.model, createdAt: isoIst(new Date()), snapshots };
+  return { label: opts.label, model: out.model, prompt: opts.prompt, createdAt: isoIst(new Date()), snapshots };
 }

@@ -72,6 +72,7 @@ interface Manifest {
 interface ResultRun {
   label: string;            // 'live', or a model id like 'whisper-small.en' / 'qwen2.5-vl'
   model?: string;
+  prompt?: string;          // the context/bias prompt this run used (if any)
   createdAt: string;        // IST
   snapshots: unknown[];     // SnapshotRecord[] produced by this run
 }
