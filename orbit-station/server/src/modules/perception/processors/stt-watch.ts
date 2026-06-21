@@ -61,6 +61,17 @@ const HALLUCINATION_PHRASES = new Set([
   "i'm sorry", 'bye', 'bye.', '.', 'so', 'okay', 'the end',
 ]);
 
+/** The dock's listening on/off BEEP (a ToneGenerator blip) isn't an AEC reference
+ *  (only TTS is rendered through the WebRTC loopback), so the mic hears it and
+ *  Whisper transcribes it as "beep"/"beep beep". Drop a transcript that is ONLY
+ *  beep tokens so it never becomes an agent turn (the dock was replying to its own
+ *  beep). A real sentence that merely CONTAINS "beep" still passes. */
+function isBeepArtifact(text: string): boolean {
+  const norm = text.toLowerCase().replace(/[^a-z\s]/g, ' ').replace(/\s+/g, ' ').trim();
+  if (!norm) return false;
+  return norm.split(' ').every((w) => w === 'beep');
+}
+
 function isHallucination(text: string): boolean {
   const norm = text.toLowerCase().replace(/\s+/g, ' ').trim();
   if (HALLUCINATION_PHRASES.has(norm.replace(/[.!]+$/, ''))) return true;
@@ -328,11 +339,15 @@ export function sttWatchProcessor(
         const conf = tr.avgLogprob != null ? Math.max(0, Math.min(1, 1 + tr.avgLogprob)) : 0.8;
         ctx.emit({ kind: 'transcript', source: 'stt-watch', payload: { text: tr.text, isFinal: true }, confidence: conf });
         // A1.2: hand the final transcript + its utterance window to the brain's
-        // addressed latch so a tapped utterance can become an agent turn.
-        onFinal?.({
-          dockId: ctx.dockId, streamId: ctx.streamId, text: tr.text,
-          startedAt: startedAt.getTime(), endedAt: endedAt.getTime(), lowConfidence,
-        });
+        // addressed latch so a tapped utterance can become an agent turn — UNLESS
+        // it's the dock's own listening beep transcribed as "beep beep" (keep the
+        // snapshot above for the record, but never let it become a turn).
+        if (!isBeepArtifact(tr.text)) {
+          onFinal?.({
+            dockId: ctx.dockId, streamId: ctx.streamId, text: tr.text,
+            startedAt: startedAt.getTime(), endedAt: endedAt.getTime(), lowConfidence,
+          });
+        }
       };
       const detector = new UtteranceDetector((pcm, startedAt, endedAt) => { void commit(pcm, startedAt, endedAt); });
       detector.commit = commit; // flushNow awaits this; the live path stays fire-and-forget
