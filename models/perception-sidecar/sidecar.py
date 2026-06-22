@@ -19,8 +19,13 @@ runs in Ollama directly, which is more efficient.
 
   python3 sidecar.py --port 8078 --model mlx-community/whisper-small.en-mlx --vision
 
+  # alternate STT engine — NVIDIA Parakeet-TDT via parakeet-mlx (same /transcribe
+  # contract, but returns null confidence metrics; English/European only):
+  python3 sidecar.py --port 8078 --engine parakeet
+
 mlx-whisper runs Metal-accelerated on Apple Silicon; base.en is ~140MB and
-transcribes a few-second window in well under real time.
+transcribes a few-second window in well under real time. --engine selects whisper
+(default) or parakeet; both run on the single MLX thread.
 """
 from __future__ import annotations
 import argparse, base64, json as _json, time
@@ -169,6 +174,69 @@ class Stt:
         return {"model": repo, "text": (r.get("text") or "").strip(), "segments": segs}
 
 
+class ParakeetStt:
+    """NVIDIA Parakeet-TDT (MLX) STT — drop-in alternative to the Whisper `Stt`
+    class behind the SAME /transcribe contract, selected with --engine parakeet.
+
+    Loads the official NVIDIA weights from HF via the open-source `parakeet-mlx`
+    package (we write NO model code; same pattern as mlx-whisper). Runs on the one
+    MLX thread like every other model here.
+
+    Contract difference vs Whisper: Parakeet is a transducer, so it has no
+    no_speech_prob / compression_ratio / per-token avg_logprob to surface. We
+    return those as None — stt-watch.ts's confidenceTier() already treats null
+    metrics gracefully (falls back to text heuristics), so the loss is just
+    Whisper's built-in hallucination tells, not a crash. Keep this in mind when
+    comparing reliability, not only WER."""
+
+    def __init__(self, model: str):
+        from parakeet_mlx import from_pretrained  # validate at boot
+        from parakeet_mlx.audio import get_logmel
+        self._from_pretrained = from_pretrained
+        self._get_logmel = get_logmel
+        self.model = model
+        self._m = MLX.submit(lambda: from_pretrained(model)).result()  # load on MLX thread
+
+    def _transcribe_audio(self, audio: np.ndarray) -> str:
+        import mlx.core as mx
+        mel = self._get_logmel(mx.array(audio), self._m.preprocessor_config)
+        res = self._m.generate(mel)
+        return (res[0].text if res else "").strip()
+
+    def transcribe(self, pcm_i16: np.ndarray, sample_rate: int) -> dict:
+        audio = pcm_i16.astype(np.float32) / 32768.0
+        if sample_rate != 16000:
+            n = int(len(audio) * 16000 / sample_rate)
+            audio = np.interp(np.linspace(0, len(audio), n, endpoint=False),
+                              np.arange(len(audio)), audio).astype(np.float32)
+        text = MLX.submit(lambda: self._transcribe_audio(audio)).result()
+        # Parakeet exposes none of Whisper's confidence tells → null (handled in TS).
+        return {"text": text, "avg_logprob": None, "no_speech_prob": None,
+                "compression_ratio": None}
+
+    def transcribe_file(self, pcm_i16, sample_rate, model=None, initial_prompt=None, job=None):
+        """Whole-file path for the bench/reprocess harness. Parakeet has no
+        per-segment Whisper metrics, no initial_prompt bias, and segments via its
+        own sentence splitter — we return one segment spanning the clip so the
+        contract shape matches. `model`/`initial_prompt` are ignored (logged once)."""
+        audio = pcm_i16.astype(np.float32) / 32768.0
+        if sample_rate != 16000:
+            n = int(len(audio) * 16000 / sample_rate)
+            audio = np.interp(np.linspace(0, len(audio), n, endpoint=False),
+                              np.arange(len(audio)), audio).astype(np.float32)
+        if job:
+            PROGRESS[job] = 0.0
+            _start_progress_ticker(job, len(audio) / 16000.0, "parakeet")
+        try:
+            text = MLX.submit(lambda: self._transcribe_audio(audio)).result()
+        finally:
+            if job:
+                PROGRESS[job] = 1.0
+        return {"model": self.model, "text": text, "segments": [{
+            "start": 0.0, "end": len(audio) / 16000.0, "text": text,
+            "avg_logprob": None, "no_speech_prob": None, "compression_ratio": None}]}
+
+
 class Vision:
     """moondream3 (MLX) vision — reuses the benched MD3 runner so they can't drift.
     Loaded lazily (first /infer) since it costs ~5 GB GPU.
@@ -280,6 +348,11 @@ def make_handler(stt: Stt, vision_holder: dict, temporal_holder: dict):
                     self._send(500, {"error": str(e)})
                     return
                 out["latency_ms"] = (time.perf_counter() - t0) * 1e3
+                # live-test visibility: one line per utterance so we can watch what
+                # the STT engine actually hears in real conversation.
+                print(f"/transcribe [{getattr(stt,'model','?')}] "
+                      f"{out['latency_ms']:.0f}ms  {len(pcm)/sr:.1f}s  "
+                      f"text={out.get('text')!r}", flush=True)
                 self._send(200, out)
                 return
 
@@ -358,7 +431,14 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--port", type=int, default=8078)
     ap.add_argument("--host", default="127.0.0.1")
-    ap.add_argument("--model", default="mlx-community/whisper-small.en-mlx")
+    ap.add_argument("--engine", default="whisper", choices=["whisper", "parakeet"],
+                    help="STT engine. whisper (default) = mlx-whisper; "
+                         "parakeet = NVIDIA Parakeet-TDT via parakeet-mlx. Same "
+                         "/transcribe contract; parakeet returns null confidence metrics.")
+    ap.add_argument("--model", default=None,
+                    help="STT model HF id. Defaults per --engine: "
+                         "whisper→mlx-community/whisper-small.en-mlx, "
+                         "parakeet→mlx-community/parakeet-tdt-0.6b-v3.")
     ap.add_argument("--vision", action="store_true", help="preload md3 vision at boot")
     ap.add_argument("--temporal", action="store_true", help="preload qwen temporal at boot")
     ap.add_argument("--no-stt", action="store_true",
@@ -368,9 +448,12 @@ def main():
     a = ap.parse_args()
     stt = None
     if not a.no_stt:
-        print(f"loading STT {a.model} …")
+        model = a.model or (
+            "mlx-community/parakeet-tdt-0.6b-v3" if a.engine == "parakeet"
+            else "mlx-community/whisper-small.en-mlx")
+        print(f"loading STT engine={a.engine} {model} …")
         t0 = time.perf_counter()
-        stt = Stt(a.model)
+        stt = ParakeetStt(model) if a.engine == "parakeet" else Stt(model)
         print(f"  ready in {time.perf_counter()-t0:.1f}s")
     vision_holder: dict = {"v": None}
     if a.vision:
