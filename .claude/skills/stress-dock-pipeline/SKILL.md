@@ -82,6 +82,57 @@ A tally, not anecdotes: trials attempted, OK vs BROKEN rate, the worst examples 
 as **SAID → HEARD → REPLIED**, and which layer each break is in (capture/STT/addressed/
 brain/TTS/UI). Feeds docs/rca/ and docs/findings/.
 
+## Building NEW test scenarios (tasks, tool-calling, …)
+
+`bin/lib.sh` is the shared foundation — reuse it; don't reinvent. It's layered so new
+test types only add the bits they need:
+
+- **station reads** (ground truth): `mode`, `secs`, `decision`, `producer_audio`, `tx_count`.
+- **device actions**: `tap`, `relaunch`, `shot`, `wait_idle`, `wait_producer`.
+- **driver mouth**: `say_line`.
+- **the one composed unit**: `ensure_listening` + `trial` (address → CONFIRM listening →
+  speak → judge). `trial` returns 0=RAN-TURN, 1=dock-failed-while-listening (REAL bug),
+  2=couldn't-confirm-listening (skip, not a dock fail).
+
+To add a scenario, write a new `bin/<name>.sh` that `source`s lib.sh and loops your flow.
+**Keep the five method rules** (instrument-don't-theorize · many reps + report a rate ·
+screenshot-vs-log cross-check · start-from-known-state · be honest which failure class).
+
+### The extension CONTRACT every new test type needs
+
+A test type is only trustworthy if it has a **ground-truth oracle** (like STT's
+`/transcribe` count) — a station-side fact that proves the thing actually happened, not a
+guess. Before writing the scenario, find/confirm the oracle and add a `lib.sh` reader for
+it. Sketches for the two you want next:
+
+- **Tasks** (background jobs the brain spawns — docs/tasks.md): oracle = the `tasks` WS
+  topic / `GET /api/brain/<dock>/...` task records (a task was created, ran, and connected
+  back). Add e.g. `task_count()` / `task_state()`. Scenario: ask the dock to start a task,
+  CONFIRM it spawned (not just that the brain *said* it would), let it run, verify it
+  reported back, and hammer concurrency (two tasks, cancel mid-run, restart while a task
+  runs — the restart class bit hard for STT; tasks are processes, so test it too).
+- **Tool-calling**: oracle = the brain turn trace (the `obs` topic `brain-debug` /
+  observability Step records show each `tool_call` + result), NOT the spoken reply (the
+  dock can *say* it did a thing without calling the tool — the classic failure). Add a
+  reader that, for a turn, asserts the expected tool fired with the right args and a
+  non-error result. Scenario: speak a line that REQUIRES a tool (e.g. set a face, play
+  music, send a message), then verify the tool actually ran — and probe the failure modes
+  (announces-but-doesn't-call; calls with wrong args; tool errors but the dock claims
+  success). Run many times; tool-calling reliability is exactly the kind of thing that's
+  fine 8/10 and silently wrong 2/10.
+
+Each new scenario should, like the existing ones, **print a per-trial line + a final
+rate**, and feed findings to docs/rca/ (for non-obvious bugs) or docs/findings/.
+
+## Known structural issue this skill keeps surfacing
+
+Several bugs found here (missing glow, "stopped speaking but not listening") share ONE
+root: **multiple uncoordinated owners of the dock's face/listening state** (local TTS
+edges, local perception, station conversation frames) racing each other, when the station
+is meant to be the sole owner. See docs/findings/face-state-ownership-cleanup.md for the
+full problem statement, what a cleanup must address, and how to test it. When you touch
+listening/face state, read that first.
+
 ## Reference
 
 The post-restart no-STT RCA (docs/rca/2026-06-22-post-restart-no-stt.md) is the worked

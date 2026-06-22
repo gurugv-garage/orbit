@@ -31,6 +31,30 @@ producer_audio() { curl -s -m3 "$BASE/api/media/status" 2>/dev/null \
 # (A turn that produces 0 new transcribes never reached the recognizer.)
 tx_count() { grep -c '/transcribe' "$STT_LOG" 2>/dev/null || echo 0; }
 
+# the dock's last spoken reply (assistant turn) — for judging REPLIED vs SAID/HEARD.
+last_reply() {
+  curl -s -m4 "$BASE/api/brain/$DOCK/history" 2>/dev/null | python3 -c "
+import sys,json
+try: h=json.load(sys.stdin)
+except: print(''); sys.exit()
+msgs=h if isinstance(h,list) else h.get('messages',h.get('history',[]))
+def txt(m):
+  c=m.get('content','')
+  return c if isinstance(c,str) else ' '.join(p.get('text','') for p in c if isinstance(p,dict))
+a=[m for m in (msgs or []) if m.get('role')=='assistant' and txt(m).strip()]
+print(txt(a[-1]).strip()[:120] if a else '')
+" 2>/dev/null
+}
+
+# preflight: station up, adb device present, dock has an audio producer. Call at the top
+# of a scenario so a missing prerequisite is an explicit error, not a wall of false fails.
+preflight() {
+  curl -s -m3 "$BASE/api/docks" >/dev/null 2>&1 || { echo "PREFLIGHT FAIL: station not up at $BASE"; return 1; }
+  adb devices | grep -qw device || { echo "PREFLIGHT FAIL: no adb device"; return 1; }
+  [ "$(producer_audio)" = audio ] || echo "PREFLIGHT WARN: dock '$DOCK' has no audio producer yet (relaunch may be needed)"
+  echo "preflight ok: station up, adb device present, dock=$DOCK producer=$(producer_audio)"
+}
+
 # --- device actions --------------------------------------------------------------------
 tap()   { adb shell input tap "$TAP_X" "$TAP_Y" >/dev/null 2>&1; }
 relaunch() { adb shell am force-stop dev.orbit.dock >/dev/null 2>&1; sleep "${1:-1}"; \
