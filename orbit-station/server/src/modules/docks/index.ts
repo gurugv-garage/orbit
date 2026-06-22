@@ -15,8 +15,16 @@
  *     self-heal after missed frames.
  *
  *   GET /api/docks                     all known docks (composition + live state)
+ *   GET /api/docks/unclaimed           live devices with no dock binding yet
+ *   POST   /api/docks/bind             claim a device → dock (deviceId, dock)
+ *   DELETE /api/docks/bind/:deviceId   forget a device's binding (re-park unclaimed)
  *   PUT    /api/docks/:name/manifest   edit a dock's expected components
  *   DELETE /api/docks/:name            forget a dock (refused while live)
+ *
+ * Runtime dock binding (docs/decision-traces/runtime-dock-binding.md): a device
+ * dials in with only its stable hardware id and learns its dock name back from
+ * the station. An unbound device rides the roster "unclaimed" (no dock) and is
+ * surfaced here to be claimed.
  */
 
 import type { Bus } from '../../core/bus.js';
@@ -26,6 +34,7 @@ import type { RouteContext, StationModule } from '../../core/module.js';
 import type { PresenceFrame } from '../../core/protocol.js';
 import type { Directory } from './directory.js';
 import type { Hub, RosterEntry } from '../../core/hub.js';
+import type { BindingStore } from './bindings.js';
 
 /** slow re-send so devices that missed a presence frame self-heal. */
 const PRESENCE_RESEND_MS = 10_000;
@@ -35,7 +44,11 @@ interface PeerEvt {
   kind?: string; caps?: string[]; build?: number; label?: string;
 }
 
-export function docksModule(directory: Directory, getHub: () => Hub): StationModule {
+export function docksModule(
+  directory: Directory,
+  getHub: () => Hub,
+  bindings: BindingStore,
+): StationModule {
   let bus: Bus;
 
   /** Drop persisted test/web/sim cruft, announcing each removal to consoles.
@@ -111,6 +124,52 @@ export function docksModule(directory: Directory, getHub: () => Hub): StationMod
       const { req, res, subPath } = ctx;
       if (subPath === '/' && req.method === 'GET') {
         json(res, 200, directory.docks());
+        return true;
+      }
+
+      // Unclaimed devices: live, announced, non-browser peers with no dock yet
+      // (docs/decision-traces/runtime-dock-binding.md). Task peers (component
+      // 'task:*') are background jobs, never a claimable device.
+      if (subPath === '/unclaimed' && req.method === 'GET') {
+        const unclaimed = getHub().roster().filter(
+          (p) => p.role !== 'browser' && !p.dock && !p.component?.startsWith('task:'),
+        ).map((p) => ({
+          id: p.id, kind: p.kind, label: p.label, caps: p.caps,
+          ip: p.ip, build: p.build, lastSeen: p.lastSeen, connectedAt: p.connectedAt,
+        }));
+        json(res, 200, unclaimed);
+        return true;
+      }
+
+      // Claim a live device onto a dock: persist the binding + adopt it on the
+      // live peer (mutate dock, re-announce, push welcome) so it goes live with
+      // no reconnect. The slot is derived from the device's kind.
+      if (subPath === '/bind' && req.method === 'POST') {
+        const body = JSON.parse(await readBody(req)) as { deviceId?: unknown; dock?: unknown };
+        const deviceId = typeof body.deviceId === 'string' ? body.deviceId.trim() : '';
+        const dock = typeof body.dock === 'string' ? body.dock.trim() : '';
+        if (!deviceId || !dock) {
+          json(res, 400, { error: 'deviceId and dock are required' });
+          return true;
+        }
+        const claimed = getHub().claim(deviceId, dock);
+        if (!claimed) {
+          // No live peer with that id — bind anyway so it adopts on next hello.
+          bindings.bind(deviceId, dock);
+          json(res, 202, { ok: true, dock, live: false });
+          return true;
+        }
+        // The peer-updated announce makes docksModule call directory.noteSeen,
+        // so the dock appears in GET /api/docks on the next tick.
+        json(res, 200, { ok: true, ...claimed, live: true });
+        return true;
+      }
+
+      const unbind = subPath.match(/^\/bind\/([^/]+)$/);
+      if (unbind && req.method === 'DELETE') {
+        const deviceId = decodeURIComponent(unbind[1]!);
+        const ok = bindings.unbind(deviceId);
+        json(res, ok ? 200 : 404, { ok });
         return true;
       }
       const m = subPath.match(/^\/([^/]+)\/manifest$/);

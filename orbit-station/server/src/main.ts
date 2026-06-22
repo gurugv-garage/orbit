@@ -30,6 +30,7 @@ import { slackModule } from './modules/slack/index.js';
 import { benchModule } from './modules/bench/index.js';
 import { docksModule } from './modules/docks/index.js';
 import { Directory } from './modules/docks/directory.js';
+import { BindingStore } from './modules/docks/bindings.js';
 import { brainModule, getBrainAccess } from './modules/brain/index.js';
 import { feedbackModule, getFeedbackCapture } from './modules/feedback/index.js';
 import { healthSummary } from './modules/observability/health.js';
@@ -78,6 +79,9 @@ async function main() {
   //  - MotionExecutor: the body's single master (brain tools + console).
   //  - ProcessingHub: the SFU's media tap (perception processors).
   const configStore = new ConfigStore();
+  // deviceId→dock bindings: the station-owned source of truth for which dock a
+  // device belongs to (docs/decision-traces/runtime-dock-binding.md).
+  const bindings = new BindingStore();
   let processingHub: ProcessingHub | undefined;
   // SFU streamId→published-label lookup (set once the media module's SFU exists),
   // so a browser stream resolves to its stable label (e.g. 'console-perception')
@@ -93,7 +97,7 @@ async function main() {
   ];
 
   const { server, secure } = createServer(modules);
-  const hub = new Hub(server, bus);
+  const hub = new Hub(server, bus, bindings);
 
   // Roster-dependent wiring (needs the hub).
   const directory = new Directory(() => hub.roster());
@@ -104,17 +108,28 @@ async function main() {
   //  3. else the raw streamId (last resort — an unlabelled/ephemeral source).
   // Without (2) a browser stream landed under its random WS id (ui-xxxxx), so the
   // console source selector (which filters by the stable label) never matched it.
-  processingHub = new ProcessingHub(bus, (streamId) =>
-    hub.roster().find((p) => p.id === streamId)?.dock
-      ?? labelOf?.(streamId)
-      ?? streamId);
+  processingHub = new ProcessingHub(
+    bus,
+    (streamId) =>
+      hub.roster().find((p) => p.id === streamId)?.dock
+        ?? labelOf?.(streamId)
+        ?? streamId,
+    // dockReady: gate out UNCLAIMED device streams (a roster peer with no dock),
+    // so perception never files snapshots under a raw ws id. A browser/label
+    // stream (no matching roster peer) is always ready.
+    // (docs/decision-traces/runtime-dock-binding.md)
+    (streamId) => {
+      const peer = hub.roster().find((p) => p.id === streamId);
+      return !peer || !!peer.dock;
+    },
+  );
   // record_video: capture a dock's live SFU stream to a WebM clip (under data/recordings/).
   const recordingsDir = fileURLToPath(new URL('../data/recordings', import.meta.url));
   const videoRecorder = buildVideoRecorder(processingHub, recordingsDir);
   const captureDir = fileURLToPath(new URL('../data/captures', import.meta.url));
 
   modules.push(perceptionModule(() => processingHub!));
-  modules.push(docksModule(directory, () => hub));
+  modules.push(docksModule(directory, () => hub, bindings));
   modules.push(bodylinkModule({ directory, motion, getHub: () => hub }));
 
   // ── SESSION CONTEXT: the one source-of-truth wiring ────────────────────────

@@ -19,6 +19,7 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.add
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
@@ -62,7 +63,14 @@ interface BrainLink {
  */
 class StationLink(
     private val url: String,
-    private val dock: String,
+    /**
+     * The dock name this device belongs to (runtime dock binding —
+     * docs/decision-traces/runtime-dock-binding.md). May be empty/null: an
+     * UNCLAIMED device dials in with just its stable [appId] and LEARNS its dock
+     * back from the station's welcome frame (delivered to [onDockLearned]).
+     * Mutable so a console claim takes effect on the live link with no restart.
+     */
+    @Volatile private var dock: String?,
     private val appId: String,
     private val scope: CoroutineScope,
     /**
@@ -117,6 +125,13 @@ class StationLink(
      * never drives the body anymore); staleness-tolerant.
      */
     private val onBodyDigest: (JsonObject) -> Unit = {},
+    /**
+     * Called when the station's `welcome` frame tells this device its dock
+     * (runtime dock binding). Fires with the resolved (dock, component) — or
+     * (null, null) while UNCLAIMED — so the UI can show a "claim me" hint and
+     * the app can persist the learned name. Always invoked on each connect.
+     */
+    private val onDockLearned: (dock: String?, component: String?) -> Unit = { _, _ -> },
 ) : BrainLink {
     private val _connected = MutableStateFlow(false)
     override val connected: StateFlow<Boolean> = _connected.asStateFlow()
@@ -168,12 +183,18 @@ class StationLink(
         val s = client.webSocketSession(url)
         session = s
         // hello v2 (protocol.ts): this peer = the `phone` slot of its dock.
+        // Runtime dock binding (docs/decision-traces/runtime-dock-binding.md):
+        // OMIT dock/component when unclaimed — the station resolves them from its
+        // deviceId→dock binding (keyed by appId) and tells us via `welcome`. When
+        // we DO know our dock (cached from a prior welcome or a dev override), we
+        // send it so the station re-announces us instantly.
+        val knownDock = dock?.takeIf { it.isNotBlank() }
         s.send(json.encodeToString(JsonObject.serializer(), buildJsonObject {
             put("t", "hello"); put("role", "device"); put("id", appId)
-            put("dock", dock); put("component", "phone")
+            if (knownDock != null) { put("dock", knownDock); put("component", "phone") }
             put("kind", "dock-android-app")
             put("caps", buildJsonArray { add("voice"); add("face"); add("camera") })
-            put("label", "$dock phone")
+            put("label", if (knownDock != null) "$knownDock phone" else "unclaimed phone")
             // OTA gate (docs/ota.md §3): build is the only version on the wire.
             if (build > 0) put("build", build)
         }))
@@ -227,6 +248,21 @@ class StationLink(
 
     private fun handleInbound(text: String) {
         val frame = runCatching { json.parseToJsonElement(text).jsonObject }.getOrNull() ?: return
+        // Runtime dock binding (docs/decision-traces/runtime-dock-binding.md): the
+        // station's `welcome` (sent on hello AND pushed on a console claim) tells
+        // us our dock. Adopt it on the live link so a claim takes effect without a
+        // reconnect; null dock ⇒ still UNCLAIMED. Not topic-wrapped — handle first.
+        if (frame["t"]?.jsonPrimitive?.content == "welcome") {
+            val learnedDock = frame["dock"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() }
+            val learnedComp = frame["component"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() }
+            if (learnedDock != null && learnedDock != dock) {
+                Timber.i("StationLink: learned dock '$learnedDock' (component=$learnedComp) from welcome")
+                dock = learnedDock
+            }
+            runCatching { onDockLearned(learnedDock, learnedComp) }
+                .onFailure { Timber.d("onDockLearned failed: ${it.message}") }
+            return
+        }
         // station wraps published events as {t:'event', topic, kind, payload, ...}
         val topic = frame["topic"]?.jsonPrimitive?.content
         val kind = frame["kind"]?.jsonPrimitive?.content

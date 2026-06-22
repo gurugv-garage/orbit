@@ -13,6 +13,7 @@ import type { Server as HttpServer, IncomingMessage } from 'node:http';
 import { WebSocketServer, WebSocket } from 'ws';
 import { isDirected, type Bus } from './bus.js';
 import {
+  componentForKind,
   isInboundFrame,
   type EventFrame,
   type InboundFrame,
@@ -20,6 +21,14 @@ import {
   type PeerRole,
   type Topic,
 } from './protocol.js';
+
+/** The station's deviceId→dock binding, injected so the hub can resolve a
+ *  device's dock from its stable id when it dials in without one, and persist a
+ *  binding when a console claims it (docs/decision-traces/runtime-dock-binding.md). */
+export interface DockBindings {
+  lookup(deviceId: string): string | undefined;
+  bind(deviceId: string, dock: string): void;
+}
 
 /** How long a silent socket lives. The hub pings every PING_INTERVAL_MS; a
  *  peer that misses PING_MISSES pongs is terminated, so a silently-dead phone
@@ -78,9 +87,11 @@ export class Hub {
   #peers = new Map<WebSocket, Peer>();
   #bus: Bus;
   #pingTimer: NodeJS.Timeout;
+  #bindings?: DockBindings;
 
-  constructor(server: HttpServer, bus: Bus) {
+  constructor(server: HttpServer, bus: Bus, bindings?: DockBindings) {
     this.#bus = bus;
+    this.#bindings = bindings;
     this.#wss = new WebSocketServer({ server, path: '/ws' });
     this.#wss.on('connection', (ws, req) => this.#onConnect(ws, req));
 
@@ -168,6 +179,32 @@ export class Hub {
     }));
   }
 
+  /**
+   * Claim an unclaimed (or rebind a claimed) live device to a dock
+   * (docs/decision-traces/runtime-dock-binding.md). Persists the binding, mutates
+   * the live peer's dock/component in place, announces `peer-updated` so
+   * dock-keyed modules re-resolve, and pushes a fresh welcome frame so the
+   * device adopts + caches the name without reconnecting. The slot is derived
+   * from the device's `kind`. Returns the peer's resolved (dock, component), or
+   * undefined if no live announced peer has that id.
+   */
+  claim(deviceId: string, dock: string): { dock: string; component?: string } | undefined {
+    const peer = [...this.#peers.values()].find((p) => p.announced && p.id === deviceId);
+    if (!peer) return undefined;
+    this.#bindings?.bind(deviceId, dock);
+    peer.dock = dock;
+    peer.component = componentForKind(peer.kind) ?? peer.component;
+    this.#announce('peer-updated', {
+      role: peer.role, id: peer.id, label: peer.label, dock: peer.dock,
+      component: peer.component, kind: peer.kind, caps: peer.caps, build: peer.build,
+    });
+    this.#send(peer.ws, {
+      t: 'welcome', id: peer.id, serverTime: Date.now(),
+      dock: peer.dock, component: peer.component ?? null,
+    });
+    return { dock: peer.dock, component: peer.component };
+  }
+
   #onConnect(ws: WebSocket, req: IncomingMessage): void {
     const now = Date.now();
     const peer: Peer = {
@@ -215,6 +252,20 @@ export class Hub {
         peer.caps = f.caps;
         peer.build = f.build;
         peer.announced = true;
+        // Runtime dock binding (docs/decision-traces/runtime-dock-binding.md): a
+        // device may dial in with no dock of its own — resolve it from the
+        // station's deviceId→dock binding so it learns its name back via the
+        // welcome frame below. If the device DID carry a dock (a dev override),
+        // honor + persist it as the binding (self-claim). Either way the slot is
+        // derived from `kind` when the device didn't state one. A peer that's
+        // still dock-less after this is UNCLAIMED: it rides the roster, idles,
+        // and surfaces in the console to be claimed.
+        if (peer.dock) {
+          this.#bindings?.bind(peer.id, peer.dock);
+        } else {
+          peer.dock = this.#bindings?.lookup(peer.id);
+        }
+        if (peer.dock && !peer.component) peer.component = componentForKind(peer.kind);
         // Address collision: a second peer claiming an occupied
         // (dock, component) displaces the old one — that's the hardware-swap
         // path (and the stale-socket-racing-a-reconnect path). Newest wins;
@@ -231,7 +282,10 @@ export class Hub {
             }
           }
         }
-        this.#send(peer.ws, { t: 'welcome', id: peer.id, serverTime: Date.now() });
+        this.#send(peer.ws, {
+          t: 'welcome', id: peer.id, serverTime: Date.now(),
+          dock: peer.dock ?? null, component: peer.component ?? null,
+        });
         this.#announce('peer-joined', {
           role: peer.role, id: peer.id, label: peer.label, dock: peer.dock,
           component: peer.component, kind: peer.kind, caps: peer.caps, build: peer.build,

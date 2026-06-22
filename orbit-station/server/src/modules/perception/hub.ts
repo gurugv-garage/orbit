@@ -49,6 +49,11 @@ interface Registered {
 export class ProcessingHub implements MediaTap {
   #bus: Bus;
   #resolveDock: (streamId: string) => string;
+  /** Gate (docs/decision-traces/runtime-dock-binding.md): false ⇒ this stream's
+   *  source is an UNCLAIMED device (a roster peer with no dock binding), so we
+   *  must NOT start processors — their snapshots would be filed under a raw ws
+   *  id and split the dock's timeline. Browser/label streams aren't gated. */
+  #dockReady: (streamId: string) => boolean;
   #procs: Registered[] = [];
   /** active producer streamIds → their media kinds seen (for late registration). */
   #active = new Map<string, Set<MediaKind>>();
@@ -56,9 +61,14 @@ export class ProcessingHub implements MediaTap {
    *  went live can still subscribe to its RTP (not just onStreamStart). */
   #tracks = new Map<string, MediaStreamTrack>();
 
-  constructor(bus: Bus, resolveDock: (streamId: string) => string) {
+  constructor(
+    bus: Bus,
+    resolveDock: (streamId: string) => string,
+    dockReady?: (streamId: string) => boolean,
+  ) {
     this.#bus = bus;
     this.#resolveDock = resolveDock;
+    this.#dockReady = dockReady ?? (() => true);
     // WS facts → channel items, fanned to interested processors.
     this.#bus.on(CLIENT_TOPIC, (m) => this.#onBusFact(m));
   }
@@ -155,6 +165,9 @@ export class ProcessingHub implements MediaTap {
 
   #startOn(reg: Registered, streamId: string): void {
     if (reg.ctx.has(streamId)) return;
+    // Unclaimed device → don't start; processors begin once it's claimed and a
+    // fresh track/fact arrives (docs/decision-traces/runtime-dock-binding.md).
+    if (!this.#dockReady(streamId)) return;
     const dockId = this.#resolveDock(streamId);
     const ctx: StreamContext = {
       streamId,

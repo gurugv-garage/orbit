@@ -11,7 +11,12 @@ sdk.dir=/Users/<you>/Library/Android/sdk
 # AVD → host: ws://10.0.2.2:8099/ws.  Physical device: ws://<laptop-lan-ip>:8099/ws.
 # Empty → no brain; the face/perception UX still runs.
 STATION_URL=
-DOCK_NAME=anne-bot
+# DOCK_NAME is now assigned at RUNTIME (docs/decision-traces/runtime-dock-binding.md):
+# leave it EMPTY and the device dials in "unclaimed" — claim it onto a dock in the
+# station console (Overview → Unclaimed devices). The binding survives app
+# uninstall/reinstall (keyed by ANDROID_ID). Set a value only as a dev override to
+# self-bind without the console.
+DOCK_NAME=
 
 # Wake-word (optional): picovoice.ai console key.
 PORCUPINE_ACCESS_KEY=
