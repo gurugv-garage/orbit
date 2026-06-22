@@ -216,7 +216,11 @@ export function brainModule(w: BrainWiring): StationModule {
 
   // Expose read-only brain state to the feedback bundler (and any later reader).
   brainRef.current = {
-    openSessionId: (dock) => store.openSession(dock)?.sessionId,
+    // Prefer the OPEN session; else fall back to the most-recent (just-closed)
+    // one — feedback is usually flagged right AFTER a conversation, by which
+    // point the session may have idle-closed. Without the fallback the dump
+    // loses its trace link (sessions are newest-first).
+    openSessionId: (dock) => store.openSession(dock)?.sessionId ?? store.sessions(dock)[0]?.sessionId,
     sessionDump: (dock, sessionId) => ({
       meta: store.sessions(dock).find((s) => s.sessionId === sessionId),
       transcript: store.messages(dock, sessionId),
