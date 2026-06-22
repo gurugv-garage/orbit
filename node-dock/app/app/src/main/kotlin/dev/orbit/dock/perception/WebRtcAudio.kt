@@ -53,6 +53,17 @@ object WebRtcAudio {
     private var nativeInitialized = false
     private var adm: JavaAudioDeviceModule? = null
 
+    // MIC-GAIN-ON-RESTART FIX (Xiaomi/MIUI nabu): the VOICE_COMMUNICATION source
+    // applies aggressive AGC whose gain calibration depends on the audio system
+    // already being in COMMUNICATION mode + the route settled BEFORE the AudioRecord
+    // opens. With no explicit setMode, a fresh app start opens the mic mid-route and
+    // MIUI latches a collapsed input gain (VAD still trips on the residual, but
+    // peakRms ~0.005 instead of ~0.14 → the station's STT hears near-silence). We
+    // force MODE_IN_COMMUNICATION before requestStartRecording so the AGC calibrates
+    // correctly, and restore the prior mode on full release.
+    private var audioManager: AudioManager? = null
+    private var savedAudioMode: Int? = null
+
     /** Shared EGL context for video encode/decode + the capturer's surface. */
     private var egl: EglBase? = null
     /** The one factory streaming attaches to (ADM + video). Built lazily. */
@@ -91,6 +102,19 @@ object WebRtcAudio {
             return
         }
         ensureNativeInit(context)
+
+        // Force communication audio mode BEFORE the mic opens so MIUI's voice-comm
+        // AGC calibrates against the right route (see field comment) — fixes the
+        // collapsed-gain-after-restart bug. Save the prior mode to restore on release.
+        runCatching {
+            val am = context.applicationContext.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+            audioManager = am
+            if (savedAudioMode == null) savedAudioMode = am.mode
+            if (am.mode != AudioManager.MODE_IN_COMMUNICATION) {
+                am.mode = AudioManager.MODE_IN_COMMUNICATION
+                Timber.i("WebRtcAudio: set AudioManager mode → IN_COMMUNICATION (was $savedAudioMode)")
+            }
+        }.onFailure { Timber.w(it, "WebRtcAudio: could not set communication audio mode") }
 
         // A1 AEC (docs/perception-to-brain.md): use WebRTC's SOFTWARE AEC, not the
         // hardware one. Proven (AecPocTest, residual 0.0002 vs HW-AEC leak): the
@@ -151,6 +175,11 @@ object WebRtcAudio {
             try { it.release() } catch (t: Throwable) { Timber.w(t, "ADM release failed") }
         }
         adm = null
+        // Restore the audio mode we changed in startCapture (full release only).
+        runCatching {
+            savedAudioMode?.let { mode -> audioManager?.let { am -> if (am.mode != mode) am.mode = mode } }
+        }.onFailure { Timber.w(it, "WebRtcAudio: could not restore audio mode") }
+        savedAudioMode = null
         Timber.d("WebRtcAudio capture released")
     }
 

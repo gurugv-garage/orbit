@@ -1,6 +1,7 @@
 package dev.orbit.dock.ui
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -421,6 +422,20 @@ fun DockScreen() {
             }
         }
     }
+    // MIC-READY: the audio actually reaches the station only once the WebRTC stream is
+    // up (isStreaming) AND the link is connected — NOT merely when the local mic opens.
+    // After a restart there's a ~few-second window where the mic is live locally but the
+    // stream is still reattaching; the first sentence spoken then is lost. Poll the
+    // (non-Flow) isStreaming() into observable state so the mic icon can show "connecting"
+    // until it's truly delivering. (docs: lost-first-sentence-after-restart.)
+    var streamUp by remember { mutableStateOf(false) }
+    LaunchedEffect(stationConnected) {
+        while (true) {
+            streamUp = stationConnected && mediaStreamer.isStreaming()
+            kotlinx.coroutines.delay(500)
+        }
+    }
+    // (micReady is derived below, once micLive is in scope.)
     DisposableEffect(Unit) { onDispose { mediaStreamer.stop() } }
 
     val state by controller.state.collectAsState()
@@ -441,6 +456,23 @@ fun DockScreen() {
     // leaves listening/followup (RemoteBrain.clearInterim), at which point we fall back
     // to the endpointed perception transcript / bot reply.
     val interimTranscript by agent.interimTranscript.collectAsState()
+    // Listening-window countdown: the station sends the absolute close time; we tick a
+    // local clock so the on-face badge shows seconds remaining. A screenshot then proves
+    // BOTH that it's in listening mode AND how long is left (debugging "UI says listening
+    // but no reply"). 0 = not in a timed window.
+    val windowUntil by agent.windowUntil.collectAsState()
+    var nowTick by remember { mutableStateOf(System.currentTimeMillis()) }
+    LaunchedEffect(windowUntil) {
+        while (windowUntil > 0L) { nowTick = System.currentTimeMillis(); kotlinx.coroutines.delay(250) }
+    }
+    val listenSecsLeft = if (windowUntil > 0L) ((windowUntil - nowTick + 999) / 1000).coerceAtLeast(0) else 0L
+    // A fresh live interim means the USER is speaking again (e.g. a follow-up in the
+    // followup window, no palm). The previous reply's botSubtitle is now stale and, by
+    // the Subtitle precedence (botSubtitle > transcript), would otherwise mask the live
+    // caption — the "response mode shows old text" bug. Clear it so the interim shows.
+    LaunchedEffect(interimTranscript) {
+        if (interimTranscript.isNotEmpty() && botSubtitle.isNotEmpty()) botSubtitle = ""
+    }
 
     val facePresent by wiring.facePresent.collectAsState()
     val sttArmed by wiring.sttArmed.collectAsState()
@@ -464,6 +496,11 @@ fun DockScreen() {
         micLiveState.start()
         onDispose { micLiveState.stop() }
     }
+    // The mic is truly "ready to be heard by the station" only when it's live locally
+    // AND the WebRTC stream is delivering (streamUp, polled above). The status-bar mic
+    // icon pulses amber until this is true, so the user doesn't speak into the
+    // post-restart reconnect window and lose their first sentence.
+    val micReady = micLive && streamUp
 
     LaunchedEffect(micGranted, micMuted) {
         if (micGranted && !micMuted) PerceptionService.start(ctx)
@@ -666,6 +703,22 @@ fun DockScreen() {
                         listening = state == FaceState.Listening || state == FaceState.Engaged,
                         accent = activeFace.palette.eyeGlow,
                     )
+                    // LISTENING COUNTDOWN badge — unambiguous on a screenshot: shows it's
+                    // in a listening window AND the seconds left before it closes. Visible
+                    // whenever the station says we're in a timed window (windowUntil>0).
+                    if (listenSecsLeft > 0L) {
+                        androidx.compose.material3.Text(
+                            text = "🎙 listening · ${listenSecsLeft}s",
+                            color = Color(0xFF7FE08C),
+                            fontSize = 15.sp,
+                            fontWeight = FontWeight.Medium,
+                            modifier = Modifier
+                                .align(Alignment.TopCenter)
+                                .padding(top = 52.dp)
+                                .background(Color(0xFF0E1A12).copy(alpha = 0.85f), RoundedCornerShape(50))
+                                .padding(horizontal = 14.dp, vertical = 5.dp),
+                        )
+                    }
                     // Who the station last recognized (lags a new face by ~1-2s).
                     seenName?.let { who ->
                         Text(
@@ -724,7 +777,9 @@ fun DockScreen() {
                     // LONG-PRESS = flag FEEDBACK on this session (feedback-flow):
                     // ships the session up to the station for a full debugging dump.
                     androidx.compose.material3.Text(
-                        text = "v${BuildConfig.VERSION_NAME} · build ${BuildConfig.VERSION_CODE}",
+                        // Lead with the DOCK NAME so it's obvious at a glance which
+                        // device this is (tab vs redmi vs …) — handy with several docks.
+                        text = "${BuildConfig.DOCK_NAME} · v${BuildConfig.VERSION_NAME} · build ${BuildConfig.VERSION_CODE}",
                         color = Color.White.copy(alpha = 0.4f),
                         fontSize = 11.sp,
                         modifier = Modifier
@@ -761,6 +816,7 @@ fun DockScreen() {
                 // framework stops/silences our mic, ON whenever it's truly live
                 // (incl. during TTS, since AEC keeps it capturing for barge-in).
                 micOn = micLive,
+                micReady = micReady,
                 camOn = camGranted && !camMuted,
                 // && stationConnected: with the link down the digest is stale —
                 // we DON'T know the body state, so don't claim it.

@@ -62,6 +62,7 @@ class PerceptionPipeline(private val appContext: Context) {
     // brief AEC residual spikes of the dock's own voice don't trip it.
     private var bargeAbove = 0
 
+
     fun start() {
         // Guard on the SCOPE: a second start() would double-run the whole pipeline
         // (two mics, two bus subscriptions).

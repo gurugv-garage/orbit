@@ -1,5 +1,10 @@
 package dev.orbit.dock.ui.status
 
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -14,8 +19,10 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
@@ -41,6 +48,10 @@ fun StatusBar(
     bodyConnected: Boolean,
     stationConnected: Boolean,
     stationAddr: String = "",
+    /** mic is on AND the audio actually reaches the station (WebRTC stream up). While
+     *  false-but-micOn, the mic icon pulses dim ("connecting") — so the user doesn't
+     *  talk into the post-restart dead window before the stream is delivering audio. */
+    micReady: Boolean = true,
     onMicToggle: (() -> Unit)? = null,
     onCamToggle: (() -> Unit)? = null,
     onWakeClick: (() -> Unit)? = null,
@@ -57,7 +68,7 @@ fun StatusBar(
         VadBar(level = audioLevel)
         SpeakerIndicator(speaker, onClick = onWakeClick)
         MicCamIndicator(
-            micOn = micOn, camOn = camOn,
+            micOn = micOn, micReady = micReady, camOn = camOn,
             onMicClick = onMicToggle, onCamClick = onCamToggle,
         )
         LinkStatus(
@@ -169,15 +180,26 @@ private fun SpeakerIndicator(speaker: Speaker, onClick: (() -> Unit)?) {
 @Composable
 private fun MicCamIndicator(
     micOn: Boolean,
+    micReady: Boolean,
     camOn: Boolean,
     onMicClick: (() -> Unit)? = null,
     onCamClick: (() -> Unit)? = null,
 ) {
+    // mic on but stream not yet delivering to the station → "connecting" (pulse, amber,
+    // trailing … ). Solid green only once the station is actually receiving audio, so
+    // the user knows when it's safe to talk (fixes the lost-first-sentence-after-restart).
+    val connecting = micOn && !micReady
     Row(verticalAlignment = Alignment.CenterVertically) {
         ToggleIcon(
-            label = "mic",
+            label = if (connecting) "mic…" else "mic",
             icon = if (micOn) "🎤" else "🚫",
             on = micOn,
+            color = when {
+                !micOn -> Color(0xFFFF7B7B)      // off → red
+                connecting -> Color(0xFFFFBE5C)  // on, not ready → amber
+                else -> Color(0xFF7FE08C)        // ready → green
+            },
+            pulsing = connecting,
             onClick = onMicClick,
         )
         Spacer(modifier = Modifier.width(8.dp))
@@ -185,6 +207,7 @@ private fun MicCamIndicator(
             label = "cam",
             icon = if (camOn) "📷" else "🚫",
             on = camOn,
+            color = if (camOn) Color(0xFF7FE08C) else Color(0xFFFF7B7B),
             onClick = onCamClick,
         )
     }
@@ -195,18 +218,26 @@ private fun ToggleIcon(
     label: String,
     icon: String,
     on: Boolean,
+    color: Color,
+    pulsing: Boolean = false,
     onClick: (() -> Unit)?,
 ) {
-    val activeColor = if (on) Color(0xFF7FE08C) else Color(0xFFFF7B7B)
+    // While pulsing ("connecting"), breathe the whole chip's alpha so it reads as
+    // not-yet-ready without adding a separate spinner.
+    val pulseAlpha by rememberInfiniteTransition(label = "micPulse").animateFloat(
+        initialValue = 0.35f, targetValue = 1f,
+        animationSpec = infiniteRepeatable(tween(700), RepeatMode.Reverse), label = "micPulseAlpha",
+    )
     val mod = Modifier
         .clip(RoundedCornerShape(50))
-        .background(activeColor.copy(alpha = 0.10f))
+        .background(color.copy(alpha = 0.10f))
         .let { if (onClick != null) it.clickable { onClick() } else it }
+        .let { if (pulsing) it.alpha(pulseAlpha) else it }
         .padding(horizontal = 8.dp, vertical = 3.dp)
     Row(verticalAlignment = Alignment.CenterVertically, modifier = mod) {
         Text(icon, fontSize = 12.sp)
         Spacer(modifier = Modifier.width(4.dp))
-        Text(label, fontSize = 11.sp, color = activeColor)
+        Text(label, fontSize = 11.sp, color = color)
     }
 }
 

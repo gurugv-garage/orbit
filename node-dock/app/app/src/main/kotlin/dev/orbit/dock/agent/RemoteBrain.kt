@@ -92,6 +92,14 @@ class RemoteBrain(
     private val _convMode = MutableStateFlow("idle")
     val convMode: StateFlow<String> = _convMode.asStateFlow()
 
+    /** Absolute epoch-ms the listening/followup window closes (0 when not in a timed
+     *  window). The UI renders a live countdown from this so a screenshot shows BOTH
+     *  that it's listening AND how long is left — the instrument for the "UI says
+     *  listening but it didn't respond" bug. The station is the source of truth; the
+     *  phone just counts down toward this value. */
+    private val _windowUntil = MutableStateFlow(0L)
+    val windowUntil: StateFlow<Long> = _windowUntil.asStateFlow()
+
     /** LIVE interim (partial) user-speech transcript for the on-face caption. The
      *  station re-transcribes the in-progress utterance every ~800ms and streams the
      *  growing text here; the UI shows it dim/italic while the user talks, then clears
@@ -383,6 +391,8 @@ class RemoteBrain(
                 val to = payload.str("to")
                 Timber.i("conversation → $to (${payload.str("reason")})")
                 _convMode.value = to
+                // carry the window-close time so the UI can show a live countdown.
+                _windowUntil.value = if (to == "listening" || to == "followup") payload.long("windowUntil") else 0L
                 // Leaving the listening window (thinking/speaking/idle) ends this
                 // utterance's caption — the interim has done its job; the reply (or
                 // silence) takes over. Clear so a stale partial doesn't linger.
@@ -726,6 +736,9 @@ class RemoteBrain(
 
     private fun JsonObject.int(key: String): Int =
         (this[key] as? JsonPrimitive)?.content?.toIntOrNull() ?: 0
+
+    private fun JsonObject.long(key: String): Long =
+        (this[key] as? JsonPrimitive)?.content?.toLongOrNull() ?: 0L
 
     private companion object {
         /** What the AgentState short label shows while the station thinks. */
