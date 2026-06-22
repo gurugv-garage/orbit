@@ -1,6 +1,8 @@
-# Post-restart "UI says listening but no reply" STT bug — RESOLVED
+# RCA: post-restart "UI says listening but no reply" STT bug
 
-**Status:** ROOT CAUSE FOUND + FIXED + VALIDATED (6/6 restart cycles OK, was ~50% broken).
+**Date:** 2026-06-22 · **Status:** RESOLVED + VALIDATED (6/6 restart cycles OK, was ~50%
+broken) · **Fixes:** VAD threshold lowered in `stt-watch.ts`; listening-glow visibility in
+`ListeningGlow.kt` / `PerceptionWiring.kt`.
 
 **The actual root cause** (after two wrong turns — see "What is NOT the cause"): NOT a
 decoder failure, NOT RTP delivery. The decoded audio was REAL but, after a restart, the
