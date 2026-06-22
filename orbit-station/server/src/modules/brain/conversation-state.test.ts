@@ -1,4 +1,4 @@
-import { describe, it } from 'node:test';
+import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { ConversationState, ConvCfg, type ConvTransition } from './conversation-state.js';
 
@@ -295,6 +295,12 @@ describe('ConversationState — D: priority / toggle', () => {
 });
 
 describe('ConversationState — D2/D3: camera presence priority', () => {
+  // These tests cover the face-arrival WINDOW logic, which is gated OFF by
+  // default in production (wake-on-look disabled — tap/wave only). Enable the
+  // flag for this suite so the logic stays under test; restore after.
+  before(() => { process.env.CONV_FACE_ARRIVAL = '1'; });
+  after(() => { delete process.env.CONV_FACE_ARRIVAL; });
+
   // D3 — a face arriving opens a low-priority listen window when idle.
   it('D3a: face arrival opens a listen window when idle', () => {
     const { cs } = make();
@@ -344,6 +350,11 @@ describe('ConversationState — D2/D3: camera presence priority', () => {
 });
 
 describe('ConversationState — face-presence anti-flap cooldown', () => {
+  // Face-arrival window is gated off by default in production; enable for this
+  // logic suite (see the D2/D3 block above for why).
+  before(() => { process.env.CONV_FACE_ARRIVAL = '1'; });
+  after(() => { delete process.env.CONV_FACE_ARRIVAL; });
+
   const CD = ConvCfg.FACE_COOLDOWN_MS;
   const FA = ConvCfg.FACE_ARRIVAL_MS;
 
@@ -415,7 +426,11 @@ describe('ConversationState — robustness (unit; full reconnection sim separate
       (cs: ConversationState) => cs.turnStart(0),                   // thinking
       (cs: ConversationState) => cs.speakStart(0),                  // speaking
       (cs: ConversationState) => { cs.speakStart(0); cs.speakEnd(5); }, // followup
-      (cs: ConversationState) => cs.faceArrival(0),                 // face listen
+      (cs: ConversationState) => {                                  // face listen
+        process.env.CONV_FACE_ARRIVAL = '1';
+        cs.faceArrival(0);
+        delete process.env.CONV_FACE_ARRIVAL;
+      },
     ]) {
       const { cs } = make();
       setup(cs);

@@ -47,6 +47,13 @@ export const ConvCfg = {
   SPEAK_MAX_MS: Number(process.env.CONV_SPEAK_MAX_MS ?? 30_000),
   /** A face arriving in view opens a brief low-priority listen window. */
   FACE_ARRIVAL_MS: Number(process.env.CONV_FACE_ARRIVAL_MS ?? 5_000),
+  /** Whether a face arriving in view opens a listen window AT ALL. Default OFF:
+   *  walking up to the dock should NOT start it listening — that competes/confuses
+   *  with the deliberate triggers (tap, and now the open-palm WAVE gesture). Only
+   *  tap/wave/followup open a window. Set CONV_FACE_ARRIVAL=1 to restore wake-on-
+   *  look. (faceLeft stays harmless — it only ever closed a face window.)
+   *  Read at CALL time (a getter) so it's togglable at runtime + in tests. */
+  get FACE_ARRIVAL_ENABLED(): boolean { return process.env.CONV_FACE_ARRIVAL === '1'; },
   /** After a face-presence window ends, ignore a new face-arrival for this long.
    *  Stops the on-off-on-off flap when someone paces in and out of frame: once a
    *  presence window closes, the dock won't re-open one on camera presence until
@@ -122,6 +129,25 @@ export class ConversationState {
     }
   }
 
+  /** ADDRESS, open-only (the palm gesture). Like {@link tap} but NEVER toggles a
+   *  window OFF — a palm always means "listen to me", never "go away". This fixes
+   *  the palm-interrupt bug: a palm shown while the dock is SPEAKING raced the
+   *  natural speaking→followup transition; arriving in 'followup', plain tap() did
+   *  tap-OFF → idle, and the user's next utterance was dropped as not-addressed.
+   *  Open-only: from idle/listening/followup → (re)open a listening window; from
+   *  thinking/speaking → interrupt into a window. It can only ever leave the dock
+   *  LISTENING. */
+  tapOpen(now: number): void {
+    this.#prune(now);
+    if (this.#mode === 'thinking' || this.#mode === 'speaking') {
+      this.#speakUntil = 0;
+      this.#openWindow('tap', now + ConvCfg.LISTEN_MS, now, 'palm-interrupt');
+    } else {
+      // idle / listening / followup → ensure a fresh listening window is open.
+      this.#openWindow('tap', now + ConvCfg.LISTEN_MS, now, 'palm-address');
+    }
+  }
+
   /** True if `tap()` at `now` would INTERRUPT an in-flight reply (mode thinking or
    *  speaking) — the session checks this before tapping to know whether to abort
    *  the active turn. Pure (prunes, no mutation). */
@@ -136,6 +162,7 @@ export class ConversationState {
    *  flap the dock on-off-on-off (the phone-side PresenceGate already requires the
    *  face to be near + centered + sustained; this is the station's backstop). */
   faceArrival(now: number): void {
+    if (!ConvCfg.FACE_ARRIVAL_ENABLED) return; // wake-on-look disabled (tap/wave only)
     this.#prune(now);
     if (now < this.#faceCooldownUntil) return; // still cooling down from the last presence
     if (this.#mode === 'idle') this.#openWindow('face', now + ConvCfg.FACE_ARRIVAL_MS, now, 'face-arrival');

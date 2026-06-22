@@ -222,6 +222,21 @@ object WebRtcAudio {
     private var ttsHead: ByteArray? = null   // current chunk being drained
     private var ttsHeadPos = 0               // offset into ttsHead
     private val ttsLock = Any()
+    // JITTER BUFFER (anti-blip). TTS is enqueued one SENTENCE at a time; the next
+    // sentence is still being synthesized+resampled when the previous one finishes
+    // playing, so the queue briefly runs dry AT SENTENCE BOUNDARIES → the drain
+    // silence-pads → an audible blip (worse on long, multi-sentence replies). Fix:
+    // when the queue empties, enter PRIMING (output silence) and don't resume
+    // draining until a small PREBUFFER cushion has accumulated — so playback
+    // resumes smoothly with margin instead of stuttering at each boundary. The
+    // start of a reply primes the same way (first sentence builds the cushion).
+    private var ttsPriming = true            // true → withhold drain until prebuffered
+    /** Total bytes currently queued (head remainder + all pending chunks). */
+    private fun queuedBytesLocked(): Int {
+        var n = (ttsHead?.size ?: 0) - ttsHeadPos
+        for (c in ttsChunks) n += c.size
+        return n
+    }
     private var loopback: TtsAecLoopback? = null
 
     /** Feed a chunk of TTS PCM-16 mono @16 kHz to be rendered through WebRTC (so it
@@ -243,27 +258,48 @@ object WebRtcAudio {
      *  Bulk array copies, no per-byte boxing — smooth for the audio callback. */
     private fun drainTts(dst: java.nio.ByteBuffer, want: Int) {
         synchronized(ttsLock) {
+            // PRIMING: while withholding playback to build the jitter cushion, output
+            // pure silence. Resume draining only once enough is queued (or the tail
+            // is so small it's clearly the final bit — don't strand the last words).
+            if (ttsPriming) {
+                val q = queuedBytesLocked()
+                if (q >= PREBUFFER_BYTES) ttsPriming = false
+                else { repeat(want) { dst.put(0) }; return }
+            }
             var filled = 0
             while (filled < want) {
                 var head = ttsHead
                 if (head == null || ttsHeadPos >= head.size) {
                     head = ttsChunks.poll()
                     ttsHead = head; ttsHeadPos = 0
-                    if (head == null) break // underrun → pad the rest with silence
+                    if (head == null) {
+                        // Queue ran dry mid-playback (a sentence boundary, the next
+                        // sentence not yet synthesized). Re-enter priming so we wait
+                        // for a fresh cushion before resuming — turning a stutter into
+                        // a slightly later, smooth resume instead of a blip.
+                        ttsPriming = true
+                        break
+                    }
                 }
                 val n = minOf(want - filled, head.size - ttsHeadPos)
                 dst.put(head, ttsHeadPos, n)
                 ttsHeadPos += n; filled += n
             }
-            while (filled < want) { dst.put(0); filled++ }
+            while (filled < want) { dst.put(0); filled++ } // pad this callback's remainder
         }
     }
 
     /** Drop any TTS PCM not yet rendered (barge-in / stop). Playback goes silent
      *  within one ADM buffer; the loopback PCs stay up for the next utterance. */
     fun stopTtsRender() {
-        synchronized(ttsLock) { ttsChunks.clear(); ttsHead = null; ttsHeadPos = 0 }
+        synchronized(ttsLock) { ttsChunks.clear(); ttsHead = null; ttsHeadPos = 0; ttsPriming = true }
     }
+
+    // Jitter cushion before (re)starting TTS drain. ~120 ms @ 16 kHz mono 16-bit —
+    // enough to ride out the inter-sentence synthesis gap without a noticeable
+    // startup delay. Tune if blips persist (raise) or the reply feels laggy to start
+    // (lower). (SAMPLE_RATE * 0.12 s * 2 bytes/sample.)
+    private val PREBUFFER_BYTES = (SAMPLE_RATE * 0.12 * 2).toInt()
 }
 
 /**

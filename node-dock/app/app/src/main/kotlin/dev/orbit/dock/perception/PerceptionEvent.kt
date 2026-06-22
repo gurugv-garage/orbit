@@ -64,6 +64,20 @@ sealed class PerceptionEvent {
     data object FaceLost : PerceptionEvent()
 
     /**
+     * On-device HAND gesture status from the camera (MediaPipe Gesture
+     * Recognizer; see PalmDetector). `gesture` is the recognizer's current label
+     * ("Open_Palm", "Closed_Fist", "None", …) or null when no hand is in frame;
+     * `score` is its confidence. `palm` is true on the frame an OPEN PALM is
+     * detected (rising edge). Drives the on-screen status overlay AND the palm-to-
+     * address/interrupt trigger in DockScreen (mirror of a tap).
+     */
+    data class HandGesture(
+        val gesture: String?,
+        val score: Float,
+        val palm: Boolean,
+    ) : PerceptionEvent()
+
+    /**
      * The dock's read of the user's emotional state from the camera. Drives
      * passive emotion mirroring while the dock is watching/listening so the
      * face reacts to the user even between LLM turns.

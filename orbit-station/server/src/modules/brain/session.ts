@@ -314,6 +314,16 @@ export class DockBrainSession {
     if (interrupts) this.cancel(); // abort the turn whose reply was just interrupted
   }
 
+  /** ADDRESS open-only (the palm gesture) — never toggles listening off. Like
+   *  {@link tap} it interrupts an in-flight reply, but it always leaves the dock
+   *  LISTENING (fixes the palm-during-speaking → followup → tap-off → dropped
+   *  utterance bug). */
+  tapOpen(now = Date.now()): void {
+    const interrupts = this.#conv.tapWouldInterrupt(now);
+    this.#conv.tapOpen(now);
+    if (interrupts) this.cancel(); // abort the interrupted reply's turn
+  }
+
   /** VAD activity from the phone — extends an open listening/followup window. */
   vadActivity(active = true, now = Date.now()): void { this.#conv.vadActivity(now, active); }
 
@@ -909,6 +919,20 @@ export class DockBrainSession {
           error: agent.state.errorMessage,
         });
         this.#d.log?.(`[brain] ${this.dock}: turn failed (${failCode}): ${agent.state.errorMessage ?? 'no detail'}`);
+        // SPEAK THE FAILURE instead of dying silently (the "STT shown but no
+        // reply" symptom): when nothing was said this turn, say a short reason so
+        // the user knows the dock heard them but couldn't answer — rather than dead
+        // air. Rate-limit (429/quota/overload) gets its own line; other errors get
+        // a generic one. Only when not softened (a partial reply already covered it).
+        if (!softened) {
+          const rateLimited = isQuotaOrOverload(agent.state.errorMessage);
+          const line = rateLimited
+            ? "Sorry, I'm being rate limited right now — give me a moment and try again."
+            : failCode === 'timeout'
+              ? "Sorry, that took too long and I couldn't finish — could you try again?"
+              : "Sorry, I hit an error and couldn't answer that — could you try again?";
+          this.#speak(line);
+        }
       } else {
         this.#sendToVoice('turn-status', { turnId: req.turnId, state: 'done' });
       }

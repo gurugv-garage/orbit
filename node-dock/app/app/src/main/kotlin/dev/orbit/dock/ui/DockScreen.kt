@@ -38,6 +38,7 @@ import dev.orbit.dock.tts.DockTts
 import dev.orbit.dock.ui.devbar.DevBarHost
 import dev.orbit.dock.ui.face.FaceController
 import dev.orbit.dock.ui.face.FaceState
+import timber.log.Timber
 import dev.orbit.dock.ui.face.PerceptionWiring
 import dev.orbit.dock.ui.perm.rememberPermissions
 import dev.orbit.dock.ui.status.StatusBar
@@ -50,6 +51,8 @@ import kotlinx.coroutines.launch
 @Composable
 fun DockScreen() {
     val ctx = LocalContext.current
+    // Haptic listening-cue vibrator (replaces the TTS-colliding beep). Idempotent.
+    remember(ctx) { dev.orbit.dock.ui.face.HapticCue.init(ctx); Unit }
     val controller = remember { FaceController() }
     val scope = rememberCoroutineScope()
     var botSubtitle by remember { mutableStateOf("") }
@@ -518,6 +521,57 @@ fun DockScreen() {
     // inconsistently. rememberUpdatedState keeps a live reference the
     // long-lived gesture coroutine can read for the *current* state.
     val currentState = androidx.compose.runtime.rememberUpdatedState(state)
+
+    // PALM-to-address / palm-to-interrupt (on-device MediaPipe gesture; see
+    // PalmDetector). Showing an open palm ADDRESSES the dock — additive, not a
+    // replacement (tap still works):
+    //   - speaking          → barge-in (interrupt + re-listen)
+    //   - idle              → start listening
+    //   - already listening → NO-OP (deliberately).
+    // Unlike a tap, a palm NEVER closes an open listening window. A tap toggles
+    // (tap-on / tap-off), but palm detection is noisier and naturally re-fires
+    // while a hand lingers — routing a 2nd palm to "stop" would tear down the
+    // window you JUST opened, right before you speak ("listening but no response").
+    // So a palm only ever opens/keeps listening; you stop by silence/timeout or a
+    // real tap. Rising-edge detection + a ~2s action debounce keep one raise = one
+    // action. Reads currentState (the live face state) to route.
+    val lastPalmActionMs = remember { java.util.concurrent.atomic.AtomicLong(0L) }
+    LaunchedEffect(Unit) {
+        PerceptionBus.events.collect { event ->
+            if (event !is PerceptionEvent.HandGesture || !event.palm) return@collect
+            val now = System.currentTimeMillis()
+            if (now - lastPalmActionMs.get() < PALM_ACTION_DEBOUNCE_MS) return@collect
+            lastPalmActionMs.set(now)
+            // A palm ALWAYS means "address me / listen" — never "stop listening". It
+            // uses the OPEN-ONLY address (addressedOpenOnly → station tapOpen), so it
+            // can't toggle a window off the way a tap does. This is the clean fix for
+            // the palm-during-speaking bug: the old path routed through bargeIn() →
+            // WakeWord → addressed (a TOGGLE), which — when the short TTS had already
+            // flipped speaking→followup — landed as tap-OFF → idle, and the user's
+            // next utterance was dropped as not-addressed.
+            when (currentState.value) {
+                FaceState.Speaking -> {
+                    // Interrupt: tear down the current TTS + turn, THEN address
+                    // open-only so a fresh listening window opens (and can't be
+                    // toggled shut by a follow-up palm frame).
+                    Timber.i("palm → interrupt + listen (open-only)")
+                    botSubtitle = ""
+                    tts.stop()
+                    agentRef.value?.stop()
+                    agentRef.value?.addressedOpenOnly()
+                }
+                else -> {
+                    // Idle / Listening / Followup / Engaged → ensure listening is
+                    // open. Open-only is idempotent: re-showing a palm keeps the
+                    // window open, never closes it.
+                    Timber.i("palm → address + listen (open-only)")
+                    botSubtitle = ""
+                    agentRef.value?.addressedOpenOnly()
+                }
+            }
+        }
+    }
+
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -597,6 +651,14 @@ fun DockScreen() {
                         eyesClosed = camMuted && !privacy,
                         compactFraction = 1f,
                         staticForScreenshot = false,
+                    )
+                    // LISTENING glow — a soft breathing edge halo while the dock is
+                    // attending (listening/followup), tinted by the active face's eye
+                    // glow so it matches every style. Pairs with the haptic + beep cues
+                    // as the VISUAL "I'm listening" signal. Fades out otherwise.
+                    dev.orbit.dock.ui.face.ListeningGlow(
+                        listening = state == FaceState.Listening || state == FaceState.Engaged,
+                        accent = activeFace.palette.eyeGlow,
                     )
                     // Who the station last recognized (lags a new face by ~1-2s).
                     seenName?.let { who ->
@@ -848,3 +910,8 @@ private fun stateHint(
     state == FaceState.Illustrating -> ""
     else -> ""
 }
+
+/** Min gap between two palm-triggered actions (address / interrupt / stop). On
+ *  top of the detector's own 1.2s palm cooldown — so a single palm raise maps to
+ *  exactly ONE action, never a burst. */
+private const val PALM_ACTION_DEBOUNCE_MS = 2_000L

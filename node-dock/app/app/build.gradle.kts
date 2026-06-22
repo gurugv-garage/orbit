@@ -241,6 +241,10 @@ dependencies {
     implementation(libs.camerax.lifecycle)
     implementation(libs.camerax.view)
     implementation(libs.mlkit.face.detection)
+    // MediaPipe Tasks (vision) — on-device hand Gesture Recognizer (wave detection).
+    // Latest Google line; ML Kit has no hand/gesture API. Model fetched by
+    // scripts/fetch-models.sh into assets/models/gesture_recognizer.task.
+    implementation(libs.mediapipe.tasks.vision)
 
     // WebRTC: PeerConnectionFactory, ADM (APM-processed mic: AEC/NS/AGC/VAD),
     // VideoCapturer (camera frames into a stream we can render + later send).

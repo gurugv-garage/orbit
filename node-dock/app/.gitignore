@@ -29,9 +29,11 @@ captures/
 # Kotlin
 .kotlin/
 
-# Big ONNX models — fetched on demand by scripts/fetch-models.sh.
-# Silero VAD (~2 MB) is committed; FER+ (~35 MB) is not.
+# Big models — fetched on demand by scripts/fetch-models.sh.
+# Silero VAD (~2 MB) is committed; FER+ (~35 MB) + the MediaPipe gesture
+# recognizer (~8 MB, palm detection) are not.
 app/src/main/assets/models/emotion_ferplus.onnx
+app/src/main/assets/models/gesture_recognizer.task
 
 # local debug dumps (camera frames, screenshots) — at module root (app/tmp/)
 tmp/

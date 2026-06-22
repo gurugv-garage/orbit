@@ -15,6 +15,7 @@ ktor = "3.0.3"
 kotlinx-serialization = "1.8.1"
 cameraX = "1.5.3"
 mlkitFace = "16.1.7"
+mediapipeTasks = "0.10.21"
 webrtc = "125.6422.07"
 junit = "4.13.2"
 androidxTest = "1.6.1"
@@ -48,6 +49,7 @@ camerax-camera2 = { module = "androidx.camera:camera-camera2", version.ref = "ca
 camerax-lifecycle = { module = "androidx.camera:camera-lifecycle", version.ref = "cameraX" }
 camerax-view = { module = "androidx.camera:camera-view", version.ref = "cameraX" }
 mlkit-face-detection = { module = "com.google.mlkit:face-detection", version.ref = "mlkitFace" }
+mediapipe-tasks-vision = { module = "com.google.mediapipe:tasks-vision", version.ref = "mediapipeTasks" }
 webrtc-android = { module = "io.github.webrtc-sdk:android", version.ref = "webrtc" }
 lifecycle-runtime-compose = { module = "androidx.lifecycle:lifecycle-runtime-compose", version.ref = "lifecycle" }
 lifecycle-viewmodel-compose = { module = "androidx.lifecycle:lifecycle-viewmodel-compose", version.ref = "lifecycle" }

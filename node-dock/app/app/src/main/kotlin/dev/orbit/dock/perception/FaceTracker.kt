@@ -89,6 +89,14 @@ class FaceTracker(private val appContext: Context) : CameraFrameProvider {
     // Per-class EMAs over softmax probabilities (8 classes).
     private val ferEma = FloatArray(FerOnnx.Emotion.entries.size)
 
+    // Palm detector (MediaPipe Gesture Recognizer). Loaded lazily on the analyzer
+    // thread on first frame, like FER+. Runs continuously, throttled to ~6 Hz
+    // (PALM_INTERVAL_NS) for snappy edge-detection while leaving CPU for the
+    // preview + face/FER path on a modest phone.
+    @Volatile private var palm: PalmDetector? = null
+    @Volatile private var palmLoadAttempted = false
+    private var lastPalmNs = 0L
+
     private val running = AtomicBoolean(false)
     private val lastEmitNs = AtomicLong(0L)
     private val lastSeenMs = AtomicLong(0L)
@@ -156,6 +164,8 @@ class FaceTracker(private val appContext: Context) : CameraFrameProvider {
         try { detector.close() } catch (_: Throwable) {}
         try { fer?.close() } catch (_: Throwable) {}
         fer = null
+        try { palm?.close() } catch (_: Throwable) {}
+        palm = null
         executor.shutdown()
     }
 
@@ -268,17 +278,20 @@ class FaceTracker(private val appContext: Context) : CameraFrameProvider {
             proxy.close()
             return
         }
-        // Analysis-rate throttle: process at most ~2 Hz. The heavy work
-        // (toBitmap + ML Kit face detect + FER + JPEG) ran on EVERY analyzer
-        // frame, starving the live preview on modest phones (Snapdragon 636).
-        // Gaze/emotion/vision don't need more than ~2 Hz, so skip the rest —
-        // the preview is a separate use-case and keeps its full framerate.
+        // TWO cadences share ONE decode. The palm detector runs at a fast rate
+        // for snappy rising-edge response (~6 Hz, PALM_INTERVAL_NS); the heavy
+        // face/FER/JPEG work only needs ~1 Hz (ANALYSIS_INTERVAL_NS) and would
+        // starve the live preview on a modest phone (Snapdragon 636) if run on
+        // every frame. So: gate the PALM path at the fast rate, the FACE path at
+        // the slow rate, and skip the (costly) toBitmap decode entirely when
+        // NEITHER is due.
         val nowNsGate = System.nanoTime()
-        if (nowNsGate - lastProcessNs < ANALYSIS_INTERVAL_NS) {
+        val palmDue = nowNsGate - lastPalmNs >= PALM_INTERVAL_NS
+        val faceDue = nowNsGate - lastProcessNs >= ANALYSIS_INTERVAL_NS
+        if (!palmDue && !faceDue) {
             proxy.close()
             return
         }
-        lastProcessNs = nowNsGate
         val rotation = proxy.imageInfo.rotationDegrees
         // Copy the frame to a bitmap and RELEASE the camera buffer immediately.
         // Previously the proxy stayed open across the whole ML Kit detection
@@ -295,6 +308,18 @@ class FaceTracker(private val appContext: Context) : CameraFrameProvider {
         }
         proxy.close()
         if (bitmap == null) return
+
+        // PALM DETECTION (MediaPipe) — the fast path, on the upright bitmap,
+        // independent of face detection (a palm shouldn't require a detected
+        // face). Lazy-loaded on first frame.
+        if (palmDue) {
+            lastPalmNs = nowNsGate
+            runPalmDetection(bitmap)
+        }
+
+        // Everything below is the heavy ~1 Hz face/emotion/vision path.
+        if (!faceDue) return
+        lastProcessNs = nowNsGate
 
         val imgW = bitmap.width.toFloat()
         val imgH = bitmap.height.toFloat()
@@ -385,6 +410,24 @@ class FaceTracker(private val appContext: Context) : CameraFrameProvider {
     }
 
     /**
+     * Feed one upright frame to the palm detector (lazy-loaded on first call).
+     * Runs synchronously on the analyzer thread (MediaPipe IMAGE mode), like the
+     * ML Kit/FER work. Cheap no-op if the model failed to load (palm stays
+     * disabled, everything else unaffected).
+     *
+     * Note: this is gated FASTER than the face path (PALM_INTERVAL_NS ≈ 6 Hz) so
+     * a palm raise is caught promptly; the heavier face/FER/JPEG work stays ~1 Hz.
+     */
+    private fun runPalmDetection(bitmap: Bitmap) {
+        if (!palmLoadAttempted) {
+            palmLoadAttempted = true
+            palm = PalmDetector.fromAssets(appContext)
+        }
+        val p = palm ?: return
+        p.onFrame(bitmap, System.currentTimeMillis())
+    }
+
+    /**
      * Run FER+ on a 1.4× expanded crop around the face bounding box. The
      * model was trained on faces with some forehead/chin margin, so a tight
      * bbox crop performs noticeably worse than a slightly padded one.
@@ -452,6 +495,12 @@ class FaceTracker(private val appContext: Context) : CameraFrameProvider {
 /** ~1 Hz analysis cadence (1000 ms). Enough for gaze/emotion/vision; leaves
  *  maximum headroom for a smooth live preview on modest hardware. */
 private const val ANALYSIS_INTERVAL_NS = 1_000_000_000L
+
+/** ~6 Hz palm-detection cadence (165 ms) — snappy rising-edge response to a palm
+ *  raise. Only the (cheap) frame decode + MediaPipe gesture pass run at this rate;
+ *  the heavy ML Kit/FER/JPEG work stays at ANALYSIS_INTERVAL_NS. Tune down if the
+ *  preview suffers on a smaller phone. */
+private const val PALM_INTERVAL_NS = 165_000_000L
 
 /**
  * Front camera + landscape-locked activity = a fixed, known mis-orientation:

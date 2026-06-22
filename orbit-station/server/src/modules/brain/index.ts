@@ -275,6 +275,11 @@ export function brainModule(w: BrainWiring): StationModule {
       // upstream; the attention gate may act on them later).
       const onAddressedFinal = (t: { dockId: string; text: string; startedAt: number; endedAt: number; confTier?: string;
           avgLogprob?: number | null; noSpeechProb?: number | null; compressionRatio?: number | null }) => {
+        // DIAG (kept, disabled): confirms a transcript reached the brain. Re-enable
+        // if "STT shown but no turn" recurs.
+        // DIAG (kept, disabled): confirms a transcript reached the brain. Re-enable
+        // if "STT shown but no turn" recurs.
+        // console.log(`[brain] onAddressedFinal RECEIVED: dock=${t.dockId} text="${t.text.slice(0,40)}" started=${t.startedAt} ended=${t.endedAt}`);
         // snapshot the conversation state BEFORE any decision consumes the window.
         const preLastWin = session(t.dockId).convLastWindowUntil(); // BEFORE snapshot prunes
         const pre = session(t.dockId).conversation();
@@ -361,7 +366,11 @@ export function brainModule(w: BrainWiring): StationModule {
             // A tap — TOGGLE the dock's addressed listening window (D1). Stamped
             // with the STATION clock so the utterance correlation (also station
             // clock) is skew-free. Tap on = open window; tap again = close it.
-            session(dock).tap();
+            // EXCEPT openOnly (the PALM gesture): address open-only, never toggle
+            // off — a palm always means "listen to me". Fixes palm-during-speaking
+            // racing speaking→followup and landing as tap-off → idle → dropped.
+            if ((p as { openOnly?: boolean } | null)?.openOnly) session(dock).tapOpen();
+            else session(dock).tap();
             // TRANSPARENCY: the user is trying to talk. If the dock is in a known
             // broken condition (e.g. the STT sidecar is down so it's deaf), tell
             // it the real reason now so it can speak it — instead of silently

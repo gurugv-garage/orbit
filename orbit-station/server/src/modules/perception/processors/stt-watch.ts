@@ -217,7 +217,10 @@ export class UtteranceDetector {
     const frames = this.#utter;
     const ms = this.#utterMs - this.#silenceMs; // voiced span
     this.#inSpeech = false; this.#utter = []; this.#silenceMs = 0; this.#utterMs = 0;
-    if (ms < MIN_UTTERANCE_MS) return; // too short → noise
+    if (ms < MIN_UTTERANCE_MS) return; // too short → noise (a clipped/quiet onset
+                                       // under MIN_UTTERANCE_MS is dropped here — the
+                                       // cause of an occasional "tapped but no reply"
+                                       // when only a fragment of speech was voiced).
     this.#onUtterance(concatFrames(frames), this.#startedAt ?? new Date(), new Date());
     this.#startedAt = null;
   }
@@ -375,6 +378,9 @@ interface StreamState {
   detector: UtteranceDetector;
   /** echo-gate: true while we're dropping audio because the dock is speaking. */
   muted: boolean;
+  /** diagnostics: whether any RTP has arrived + a packet counter. */
+  rtpSeen?: boolean;
+  rtpCount?: number;
 }
 
 /** A final transcript + its utterance window, handed to the A1.2 transcript hook. */
@@ -413,6 +419,7 @@ export function sttWatchProcessor(
   flushAll(): Promise<void>;
 } {
   const streams = new Map<string, StreamState>();
+  const unknownStreamsLogged = new Set<string>(); // diagnostic: log unknown-stream audio once
 
   return {
     flushAll: async () => { await Promise.all([...streams.values()].map((s) => s.detector.flushNow())); },
@@ -422,6 +429,22 @@ export function sttWatchProcessor(
     channels: [],
 
     onStreamStart(ctx: StreamContext) {
+      // IDEMPOTENT RE-ATTACH (the "listening but no response" bug): the SFU fires
+      // onStreamStart repeatedly for the SAME streamId (ICE renegotiation / track
+      // re-add on a station reload or network blip — observed firing every few
+      // seconds with no matching onStreamEnd). The old code rebuilt the detector
+      // each time and `streams.set` REPLACED it, throwing away the in-progress
+      // utterance buffer mid-speech — so the VAD never accumulated a full utterance,
+      // nothing ever endpointed, and every tap window timed out with no transcript.
+      // Fix: if a detector already exists for this stream, KEEP it (a re-attach is
+      // not a new stream). Audio keeps flowing into the SAME detector → utterances
+      // endpoint normally.
+      if (streams.has(ctx.streamId)) {
+        console.log(`[stt-watch] onStreamStart: ${ctx.streamId} already attached — keeping existing detector (re-attach)`);
+        return;
+      }
+      // DIAG (kept, disabled): detector attach. Re-enable if STT goes silent.
+      // console.log(`[stt-watch] onStreamStart: dock=${ctx.dockId} streamId=${ctx.streamId} — STT detector attached`);
       // Each completed (or force-flushed) utterance → one transcription → snapshot.
       // Returns a Promise so flushNow() can await the commit before summarizing.
       const commit = async (pcm: Int16Array, startedAt: Date, endedAt: Date): Promise<void> => {
@@ -500,7 +523,17 @@ export function sttWatchProcessor(
 
     onRtp(streamId: string, _kind: MediaKind, rtp: RtpPacket) {
       const st = streams.get(streamId);
-      if (!st) return;
+      if (!st) {
+        // Audio arriving for a stream with NO detector = the no-STT bug: a producer
+        // (re)attached but onStreamStart never created its state. Log ONCE per
+        // unknown stream so we see it without spamming every packet.
+        if (!unknownStreamsLogged.has(streamId)) {
+          unknownStreamsLogged.add(streamId);
+          // DIAG (kept, disabled): audio for a stream with no detector.
+          // console.warn(`[stt-watch] onRtp for UNKNOWN stream ${streamId} — no detector, dropping audio (no onStreamStart fired?)`);
+        }
+        return;
+      }
       // Echo-gate (2c.1 Tier 2): drop audio while the dock's own TTS plays so we
       // don't transcribe ourselves. NOW DEFAULT-OFF: the A1 AEC fix (TTS rendered
       // through WebRTC → software AEC) cancels the dock's voice at the source, so
@@ -512,6 +545,12 @@ export function sttWatchProcessor(
         return;
       }
       st.muted = false;
+      // DIAG (kept, disabled): confirm audio packets reach the detector (first
+      // packet + a heartbeat every ~500). Re-enable to check the SFU→STT tap is
+      // routing audio (vs detector attached but starved).
+      // if (!st.rtpSeen) { st.rtpSeen = true; console.log(`[stt-watch] FIRST audio packet for ${streamId} — feeding detector`); }
+      // st.rtpCount = (st.rtpCount ?? 0) + 1;
+      // if (st.rtpCount % 500 === 0) console.log(`[stt-watch] ${streamId}: ${st.rtpCount} audio packets fed`);
       st.detector.feed(rtp);
     },
 

@@ -74,22 +74,39 @@ class PerceptionWiring(
     // last rendered "listening" edge, so the face/beep fire only on transitions.
     @Volatile private var listeningRendered = false
 
-    /** RENDER the station's conversation mode onto the face + beeps. The station is
-     *  the sole owner of listening/speaking/idle — the phone just reflects it. The
-     *  on↔off "listening" edge drives the beep; we don't fight the agent turn while
-     *  it's Speaking/Engaged (that's driven by the TTS callback). */
+    /** RENDER the station's conversation mode onto the face + cues. The station is
+     *  the sole owner of listening/speaking/idle — the phone just reflects it.
+     *
+     *  CUE POLICY: the on/off pip + haptic mark only the meaningful "(not) attending
+     *  to you" transitions, and NEVER fire around speech. So:
+     *   - `followup` (the auto-relisten right AFTER a reply) does NOT cue — the dock
+     *     just spoke; a beep there is redundant and lands on the TTS audio path.
+     *   - the OFF cue is suppressed when the window closes INTO a turn (the dock is
+     *     about to speak — `thinking`/`speaking`); a beep right before TTS is the
+     *     collision the user reported. It only cues when listening genuinely ends to
+     *     `idle` (you stopped / timed out without a reply).
+     *  Net: ON cue when idle→listening (you addressed it, now attending); OFF cue
+     *  when listening→idle. The face still updates for every state (glow/listen). */
     private fun renderConvMode(mode: String) {
-        val on = mode == "listening" || mode == "followup"
-        if (on != listeningRendered) {
-            listeningRendered = on
-            if (on) {
-                BeepPlayer.listeningOn()
-                if (controller.state.value == FaceState.Idle) controller.listen()
-            } else {
+        // "Attending" for the FACE glow/state includes followup; for CUES we use the
+        // narrower "listening" only (followup is post-speech, no cue).
+        val attending = mode == "listening" || mode == "followup"
+        val cueOn = mode == "listening"
+        if (cueOn != listeningRendered) {
+            listeningRendered = cueOn
+            if (cueOn) {
+                HapticCue.listeningOn()
+                BeepPlayer.listeningOn() // light high pip (+ haptic + the face glow)
+            } else if (mode == "idle") {
+                // Only cue OFF on a real end-to-idle — NOT when closing into a turn
+                // (thinking/speaking), where a beep would step on the reply's TTS.
+                HapticCue.listeningOff()
                 BeepPlayer.listeningOff()
-                if (controller.state.value == FaceState.Listening) controller.silence()
             }
         }
+        // Face state follows attending (covers followup too) independent of cues.
+        if (attending) { if (controller.state.value == FaceState.Idle) controller.listen() }
+        else { if (controller.state.value == FaceState.Listening) controller.silence() }
     }
 
     fun attach(scope: CoroutineScope) {
@@ -219,6 +236,14 @@ class PerceptionWiring(
                         // NOT touch identity (one writer: UserIdentified), so it can't
                         // race the name. Kept for any future presence-only UI.
                         Timber.d("station presence: ${event.present}")
+                    }
+                    is PerceptionEvent.HandGesture -> {
+                        // On-device hand gesture (MediaPipe; PalmDetector). Consumed
+                        // ELSEWHERE: the CameraPreview overlay reads it for live
+                        // status, and DockScreen routes a palm (event.palm) to
+                        // address/barge-in/stop (mirror of a tap). Nothing to do
+                        // here — kept as a branch so the `when` stays exhaustive and
+                        // a single owner (DockScreen) acts on the palm (no double-fire).
                     }
                     is PerceptionEvent.Status -> {
                         // Pipeline status text only. The station owns the face mode

@@ -199,6 +199,19 @@ class RemoteBrain(
         trace("ADDRESSED (tap) → station")
     }
 
+    /** Address the dock OPEN-ONLY (the palm gesture): always "listen to me", never
+     *  toggle listening off. The station handles `openOnly` with tapOpen() — unlike
+     *  a tap, a palm shown in followup/listening can't close the window (which was
+     *  dropping the user's next utterance after a palm-interrupt). */
+    fun addressedOpenOnly() {
+        if (!isConfigured) return
+        link.publish("agent", "addressed", buildJsonObject {
+            put("at", System.currentTimeMillis())
+            put("openOnly", true)
+        })
+        trace("ADDRESSED (palm, open-only) → station")
+    }
+
     /** Flag FEEDBACK about this session (feedback-flow). Ships the user's reason +
      *  a verbatim snapshot of device-side context (the last turn's TurnLog, recent
      *  event-log lines, and the app version/SHA) up to the station, which bundles
