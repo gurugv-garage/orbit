@@ -1,6 +1,6 @@
 package dev.orbit.dock.ui.face
 
-import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
@@ -47,20 +47,25 @@ fun ListeningGlow(
         label = "glow-pulse",
     )
     // Target intensity gates the whole effect on `listening`; the color tween makes
-    // it fade in/out smoothly instead of popping.
-    val rimColor by animateColorAsState(
-        targetValue = if (listening) accent.copy(alpha = 0.9f * pulse) else Color.Transparent,
+    // Fade the WHOLE glow in/out on the listening gate (0..1), so it doesn't pop.
+    // NOTE: previously this chased a per-frame `accent.copy(alpha=0.9*pulse)` target
+    // with a 450ms color tween — the slow tween never caught the fast 1.6s pulse, so
+    // the rim settled at ~0.09 alpha = effectively invisible (the "no glow" bug). Now
+    // the tween only gates ON/OFF (0↔1); the pulse is applied directly to a strong
+    // base alpha, so the halo is clearly visible while listening.
+    val gate by animateFloatAsState(
+        targetValue = if (listening) 1f else 0f,
         animationSpec = tween(durationMillis = 450),
-        label = "glow-rim",
+        label = "glow-gate",
     )
 
     // Brighten the accent toward white so the halo reads clearly even when a face's
-    // eyeGlow is dark; alpha still carries the pulse + listening gate.
+    // eyeGlow is dark; the pulse (0.35..1) × gate carries a STRONG, visible alpha.
     val glow = Color(
         red = (accent.red + (1f - accent.red) * 0.35f),
         green = (accent.green + (1f - accent.green) * 0.35f),
         blue = (accent.blue + (1f - accent.blue) * 0.35f),
-        alpha = rimColor.alpha,
+        alpha = 0.85f * pulse * gate,
     )
 
     androidx.compose.foundation.layout.Box(

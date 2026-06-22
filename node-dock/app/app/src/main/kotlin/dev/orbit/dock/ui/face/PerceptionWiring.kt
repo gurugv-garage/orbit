@@ -104,9 +104,22 @@ class PerceptionWiring(
                 BeepPlayer.listeningOff()
             }
         }
-        // Face state follows attending (covers followup too) independent of cues.
-        if (attending) { if (controller.state.value == FaceState.Idle) controller.listen() }
-        else { if (controller.state.value == FaceState.Listening) controller.silence() }
+        // Face state follows the STATION's attending mode (covers followup too). The
+        // glow MUST track the station's listening window — it's the authoritative owner.
+        // BUG FIXED: the old guard only called listen() from FaceState.Idle, so when the
+        // station opened a window while the face was in any other state (Engaged, or a
+        // followup right after Speaking), the glow never turned on even though the
+        // countdown showed listening — the intermittent "listening, countdown, but no
+        // glow, and it didn't hear me". Now: enter Listening whenever attending and not
+        // already Listening; leave it when no longer attending. Don't stomp Speaking
+        // (the dock is replying) — but attending is false during thinking/speaking, so
+        // this only ever flips between Listening and Idle/Engaged.
+        if (attending) {
+          if (controller.state.value != FaceState.Listening
+              && controller.state.value != FaceState.Speaking) controller.listen()
+        } else {
+          if (controller.state.value == FaceState.Listening) controller.silence()
+        }
     }
 
     fun attach(scope: CoroutineScope) {
