@@ -37,8 +37,15 @@ const SAMPLE_RATE = 16_000; // whisper wants 16 kHz
 const FRAME_MS = 30;
 const FRAME_SAMPLES = (SAMPLE_RATE * FRAME_MS) / 1000;
 
-/** Per-frame RMS at/above this counts as "voiced" (above comfort-noise hum). */
-const SILENCE_RMS = Number(process.env.STT_SILENCE_RMS ?? 0.02);
+/** Per-frame RMS at/above this counts as "voiced" (above comfort-noise hum).
+ *  LOWERED 0.02 → 0.012 (the post-restart no-STT fix). Measured live: after an app
+ *  restart the dock mic comes up at slightly reduced gain — real speech peaks ~0.018,
+ *  JUST under the old 0.02 gate, so the VAD never fired and the utterance was never
+ *  endpointed/transcribed (intermittent "UI says listening but no reply"). Healthy
+ *  speech peaks ~0.021-0.023; true room tone sits ~0.001-0.004 — so 0.012 sits in the
+ *  clean gap: it catches marginal-gain restart speech with margin, while staying well
+ *  above comfort noise. See docs/findings/inprogress-stt-issue.md. */
+const SILENCE_RMS = Number(process.env.STT_SILENCE_RMS ?? 0.012);
 /** Silence this long after speech ends the utterance (endpoint). 1.3 s so natural
  *  mid-sentence pauses ("What time is the … meeting?") don't split a thought; the
  *  cost is ~0.6 s longer to commit after you actually stop. */
@@ -160,6 +167,10 @@ export class UtteranceDetector {
   // probe showed under contention a pass can take >2s — never queue a second).
   #lastInterimMs = 0;
   #interimInFlight = false;
+  // Opus decode success/failure counters — a sustained failure run is logged (a dead
+  // decoder used to fail silently; see the post-restart STT investigation).
+  #decodeOk = 0;
+  #decodeFail = 0;
 
   // Same as onUtterance but awaitable — used by flushNow so the caller knows the
   // transcript is persisted. Set alongside the constructor callback.
@@ -193,8 +204,21 @@ export class UtteranceDetector {
       const pcm48 = new Int16Array(decoded.buffer, decoded.byteOffset, Math.floor(decoded.length / 2));
       const out = new Int16Array(Math.floor(pcm48.length / 3)); // 48k → 16k
       for (let i = 0; i < out.length; i++) out[i] = pcm48[i * 3]!;
+      this.#decodeOk++;
       this.#process(out);
-    } catch { /* skip bad packet */ }
+    } catch (err) {
+      // DIAG (post-restart no-STT hunt): a SILENT decode failure here is the suspected
+      // root cause — packets "fed" but decode to nothing → no VAD → no utterance. Count
+      // it and log the first error + a periodic summary so a dead decoder is never
+      // invisible. (docs/findings/inprogress-stt-issue.md)
+      this.#decodeFail++;
+      if (this.#decodeFail === 1) {
+        console.warn(`[stt-watch] OPUS DECODE FAILED (first): ${err instanceof Error ? err.message : String(err)}`);
+      }
+      if (this.#decodeFail % 200 === 0) {
+        console.warn(`[stt-watch] opus decode: ${this.#decodeFail} failures / ${this.#decodeOk} ok`);
+      }
+    }
   }
 
   /** Test-only: inject raw 16 kHz mono PCM straight into the VAD (bypasses the
@@ -643,6 +667,7 @@ export function sttWatchProcessor(
     },
 
     onStreamEnd(streamId: string) {
+      console.warn(`[stt-watch] onStreamEnd: ${streamId} — detector stopped + removed`); // DIAG (restart hunt)
       streams.get(streamId)?.detector.stop();
       streams.delete(streamId);
     },

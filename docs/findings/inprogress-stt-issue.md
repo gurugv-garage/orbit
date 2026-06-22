@@ -1,0 +1,163 @@
+# Post-restart "UI says listening but no reply" STT bug — RESOLVED
+
+**Status:** ROOT CAUSE FOUND + FIXED + VALIDATED (6/6 restart cycles OK, was ~50% broken).
+
+**The actual root cause** (after two wrong turns — see "What is NOT the cause"): NOT a
+decoder failure, NOT RTP delivery. The decoded audio was REAL but, after a restart, the
+dock mic comes up at slightly reduced gain — speech peaked **~0.018 RMS**, JUST under the
+**0.020 `SILENCE_RMS`** VAD gate. So the VAD never fired → no utterance → no transcribe →
+no reply. Healthy speech peaks ~0.021-0.023; room tone ~0.001-0.004. **Fix: lowered
+`SILENCE_RMS` default 0.02 → 0.012** (clean gap between room tone and even quiet speech).
+Found by per-frame peakRms instrumentation: broken cycles logged `peakRms=0.018
+voicedFrames=0/150`, working cycles `peakRms=0.021 voicedFrames=2/150 inSpeech=true`.
+
+**Also fixed this pass** (the glow clue the user reported): the listening-glow was (a) only
+triggered from `FaceState.Idle` so it missed station-opened windows from other states, and
+(b) rendered at ~0.09 alpha (a slow color-tween chasing a fast pulse) = invisible. Fixed
+both in `ListeningGlow.kt` / `PerceptionWiring.kt` — glow now tracks the station's listening
+mode and is clearly visible (screenshot-validated).
+
+**Confirmed working, not removed:** the VAD/RMS audio-level meter (`VadBar`) — it's fed
+locally (we still capture the mic for RMS even though STT is server-side).
+
+<!-- TOC -->
+<!-- /TOC -->
+
+## Symptom (user-reported)
+
+The dock UI shows it's **listening** (green mic, listening glow/countdown), you speak
+**within** the window, and it **does not respond** — no reply, no error. Felt random.
+Noticed **more often right after an app restart**.
+
+## TL;DR root cause
+
+After an app restart, ~**50% of the time**: audio reaches the SFU **and** reaches the
+`stt-watch` detector (thousands of packets), but the detector **never endpoints an
+utterance** → no `/transcribe` call → no final → the addressed-decision logs
+`skip:not-addressed` → no reply. The mic icon shows **green the whole time** because it
+keys on `isStreaming()` (track exists), which is true here — so **green lies**.
+
+Most likely mechanism: the `UtteranceDetector`'s freshly-created `OpusScript` decoder
+fails to decode the **rebuilt** RTP stream after restart; `feed()`'s
+`catch { /* skip bad packet */ }` swallows the failure **silently**, so packets count as
+"fed" but decode to nothing → RMS stays below `SILENCE_RMS` → VAD never trips → no
+utterance, ever.
+
+## What is NOT the cause (ruled out, with evidence)
+
+The investigation went down two wrong paths before the diagnostics settled it. Recording
+them so we don't repeat:
+
+1. **NOT a double-tap closing the window.** Early theory; my repro double-tapped, which
+   *does* close the window (tap toggles), but that was a test artifact, not the user's
+   single-tap failure.
+2. **NOT the listening window expiring before speech.** Real and reproducible (speak
+   after the ~8s window lapses → `skip:not-addressed`), but that case has **no listening
+   UI** — the user's bug is **UI shows listening AND it still fails**. Different bug. (The
+   addressed-utterance *race* — started-in-window, final lands post-prune — was a genuine
+   adjacent bug and is **fixed** in `372ef1b`; not this one.)
+3. **NOT WebRTC RTP delivery to the station.** I built an SFU rtp-watchdog assuming RTP
+   never arrived — **wrong, and reverted.** The SFU logs `first audio RTP — media path
+   live` on every cycle, including broken ones. RTP reaches the SFU fine.
+4. **NOT the SFU→tap→detector wiring being unsubscribed.** The detector receives the
+   packets (`[stt-watch] 5000 audio packets fed` and climbing on broken cycles).
+
+The loss is **inside the detector, after the decoder** — downstream of everything above.
+
+## Evidence (the decisive trace)
+
+On a BROKEN cycle (finals=0, no reply):
+
+```
+[sfu] app-ce2cd649: ingest connection=connecting
+[sfu] app-ce2cd649: ingest connection=connected
+[sfu] app-ce2cd649: first audio RTP — media path live      ← RTP reaches SFU
+[stt-watch] onStreamStart: dock=anne-bot streamId=app-ce2cd649 — STT detector attached  ← fresh detector
+[stt-watch] FIRST audio packet for app-ce2cd649 — feeding detector                       ← detector fed
+[stt-watch] app-ce2cd649: 500 audio packets fed
+[stt-watch] app-ce2cd649: 1000 audio packets fed
+... up to 5000+ ...                                          ← thousands of packets fed
+```
+…yet **zero new `/transcribe` calls** at the STT sidecar for the spoken line, and the
+addressed trace shows `decision=skip:not-addressed`.
+
+Contrast a WORKING cycle: same `packets fed` logs **plus** `/transcribe … text='…'` and
+`decision=RAN-TURN`.
+
+Also notable: `[stt-watch] onStreamEnd` is **never logged** on restart — the old
+producer's stream-end ordering relative to the new producer's start is worth checking as
+part of the fix (a late `onProducerGone` for the old producer could delete the *new*
+context — though the "packets fed" evidence suggests the new ctx survives and the failure
+is the decoder, not the ctx).
+
+## How to reproduce (stable, ~50% per restart)
+
+1. Confirm dock idle + producer up: `curl -s localhost:8099/api/media/status` shows the
+   `anne-bot` producer with `audio:true`.
+2. `adb shell am force-stop dev.orbit.dock` ; wait ~8s.
+3. Relaunch: `adb shell monkey -p dev.orbit.dock -c android.intent.category.LAUNCHER 1`.
+4. Wait until `media/status` shows producer `audio:true` again (~3-4s), then ~6s settle.
+5. `adb shell input tap 800 1280` (tap-to-address; screen is 1600×2560), then speak.
+6. **Bug signature:** `[stt-watch] N audio packets fed` climbing in the station log, but
+   **0 new `/transcribe`** in the STT sidecar log, and
+   `GET /api/brain/anne-bot/debug/addressed` last entry = `skip:not-addressed`.
+
+Loop it 4–6× to see the ~50% rate. The driver also has the laptop-speaker test
+(`.claude/skills/two-dock-converse`) — `say -v Samantha "…"` reaches the dock mic.
+
+### Instruments (all live / committed)
+
+- **stt-watch diagnostics** (`aea124a`): attach / first-packet / per-500 heartbeat /
+  unknown-stream. The packets-fed-but-no-transcribe signature comes from here.
+- **SFU logs** (were a local diff; reverted with the watchdog — re-add if needed):
+  `ingest connection=…` and `first audio RTP`.
+- **Addressed-decision trace** (REST, already in the codebase):
+  `GET /api/brain/:dock/debug/addressed` → ring of `{decision, mode, msToExpiry, text}`.
+  `decision` ∈ `RAN-TURN | skip:not-addressed | skip:garbage | skip:no-words | skip:recording`.
+- **STT sidecar per-utterance log**: `/tmp/stt-sidecar-parakeet.log` (one line per
+  `/transcribe`) — the ground truth for "did STT actually run."
+- **Conv state**: `GET /api/brain/:dock/conversation` → `{mode, windowUntil, msToExpiry}`.
+
+## The fix (planned, not yet done)
+
+1. **Decoder reset on restart (primary).** In `stt-watch.ts`, ensure the per-stream
+   `OpusScript` decoder is **freshly created and clean** when a producer restarts. If the
+   detector instance is reused across a producer rebuild, the decoder may be desynced;
+   recreate it (and the `UtteranceDetector`) on a genuine new producer, not just on the
+   first `onStreamStart`. Check the `onStreamEnd`/`onProducerGone` ordering so a late
+   teardown of the OLD producer can't clobber the NEW detector/ctx.
+2. **Stop swallowing decode failures.** `feed()`'s `catch { /* skip bad packet */ }` must
+   at least **count** consecutive decode errors and log/emit when sustained — so a dead
+   decoder is never invisible again (this is what hid the bug for so long).
+3. **Make the mic indicator honest (secondary, but the user's core ask).** Today green =
+   `micLive && stationConnected && isStreaming()`. `isStreaming()` is true even when STT
+   gets nothing. Drive green from **station-confirmed audio receipt** (e.g. stt-watch saw
+   a packet *and* the detector is producing utterances recently), pushed back to the
+   phone — so green means "it can actually hear you," and the broken-restart state shows
+   amber/connecting.
+
+### Validation bar for the fix
+
+- Re-run the repro 6+ cycles: **0 broken** (every restart → a spoken line yields a
+  `/transcribe` and `RAN-TURN`).
+- Screenshot the mic icon each cycle: never green-while-broken.
+- Add a server test if the decoder-reset path is unit-testable (the detector already has
+  `feedPcm` for synthetic PCM; a decode-failure/reset test would lock the regression).
+
+## Related / adjacent (already fixed this session)
+
+- **Addressed-utterance race** (`372ef1b`): started-in-window but the final lands after a
+  lazy prune-to-idle → was dropped; fixed via an open-interval check. Regression tests
+  A1j/A1k. **This is a different bug** from the decoder one above.
+- **Listening countdown badge + windowUntil in the conversation frame** (`2e5865d`,
+  `e52bc45`): so a screenshot proves listening + seconds-left. Built as the diagnostic the
+  user requested; also a real UX win.
+- **Mic-ready indicator** (`e52bc45`): amber→green; correct when the station is down, but
+  **falsely green in this decoder bug** — see fix #3.
+- **Quota**: speak only when BOTH free+paid fail; clearer fallback logs (`2e5865d`).
+
+## Method note (what worked)
+
+Theorizing failed twice; **instrument → reproduce → validate with screenshots** is what
+localized it. Keep the stt-watch diagnostics on until the fix is verified. (Mirrors the
+conv-window-debugging lesson: instrument the decision, don't theorize.)
