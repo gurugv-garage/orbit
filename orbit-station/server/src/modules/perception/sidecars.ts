@@ -75,7 +75,11 @@ export interface SidecarSpec {
 export const SIDECAR_SPECS: Record<'vision' | 'speech', SidecarSpec> = {
   // one model per process (MLX/Metal isn't thread-safe); --no-stt on vision.
   vision: { name: 'vision', port: 8080, args: ['sidecar.py', '--port', '8080', '--temporal', '--no-stt'] },
-  speech: { name: 'speech', port: 8078, args: ['sidecar.py', '--port', '8078', '--model', 'mlx-community/whisper-small.en-mlx'] },
+  // STT engine = parakeet (changed from whisper-small.en 2026-06-22). Live test on
+  // the dock beat whisper on speed + WER, incl. Indian loanwords; see the --engine
+  // note in sidecar.py for the trade-offs (English-only; no Whisper confidence tells).
+  // Swap '--engine', 'parakeet' → '--engine', 'whisper' to fall back.
+  speech: { name: 'speech', port: 8078, args: ['sidecar.py', '--port', '8078', '--engine', 'parakeet'] },
 };
 
 /** A child this supervisor spawned (so we can stop/restart what we own). */

@@ -431,10 +431,19 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--port", type=int, default=8078)
     ap.add_argument("--host", default="127.0.0.1")
-    ap.add_argument("--engine", default="whisper", choices=["whisper", "parakeet"],
-                    help="STT engine. whisper (default) = mlx-whisper; "
-                         "parakeet = NVIDIA Parakeet-TDT via parakeet-mlx. Same "
-                         "/transcribe contract; parakeet returns null confidence metrics.")
+    # DEFAULT = parakeet (changed from whisper 2026-06-22). Live end-to-end test on
+    # the anne-bot dock (far-field, over WebRTC) transcribed real accented
+    # conversational speech word-perfect at 114-240ms — faster + lower WER than
+    # whisper-small.en, and it even nailed Indian loanwords ("Amma", "puja"). Two
+    # trade-offs to remember: (1) Parakeet is English/European only — a full Hindi
+    # SENTENCE (not a loanword) will likely break; (2) it returns null for Whisper's
+    # confidence tells (no_speech_prob/compression_ratio/avg_logprob), so the
+    # hallucination-tier safety net in stt-watch.ts is inactive under it (fine in a
+    # quiet room, riskier far-field/noisy). Pass --engine whisper to fall back.
+    ap.add_argument("--engine", default="parakeet", choices=["whisper", "parakeet"],
+                    help="STT engine. parakeet (default) = NVIDIA Parakeet-TDT via "
+                         "parakeet-mlx; whisper = mlx-whisper. Same /transcribe "
+                         "contract; parakeet returns null confidence metrics.")
     ap.add_argument("--model", default=None,
                     help="STT model HF id. Defaults per --engine: "
                          "whisper→mlx-community/whisper-small.en-mlx, "
