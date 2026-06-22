@@ -43,6 +43,7 @@ import {
   type ToolResultMessage,
 } from '@earendil-works/pi-ai';
 import type { Bus } from '../../core/bus.js';
+import { dockConditions } from '../../core/conditions.js';
 import type { Directory } from '../docks/directory.js';
 import type { MotionExecutor } from '../bodylink/motion.js';
 import type { FaceToolsApi, PerceptionGroundingApi, MemoryApi } from '../perception/index.js';
@@ -528,8 +529,15 @@ export class DockBrainSession {
   #onConvTransition(t: ConvTransition): void {
     this.#d.log?.(`[conv] ${this.dock} ${t.from}->${t.to} (${t.reason})`);
     // a directed agent frame to the phone (the renderer reads it for face/beeps).
-    try { this.#sendToVoice('conversation', { from: t.from, to: t.to, reason: t.reason, at: t.at }); }
-    catch { /* transport optional in tests */ }
+    // windowUntil = absolute epoch ms the listening/followup window closes (0 when not
+    // timed) — the phone renders a live countdown from it, so a screenshot shows WHETHER
+    // it's listening AND how long is left (debugging the "UI says listening but no reply").
+    const snap = this.#conv.snapshot(t.at);
+    try {
+      this.#sendToVoice('conversation', {
+        from: t.from, to: t.to, reason: t.reason, at: t.at, windowUntil: snap.windowUntil,
+      });
+    } catch { /* transport optional in tests */ }
     // Drive the tick only while in a TIMED mode (listening/followup/speaking), so
     // a window/speak expiry fires its transition promptly (the phone gets beep-off
     // / idle on time, not only at the next incoming event). Stop when idle/thinking
@@ -850,7 +858,11 @@ export class DockBrainSession {
       if (!this.#cancelled && !this.#timedOut && !this.#usePaidKey
           && hasPaidKey() && agent.state.model.provider === 'google'
           && isQuotaOrOverload(agent.state.errorMessage)) {
-        this.#d.log?.(`[brain] ${this.dock}: free key ${agent.state.errorMessage?.slice(0, 60)}… → retrying on paid account`);
+        // EXPECTED + BENIGN: the FREE key hitting quota is normal — that's why a paid
+        // fallback exists. Log it clearly as "free key failed → falling back to paid"
+        // so it's never mistaken for a real outage (it isn't, unless the paid retry
+        // below ALSO fails).
+        this.#d.log?.(`[brain] ${this.dock}: FREE key hit quota/overload (${agent.state.errorMessage?.slice(0, 60)}…) — this is expected; FALLING BACK to paid account`);
         this.#debug('paid-fallback', { reason: agent.state.errorMessage?.slice(0, 120) });
         this.#usePaidKey = true;
         // The failed prompt already appended the user message (and possibly a
@@ -867,10 +879,29 @@ export class DockBrainSession {
         } else {
           await agent.prompt([userMessage]);
         }
+        // Log the OUTCOME of the paid retry so the logs are unambiguous next time.
+        if (isQuotaOrOverload(agent.state.errorMessage)) {
+          this.#d.log?.(`[brain] ${this.dock}: PAID account ALSO hit quota/overload — BOTH keys exhausted, the turn will fail (user-facing)`);
+        } else if (agent.state.errorMessage) {
+          this.#d.log?.(`[brain] ${this.dock}: paid retry failed with a non-quota error: ${agent.state.errorMessage.slice(0, 80)}`);
+        } else {
+          this.#d.log?.(`[brain] ${this.dock}: paid account recovered the turn (free-key quota was the only problem)`);
+        }
       }
       const errMsg = agent.state.errorMessage;
       if (this.#timedOut) failCode = 'timeout';
       else if (!this.#cancelled && errMsg) failCode = 'llm_error';
+      // BOTH-KEYS-EXHAUSTED → a genuinely user-facing condition. Report it to the
+      // ambient dock-conditions so the user hears it on their NEXT interaction (the
+      // throttled dock-error channel), instead of silent dead air. Only when we were
+      // ALREADY on the paid key (so the free-key 429 alone never speaks) AND the final
+      // error is still a quota/overload. Any non-quota outcome clears the condition.
+      if (this.#usePaidKey && !this.#cancelled && isQuotaOrOverload(agent.state.errorMessage)) {
+        dockConditions.report(this.dock, 'llm_exhausted',
+          "I've hit my usage limit right now and can't think clearly — please try again in a little while, or ask my operator to top up my credits.");
+      } else if (!this.#cancelled && !isQuotaOrOverload(agent.state.errorMessage)) {
+        dockConditions.clear(this.dock, 'llm_exhausted'); // recovered / unrelated error
+      }
     } catch (err) {
       if (!this.#cancelled) {
         failCode = this.#timedOut ? 'timeout' : 'llm_error';

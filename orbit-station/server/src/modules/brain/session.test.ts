@@ -5,6 +5,7 @@
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { dockConditions } from '../../core/conditions.js';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -432,6 +433,71 @@ test('google quota with NO paid key → fails (no infinite retry)', async () => 
     assert.equal(last.state, 'failed');
   } finally {
     if (prevPaid === undefined) delete process.env.GEMINI_API_KEY_PAID_ACC; else process.env.GEMINI_API_KEY_PAID_ACC = prevPaid;
+  }
+});
+
+test('google quota on BOTH free AND paid → turn fails + reports llm_exhausted condition', async () => {
+  const prevPaid = process.env.GEMINI_API_KEY_PAID_ACC;
+  const prevFree = process.env.GEMINI_API_KEY;
+  process.env.GEMINI_API_KEY = 'free';
+  process.env.GEMINI_API_KEY_PAID_ACC = 'paid';
+  dockConditions.clear(DOCK, 'llm_exhausted'); // clean slate
+  try {
+    // BOTH calls 429: free key fails → fall back → paid key ALSO 429s.
+    const fail = (s: AssistantMessageEventStream) => {
+      const m = assistant('', 'stop');
+      (m as { errorMessage?: string }).errorMessage =
+        '{"error":{"code":429,"status":"RESOURCE_EXHAUSTED"}}';
+      s.push({ type: 'done', reason: 'stop', message: m });
+      s.end(m);
+    };
+    const { session, frames } = makeSession([fail, fail], {
+      config: { brainModel: 'google/gemini-2.5-flash' },
+    });
+    await session.handleTurnRequest({ turnId: 't1', trigger: { kind: 'user', text: 'hi' } });
+    const last = frames.filter((f) => f.kind === 'turn-status').at(-1)!.payload as { state: string };
+    assert.equal(last.state, 'failed', 'both keys exhausted → the turn fails');
+    // the user-facing ambient condition is set, so the NEXT interaction speaks it.
+    const cond = dockConditions.current(DOCK);
+    assert.equal(cond?.code, 'llm_exhausted', 'llm_exhausted condition reported for the next tap');
+    assert.ok((cond?.message ?? '').length > 0, 'the condition carries a spoken message');
+  } finally {
+    dockConditions.clear(DOCK, 'llm_exhausted');
+    if (prevPaid === undefined) delete process.env.GEMINI_API_KEY_PAID_ACC; else process.env.GEMINI_API_KEY_PAID_ACC = prevPaid;
+    if (prevFree === undefined) delete process.env.GEMINI_API_KEY; else process.env.GEMINI_API_KEY = prevFree;
+  }
+});
+
+test('a non-quota error after fallback does NOT set llm_exhausted (and clears a stale one)', async () => {
+  const prevPaid = process.env.GEMINI_API_KEY_PAID_ACC;
+  const prevFree = process.env.GEMINI_API_KEY;
+  process.env.GEMINI_API_KEY = 'free';
+  process.env.GEMINI_API_KEY_PAID_ACC = 'paid';
+  dockConditions.report(DOCK, 'llm_exhausted', 'stale from a previous run'); // pre-seed
+  try {
+    // free 429 → fall back → paid hits a DIFFERENT, non-quota error.
+    const quota = (s: AssistantMessageEventStream) => {
+      const m = assistant('', 'stop');
+      (m as { errorMessage?: string }).errorMessage = '429 RESOURCE_EXHAUSTED';
+      s.push({ type: 'done', reason: 'stop', message: m });
+      s.end(m);
+    };
+    const otherErr = (s: AssistantMessageEventStream) => {
+      const m = assistant('', 'stop');
+      (m as { errorMessage?: string }).errorMessage = 'No API key for provider: google';
+      s.push({ type: 'done', reason: 'stop', message: m });
+      s.end(m);
+    };
+    const { session } = makeSession([quota, otherErr], {
+      config: { brainModel: 'google/gemini-2.5-flash' },
+    });
+    await session.handleTurnRequest({ turnId: 't1', trigger: { kind: 'user', text: 'hi' } });
+    // a non-quota failure is not "usage limit" → the stale condition is cleared.
+    assert.equal(dockConditions.current(DOCK), undefined, 'non-quota error clears llm_exhausted');
+  } finally {
+    dockConditions.clear(DOCK, 'llm_exhausted');
+    if (prevPaid === undefined) delete process.env.GEMINI_API_KEY_PAID_ACC; else process.env.GEMINI_API_KEY_PAID_ACC = prevPaid;
+    if (prevFree === undefined) delete process.env.GEMINI_API_KEY; else process.env.GEMINI_API_KEY = prevFree;
   }
 });
 
