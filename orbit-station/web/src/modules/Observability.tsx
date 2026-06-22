@@ -4,6 +4,9 @@ import { useStationEvents } from '../lib/useStation';
 import { api } from '../lib/station';
 import type { AgentEventDto } from '../lib/protocol';
 
+// feedback overlay (GET /api/feedback/) — just the fields the trace badges need.
+interface FeedbackMeta { id: string; sessionId?: string; turnId?: string; source: string; reason?: string }
+
 // ── view models (mirror the server store) ────────────────────────────────────
 interface ToolVM { id: string; name: string; args?: unknown; result?: string; isError?: boolean; startedAt?: number; endedAt?: number }
 interface StepVM { idx: number; model?: string; stopReason?: string; text?: string; tools: ToolVM[]; inTok?: number; outTok?: number; startedAt?: number; streamStartedAt?: number; endedAt?: number }
@@ -55,6 +58,37 @@ export function Observability() {
     return () => { cancelled = true; };
   }, []);
 
+  // FEEDBACK overlay: fetch all feedback once + on the live `feedback` topic, and
+  // index it so the trace can show 💬(count) per session and 💬(text) per turn.
+  const [feedback, setFeedback] = useState<FeedbackMeta[]>([]);
+  const refreshFeedback = useCallback(() => {
+    api.get<FeedbackMeta[]>('/feedback/').then(setFeedback).catch(() => {});
+  }, []);
+  useEffect(() => { refreshFeedback(); }, [refreshFeedback]);
+  useStationEvents('feedback', refreshFeedback);
+
+  // sessionId → count; sessionId+turnId → the feedbacks on that exact turn.
+  const fbBySession = useMemo(() => {
+    const m = new Map<string, FeedbackMeta[]>();
+    for (const f of feedback) if (f.sessionId) (m.get(f.sessionId) ?? m.set(f.sessionId, []).get(f.sessionId)!).push(f);
+    return m;
+  }, [feedback]);
+  const fbByTurn = useMemo(() => {
+    const m = new Map<string, FeedbackMeta[]>();
+    for (const f of feedback) if (f.sessionId && f.turnId) (m.get(turnKey(f.sessionId, f.turnId)) ?? m.set(turnKey(f.sessionId, f.turnId), []).get(turnKey(f.sessionId, f.turnId))!).push(f);
+    return m;
+  }, [feedback]);
+
+  // LIVE perception models — what the dock is actually perceiving with right now
+  // (the two MLX sidecars + their up/down state). Shown atop the perception lane.
+  const [percModels, setPercModels] = useState<Array<{ name: string; kind: string; up: boolean }>>([]);
+  useEffect(() => {
+    const load = () => api.get<Array<{ name: string; kind: string; up: boolean }>>('/perception/sidecars').then((s) => setPercModels(s ?? [])).catch(() => {});
+    load();
+    const iv = setInterval(load, 10_000); // refresh so up/down stays current
+    return () => clearInterval(iv);
+  }, []);
+
   const onEvent = useCallback((frame: { payload: unknown }) => {
     const ev = frame.payload as AgentEventDto;
     setTurns((prev) => {
@@ -93,7 +127,7 @@ export function Observability() {
   // but turns WITHIN a session read chronologically — oldest at top, newest at
   // the bottom — so a conversation flows top-to-bottom. ("slowest" overrides to
   // slowest-first since that's the point of the filter.)
-  const groups = useMemo(() => {
+  const allGroups = useMemo(() => {
     const m = new Map<string, TurnVM[]>();
     for (const t of filtered) (m.get(t.sessionId) ?? m.set(t.sessionId, []).get(t.sessionId)!).push(t);
     const arr = [...m.entries()].map(([sid, ts]) => {
@@ -104,8 +138,27 @@ export function Observability() {
     return arr;
   }, [filtered, fSlow]);
 
+  // Perception's own Gemini activity (background STT / summarizer / embedder) is
+  // logged as a rolling `perception:<dock>` session for COST tracking — it's not a
+  // conversation, so split it into its own collapsed lane instead of polluting the
+  // conversation traces. (cost-report.ts on the server emits these.)
+  const isPerc = (sid: string) => sid.startsWith('perception:');
+  const groups = useMemo(() => allGroups.filter((g) => !isPerc(g.sid)), [allGroups]);
+  const percGroups = useMemo(() => allGroups.filter((g) => isPerc(g.sid)), [allGroups]);
+
   const toggleTurn = (id: string) => setExpanded((s) => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
   const toggleSession = (sid: string) => setCollapsedSessions((s) => { const n = new Set(s); n.has(sid) ? n.delete(sid) : n.add(sid); return n; });
+
+  // perception sessions start COLLAPSED (they're cost noise, not conversation) —
+  // seed the collapsed set once when a new perception session first appears.
+  const seededCollapse = useRef(new Set<string>());
+  useEffect(() => {
+    const fresh = percGroups.map((g) => g.sid).filter((sid) => !seededCollapse.current.has(sid));
+    if (fresh.length) {
+      fresh.forEach((sid) => seededCollapse.current.add(sid));
+      setCollapsedSessions((s) => { const n = new Set(s); fresh.forEach((sid) => n.add(sid)); return n; });
+    }
+  }, [percGroups]);
 
   return (
     <section className="obs">
@@ -141,21 +194,61 @@ export function Observability() {
                   <span className="mono obs-session-id">{g.sid}</span>
                   <span className="pill acc sm">{g.source ?? '—'}</span>
                   <span className="muted sm">{g.turns.length} turns</span>
+                  {(fbBySession.get(g.sid)?.length ?? 0) > 0 && (
+                    <span className="pill acc sm" title="feedback recorded on this session">💬 {fbBySession.get(g.sid)!.length}</span>
+                  )}
                   <span className="muted sm">· {clock(g.started)}–{clock(g.last)}</span>
                 </button>
                 {!collapsed && g.turns.map((t) => (
-                  <TurnRow key={t.id} turn={t} open={expanded.has(t.id)} onToggle={() => toggleTurn(t.id)} />
+                  <TurnRow key={t.id} turn={t} open={expanded.has(t.id)} onToggle={() => toggleTurn(t.id)} feedback={fbByTurn.get(turnKey(t.sessionId, t.id))} />
                 ))}
               </div>
             );
           })}
         </div>}
+
+      {/* PERCEPTION lane — distinct + collapsed, so the dock's own background
+          model activity (cost noise) doesn't pollute the conversation traces.
+          Header shows what the dock is perceiving with right now. */}
+      {(percGroups.length > 0 || percModels.length > 0) && (
+        <div className="obs-perc-lane" style={{ marginTop: 18, borderTop: '1px solid var(--line)', paddingTop: 12 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginBottom: 8 }}>
+            <strong style={{ fontSize: 12 }}>🧠 Perception activity</strong>
+            <span className="muted sm">the dock's own background models — not conversation</span>
+            <span className="spacer" style={{ flex: 1 }} />
+            {percModels.map((m) => (
+              <span key={m.name} className={`pill sm ${m.up ? 'good' : 'bad'}`} title={`${m.name}: ${m.kind} — ${m.up ? 'running' : 'DOWN'}`}>
+                {m.up ? '●' : '○'} {m.name} · {m.kind}
+              </span>
+            ))}
+          </div>
+          <div className="obs-sessions">
+            {percGroups.map((g) => {
+              const collapsed = collapsedSessions.has(g.sid);
+              return (
+                <div key={g.sid} className="obs-session">
+                  <button className="obs-session-head" onClick={() => toggleSession(g.sid)}>
+                    <span className="obs-caret">{collapsed ? '▸' : '▾'}</span>
+                    <span className="mono obs-session-id">{g.sid}</span>
+                    <span className="pill sm">{g.source ?? '—'}</span>
+                    <span className="muted sm">{g.turns.length} calls</span>
+                    <span className="muted sm">· {clock(g.started)}–{clock(g.last)}</span>
+                  </button>
+                  {!collapsed && g.turns.map((t) => (
+                    <TurnRow key={t.id} turn={t} open={expanded.has(t.id)} onToggle={() => toggleTurn(t.id)} feedback={fbByTurn.get(turnKey(t.sessionId, t.id))} />
+                  ))}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
     </section>
   );
 }
 
 // ── one turn: header row + in-place expandable detail ────────────────────────
-function TurnRow({ turn, open, onToggle }: { turn: TurnVM; open: boolean; onToggle: () => void }) {
+function TurnRow({ turn, open, onToggle, feedback }: { turn: TurnVM; open: boolean; onToggle: () => void; feedback?: FeedbackMeta[] }) {
   const err = turn.steps.some((s) => s.tools.some((x) => x.isError));
   return (
     <div className={`obs-turn${open ? ' open' : ''}`}>
@@ -171,6 +264,9 @@ function TurnRow({ turn, open, onToggle }: { turn: TurnVM; open: boolean; onTogg
         ))}
         {err && <span className="dot off" title="error" />}
         {!turn.ended && <span className="dot wait" title="running" />}
+        {feedback?.map((f) => (
+          <span key={f.id} className="pill acc sm" title={`feedback (${f.source}): ${f.reason ?? ''}`}>💬 {f.reason ?? 'feedback'}</span>
+        ))}
         <span className="spacer" />
         <span className="muted sm obs-turn-fulltime">{fullTime(turn.startedAt)}</span>
       </button>

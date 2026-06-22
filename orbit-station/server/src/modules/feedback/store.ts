@@ -20,6 +20,11 @@ const DATA_DIR = fileURLToPath(new URL('../../../.data/feedback/', import.meta.u
 export interface StoredFeedback {
   id: string;
   file: string;
+  /** the feedback folder (absolute). */
+  dir: string;
+  /** the full file path on disk (absolute) — shown in the console so you know
+   *  exactly where to open it for analysis. */
+  path: string;
   meta: FeedbackMeta;
   content: string;
 }
@@ -29,6 +34,11 @@ export class FeedbackStore {
 
   constructor(root = DATA_DIR) {
     this.#root = root;
+  }
+
+  /** The feedback folder on disk (absolute). */
+  get root(): string {
+    return this.#root;
   }
 
   /** Write a rendered feedback MD, returning the file id. Atomic (tmp+rename). */
@@ -70,7 +80,7 @@ export class FeedbackStore {
     if (!file) return undefined;
     try {
       const content = readFileSync(join(this.#root, file), 'utf8');
-      return { id, file, meta: parseFrontmatter(id, content), content };
+      return { id, file, dir: this.#root, path: join(this.#root, file), meta: parseFrontmatter(id, content), content };
     } catch {
       return undefined;
     }

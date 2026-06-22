@@ -19,7 +19,7 @@ interface FeedbackMeta {
   source: 'app-button' | 'brain-tool' | 'api';
   reason?: string;
 }
-interface FeedbackDetail { id: string; file: string; meta: FeedbackMeta; content: string }
+interface FeedbackDetail { id: string; file: string; dir: string; path: string; meta: FeedbackMeta; content: string }
 
 const SOURCE_ICO: Record<FeedbackMeta['source'], string> = {
   'app-button': '📱', 'brain-tool': '🤖', 'api': '🛰',
@@ -102,6 +102,14 @@ export function Feedback() {
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
               <strong>{detail.meta.dock} · {detail.meta.reason || '(no reason)'}</strong>
               <button onClick={() => void remove(detail.id)} disabled={busy} style={btnDanger}>Delete</button>
+            </div>
+            {/* actual on-disk location, so you can open it directly for analysis */}
+            <div
+              title="click to copy the full path"
+              onClick={() => navigator.clipboard?.writeText(detail.path)}
+              style={{ fontSize: 11, opacity: 0.55, fontFamily: 'monospace', marginBottom: 10, cursor: 'pointer', wordBreak: 'break-all' }}
+            >
+              📁 {detail.path} <span style={{ opacity: 0.5 }}>(click to copy)</span>
             </div>
             <pre style={{
               whiteSpace: 'pre-wrap', wordBreak: 'break-word', fontSize: 12, lineHeight: 1.5,
