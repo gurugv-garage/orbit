@@ -1,0 +1,20 @@
+# perception-sidecar Python deps (Apple Silicon / MLX).
+#   pip install -r requirements.txt
+#
+# Versions are pinned to what was tested live on the dev box (2026-06-22). MLX
+# wheels are Apple-Silicon only — this sidecar does not run on x86/Linux as-is.
+#
+# What needs what:
+#   STT  --engine parakeet (DEFAULT) → parakeet-mlx   (NVIDIA Parakeet-TDT)
+#   STT  --engine whisper            → mlx-whisper
+#   vision (--temporal / --vision)   → mlx-vlm, Pillow (+ the md3 runner in
+#                                      ../moondream/bench)
+#   always                           → numpy ; mlx is pulled in transitively by
+#                                      the mlx-* packages (listed for clarity).
+
+parakeet-mlx==0.5.2
+mlx-whisper==0.4.3
+mlx-vlm==0.6.3
+numpy==2.2.6
+Pillow==10.4.0
+mlx==0.31.2
