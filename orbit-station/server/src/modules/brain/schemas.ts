@@ -274,9 +274,9 @@ export const inspectObservabilitySchema = {
 export const RECORD_FEEDBACK_DESC =
   "Record the user's feedback about how I'm doing for later review. Use when the user is clearly happy or unhappy, " +
   'points out something I got wrong (misheard, didn\'t move, wrong answer, too slow), or explicitly says "give feedback". ' +
-  'This snapshots the whole session — my traces, timings, perception, version — and saves it with their words for the ' +
-  'team to review. If their reason is vague, ask ONE quick clarifying question first (what did they expect?), then record. ' +
-  'Confirm briefly that you saved it.';
+  'This snapshots the whole session — my traces, timings, perception, version — and saves it with their words to the ' +
+  'feedback folder for later analysis. If their reason is vague, ask ONE quick clarifying question first (what did they ' +
+  'expect?), then record. Confirm briefly that it was saved to the feedback folder for review whenever they want.';
 
 export const INSPECT_OBSERVABILITY_DESC =
   'Look up structured facts about MYSELF and this session — my current software version/build (git, app, firmware), ' +

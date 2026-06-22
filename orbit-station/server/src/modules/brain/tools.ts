@@ -255,7 +255,7 @@ export function buildFeedbackTools(dock: string, sessionId: () => string | undef
           dock, sessionId: sessionId(), source: 'brain-tool',
           reason: args.reason, detail: args.detail, turnId: turnId?.(),
         });
-        return textResult(`Feedback recorded (${out.id}). Thanks — the team will review it.`);
+        return textResult(`Feedback recorded (${out.id}) and saved to the feedback folder (.data/feedback/${out.file}) for analysis whenever you'd like to go through it.`);
       } catch (err) {
         return textResult(`Couldn't record the feedback right now: ${err instanceof Error ? err.message : String(err)}`);
       }
