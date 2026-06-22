@@ -14,6 +14,7 @@
  */
 
 import type { SnapshotRecord } from './snapshots.js';
+import { reportGeminiCost } from './cost-report.js';
 
 const MODEL = process.env.PERCEPTION_SUMMARY_MODEL ?? 'gemini-2.5-flash';
 const GEMINI_BASE = 'https://generativelanguage.googleapis.com/v1beta/models';
@@ -216,6 +217,10 @@ export async function summarize(
     });
     const data = (await r.json()) as any;
     if (!r.ok) { result.error = `gemini ${r.status}: ${JSON.stringify(data).slice(0, 200)}`; return result; }
+    // Record this summarizer call's spend in the Cost tab (all records share one
+    // dock — it's the rollup `source`). Best-effort; skipped if usage is absent.
+    const dockId = records[0]?.dockId;
+    if (dockId) reportGeminiCost(dockId, model, 'summary', data?.usageMetadata, Date.now());
     result.summary = data?.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || '(empty)';
   } catch (e) {
     result.error = (e as Error).message;

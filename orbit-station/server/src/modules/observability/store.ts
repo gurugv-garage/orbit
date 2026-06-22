@@ -251,7 +251,7 @@ export class ObsStore {
     const total = bucket();
     const groups = new Map<string, CostBucket>();
     for (const { turn, source } of this.#turnsInWindow(from, to)) {
-      const kind = turn.trigger?.kind === 'task' ? 'task' : 'user';
+      const kind = costKind(turn.trigger?.kind);
       for (const step of turn.steps) {
         const u = step.usage;
         if (!u) continue;
@@ -276,7 +276,7 @@ export class ObsStore {
   costSeries(from: number, to: number, groupBy: 'source' | 'kind' | 'model'): CostSeriesPoint[] {
     const days = new Map<string, Record<string, number>>();
     for (const { turn, source } of this.#turnsInWindow(from, to)) {
-      const kind = turn.trigger?.kind === 'task' ? 'task' : 'user';
+      const kind = costKind(turn.trigger?.kind);
       const day = utcDay(turn.startedAt);
       for (const step of turn.steps) {
         const cost = step.usage?.cost;
@@ -375,6 +375,15 @@ function add(b: CostBucket, u: NonNullable<StepRecord['usage']>): void {
   b.inputTokens += u.inputTokens ?? 0;
   b.outputTokens += u.outputTokens ?? 0;
   b.calls += 1;
+}
+
+/** Bucket a turn's trigger kind for the cost 'kind' axis. `task` and `perception`
+ *  (the station's own non-user LLM spend — bg-STT, summaries, embeds) get their own
+ *  rows; everything else (incl. an absent trigger) is user-driven spend → 'user'. */
+function costKind(triggerKind: string | undefined): string {
+  if (triggerKind === 'task') return 'task';
+  if (triggerKind === 'perception') return 'perception';
+  return 'user';
 }
 
 /** UTC calendar day ('YYYY-MM-DD') of an epoch-ms timestamp. */

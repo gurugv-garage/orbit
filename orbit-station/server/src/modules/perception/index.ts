@@ -338,7 +338,7 @@ export function perceptionModule(getHub: () => ProcessingHub): StationModule {
   };
   const bgStt = bgSttModel
     ? (pcm: Int16Array, rate: number, dockId: string) =>
-        backgroundTranscribe(pcm, rate, bgSttModel, bgContext(dockId))
+        backgroundTranscribe(pcm, rate, bgSttModel, bgContext(dockId), dockId)
     : undefined;
   const stt = sttWatchProcessor(
     snapshots,

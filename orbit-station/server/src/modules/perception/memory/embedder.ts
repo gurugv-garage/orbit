@@ -11,6 +11,7 @@
  */
 
 import type { Embedder } from './store.js';
+import { reportGeminiCost, type GeminiUsage } from '../cost-report.js';
 
 const MODEL = process.env.MEMORY_EMBED_MODEL ?? 'gemini-embedding-001';
 const BASE = 'https://generativelanguage.googleapis.com/v1beta/models';
@@ -32,7 +33,10 @@ export function geminiEmbedder(): Embedder {
         signal: AbortSignal.timeout(10_000),
       });
       if (!r.ok) return null;
-      const data = (await r.json()) as { embedding?: { values?: number[] } };
+      const data = (await r.json()) as { embedding?: { values?: number[] }; usageMetadata?: GeminiUsage };
+      // Record embedding spend in the Cost tab. The Embedder contract carries no
+      // dockId (one shared instance), so attribute it to a generic 'station' source.
+      reportGeminiCost('station', MODEL, 'mem-embed', data.usageMetadata, Date.now());
       const values = data?.embedding?.values;
       if (!Array.isArray(values) || values.length === 0) return null;
       return Float32Array.from(values);

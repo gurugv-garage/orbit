@@ -19,7 +19,7 @@ function seedTurn(
   store: ObsStore,
   opts: {
     source: string; sessionId: string; turnId: string; ts: number;
-    kind: 'user' | 'task'; model: string;
+    kind: string; model: string;
     cost: number; input: number; output: number;
   },
 ): void {
@@ -67,6 +67,19 @@ test('costRollup by kind separates user vs task', () => {
   const r = store.costRollup(now - DAY, now + DAY, 'kind');
   assert.deepEqual(r.groups.map((g) => g.group), ['user', 'task']);
   assert.ok(Math.abs(r.groups.find((g) => g.group === 'task')!.cost - 0.04) < 1e-9);
+});
+
+test('costRollup by kind gives perception its own bucket (not folded into user)', () => {
+  const store = freshStore();
+  const now = Date.now();
+  seedTurn(store, { source: 'deskA', sessionId: 's1', turnId: 't1', ts: now, kind: 'user', model: 'm', cost: 0.10, input: 1, output: 1 });
+  seedTurn(store, { source: 'deskA', sessionId: 'perception:deskA', turnId: 'p1', ts: now, kind: 'perception', model: 'g (bg-stt)', cost: 0.02, input: 1, output: 1 });
+
+  const r = store.costRollup(now - DAY, now + DAY, 'kind');
+  assert.deepEqual(r.groups.map((g) => g.group).sort(), ['perception', 'user']);
+  assert.ok(Math.abs(r.groups.find((g) => g.group === 'perception')!.cost - 0.02) < 1e-9);
+  // user must NOT absorb the perception spend
+  assert.ok(Math.abs(r.groups.find((g) => g.group === 'user')!.cost - 0.10) < 1e-9);
 });
 
 test('costRollup honors the time window', () => {

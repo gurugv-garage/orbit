@@ -31,6 +31,10 @@ export interface ObsAccess {
   get(sessionId: string): SessionRecord | undefined;
   /** attach/refresh per-session enrichment (station-side context). */
   enrich(sessionId: string, source: string, patch: Partial<SessionEnrichment>): void;
+  /** Feed one synthetic agent event into the store (+ live fan-out). Used by
+   *  non-brain LLM callers (e.g. perception's Gemini calls) to record their
+   *  spend as a Turn so it rolls up in the Cost tab. `source` is the owning dock. */
+  ingest(ev: AgentEventDto, source: string): void;
 }
 const obsRef: { current?: ObsAccess } = {};
 /** The live obs store reader/writer (set when the observability module inits). */
@@ -40,10 +44,6 @@ export function getObsAccess(): ObsAccess | undefined {
 
 export function observabilityModule(): StationModule {
   const store = new ObsStore();
-  obsRef.current = {
-    get: (id) => store.get(id),
-    enrich: (id, source, patch) => { store.enrich(id, source, patch); },
-  };
   let bus: Bus;
 
   function ingest(ev: AgentEventDto, source: string): void {
@@ -62,6 +62,13 @@ export function observabilityModule(): StationModule {
 
     init(b) {
       bus = b;
+      // Publish the cross-module access only once the bus is live (the exposed
+      // `ingest` re-publishes onto it), so a caller can never hit an undefined bus.
+      obsRef.current = {
+        get: (id) => store.get(id),
+        enrich: (id, source, patch) => { store.enrich(id, source, patch); },
+        ingest: (ev, source) => { ingest(ev, source); },
+      };
       // WS ingest: peers publishing obs events feed the store too.
       bus.on('obs', (msg) => {
         if (msg.source === 'station') return; // our own re-publish

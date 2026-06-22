@@ -11,6 +11,8 @@
  * never silence, never a connection. One short call per utterance.
  */
 
+import { reportGeminiCost, type GeminiUsage } from '../cost-report.js';
+
 const GEMINI_BASE = 'https://generativelanguage.googleapis.com/v1beta/models';
 
 function geminiKey(): string | undefined {
@@ -66,7 +68,7 @@ function wav(pcm: Int16Array, rate: number): Buffer {
  * failure (the caller keeps the Whisper snapshot) — bg STT must never break live.
  */
 export async function backgroundTranscribe(
-  pcm: Int16Array, sampleRate: number, model: string, context?: string,
+  pcm: Int16Array, sampleRate: number, model: string, context?: string, dockId?: string,
 ): Promise<BgTranscript | null> {
   const key = geminiKey();
   if (!key) return null;
@@ -94,7 +96,12 @@ export async function backgroundTranscribe(
       signal: AbortSignal.timeout(30_000),
     });
     if (!r.ok) return null;
-    const data = await r.json() as { candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }> };
+    const data = await r.json() as {
+      candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>;
+      usageMetadata?: GeminiUsage;
+    };
+    // Record this call's spend in the Cost tab (best-effort; only when we know the dock).
+    if (dockId) reportGeminiCost(dockId, model, 'bg-stt', data.usageMetadata, Date.now());
     const txt = data?.candidates?.[0]?.content?.parts?.[0]?.text ?? '{}';
     const parsed = JSON.parse(txt) as { text?: string; speaker?: number };
     const text = (parsed.text ?? '').trim();
