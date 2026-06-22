@@ -533,6 +533,13 @@ fun DockScreen() {
             PerceptionBus.emit(PerceptionEvent.WakeWord(label = "(barge-in)"))
             tts.stop()   // emits the Speaking(false) edge itself (SpeakingEdgeGate)
             agentRef.value?.stop()
+            // tts.stop()'s wind-down calls face.silence() (DockTts.finishUtterance),
+            // which RACES the station's incoming conversation→listening glow update —
+            // leaving "stopped speaking but not visibly listening". A barge-in IS a
+            // transition INTO listening, so assert it locally now; the station's frame
+            // confirms the same state a beat later (idempotent). Fixes the missing glow
+            // on tap-during-speech.
+            controller.listen()
             Unit
         }
     }

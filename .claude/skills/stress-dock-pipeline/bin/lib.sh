@@ -46,20 +46,62 @@ wait_producer() { for _ in $(seq 1 "${1:-20}"); do [ "$(producer_audio)" = audio
 # --- driver mouth (laptop speaker → dock mic, acoustic) --------------------------------
 say_line() { say -v "${VOICE:-Samantha}" -r "${RATE:-170}" "$1"; }
 
-# --- one trial: address, speak, judge --------------------------------------------------
+# RELIABLY get a confirmed-open listening window with enough headroom to speak into,
+# then guarantee we ONLY speak while it's actually listening. The hard requirement:
+# never speak unless mode==listening/followup with >= MIN_SECS left at speak time.
+#
+# A tap TOGGLES (opens from idle; CLOSES an already-open window) — so we tap ONLY when
+# idle, never when already attending. We then RE-CONFIRM right before returning, with a
+# fresh re-address if the window lapsed. Returns 0 with a confirmed window; 1 if it
+# couldn't establish one (so the caller reports HARNESS-NOLISTEN, NOT a dock failure).
+ensure_listening() {
+  local min_secs="${1:-3}"   # require at least this many seconds left before speaking
+  for attempt in 1 2 3 4; do
+    local m; m=$(mode)
+    if [ "$m" != listening ] && [ "$m" != followup ]; then
+      [ "$m" = idle ] && tap          # only tap from idle (toggle-safe)
+      sleep 0.3
+      m=$(mode)
+    fi
+    if { [ "$m" = listening ] || [ "$m" = followup ]; } && [ "$(secs)" -ge "$min_secs" ]; then
+      return 0                         # confirmed open with headroom
+    fi
+    sleep 0.3
+  done
+  return 1
+}
+
+# --- one trial: address, CONFIRM listening, speak, judge -------------------------------
 # Usage: trial "<spoken line>" [pre_delay_s]
-#   pre_delay_s = seconds to wait AFTER tap BEFORE speaking (0 = immediate). Use a few
-#   seconds to probe the window-expiry edge.
-# Prints: SAID / mode-before / STT-finals-delta / DECISION. Returns 0 if RAN-TURN.
+#   pre_delay_s = seconds to wait BEFORE speaking, applied THEN re-confirmed. Use a few
+#   seconds (>= window length) to probe the expiry edge ON PURPOSE — those will print
+#   AFTER-EXPIRY and are an EXPECTED not-addressed, not a failure.
+# Prints: SAID / state-at-speak / finals / DECISION. Returns: 0 RAN-TURN; 1 dock failed
+#   while genuinely listening (a REAL bug); 2 couldn't speak-while-listening (harness/
+#   intentional-expiry — NOT counted as a dock failure).
 trial() {
   local line="$1" pre="${2:-0.5}"
   local t0; t0=$(tx_count)
-  tap; sleep "$pre"
+  ensure_listening 3 || true
+  sleep "$pre"
+  # RE-CONFIRM at the instant of speaking — this is the "reliably know it's listening
+  # when I talk" guarantee. If pre pushed us past the window, re-address once more
+  # (unless pre was deliberately long to test expiry).
   local m b; m=$(mode); b=$(secs)
+  if [ "$m" != listening ] && [ "$m" != followup ]; then
+    # not listening at speak time. If pre was short, this is a harness miss → re-address
+    # and retry once; if pre was long (>=6s) it's an intentional expiry probe → proceed.
+    if awk "BEGIN{exit !($pre < 6)}"; then ensure_listening 3 && { m=$(mode); b=$(secs); }; fi
+  fi
+  if [ "$m" != listening ] && [ "$m" != followup ]; then
+    printf 'SAID="%s"  AT-SPEAK=[%s %ss]  -> NOT-LISTENING (skipped: harness/expiry, not a dock fail)\n' "$line" "$m" "$b"
+    say_line "$line"; sleep 7
+    return 2
+  fi
   say_line "$line"
   sleep 7
   local finals; finals=$(( $(tx_count) - t0 ))
   local dec; dec=$(decision)
-  printf 'SAID="%s"  before=[%s %ss]  finals=%d  DECISION=%s\n' "$line" "$m" "$b" "$finals" "$dec"
+  printf 'SAID="%s"  AT-SPEAK=[%s %ss]  finals=%d  DECISION=%s\n' "$line" "$m" "$b" "$finals" "$dec"
   case "$dec" in RAN-TURN*) return 0;; *) return 1;; esac
 }

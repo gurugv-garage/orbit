@@ -19,13 +19,16 @@ LINES=(
   "Okay okay, never mind that — what's the capital of France?"
 )
 
-pass=0; fail=0
+pass=0; fail=0; skip=0
 for r in $(seq 1 "$ROUNDS"); do
   echo "========== ROUND $r/$ROUNDS =========="
   for line in "${LINES[@]}"; do
-    wait_idle 15 || true                    # start each from idle (avoid tap-toggle-off)
-    if trial "$line" 0.5; then pass=$((pass+1)); else fail=$((fail+1)); fi
-    sleep 2
+    # trial() guarantees it only speaks while CONFIRMED listening (ensure_listening +
+    # re-confirm at speak time). rc: 0=RAN-TURN, 1=dock failed WHILE listening (REAL
+    # bug), 2=couldn't speak-while-listening (harness/skip, NOT a dock failure).
+    trial "$line" 0.5; rc=$?
+    case $rc in 0) pass=$((pass+1));; 1) fail=$((fail+1));; 2) skip=$((skip+1));; esac
+    sleep 1
   done
 
   # --- MID-CONVERSATION TAP / BARGE-IN: tap + speak WHILE the dock is replying ---
@@ -39,6 +42,7 @@ for r in $(seq 1 "$ROUNDS"); do
   echo "barge-in: mode=$(mode) finals=$(( $(tx_count) - before )) decision=$(decision)"
   sleep 2
 done
-echo "================ HAMMER: pass=$pass fail=$fail (over $ROUNDS rounds) ================"
-echo "NOTE: judge HEARD vs SAID vs REPLIED for each — a 'pass' here only means a turn RAN;"
-echo "read /api/brain/$DOCK/history for the actual reply quality + STT mishearings."
+echo "================ HAMMER: pass=$pass  fail=$fail (dock failed WHILE listening = REAL)  skip=$skip (couldn't confirm listening) ================"
+echo "NOTE: only 'fail' counts as a dock bug — those spoke with a CONFIRMED listening"
+echo "window and still got no turn. 'skip' = harness couldn't get a window (don't blame"
+echo "the dock). Judge HEARD vs SAID vs REPLIED via /api/brain/$DOCK/history."

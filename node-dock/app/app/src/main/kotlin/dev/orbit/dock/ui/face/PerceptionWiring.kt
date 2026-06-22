@@ -104,19 +104,18 @@ class PerceptionWiring(
                 BeepPlayer.listeningOff()
             }
         }
-        // Face state follows the STATION's attending mode (covers followup too). The
-        // glow MUST track the station's listening window — it's the authoritative owner.
-        // BUG FIXED: the old guard only called listen() from FaceState.Idle, so when the
-        // station opened a window while the face was in any other state (Engaged, or a
-        // followup right after Speaking), the glow never turned on even though the
-        // countdown showed listening — the intermittent "listening, countdown, but no
-        // glow, and it didn't hear me". Now: enter Listening whenever attending and not
-        // already Listening; leave it when no longer attending. Don't stomp Speaking
-        // (the dock is replying) — but attending is false during thinking/speaking, so
-        // this only ever flips between Listening and Idle/Engaged.
+        // Face state follows the STATION's attending mode (the station is the
+        // authoritative owner of listening). The glow MUST track it, from ANY prior
+        // state — including Speaking. The tap-interrupt (barge-in) case is exactly
+        // Speaking→listening: you tap while the dock is replying, the station cancels
+        // the reply and opens a listening window, and the face is momentarily still
+        // Speaking. The old guard excluded Speaking, so the glow never turned on and
+        // the dock "stopped speaking but didn't look like it was listening". Now:
+        // enter Listening whenever the station is attending and we're not already
+        // showing Listening; leave it when no longer attending. (The local TTS stop on
+        // a barge-in is handled by the tap path; this only drives the face glow/state.)
         if (attending) {
-          if (controller.state.value != FaceState.Listening
-              && controller.state.value != FaceState.Speaking) controller.listen()
+          if (controller.state.value != FaceState.Listening) controller.listen()
         } else {
           if (controller.state.value == FaceState.Listening) controller.silence()
         }
