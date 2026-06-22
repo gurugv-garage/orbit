@@ -56,7 +56,7 @@ import { SentenceStreamer } from './sentence.js';
 import { SessionStore, type SessionMeta } from './store.js';
 import { loadDockSkills, type DockSkills } from './skills.js';
 import { buildFileTools, FILE_TOOLS_PROMPT } from './filetools.js';
-import { buildDockTools, buildGrantTools, buildSlackTools, buildWhatsAppTools, buildResearchTools, buildMemoryTools, type ToolTurnContext } from './tools.js';
+import { buildDockTools, buildGrantTools, buildSlackTools, buildWhatsAppTools, buildResearchTools, buildMemoryTools, buildFeedbackTools, buildObsTools, type ToolTurnContext } from './tools.js';
 import type { MoveStep } from './schemas.js';
 import type { VideoRecorderApi } from '../perception/record/recorder.js';
 import * as slack from '../../integrations/slack.js';
@@ -120,6 +120,14 @@ export interface SessionDeps {
   /** the dock's model-facing task tools, built per-turn with the live session id
    *  as the parent (tasks §6). Undefined → tasks disabled / not wired. */
   getTaskTools?: (dock: string, parentSessionId: () => string | undefined) => import('@earendil-works/pi-agent-core').AgentTool<any>[];
+  /** SNAPSHOT per-session context (provenance/config/models/perception/…) onto
+   *  the observability session record. Called on each turn end so EVERY session
+   *  is instrumented (observability is the source of truth). Undefined → skip. */
+  enrichSession?: (dock: string, sessionId: string, span?: { from: number; to: number }) => Promise<void> | void;
+  /** feedback capture entrypoint (record_feedback tool). Undefined → tool off. */
+  feedbackCapture?: import('./tools.js').FeedbackCaptureFn;
+  /** observability read access (inspect_observability tool). Undefined → tool off. */
+  obs?: import('./tools.js').ObsToolApi;
 }
 
 type FailCode = 'timeout' | 'llm_error' | 'busy';
@@ -767,6 +775,11 @@ export class DockBrainSession {
       ...(this.#skills.tool ? [this.#skills.tool] : []),
       ...(fileAccess ? buildFileTools({ confirm: (s, d) => this.#confirmOnDock(s, d) }) : []),
       ...(this.#d.getTaskTools?.(this.dock, () => this.#meta?.sessionId) ?? []),
+      // feedback + self-knowledge: record_feedback (flag a session for review) and
+      // inspect_observability (answer "what version / how fast / any errors" from
+      // the same traces the console shows). Both built only when wired.
+      ...buildFeedbackTools(this.dock, () => this.#meta?.sessionId, this.#d.feedbackCapture, () => this.#obsTurnId || undefined),
+      ...buildObsTools(this.dock, () => this.#meta?.sessionId, this.#d.obs),
     ];
     this.#debug('turn-start', {
       text: req.trigger.text,
@@ -865,6 +878,16 @@ export class DockBrainSession {
 
       if (this.#meta) this.#d.store.turnEnded(this.dock, this.#meta.sessionId, agent.state.messages);
       this.#shipObs('TurnEnd');
+
+      // INSTRUMENT: snapshot the session's station-side context (provenance,
+      // config, models, perception window, …) onto the obs record. Best-effort,
+      // off the turn's critical path — a failure here never affects the reply.
+      if (this.#meta) {
+        const sid = this.#meta.sessionId;
+        const span = { from: this.#turnStartedAt, to: Date.now() };
+        void Promise.resolve(this.#d.enrichSession?.(this.dock, sid, span))
+          .catch((err) => this.#d.log?.(`[brain] ${this.dock}: enrich failed (ignored): ${String(err)}`));
+      }
 
       this.#debug('turn-end', {
         state: this.#cancelled ? 'cancelled' : failCode != null ? 'failed' : 'done',

@@ -262,7 +262,11 @@ fun DockScreen() {
             // upload the JPEG only when the live A/V stream is DOWN — when
             // it's up the brain grabs frames from the SFU (no per-turn upload).
             uploadFrame = { mediaStreamerRef.value?.isStreaming() != true },
-        ).also { agentRef.value = it }
+        ).also {
+            agentRef.value = it
+            // expose to the debug receiver (adb-driven feedback flagging).
+            dev.orbit.dock.agent.BrainTestController.brain = it
+        }
     }
 
     // Debug-only test harness: register the adb-broadcast receiver so the
@@ -645,13 +649,23 @@ fun DockScreen() {
                     }
                     // Version label (top-start) — what build is running, handy
                     // for confirming OTA updates landed. Replaces the old exit X.
+                    // LONG-PRESS = flag FEEDBACK on this session (feedback-flow):
+                    // ships the session up to the station for a full debugging dump.
                     androidx.compose.material3.Text(
                         text = "v${BuildConfig.VERSION_NAME} · build ${BuildConfig.VERSION_CODE}",
                         color = Color.White.copy(alpha = 0.4f),
                         fontSize = 11.sp,
                         modifier = Modifier
                             .align(Alignment.TopStart)
-                            .padding(12.dp),
+                            .padding(12.dp)
+                            .pointerInput(Unit) {
+                                detectTapGestures(onLongPress = {
+                                    agentRef.value?.sendFeedback(null)
+                                    android.widget.Toast.makeText(
+                                        ctx, "Feedback flagged for this session", android.widget.Toast.LENGTH_SHORT,
+                                    ).show()
+                                })
+                            },
                     )
                     // The dock's "eye": a live thumbnail of what the camera (and
                     // the vision LLM) sees. Only while the camera is actually on.

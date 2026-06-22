@@ -54,6 +54,18 @@ android {
             "DOCK_NAME",
             "\"${localProps.getProperty("DOCK_NAME", "anne-bot")}\"",
         )
+        // The git SHA this build was cut from — baked in so a feedback dump can
+        // reproduce against an exact app build (feedback-flow). Uses the
+        // config-cache-safe providers.exec API (a plain ProcessBuilder at config
+        // time is rejected by the configuration cache). Best-effort: a checkout
+        // without git falls back to "unknown".
+        val gitSha = providers.exec {
+            commandLine("git", "rev-parse", "--short=12", "HEAD")
+            isIgnoreExitValue = true
+            workingDir = rootProject.projectDir
+        }.standardOutput.asText.map { it.trim() }.orElse("unknown").get()
+            .ifEmpty { "unknown" }
+        buildConfigField("String", "GIT_SHA", "\"$gitSha\"")
     }
 
     // Release signing for OTA (docs/OTA.md §5.1). A stable key is required: the

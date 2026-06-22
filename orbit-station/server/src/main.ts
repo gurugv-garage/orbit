@@ -16,7 +16,7 @@ import { Hub } from './core/hub.js';
 import { createServer } from './core/http.js';
 import { startWebWatch, stopWebWatch } from './core/web-watch.js';
 import type { StationModule } from './core/module.js';
-import { observabilityModule } from './modules/observability/index.js';
+import { observabilityModule, getObsAccess } from './modules/observability/index.js';
 import { configModule } from './modules/config/index.js';
 import { ConfigStore } from './modules/config/store.js';
 import { bodylinkModule } from './modules/bodylink/index.js';
@@ -30,7 +30,15 @@ import { slackModule } from './modules/slack/index.js';
 import { benchModule } from './modules/bench/index.js';
 import { docksModule } from './modules/docks/index.js';
 import { Directory } from './modules/docks/directory.js';
-import { brainModule } from './modules/brain/index.js';
+import { brainModule, getBrainAccess } from './modules/brain/index.js';
+import { feedbackModule, getFeedbackCapture } from './modules/feedback/index.js';
+import { healthSummary } from './modules/observability/health.js';
+import { composeEnrichment, type ContextSources } from './modules/observability/context.js';
+import { stationProvenance } from './modules/feedback/provenance.js';
+import type { Provenance } from './modules/feedback/types.js';
+import {
+  getPerceptionGrounding, getSnapshotsApi, getMemoryApi, getGateApi,
+} from './modules/perception/index.js';
 import { otaModule } from './modules/ota/index.js';
 import { stationModule } from './modules/station.js';
 
@@ -108,10 +116,68 @@ async function main() {
   modules.push(perceptionModule(() => processingHub!));
   modules.push(docksModule(directory, () => hub));
   modules.push(bodylinkModule({ directory, motion, getHub: () => hub }));
+
+  // ── SESSION CONTEXT: the one source-of-truth wiring ────────────────────────
+  // Observability owns per-session context. These accessors let it (and the
+  // feedback flow + the agent's inspect_observability tool) reach all the live
+  // station state — configs, versions, models, perception, gate/addressed,
+  // grounding — whether snapshotted onto the session or pulled on demand.
+  const firmwareBuild = (dock: string): number | string | undefined =>
+    hub.roster().find((p) => p.dock === dock && p.kind === 'dock-body-fw')?.build ?? undefined;
+  const provenanceFor = (dock: string): Provenance => ({
+    station: stationProvenance(),
+    firmware: { build: firmwareBuild(dock) },
+    models: { ...(getBrainAccess()?.models(dock) ?? {}), perception: perceptionModelsInPlay() },
+  });
+  const contextSources: ContextSources = {
+    provenance: (dock) => provenanceFor(dock),
+    config: (dock) => { void dock; return brainConfigSnapshot(configStore); },
+    models: (dock) => ({ ...(getBrainAccess()?.models(dock) ?? {}), perception: perceptionModelsInPlay() }),
+    profile: async (dock) => getBrainAccess()?.profile(dock),
+    snapshots: (fromIso, toIso, dock) => getSnapshotsApi()?.inWindow(fromIso, toIso, dock) ?? [],
+    gateDecisions: (limit) => getGateApi()?.recentDecisions(limit) ?? [],
+    addressed: (dock) => getBrainAccess()?.addressed(dock) ?? [],
+    grounding: (dock) => getPerceptionGrounding()?.forDock(dock),
+  };
+  // the brain enriches each session on turn end via this composer (instrumented
+  // for EVERY session, not just when feedback is flagged).
+  const enrichSession = async (dock: string, sessionId: string, span?: { from: number; to: number }) => {
+    const patch = await composeEnrichment(dock, contextSources, span);
+    getObsAccess()?.enrich(sessionId, dock, patch);
+  };
+
   modules.push(brainModule({
     directory, motion, getHub: () => hub,
     config: (key) => configStore.get(key)?.value,
     recordVideo: videoRecorder,
+    enrichSession,
+    sessionContext: contextSources,
+    // record_feedback → the feedback module's capture (wired below; lazy so the
+    // ordering — feedback module is pushed after brain — doesn't matter).
+    feedbackCapture: (req) => {
+      const cap = getFeedbackCapture();
+      if (!cap) throw new Error('feedback module not ready');
+      return cap.capture(req);
+    },
+    // inspect_observability → the obs store + a fresh provenance snapshot.
+    obs: {
+      session: (sessionId) => getObsAccess()?.get(sessionId),
+      health: (turns) => healthSummary(turns),
+      provenance: (dock) => provenanceFor(dock),
+    },
+  }));
+  // feedback: a THIN layer over the enriched obs session — read the session's
+  // stored context, add the user's words + a fresh static snapshot, write MD.
+  modules.push(feedbackModule({
+    dockOf: (peerId) => getBrainAccess()?.dockOf(peerId),
+    getTrace: (sessionId) => getObsAccess()?.get(sessionId),
+    health: (turns) => healthSummary(turns),
+    openSessionId: (dock) => getBrainAccess()?.openSessionId(dock),
+    getSession: (dock, sessionId) => getBrainAccess()?.sessionDump(dock, sessionId) ?? {},
+    sessionContext: contextSources,
+    provenance: (dock) => provenanceFor(dock),
+    memory: (dock, limit) => getMemoryApi()?.recent(dock, limit) ?? [],
+    constants: () => feedbackConstants(),
   }));
   // capture-judging harness: record a dock's A/V + snapshots for replay/judging.
   modules.push(captureModule({ getHub: () => processingHub!, directory, dir: captureDir }));
@@ -179,6 +245,39 @@ function lanAddress(): string | undefined {
     }
   }
   return undefined;
+}
+
+/** Distinct perception sidecar models currently producing snapshots (derived
+ *  from the recent snapshot window — no extra registry needed). */
+function perceptionModelsInPlay(): Array<{ name: string; endpoint: string }> {
+  const since = new Date(Date.now() - 10 * 60_000 + 5.5 * 3600_000).toISOString().replace('Z', '+05:30');
+  const now = new Date(Date.now() + 5.5 * 3600_000).toISOString().replace('Z', '+05:30');
+  const recs = (getSnapshotsApi()?.inWindow(since, now) ?? []) as Array<{ model?: { name: string; endpoint: string } }>;
+  const seen = new Map<string, { name: string; endpoint: string }>();
+  for (const r of recs) {
+    if (r.model?.name) seen.set(`${r.model.name}@${r.model.endpoint}`, r.model);
+  }
+  return [...seen.values()];
+}
+
+/** The dock's effective brain config (the `brain*` keys) as a flat snapshot. */
+function brainConfigSnapshot(configStore: ConfigStore): Record<string, unknown> {
+  const all = configStore.export();
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(all)) {
+    if (k.startsWith('brain') || k.startsWith('perception')) out[k] = v;
+  }
+  return out;
+}
+
+/** Env-tunable constants worth recording in a feedback dump for reference. */
+function feedbackConstants(): Record<string, unknown> {
+  return {
+    FORCE_GET_WINDOW_MS: process.env.FORCE_GET_WINDOW_MS,
+    PERCEPTION_SNAPSHOT_CAP: process.env.PERCEPTION_SNAPSHOT_CAP,
+    PERCEPTION_KEYFRAME_CAP: process.env.PERCEPTION_KEYFRAME_CAP,
+    PORT: process.env.PORT ?? '8099',
+  };
 }
 
 main().catch((err) => {

@@ -1,5 +1,6 @@
 package dev.orbit.dock.agent
 
+import dev.orbit.dock.BuildConfig
 import dev.orbit.dock.perception.CameraFrameProvider
 import dev.orbit.dock.station.BrainLink
 import kotlinx.coroutines.CoroutineScope
@@ -121,6 +122,12 @@ class RemoteBrain(
 
     @Volatile private var brainReady = false
 
+    // Recent event-log lines, kept as a ring so a feedback flag can ship the
+    // last bit of device-side history up with the dump (feedback-flow). Guarded
+    // by its own lock — trace() runs on many threads.
+    private val recentLines = ArrayDeque<String>()
+    private val recentLock = Any()
+
     // transcript pre-warm throttling (≥100ms between partials, final always)
     @Volatile private var lastTranscriptSentAt = 0L
     @Volatile private var utteranceId = newUtteranceId()
@@ -186,6 +193,60 @@ class RemoteBrain(
             put("at", System.currentTimeMillis())
         })
         trace("ADDRESSED (tap) → station")
+    }
+
+    /** Flag FEEDBACK about this session (feedback-flow). Ships the user's reason +
+     *  a verbatim snapshot of device-side context (the last turn's TurnLog, recent
+     *  event-log lines, and the app version/SHA) up to the station, which bundles
+     *  it with the full session trace into a markdown dump for offline review.
+     *  Critical send (the flag must not be silently dropped); a failure traces. */
+    fun sendFeedback(reason: String?) {
+        if (!isConfigured) return
+        scope.launch {
+            val ok = link.publishCritical("agent", "feedback", buildJsonObject {
+                reason?.takeIf { it.isNotBlank() }?.let { put("reason", it) }
+                lastTurnId.takeIf { it.isNotEmpty() }?.let { put("turnId", it) }
+                put("clientContext", buildClientContext())
+            })
+            trace(if (ok) "FEEDBACK → station${reason?.let { ": $it" } ?: ""}" else "FEEDBACK send FAILED")
+        }
+    }
+
+    /** The device-side context embedded verbatim in a feedback dump: app version
+     *  provenance + the most-recent turn's log + recent event lines. */
+    private fun buildClientContext(): JsonObject = buildJsonObject {
+        put("app", buildJsonObject {
+            put("versionName", BuildConfig.VERSION_NAME)
+            put("versionCode", BuildConfig.VERSION_CODE)
+            put("gitSha", BuildConfig.GIT_SHA)
+            put("dock", BuildConfig.DOCK_NAME)
+        })
+        TurnLog.current.value?.let { t ->
+            put("lastTurn", buildJsonObject {
+                put("transcript", t.transcript)
+                t.reply?.let { put("reply", it) }
+                t.winningModel?.let { put("winningModel", it) }
+                t.latencyMs?.let { put("latencyMs", it) }
+                put("attempts", JsonArray(t.attempts.map { a ->
+                    buildJsonObject {
+                        put("modelId", a.modelId)
+                        put("attempt", a.attempt)
+                        put("of", a.of)
+                        put("success", a.success)
+                        a.error?.let { put("error", it) }
+                    }
+                }))
+                put("tools", JsonArray(t.tools.map { tc ->
+                    buildJsonObject {
+                        put("name", tc.name)
+                        tc.arg?.let { put("arg", it) }
+                        put("atMs", tc.atMs)
+                    }
+                }))
+            })
+        }
+        val lines = synchronized(recentLock) { recentLines.toList() }
+        put("eventLog", JsonArray(lines.map { JsonPrimitive(it) }))
     }
 
     // ── raw conversation events → the station (it owns the state machine) ──────
@@ -572,6 +633,10 @@ class RemoteBrain(
 
     private fun trace(line: String) {
         _events.tryEmit(line)
+        synchronized(recentLock) {
+            recentLines.addLast(line)
+            while (recentLines.size > RECENT_LINES_CAP) recentLines.removeFirst()
+        }
         Timber.tag(EVT).i(line)
     }
 
@@ -586,6 +651,8 @@ class RemoteBrain(
         const val BRAIN_LABEL = "station"
         const val EVT = "DOCK_EVT"
         const val EVENT_LOG_REPLAY = 40
+        /** how many recent event-log lines a feedback dump ships up. */
+        const val RECENT_LINES_CAP = 60
         const val TRANSCRIPT_THROTTLE_MS = 100L
         /** Local silence ceiling — longer than the station's own 60s turn
          *  timeout, so it only fires when the station truly vanished. */

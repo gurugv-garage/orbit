@@ -16,6 +16,7 @@ import { Perception } from './modules/Perception';
 import { Memory } from './modules/Memory';
 import { Capture } from './modules/Capture';
 import { Cost } from './modules/Cost';
+import { Feedback } from './modules/Feedback';
 
 interface ViewDef { id: string; label: string; ico: string; el: React.ReactNode; }
 
@@ -32,6 +33,7 @@ const VIEWS: ViewDef[] = [
   { id: 'perception', label: 'Perception', ico: '🧠', el: <Perception /> },
   { id: 'capture', label: 'Capture', ico: '⏺', el: <Capture /> },
   { id: 'memory', label: 'Memory', ico: '🗃', el: <Memory /> },
+  { id: 'feedback', label: 'Feedback', ico: '💬', el: <Feedback /> },
   { id: 'ota', label: 'Updates', ico: '⬆', el: <Ota /> },
   { id: 'bench', label: 'Benchmarks', ico: '📊', el: <Bench /> },
 ];

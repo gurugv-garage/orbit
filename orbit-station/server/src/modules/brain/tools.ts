@@ -233,6 +233,82 @@ export function buildResearchTools(): AgentTool<any>[] {
   ];
 }
 
+/** The capture entrypoint the record_feedback tool calls (the feedback module
+ *  implements it). Kept as a plain function type to avoid a module cycle. */
+export type FeedbackCaptureFn = (req: {
+  dock: string; sessionId?: string; source: 'brain-tool'; reason?: string; detail?: string; turnId?: string;
+}) => Promise<{ id: string; file: string }>;
+
+/**
+ * record_feedback — the agent's path to flag feedback (docs/features-todo/
+ * feedback-flow.md). Snapshots the whole session (handled station-side: the
+ * bundler reads the enriched obs record) and writes an MD with the user's words.
+ * The DESC tells the model to ask one quick clarifying question when the reason
+ * is vague before recording. Built only when the capture fn is wired.
+ */
+export function buildFeedbackTools(dock: string, sessionId: () => string | undefined, capture?: FeedbackCaptureFn, turnId?: () => string | undefined): AgentTool<any>[] {
+  if (!capture) return [];
+  return [
+    tool('record_feedback', S.RECORD_FEEDBACK_DESC, S.recordFeedbackSchema, async (_id, args: { reason: string; detail?: string }) => {
+      try {
+        const out = await capture({
+          dock, sessionId: sessionId(), source: 'brain-tool',
+          reason: args.reason, detail: args.detail, turnId: turnId?.(),
+        });
+        return textResult(`Feedback recorded (${out.id}). Thanks — the team will review it.`);
+      } catch (err) {
+        return textResult(`Couldn't record the feedback right now: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }),
+  ];
+}
+
+/** Read-only observability access for the inspect tool. */
+export interface ObsToolApi {
+  /** the enriched session record (turns + enrichment) for a session id. */
+  session(sessionId: string): import('../observability/types.js').SessionRecord | undefined;
+  /** UX-health summary over a set of turns. */
+  health(turns: import('../observability/types.js').TurnRecord[]): import('../observability/health.js').HealthSummary;
+  /** a fresh provenance snapshot (version/build/models). */
+  provenance(dock: string): unknown;
+}
+
+/**
+ * inspect_observability — the agent's STRUCTURED SELF-KNOWLEDGE tool. Lets the
+ * model answer "what version are you / how fast were you / did you error" and
+ * help the user give precise feedback, by reading the same observability the
+ * console shows. Returns compact facts (not a raw dump) for the model to narrate.
+ */
+export function buildObsTools(dock: string, sessionId: () => string | undefined, obs?: ObsToolApi): AgentTool<any>[] {
+  if (!obs) return [];
+  return [
+    tool('inspect_observability', S.INSPECT_OBSERVABILITY_DESC, S.inspectObservabilitySchema, async (_id, args: { aspect: 'version' | 'health' | 'session' | 'all' }) => {
+      const want = args.aspect || 'all';
+      const sid = sessionId();
+      const rec = sid ? obs.session(sid) : undefined;
+      const parts: string[] = [];
+
+      if (want === 'version' || want === 'all') {
+        parts.push(`VERSION: ${JSON.stringify(obs.provenance(dock))}`);
+      }
+      if ((want === 'health' || want === 'all') && rec) {
+        parts.push(`HEALTH (last ${rec.turns.length} turns): ${JSON.stringify(obs.health(rec.turns))}`);
+      }
+      if ((want === 'session' || want === 'all') && rec) {
+        const turns = rec.turns.map((t, i) => {
+          const dur = t.endedAt ? t.endedAt - t.startedAt : undefined;
+          const ttft = t.steps.map((s) => s.ttftMs).find((x) => x != null);
+          const err = t.steps.some((s) => s.error || s.tools.some((tc) => tc.isError));
+          return `  turn ${i + 1} (${t.trigger?.kind ?? '?'}): ${dur ?? '?'}ms${ttft != null ? `, ttft ${ttft}ms` : ''}${err ? ', HAD ERROR' : ''}`;
+        }).join('\n');
+        parts.push(`SESSION ${rec.sessionId} timings:\n${turns || '  (no turns yet)'}`);
+      }
+      if (!parts.length) parts.push('No observability data for this session yet (no completed turns).');
+      return textResult(parts.join('\n\n'));
+    }),
+  ];
+}
+
 /** Render a memory for the model: id (so it can inspect/update/forget), the claim,
  *  subject, confidence, and when it took effect. Short — the model reads many. */
 function fmtMemory(m: MemoryRow): string {

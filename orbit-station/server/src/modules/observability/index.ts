@@ -21,10 +21,29 @@ import { json } from '../../core/http.js';
 import type { RouteContext, StationModule } from '../../core/module.js';
 import { healthSummary } from './health.js';
 import { ObsStore } from './store.js';
-import type { AgentEventDto } from './types.js';
+import type { AgentEventDto, SessionEnrichment, SessionRecord } from './types.js';
+
+/** Access to the obs store for other modules. Observability is the source of
+ *  truth for per-session context: read the enriched Session/Turn/Step tree, and
+ *  WRITE enrichment (provenance/config/models/perception) onto a session. The
+ *  brain enriches on turn end; the feedback bundler reads the result. */
+export interface ObsAccess {
+  get(sessionId: string): SessionRecord | undefined;
+  /** attach/refresh per-session enrichment (station-side context). */
+  enrich(sessionId: string, source: string, patch: Partial<SessionEnrichment>): void;
+}
+const obsRef: { current?: ObsAccess } = {};
+/** The live obs store reader/writer (set when the observability module inits). */
+export function getObsAccess(): ObsAccess | undefined {
+  return obsRef.current;
+}
 
 export function observabilityModule(): StationModule {
   const store = new ObsStore();
+  obsRef.current = {
+    get: (id) => store.get(id),
+    enrich: (id, source, patch) => { store.enrich(id, source, patch); },
+  };
   let bus: Bus;
 
   function ingest(ev: AgentEventDto, source: string): void {

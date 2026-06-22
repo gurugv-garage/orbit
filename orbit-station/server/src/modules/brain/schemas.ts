@@ -250,6 +250,40 @@ export const sendToWhatsAppSchema = {
   required: ['text'],
 } as const;
 
+export const recordFeedbackSchema = {
+  type: 'object',
+  properties: {
+    reason: { type: 'string', description: 'a SHORT label for the feedback (e.g. "head did not move", "misheard me", "great answer"). One line.' },
+    detail: { type: 'string', description: 'optional longer explanation — what the user expected vs. what happened, in their words.' },
+  },
+  required: ['reason'],
+} as const;
+
+export const inspectObservabilitySchema = {
+  type: 'object',
+  properties: {
+    aspect: {
+      type: 'string',
+      enum: ['version', 'health', 'session', 'all'],
+      description: "what to look up: 'version' = my current build/version (git sha, app/firmware, models); 'health' = this session's latency/error metrics; 'session' = the turn-by-turn timings of the current session; 'all' = everything.",
+    },
+  },
+  required: ['aspect'],
+} as const;
+
+export const RECORD_FEEDBACK_DESC =
+  "Record the user's feedback about how I'm doing for later review. Use when the user is clearly happy or unhappy, " +
+  'points out something I got wrong (misheard, didn\'t move, wrong answer, too slow), or explicitly says "give feedback". ' +
+  'This snapshots the whole session — my traces, timings, perception, version — and saves it with their words for the ' +
+  'team to review. If their reason is vague, ask ONE quick clarifying question first (what did they expect?), then record. ' +
+  'Confirm briefly that you saved it.';
+
+export const INSPECT_OBSERVABILITY_DESC =
+  'Look up structured facts about MYSELF and this session — my current software version/build (git, app, firmware), ' +
+  'the active models, and this session\'s health (latencies, errors, per-turn timings). Use when the user asks "what ' +
+  'version are you", "how fast were you", "did you have errors", or when helping them give precise feedback (so you can ' +
+  'tell them what actually happened). Returns the data for YOU to explain conversationally — do not dump the raw JSON at them.';
+
 export const researchRecentSchema = {
   type: 'object',
   properties: {

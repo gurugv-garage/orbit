@@ -16,6 +16,7 @@ import type {
   CostGroupBy,
   CostSeriesPoint,
   CostSummary,
+  SessionEnrichment,
   SessionRecord,
   StepRecord,
   ToolCallRecord,
@@ -139,7 +140,8 @@ export class ObsStore {
     this.#db.exec(`
       CREATE TABLE IF NOT EXISTS obs_sessions (
         session_id TEXT PRIMARY KEY, source TEXT,
-        first_seen INTEGER, last_seen INTEGER
+        first_seen INTEGER, last_seen INTEGER,
+        enrichment TEXT                 -- SessionEnrichment as JSON (per-session context)
       );
       CREATE TABLE IF NOT EXISTS obs_turns (
         -- turn ids are unique only WITHIN a session, so the key is composite.
@@ -156,14 +158,23 @@ export class ObsStore {
       -- keyed by the same composite identity packed into one column.
       CREATE VIRTUAL TABLE IF NOT EXISTS obs_fts USING fts5(turn_key, body);
     `);
+    // MIGRATION: add the per-session enrichment column to tables created before
+    // it existed (CREATE TABLE IF NOT EXISTS won't add a column to an old table).
+    const cols = this.#db.prepare(`PRAGMA table_info(obs_sessions)`).all() as Array<{ name: string }>;
+    if (!cols.some((c) => c.name === 'enrichment')) {
+      this.#db.exec(`ALTER TABLE obs_sessions ADD COLUMN enrichment TEXT`);
+    }
   }
 
   #persist(session: SessionRecord, turn: TurnRecord): void {
     this.#db.prepare(
-      `INSERT INTO obs_sessions(session_id,source,first_seen,last_seen)
-       VALUES(@id,@src,@fs,@ls)
+      `INSERT INTO obs_sessions(session_id,source,first_seen,last_seen,enrichment)
+       VALUES(@id,@src,@fs,@ls,@enr)
        ON CONFLICT(session_id) DO UPDATE SET last_seen=@ls`,
-    ).run({ id: session.sessionId, src: session.source, fs: session.firstSeen, ls: session.lastSeen });
+    ).run({
+      id: session.sessionId, src: session.source, fs: session.firstSeen, ls: session.lastSeen,
+      enr: session.enrichment ? JSON.stringify(session.enrichment) : null,
+    });
 
     const hadError = turn.steps.some((s) => s.tools.some((t) => t.isError)) ? 1 : 0;
     this.#db.prepare(
@@ -201,6 +212,14 @@ export class ObsStore {
       const session = this.#session(turn.sessionId, row.source, turn.startedAt);
       session.lastSeen = Math.max(session.lastSeen, turn.endedAt ?? turn.startedAt);
       if (!session.turns.find((t) => t.turnId === turn.turnId)) session.turns.push(turn);
+    }
+    // re-attach enrichment for the hydrated sessions (one row each).
+    const enr = this.#db.prepare(
+      `SELECT session_id, enrichment FROM obs_sessions WHERE enrichment IS NOT NULL`,
+    ).all() as Array<{ session_id: string; enrichment: string }>;
+    for (const row of enr) {
+      const s = this.#sessions.get(row.session_id);
+      if (s) try { s.enrichment = JSON.parse(row.enrichment) as SessionEnrichment; } catch { /* skip bad json */ }
     }
   }
 
@@ -282,6 +301,26 @@ export class ObsStore {
 
   get(sessionId: string): SessionRecord | undefined {
     return this.#sessions.get(sessionId);
+  }
+
+  /** Attach/refresh per-session ENRICHMENT (station-side context: provenance,
+   *  config, models, perception window, …). Merged shallowly over any prior
+   *  enrichment and persisted. Creates the session shell if it doesn't exist
+   *  yet (enrichment can land before the first agent event on a fresh session).
+   *  `source` is the owning dock (same identity the event stream uses). */
+  enrich(sessionId: string, source: string, patch: Partial<SessionEnrichment>): SessionRecord {
+    const s = this.#session(sessionId, source, Date.now());
+    s.enrichment = { ...(s.enrichment ?? { updatedAt: 0 }), ...patch, updatedAt: Date.now() };
+    // persist just the enrichment (no turn needed).
+    this.#db.prepare(
+      `INSERT INTO obs_sessions(session_id,source,first_seen,last_seen,enrichment)
+       VALUES(@id,@src,@fs,@ls,@enr)
+       ON CONFLICT(session_id) DO UPDATE SET last_seen=@ls, enrichment=@enr`,
+    ).run({
+      id: s.sessionId, src: s.source, fs: s.firstSeen, ls: s.lastSeen,
+      enr: JSON.stringify(s.enrichment),
+    });
+    return s;
   }
 
   /** Permanently delete a session's trace (in-memory + SQLite + FTS). */

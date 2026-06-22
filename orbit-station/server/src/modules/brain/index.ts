@@ -45,6 +45,25 @@ import { validateParams } from '../../tasks/_harness/index.js';
 import { randomUUID } from 'node:crypto';
 import type { IncomingMessage } from 'node:http';
 
+/** Read-only access to brain state for other modules (the feedback bundler:
+ *  session meta+transcript, the live profile, the conversation probe, the active
+ *  model, and recent addressed-decisions). Tenancy is the caller's concern —
+ *  this is keyed by dock, not by peer. */
+export interface BrainAccess {
+  openSessionId(dock: string): string | undefined;
+  sessionDump(dock: string, sessionId: string): { meta?: unknown; transcript?: unknown };
+  profile(dock: string): Promise<unknown>;
+  conversation(dock: string): unknown;
+  models(dock: string): { brain?: string; thinking?: string };
+  addressed(dock: string): unknown[];
+  dockOf(peerId: string): string | undefined;
+}
+const brainRef: { current?: BrainAccess } = {};
+/** The live BrainAccess (set when the brain module inits). */
+export function getBrainAccess(): BrainAccess | undefined {
+  return brainRef.current;
+}
+
 const IDLE_SWEEP_MS = 60_000;
 /** How often to re-push the task-digest to live docks so the app HUD self-corrects
  *  even if a per-change push was missed (failproof running-tasks view). */
@@ -62,6 +81,16 @@ export interface BrainWiring {
   config: (key: string) => unknown;
   /** live video recorder (record_video tool). Optional — undefined disables it. */
   recordVideo?: VideoRecorderApi;
+  /** snapshot per-session context onto observability on each turn end (the
+   *  "instrument everything per session" hook). Undefined → no enrichment. */
+  enrichSession?: (dock: string, sessionId: string, span?: { from: number; to: number }) => Promise<void> | void;
+  /** the shared session-context composer sources — also handed to the
+   *  inspect_observability tool so the agent can pull structured self-knowledge. */
+  sessionContext?: import('../observability/context.js').ContextSources;
+  /** feedback capture entrypoint (record_feedback tool). Undefined → tool off. */
+  feedbackCapture?: import('./tools.js').FeedbackCaptureFn;
+  /** observability read access (inspect_observability tool). Undefined → tool off. */
+  obs?: import('./tools.js').ObsToolApi;
 }
 
 export function brainModule(w: BrainWiring): StationModule {
@@ -164,6 +193,9 @@ export function brainModule(w: BrainWiring): StationModule {
         getFaces: getFaceTools, getGrounding: getPerceptionGrounding,
         getMemory: getMemoryApi,
         recordVideo: w.recordVideo, config: w.config,
+        enrichSession: w.enrichSession,
+        feedbackCapture: w.feedbackCapture,
+        obs: w.obs,
         log: (line) => console.log(line),
         stopTasksForParent: (d, parentSessionId) => { supervisor.stopForParent(d, parentSessionId); },
         hasRunningTasks: (d, parentSessionId) => supervisor.hasRunningUnder(d, parentSessionId),
@@ -181,6 +213,25 @@ export function brainModule(w: BrainWiring): StationModule {
   function dockOf(peerId: string): string | undefined {
     return w.getHub().roster().find((p) => p.id === peerId)?.dock;
   }
+
+  // Expose read-only brain state to the feedback bundler (and any later reader).
+  brainRef.current = {
+    openSessionId: (dock) => store.openSession(dock)?.sessionId,
+    sessionDump: (dock, sessionId) => ({
+      meta: store.sessions(dock).find((s) => s.sessionId === sessionId),
+      transcript: store.messages(dock, sessionId),
+    }),
+    profile: (dock) => buildDockProfile(dock, w, store),
+    conversation: (dock) => sessions.get(dock)?.conversation(),
+    models: (dock) => {
+      void dock;
+      const brain = typeof w.config('brainModel') === 'string' ? (w.config('brainModel') as string) : undefined;
+      const thinking = typeof w.config('brainThinking') === 'string' ? (w.config('brainThinking') as string) : undefined;
+      return { brain, thinking };
+    },
+    addressed: (dock) => addrTrace.filter((e) => e.dock === dock),
+    dockOf,
+  };
 
   return {
     name: 'brain',

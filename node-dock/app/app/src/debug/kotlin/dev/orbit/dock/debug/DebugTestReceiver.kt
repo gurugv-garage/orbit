@@ -24,6 +24,9 @@ import timber.log.Timber
  *                                                                # inject a final transcript
  *                                                                # (drives the agent as if heard)
  *   adb shell am broadcast -a dev.orbit.dock.debug.SPEAKING -e active true|false
+ *   adb shell am broadcast -a dev.orbit.dock.debug.FEEDBACK -e reason "head didn't move"
+ *                                                                # flag feedback on the session
+ *                                                                # (ships the dump up to the station)
  */
 object DebugTestReceiver {
 
@@ -80,6 +83,13 @@ object DebugTestReceiver {
                     "${PREFIX}SPEAKING" -> {
                         val active = intent.getStringExtra("active")?.toBoolean() ?: false
                         PerceptionBus.emit(PerceptionEvent.Speaking(active = active))
+                    }
+                    "${PREFIX}FEEDBACK" -> {
+                        // Flag feedback on the current session (feedback-flow):
+                        // exercises the capture path without an on-screen long-press.
+                        val reason = intent.getStringExtra("reason")
+                        Timber.i("DEBUG feedback: \"$reason\"")
+                        dev.orbit.dock.agent.BrainTestController.brain?.sendFeedback(reason)
                     }
                     "${PREFIX}EXIT" -> {
                         // Exercise the in-app Exit teardown path (same call the
@@ -162,6 +172,7 @@ object DebugTestReceiver {
             addAction("${PREFIX}STOP")
             addAction("${PREFIX}SAY")
             addAction("${PREFIX}SPEAKING")
+            addAction("${PREFIX}FEEDBACK")
             addAction("${PREFIX}BARGE")
             addAction("${PREFIX}SETFACE")
             addAction("${PREFIX}SETFACESTYLE")

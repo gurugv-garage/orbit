@@ -167,6 +167,38 @@ export interface CostSeriesPoint {
   byGroup: Record<string, number>;
 }
 
+/**
+ * Per-session ENRICHMENT — the station-side context that isn't in the agent
+ * event stream but belongs to the session for debugging: build/version
+ * provenance, the effective config snapshot, the active models, and a windowed
+ * slice of perception (with STT/vision confidences + raw payloads).
+ *
+ * This is the "instrument everything per session" surface: captured for EVERY
+ * session (refreshed on turn end), persisted alongside the trace, so the
+ * console and the feedback flow read ONE source of truth. The feedback flow
+ * then only adds the user's words + a fresh static snapshot on top.
+ */
+export interface SessionEnrichment {
+  /** when this enrichment was last refreshed (epoch ms). */
+  updatedAt: number;
+  /** build/version provenance (station git/version/node; app/firmware when known). */
+  provenance?: unknown;
+  /** the dock's effective brain config at capture (model, thinking, persona flags…). */
+  config?: Record<string, unknown>;
+  /** active models: brain model + thinking, perception sidecar models. */
+  models?: { brain?: string; thinking?: string; perception?: Array<{ name: string; endpoint: string }> };
+  /** the live system prompt / composition snapshot (the dock profile). */
+  profile?: unknown;
+  /** perception snapshots overlapping the session window (confidences + payloads). */
+  perception?: unknown[];
+  /** recent attention-gate decisions during the session. */
+  gateDecisions?: unknown[];
+  /** recent addressed-decisions for the dock. */
+  addressed?: unknown[];
+  /** the world-state / grounding block text at capture. */
+  grounding?: string | null;
+}
+
 /** A Session = turns sharing one message history. */
 export interface SessionRecord {
   sessionId: string;
@@ -175,4 +207,7 @@ export interface SessionRecord {
   firstSeen: number;
   lastSeen: number;
   turns: TurnRecord[];
+  /** station-side per-session context (see SessionEnrichment). Optional: older
+   *  sessions + sessions whose dock never enriched simply omit it. */
+  enrichment?: SessionEnrichment;
 }
