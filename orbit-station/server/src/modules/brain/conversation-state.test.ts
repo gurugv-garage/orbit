@@ -174,6 +174,37 @@ describe('ConversationState — A: basic addressed turn', () => {
       'started while open, ended late → addressed (long-utterance grace intact)');
   });
 
+  // A1j — THE INTERMITTENT LIVE RACE (reproduced ~1-in-10 with screenshots + the
+  // addressed trace): you tap, the badge shows "listening · Ns", you speak WELL within
+  // the window — but the FINAL only lands after a lazy #prune flips mode to idle in the
+  // ~1.3s STT-endpoint gap. The utterance STARTED inside the open interval, so it MUST
+  // still be addressed. The old rescue (startedAt <= #lastWindowUntil, zeroed on the
+  // prior consume) failed here intermittently; the [openedAt, lastWindowUntil] interval
+  // check fixes it deterministically.
+  it('A1j: started in-window but final lands after a lazy prune-to-idle → addressed', () => {
+    const { cs } = make();
+    cs.tap(0);                                       // window open [0, LISTEN_MS]
+    const start = 800;                               // spoke 0.8s in (badge clearly listening)
+    // NO read before this — prune is lazy; the final arrives at LISTEN_MS+300 (just past
+    // the real close, inside the STT-endpoint gap), so utteranceEnded prunes to idle THEN.
+    const end = ConvCfg.LISTEN_MS + 300;
+    assert.equal(cs.utteranceEnded(end, end, start), true,
+      'utterance begun while listening is addressed even if the final lands post-prune');
+    assert.equal(cs.mode(end), 'thinking', '→ runs the turn');
+  });
+
+  // A1k — same breath, TWO utterances: the first consumes the window; the second (also
+  // begun in the original open interval) must still be addressed — the old `consumed`
+  // zeroing of #lastWindowUntil dropped it.
+  it('A1k: a second utterance from the same open window is still addressed', () => {
+    const { cs } = make();
+    cs.tap(0);
+    assert.equal(cs.utteranceEnded(1000, 1100, 200), true, 'first utterance addressed');
+    // second utterance also started while the window was open (300), ends a bit later;
+    // still within the window so windowOpenNow is true OR the interval rescue applies.
+    assert.equal(cs.utteranceEnded(2000, 2100, 300), true, 'second from the same window addressed');
+  });
+
   // A4 — tap before the sentence ends (started before tap, ends after) → addressed.
   it('A4: tap before the sentence ends → addressed', () => {
     const { cs } = make();

@@ -82,6 +82,12 @@ export class ConversationState {
   #lastWindowUntil = 0; // expiry of the MOST RECENT window, kept after it closes — so a
                         // long utterance that STARTED while listening still counts as
                         // addressed even if it ENDS after the window expired (no cut-off).
+  #windowOpenedAt = 0;  // when the most-recent window OPENED. With #lastWindowUntil this
+                        // forms the [opened, closed] interval an utterance must have
+                        // STARTED within to count — robust to prune/consume timing (the
+                        // intermittent "UI says listening but no reply" race: the old
+                        // rescue depended on #lastWindowUntil not being zeroed/clamped
+                        // before the final landed, which a tick or a prior consume broke).
   #windowSrc: WindowSource = 'tap'; // why the current window is open (priority)
   #speakUntil = 0;  // SPEAKING safety expiry (ms), or 0
   #faceCooldownUntil = 0; // a face-arrival is ignored until this time (anti-flap)
@@ -255,22 +261,27 @@ export class ConversationState {
   utteranceEnded(endedAt: number, now: number, startedAt?: number): boolean {
     this.#prune(now);
     const windowOpenNow = this.#mode === 'listening' || this.#mode === 'followup';
-    // LONG-UTTERANCE FIX: a sentence you BEGAN while the window was open is addressed,
-    // even if it ran long and ENDED after the window expired (you were talking the
-    // whole time — don't drop it / cut you off). The qualifying condition is that the
-    // utterance STARTED at/before the window's real close — NOT within GRACE of it.
-    // GRACE is for the tap↔utterance ENDING ordering race (finish, then tap a beat
-    // later — applied to endedAt below), NOT the start: adding it here let an utterance
-    // that STARTED up to GRACE(2.5s) AFTER the window closed still count as addressed,
-    // so the dock replied to speech begun seconds after the indicator went to
-    // "watching" (proven from the trace: startedAt was 0.6s AFTER lastWindowUntil, yet
-    // inside lastWindowUntil+GRACE). Start strictly at/before the real close.
-    const startedWhileOpen = startedAt != null && startedAt <= this.#lastWindowUntil
-      && this.#lastWindowUntil > 0;
-    if (!windowOpenNow && !startedWhileOpen) return false;
+    // STARTED-WHILE-OPEN (the robust rescue): an utterance you BEGAN while the window
+    // was open is addressed, even if the FINAL only lands after the window has since
+    // closed (STT adds ~1.3s trailing silence; a conv-tick can prune the window to idle
+    // in that gap). Qualify on the OPEN INTERVAL [openedAt, lastWindowUntil]:
+    //   openedAt - GRACE  ≤  startedAt  ≤  lastWindowUntil
+    // The leading GRACE absorbs the tap↔speech ordering race (you start a beat before
+    // the tap registers); the far end is the window's REAL close (#prune pins
+    // #lastWindowUntil to the true expiry, never `now`, so speech begun AFTER close is
+    // still excluded). This does NOT depend on #lastWindowUntil surviving a prior
+    // consume — the previous bug: a same-breath 2nd utterance, or a tick that pruned +
+    // a stale zeroing, made the old `startedAt <= #lastWindowUntil` check fail
+    // intermittently (the "UI says listening but no reply" race).
+    const inOpenInterval = startedAt != null && this.#lastWindowUntil > 0
+      && startedAt >= this.#windowOpenedAt - ConvCfg.GRACE_MS
+      && startedAt <= this.#lastWindowUntil;
+    if (!windowOpenNow && !inOpenInterval) return false;
     if (windowOpenNow && endedAt < now - ConvCfg.GRACE_MS) return false;
     this.#windowUntil = 0;
-    this.#lastWindowUntil = 0; // consumed
+    // DON'T zero #lastWindowUntil/#windowOpenedAt here — keeping the just-closed
+    // interval lets a follow-on utterance from the SAME breath still qualify; a NEW
+    // window (tap/followup) overwrites the interval via #setWindow + #set anyway.
     this.#set('thinking', now, 'addressed-utterance');
     return true;
   }
@@ -334,6 +345,13 @@ export class ConversationState {
   #set(to: ConvMode, at: number, reason: string): void {
     if (to === this.#mode) return;
     const from = this.#mode;
+    // Mark a FRESH window-open interval when ENTERING listening/followup from a
+    // non-window mode. Re-opening while already in a window keeps the original
+    // openedAt (just extends the far end via #setWindow) — so an utterance begun
+    // anywhere in a continuous listening session still counts as addressed.
+    const enteringWindow = (to === 'listening' || to === 'followup');
+    const wasInWindow = (from === 'listening' || from === 'followup');
+    if (enteringWindow && !wasInWindow) this.#windowOpenedAt = at;
     this.#mode = to;
     this.#onTransition?.({ from, to, reason, at });
   }
