@@ -512,8 +512,8 @@ export function sttWatchProcessor(
         console.log(`[stt-watch] onStreamStart: ${ctx.streamId} already attached — keeping existing detector (re-attach)`);
         return;
       }
-      // DIAG (kept, disabled): detector attach. Re-enable if STT goes silent.
-      // console.log(`[stt-watch] onStreamStart: dock=${ctx.dockId} streamId=${ctx.streamId} — STT detector attached`);
+      // DIAG: detector attach. (Re-enabled to debug the post-restart no-STT race.)
+      console.log(`[stt-watch] onStreamStart: dock=${ctx.dockId} streamId=${ctx.streamId} — STT detector attached`);
       // Each completed (or force-flushed) utterance → one transcription → snapshot.
       // Returns a Promise so flushNow() can await the commit before summarizing.
       const commit = async (pcm: Int16Array, startedAt: Date, endedAt: Date): Promise<void> => {
@@ -617,8 +617,8 @@ export function sttWatchProcessor(
         // unknown stream so we see it without spamming every packet.
         if (!unknownStreamsLogged.has(streamId)) {
           unknownStreamsLogged.add(streamId);
-          // DIAG (kept, disabled): audio for a stream with no detector.
-          // console.warn(`[stt-watch] onRtp for UNKNOWN stream ${streamId} — no detector, dropping audio (no onStreamStart fired?)`);
+          // DIAG: audio for a stream with no detector (re-enabled for the restart race).
+          console.warn(`[stt-watch] onRtp for UNKNOWN stream ${streamId} — no detector, dropping audio (no onStreamStart fired?)`);
         }
         return;
       }
@@ -633,12 +633,12 @@ export function sttWatchProcessor(
         return;
       }
       st.muted = false;
-      // DIAG (kept, disabled): confirm audio packets reach the detector (first
-      // packet + a heartbeat every ~500). Re-enable to check the SFU→STT tap is
-      // routing audio (vs detector attached but starved).
-      // if (!st.rtpSeen) { st.rtpSeen = true; console.log(`[stt-watch] FIRST audio packet for ${streamId} — feeding detector`); }
-      // st.rtpCount = (st.rtpCount ?? 0) + 1;
-      // if (st.rtpCount % 500 === 0) console.log(`[stt-watch] ${streamId}: ${st.rtpCount} audio packets fed`);
+      // DIAG (re-enabled): confirm audio packets reach the detector (first packet +
+      // a heartbeat every ~500) — distinguishes "detector attached but starved" from
+      // "audio flowing but not endpointing" in the post-restart race.
+      if (!st.rtpSeen) { st.rtpSeen = true; console.log(`[stt-watch] FIRST audio packet for ${streamId} — feeding detector`); }
+      st.rtpCount = (st.rtpCount ?? 0) + 1;
+      if (st.rtpCount % 500 === 0) console.log(`[stt-watch] ${streamId}: ${st.rtpCount} audio packets fed`);
       st.detector.feed(rtp);
     },
 
