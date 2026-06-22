@@ -97,3 +97,136 @@ test('punctuation-only / empty transcripts have no words (blocked from a turn)',
     assert.equal(hasNoWords(p), false, `"${p}" must pass as real words`);
   }
 });
+
+// --------------------------------------------------------------------------- //
+// LIVE INTERIMS (streaming partial transcripts). Mirrors detector constants:
+// INTERIM_INTERVAL_MS=800, INTERIM_MIN_AUDIO_MS=300. The detector calls onInterim
+// at the cadence WHILE in-speech, gated by shouldInterim(). onInterim is async; we
+// resolve it synchronously in tests so #interimInFlight clears before the next frame.
+// --------------------------------------------------------------------------- //
+
+/** A detector wired with interim hooks. `gate` toggles shouldInterim; each onInterim
+ *  call records the voiced-ms of the partial buffer and (optionally) blocks until
+ *  released, to exercise the in-flight guard.
+ *
+ *  IMPORTANT: onInterim is ASYNC and the detector guards with #interimInFlight until
+ *  the promise SETTLES (a microtask). In production, RTP frames arrive over time so
+ *  the promise settles between feeds; in tests we must feed incrementally and await a
+ *  microtask between chunks (feedMs) — feeding 5s in one synchronous feedPcm would
+ *  keep the guard latched and emit only ONE interim (which is itself correct behavior,
+ *  just not what we're measuring). */
+function interimDetector(opts?: { gate?: () => boolean }) {
+  const ends: number[] = [];
+  const interims: number[] = []; // voiced-ms of each interim's buffer
+  let gateOpen = true;
+  let release: (() => void) | null = null;
+  let block = false;
+  const d = new UtteranceDetector((pcm) => { ends.push(pcm.length / 16); });
+  d.shouldInterim = opts?.gate ?? (() => gateOpen);
+  d.onInterim = (pcm) => {
+    interims.push(pcm.length / 16);
+    if (!block) return Promise.resolve();
+    return new Promise<void>((res) => { release = res; });
+  };
+  // feed `ms` of audio as ~150ms chunks, draining microtasks between each so an async
+  // onInterim settles and the in-flight guard clears — mirrors incremental RTP.
+  const feedMs = async (ms: number, kind: (n: number) => Int16Array) => {
+    const chunk = 150;
+    for (let done = 0; done < ms; done += chunk) {
+      d.feedPcm(kind(frames(Math.min(chunk, ms - done))));
+      await Promise.resolve(); // let onInterim's promise settle (clears #interimInFlight)
+    }
+  };
+  return {
+    d, ends, interims, feedMs,
+    feed: (ms: number) => feedMs(ms, loud),
+    silence: (ms: number) => feedMs(ms, quiet),
+    setGate: (v: boolean) => { gateOpen = v; },
+    setBlocking: (v: boolean) => { block = v; },
+    releaseInFlight: () => { release?.(); release = null; },
+  };
+}
+
+// CADENCE: ~5s of continuous speech at an 800ms cadence → ~6 interims (5000/800),
+// and crucially NO endpoint (still talking). The exact count can vary ±1 with framing.
+test('interims fire at ~800ms cadence during continuous speech (no endpoint yet)', async () => {
+  const h = interimDetector();
+  await h.feed(5000); // 5s continuous speech, fed incrementally
+  assert.equal(h.ends.length, 0, 'no endpoint while still speaking');
+  assert.ok(h.interims.length >= 4 && h.interims.length <= 7,
+    `~6 interims over 5s @800ms, got ${h.interims.length}`);
+  // each interim sees MORE audio than the previous (growing buffer → self-correcting).
+  for (let i = 1; i < h.interims.length; i++) {
+    assert.ok(h.interims[i]! > h.interims[i - 1]!, 'interim buffer grows each tick');
+  }
+});
+
+// LISTENING GATE: when shouldInterim() is false (dock not in a listening turn), NO
+// interim fires — the whole point of bounding GPU cost to active turns.
+test('no interims fire when the listening gate is closed', async () => {
+  const h = interimDetector();
+  h.setGate(false);
+  await h.feed(5000);
+  assert.equal(h.interims.length, 0, 'gate closed → zero interims');
+  // …and the final path is untouched: a real endpoint still commits.
+  await h.silence(1500);
+  assert.equal(h.ends.length, 1, 'final still commits with the gate closed');
+});
+
+// GATE FLIP MID-UTTERANCE: opening the gate partway begins interims; closing stops them.
+test('the listening gate is honored dynamically mid-utterance', async () => {
+  const h = interimDetector();
+  h.setGate(false);
+  await h.feed(2000); // 2s with gate closed → none
+  assert.equal(h.interims.length, 0);
+  h.setGate(true);
+  await h.feed(2000); // 2s with gate open → some
+  assert.ok(h.interims.length >= 1, 'interims resume once the gate opens');
+});
+
+// MIN-AUDIO FLOOR: no interim until the utterance has ≥ INTERIM_MIN_AUDIO_MS(300) of
+// audio (a 100ms onset transcribes to junk / caption flicker). Below the floor: none.
+test('no interim before the min-audio floor (300ms)', async () => {
+  const h = interimDetector();
+  await h.feed(200);  // 200ms < 300ms floor (also < first 800ms tick)
+  assert.equal(h.interims.length, 0, 'too little audio → no interim');
+});
+
+// IN-FLIGHT GUARD: while one interim transcription is outstanding (slow under GPU
+// contention), no second one is queued — we never pile up re-transcriptions.
+test('in-flight guard: a slow interim is not double-fired', async () => {
+  const h = interimDetector();
+  h.setBlocking(true);
+  await h.feed(3000); // 3s would normally be ~3-4 interims, but the first blocks…
+  assert.equal(h.interims.length, 1, 'only ONE interim in flight at a time');
+  h.releaseInFlight();             // settle the outstanding one
+  h.setBlocking(false);
+  await h.feed(1500); // …now subsequent ticks may fire
+  assert.ok(h.interims.length >= 2, 'next interim fires after the prior settles');
+});
+
+// NEW UTTERANCE RESETS CADENCE: after an endpoint, the next utterance starts its
+// interim cadence fresh (doesn't inherit the prior utterance's timer).
+test('interim cadence resets per utterance', async () => {
+  const h = interimDetector();
+  await h.feed(1200);    // utterance 1 (≥1 interim past the 800ms tick)
+  await h.silence(1500); // endpoint
+  const after1 = h.interims.length;
+  assert.equal(h.ends.length, 1);
+  assert.ok(after1 >= 1, 'utterance 1 produced an interim');
+  await h.feed(1200);    // utterance 2
+  // utterance 2 crosses the floor + 800ms tick and fires its OWN interim, proving the
+  // cadence counter reset (it didn't carry the prior utterance's lastMs).
+  assert.ok(h.interims.length > after1, 'new utterance emits its own interim');
+});
+
+// SAFETY: with NO interim hook wired (default), the detector behaves exactly as
+// before — no interims, finals unaffected. (Opt-in feature.)
+test('detector with no interim hook is unchanged (interims are opt-in)', () => {
+  const ends: number[] = [];
+  const d = new UtteranceDetector((pcm) => { ends.push(pcm.length / 16); });
+  // no d.onInterim / d.shouldInterim set
+  d.feedPcm(loud(frames(5000)));
+  d.feedPcm(quiet(frames(1500)));
+  assert.equal(ends.length, 1, 'final path identical when interims are not wired');
+});

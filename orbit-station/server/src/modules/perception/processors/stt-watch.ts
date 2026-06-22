@@ -132,6 +132,18 @@ function concatFrames(frames: Int16Array[]): Int16Array {
   return pcm;
 }
 
+/** How often, while the user is mid-utterance, we re-transcribe the buffer-so-far
+ *  to emit a live interim (partial) transcript for the dock UI. 800ms (NOT pibot's
+ *  250ms): the contention probe showed a 400ms cadence starves the shared Metal GPU
+ *  (vision completed 1 window in 12s); 800ms gives 3-5 live updates across a typical
+ *  utterance with GPU gaps. Interims also fire ONLY while the dock is listening (a
+ *  few seconds/turn), not on every ambient utterance, so the cost is bounded.
+ *  Env-tunable from the playground. */
+const INTERIM_INTERVAL_MS = Number(process.env.STT_INTERIM_INTERVAL_MS ?? 800);
+/** Don't emit an interim until the utterance has at least this much voiced audio —
+ *  a 100ms onset transcribes to junk and just makes the caption flicker. */
+const INTERIM_MIN_AUDIO_MS = Number(process.env.STT_INTERIM_MIN_AUDIO_MS ?? 300);
+
 export class UtteranceDetector {
   #dec: OpusScript | null = null;
   #started = false;
@@ -143,10 +155,23 @@ export class UtteranceDetector {
   #utterMs = 0;
   #onUtterance: (pcm: Int16Array, startedAt: Date, endedAt: Date) => void | Promise<void>;
   #startedAt: Date | null = null;
+  // INTERIM streaming state. #lastInterimMs = utterance-ms at the last interim tick;
+  // #interimInFlight guards against piling up re-transcriptions if one is slow (the
+  // probe showed under contention a pass can take >2s — never queue a second).
+  #lastInterimMs = 0;
+  #interimInFlight = false;
 
   // Same as onUtterance but awaitable — used by flushNow so the caller knows the
   // transcript is persisted. Set alongside the constructor callback.
   commit?: (pcm: Int16Array, startedAt: Date, endedAt: Date) => Promise<void>;
+  // INTERIM hook: called at ~INTERIM_INTERVAL_MS while in-speech with the partial
+  // utterance PCM, ONLY when shouldInterim() returns true (the listening gate). The
+  // processor wires this to transcribe()+emit; the detector stays transport-free so
+  // tests can drive it. Returns a promise so we can clear #interimInFlight on settle.
+  onInterim?: (pcm: Int16Array, startedAt: Date) => Promise<void>;
+  // The listening gate — interims are skipped unless this returns true (or is unset,
+  // in which case interims never fire: opt-in). Cheap, called per candidate tick.
+  shouldInterim?: () => boolean;
 
   constructor(onUtterance: (pcm: Int16Array, startedAt: Date, endedAt: Date) => void | Promise<void>) {
     this.#onUtterance = onUtterance;
@@ -197,11 +222,13 @@ export class UtteranceDetector {
       this.#utter.push(frame);
       this.#utterMs += FRAME_MS;
       this.#silenceMs = voiced ? 0 : this.#silenceMs + FRAME_MS;
-      if (this.#silenceMs >= ENDPOINT_MS || this.#utterMs >= MAX_UTTERANCE_MS) this.#endUtterance();
+      if (this.#silenceMs >= ENDPOINT_MS || this.#utterMs >= MAX_UTTERANCE_MS) { this.#endUtterance(); return; }
+      this.#maybeInterim();
     } else if (voiced) {
       // speech onset — start an utterance, prepend the preroll.
       this.#inSpeech = true;
       this.#silenceMs = 0; this.#utterMs = 0;
+      this.#lastInterimMs = 0; // fresh utterance → interim cadence restarts
       this.#startedAt = new Date();
       this.#utter = [...this.#preroll, frame];
       this.#preroll = [];
@@ -213,10 +240,31 @@ export class UtteranceDetector {
     }
   }
 
+  /** While in-speech, fire a live interim re-transcription at INTERIM_INTERVAL_MS —
+   *  but ONLY when: the listening gate is open (shouldInterim), a hook is wired, no
+   *  pass is already in flight (don't queue — a slow pass under GPU contention can
+   *  exceed the interval), and we have enough audio to be worth transcribing. Each
+   *  interim re-transcribes the WHOLE utterance-so-far (growing buffer), so context
+   *  only grows — the partial naturally self-corrects as more audio arrives, and the
+   *  final endpointed transcript is still the full-context authoritative one. */
+  #maybeInterim(): void {
+    if (!this.onInterim || this.#interimInFlight) return;
+    if (this.#utterMs < INTERIM_MIN_AUDIO_MS) return;
+    if (this.#utterMs - this.#lastInterimMs < INTERIM_INTERVAL_MS) return;
+    if (!this.shouldInterim?.()) return;
+    this.#lastInterimMs = this.#utterMs;
+    this.#interimInFlight = true;
+    const pcm = concatFrames(this.#utter);
+    const started = this.#startedAt ?? new Date();
+    void this.onInterim(pcm, started).catch(() => { /* interims are best-effort */ })
+      .finally(() => { this.#interimInFlight = false; });
+  }
+
   #endUtterance(): void {
     const frames = this.#utter;
     const ms = this.#utterMs - this.#silenceMs; // voiced span
     this.#inSpeech = false; this.#utter = []; this.#silenceMs = 0; this.#utterMs = 0;
+    this.#lastInterimMs = 0;
     if (ms < MIN_UTTERANCE_MS) return; // too short → noise (a clipped/quiet onset
                                        // under MIN_UTTERANCE_MS is dropped here — the
                                        // cause of an occasional "tapped but no reply"
@@ -248,6 +296,7 @@ export class UtteranceDetector {
     this.#inSpeech = false;
     this.#utter = []; this.#preroll = []; this.#carry = new Int16Array(0);
     this.#silenceMs = 0; this.#utterMs = 0; this.#startedAt = null;
+    this.#lastInterimMs = 0;
   }
 
   stop(): void {
@@ -399,6 +448,19 @@ export interface FinalTranscriptEvent {
   compressionRatio?: number | null;
 }
 
+/** A LIVE interim (partial) transcript emitted mid-utterance for the dock UI. seq is
+ *  monotonic PER UTTERANCE (resets each new utterance) so the client can drop a stale
+ *  out-of-order arrival. isFinal is always false here (the final goes via onFinal). */
+export interface InterimTranscriptEvent {
+  dockId: string;
+  streamId: string;
+  text: string;
+  /** the in-progress utterance's start (ms epoch) — pairs an interim with its final. */
+  startedAt: number;
+  /** monotonic within the utterance; the UI shows only a higher seq than last seen. */
+  seq: number;
+}
+
 export function sttWatchProcessor(
   store: SnapshotStore,
   /** A1.2: called once per endpointed final utterance (text + window), so the
@@ -413,6 +475,13 @@ export function sttWatchProcessor(
    *  Whisper text in the snapshot. Async + best-effort — the live path never waits on
    *  it. Undefined = local-Whisper-only (the default). */
   backgroundStt?: (pcm: Int16Array, sampleRate: number, dockId: string) => Promise<{ text: string; speaker?: number } | null>,
+  /** LIVE INTERIMS: emitted mid-utterance for the dock caption UI. Undefined = no
+   *  interims (default). Best-effort, decoupled from the authoritative final path. */
+  onInterim?: (e: InterimTranscriptEvent) => void,
+  /** The listening gate for interims: re-transcribe mid-utterance ONLY while this
+   *  returns true for the dock (i.e. the dock is in a listening/followup turn). Undefined
+   *  ⇒ interims never fire. Keeps the cost bounded to active turns, not ambient speech. */
+  isListening?: (dockId: string) => boolean,
 ): StreamProcessor & {
   /** Force-commit any in-progress utterance on EVERY stream now, awaiting the
    *  transcription. Used by the Summarize flush so a mid-sentence is captured. */
@@ -517,6 +586,25 @@ export function sttWatchProcessor(
       };
       const detector = new UtteranceDetector((pcm, startedAt, endedAt) => { void commit(pcm, startedAt, endedAt); });
       detector.commit = commit; // flushNow awaits this; the live path stays fire-and-forget
+      // LIVE INTERIMS — only when a consumer (onInterim) AND a gate (isListening) are
+      // wired. The detector calls onInterim(pcm) at INTERIM_INTERVAL_MS while in-speech;
+      // we transcribe the partial and forward it with a per-utterance monotonic seq. A
+      // blank/whitespace partial is skipped (don't flash an empty caption). These are
+      // best-effort and NEVER touch the snapshot/final/addressed path above.
+      if (onInterim && isListening) {
+        let lastStartMs = 0; // detect a new utterance (startedAt changes) → reset seq
+        let seq = 0;
+        detector.shouldInterim = () => isListening(ctx.dockId);
+        detector.onInterim = async (pcm, startedAt) => {
+          const startMs = startedAt.getTime();
+          if (startMs !== lastStartMs) { lastStartMs = startMs; seq = 0; }
+          const res = await transcribe(pcm);
+          if (!res.ok || !res.transcription) return;
+          const text = res.transcription.text.trim();
+          if (!text) return; // don't emit an empty interim (flicker)
+          onInterim({ dockId: ctx.dockId, streamId: ctx.streamId, text, startedAt: startMs, seq: seq++ });
+        };
+      }
       detector.start();
       streams.set(ctx.streamId, { ctx, detector, muted: false });
     },

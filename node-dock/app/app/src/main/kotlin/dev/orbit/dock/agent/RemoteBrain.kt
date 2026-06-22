@@ -92,6 +92,17 @@ class RemoteBrain(
     private val _convMode = MutableStateFlow("idle")
     val convMode: StateFlow<String> = _convMode.asStateFlow()
 
+    /** LIVE interim (partial) user-speech transcript for the on-face caption. The
+     *  station re-transcribes the in-progress utterance every ~800ms and streams the
+     *  growing text here; the UI shows it dim/italic while the user talks, then clears
+     *  it the moment the turn leaves listening/followup. Empty = nothing to show.
+     *  Cosmetic only — the brain acts on the endpointed final, never on this. */
+    private val _interimTranscript = MutableStateFlow("")
+    val interimTranscript: StateFlow<String> = _interimTranscript.asStateFlow()
+    // Drop a stale/out-of-order interim: the station stamps a per-utterance monotonic
+    // seq, so we only render a seq strictly greater than the last shown. -1 = none yet.
+    @Volatile private var lastInterimSeq = -1
+
     // ── turn epoch ────────────────────────────────────────────────────────
     // currentTurnId gates inbound frames; lastTurnId outlives the turn so the
     // post-turn TTS tail's speech-status still lands on the right turn
@@ -372,11 +383,43 @@ class RemoteBrain(
                 val to = payload.str("to")
                 Timber.i("conversation → $to (${payload.str("reason")})")
                 _convMode.value = to
+                // Leaving the listening window (thinking/speaking/idle) ends this
+                // utterance's caption — the interim has done its job; the reply (or
+                // silence) takes over. Clear so a stale partial doesn't linger.
+                if (to != "listening" && to != "followup") clearInterim()
             }
+            "transcript-interim" -> onTranscriptInterim(payload)
             "dock-error" -> onDockError(payload)
             "cancelled" -> trace("cancelled (station ack)")
             else -> Timber.d("RemoteBrain: unhandled agent frame '$kind'")
         }
+    }
+
+    /** LIVE interim (partial) user-speech transcript from the station's mid-utterance
+     *  re-transcription. Render the growing text dim while the user talks. Guards:
+     *   - blank text is ignored (don't flash an empty caption);
+     *   - a seq not strictly greater than the last shown is dropped (a slow re-transcribe
+     *     under GPU contention can land out of order) — UNLESS seq==0, which marks the
+     *     start of a NEW utterance (the station resets seq per utterance), so seq==0
+     *     always wins and re-arms the counter. */
+    private fun onTranscriptInterim(payload: JsonObject) {
+        val text = payload.str("text")
+        if (text.isBlank()) return
+        val seq = payload.int("seq")
+        if (seq == 0) {
+            lastInterimSeq = 0
+        } else if (seq <= lastInterimSeq) {
+            return // stale / out-of-order
+        } else {
+            lastInterimSeq = seq
+        }
+        _interimTranscript.value = text
+    }
+
+    /** Clear the interim caption + reset the seq gate (utterance ended / turn moved on). */
+    private fun clearInterim() {
+        if (_interimTranscript.value.isNotEmpty()) _interimTranscript.value = ""
+        lastInterimSeq = -1
     }
 
     /** A station-reported AMBIENT error (not tied to a turn) — e.g. the STT
@@ -680,6 +723,9 @@ class RemoteBrain(
 
     private fun JsonObject.bool(key: String): Boolean =
         (this[key] as? JsonPrimitive)?.content == "true"
+
+    private fun JsonObject.int(key: String): Int =
+        (this[key] as? JsonPrimitive)?.content?.toIntOrNull() ?: 0
 
     private companion object {
         /** What the AgentState short label shows while the station thinks. */

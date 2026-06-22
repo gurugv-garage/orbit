@@ -1164,6 +1164,14 @@ export class DockBrainSession {
     return /^(approved|yes|true|ok)$/i.test(reply);
   }
 
+  /** A LIVE interim (partial) user transcript → directed caption frame to the voice
+   *  component. Cosmetic UI feedback only: it never starts/affects a turn — the
+   *  authoritative path is the endpointed final via onAddressedFinal. Gated upstream
+   *  on isListening, so this only fires during an active listening/followup turn. */
+  sendInterim(text: string, seq: number): void {
+    this.#sendToVoice('transcript-interim', { text, seq, isFinal: false });
+  }
+
   /** One spoken sentence → directed speak frame to the voice component. */
   #speak(sentence: string): void {
     this.#spokeThisTurn = true;

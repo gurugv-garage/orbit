@@ -247,6 +247,16 @@ export interface FinalTranscript {
    *  (far-field mush / repetition-loop) should not become a confident agent turn. */
   confTier?: 'good' | 'shaky' | 'garbage';
 }
+/** A LIVE interim (partial) transcript — emitted mid-utterance for the dock caption
+ *  UI. Cosmetic: the authoritative transcript is still the endpointed FinalTranscript.
+ *  seq is monotonic per utterance (resets each utterance) so a stale arrival is dropped. */
+export interface InterimTranscript {
+  dockId: string;
+  streamId: string;
+  text: string;
+  startedAt: number;
+  seq: number;
+}
 export interface TranscriptApi {
   /** the brain calls this once to receive final transcripts. */
   onFinal(fn: (t: FinalTranscript) => void): void;
@@ -254,6 +264,13 @@ export interface TranscriptApi {
    *  the STT processor drops audio then (no self-transcribe). Mirrors the brain's
    *  noteSpeech signal (the phone's speech-status frames). */
   setSpeaking(dockId: string, speaking: boolean): void;
+  /** the brain calls this once to receive LIVE interim (partial) transcripts to
+   *  forward to the dock caption UI. Best-effort; decoupled from onFinal. */
+  onInterim(fn: (t: InterimTranscript) => void): void;
+  /** the brain registers HOW to check "is dock X in a listening/followup turn" — the
+   *  gate that decides whether interims are produced at all (bounds the GPU cost to
+   *  active turns, not ambient speech). Until set, NO interims fire. */
+  setListeningResolver(fn: (dockId: string) => boolean): void;
 }
 const transcriptRef: { current?: TranscriptApi } = {};
 /** The live TranscriptApi (set when the perception module inits). */
@@ -295,6 +312,10 @@ export function perceptionModule(getHub: () => ProcessingHub): StationModule {
   // utterance; we hold the single handler and forward stt-watch's events to it.
   // It also reports `speaking` per dock (echo-gate) — stt-watch drops audio then.
   let finalHandler: ((t: FinalTranscript) => void) | undefined;
+  // LIVE INTERIMS: the brain registers a handler (to forward partials to the dock UI)
+  // and a listening-resolver (the gate — only produce interims during an active turn).
+  let interimHandler: ((t: InterimTranscript) => void) | undefined;
+  let listeningResolver: ((dockId: string) => boolean) | undefined;
   // Echo-gate: a dock is "speaking" while its TTS plays AND for a short tail after
   // (TTS reverb + AEC settle still leak into the mic just after speech-status off).
   // Map dockId → epoch ms until which it counts as speaking.
@@ -313,6 +334,8 @@ export function perceptionModule(getHub: () => ProcessingHub): StationModule {
     setSpeaking: (dockId, on) => {
       speakingUntil.set(dockId, Date.now() + (on ? SPEAK_ON_WINDOW_MS : SPEAK_TAIL_MS));
     },
+    onInterim: (fn) => { interimHandler = fn; },
+    setListeningResolver: (fn) => { listeningResolver = fn; },
   };
   // BACKGROUND STT (production split, docs/findings/recall-reliability.md): when
   // PERCEPTION_BG_STT_MODEL is set (e.g. 'gemini-2.5-flash-lite'), each VAD-gated
@@ -345,6 +368,11 @@ export function perceptionModule(getHub: () => ProcessingHub): StationModule {
     (e) => finalHandler?.(e),
     (dockId) => Date.now() < (speakingUntil.get(dockId) ?? 0),
     bgStt,
+    // LIVE INTERIMS → brain → directed caption frame to the dock. Gated on the
+    // brain's listening-resolver (only during an active listening/followup turn);
+    // if the brain never registers one, interims never fire (resolver stays undefined).
+    (e) => interimHandler?.(e),
+    (dockId) => listeningResolver?.(dockId) ?? false,
   ); // 🎙 speech (exposes flushAll)
   // Vision reuses the face processor's decoded frame (ONE ffmpeg per dock, not two).
   const vision = visionSnapshotProcessor(snapshots, (sid) => face.currentFrame(sid)); // 👁 vision (captureNow)

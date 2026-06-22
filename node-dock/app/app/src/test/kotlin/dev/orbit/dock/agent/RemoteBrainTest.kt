@@ -74,6 +74,7 @@ class RemoteBrainTest {
                 for ((k, v) in pairs) when (v) {
                     is String -> put(k, v)
                     is Boolean -> put(k, v)
+                    is Int -> put(k, v)
                     is JsonObject -> put(k, v)
                     else -> error("unsupported $v")
                 }
@@ -399,5 +400,80 @@ class RemoteBrainTest {
         val d = diagnoseTurnFailure("llm_error", "model-unreachable", "")
         assertThat(d.spoken).isNotEmpty()
         assertThat(d.label).isNotEmpty()
+    }
+
+    // ── live interim (partial) transcript caption ────────────────────────────
+    // Interims are unsolicited (driven by the station's mid-utterance STT, not a
+    // turn the phone started). The phone is a pure renderer: it shows the growing
+    // partial, drops stale out-of-order arrivals, and clears on the turn leaving
+    // the listening window.
+
+    @Test
+    fun `interim transcripts update the caption with the growing partial`() {
+        val r = Rig()
+        r.frame("transcript-interim", "text" to "what", "seq" to 0, "isFinal" to false)
+        assertThat(r.brain.interimTranscript.value).isEqualTo("what")
+        r.frame("transcript-interim", "text" to "what time", "seq" to 1, "isFinal" to false)
+        r.frame("transcript-interim", "text" to "what time is it", "seq" to 2, "isFinal" to false)
+        assertThat(r.brain.interimTranscript.value).isEqualTo("what time is it")
+    }
+
+    @Test
+    fun `a stale out-of-order interim is dropped (monotonic seq)`() {
+        val r = Rig()
+        r.frame("transcript-interim", "text" to "what time is it", "seq" to 2, "isFinal" to false)
+        // a delayed earlier pass (seq 1) lands after seq 2 — must NOT clobber the caption.
+        r.frame("transcript-interim", "text" to "what time", "seq" to 1, "isFinal" to false)
+        assertThat(r.brain.interimTranscript.value).isEqualTo("what time is it")
+    }
+
+    @Test
+    fun `seq 0 starts a fresh utterance and re-arms the caption`() {
+        val r = Rig()
+        r.frame("transcript-interim", "text" to "first one done", "seq" to 3, "isFinal" to false)
+        assertThat(r.brain.interimTranscript.value).isEqualTo("first one done")
+        // a NEW utterance restarts at seq 0 — even though 0 < 3, it must win (re-arm).
+        r.frame("transcript-interim", "text" to "second", "seq" to 0, "isFinal" to false)
+        assertThat(r.brain.interimTranscript.value).isEqualTo("second")
+        r.frame("transcript-interim", "text" to "second utterance", "seq" to 1, "isFinal" to false)
+        assertThat(r.brain.interimTranscript.value).isEqualTo("second utterance")
+    }
+
+    @Test
+    fun `a blank interim never flashes an empty caption`() {
+        val r = Rig()
+        r.frame("transcript-interim", "text" to "hello there", "seq" to 0, "isFinal" to false)
+        r.frame("transcript-interim", "text" to "", "seq" to 1, "isFinal" to false)
+        assertThat(r.brain.interimTranscript.value).isEqualTo("hello there")
+    }
+
+    @Test
+    fun `leaving the listening window clears the interim caption`() {
+        val r = Rig()
+        r.frame("transcript-interim", "text" to "tell me a story", "seq" to 0, "isFinal" to false)
+        assertThat(r.brain.interimTranscript.value).isEqualTo("tell me a story")
+        // station moves the dock out of listening (it endpointed → thinking) → clear.
+        r.frame("conversation", "to" to "thinking", "reason" to "addressed-utterance")
+        assertThat(r.brain.interimTranscript.value).isEmpty()
+    }
+
+    @Test
+    fun `staying in the listening window keeps the caption`() {
+        val r = Rig()
+        r.frame("conversation", "to" to "listening", "reason" to "palm-address")
+        r.frame("transcript-interim", "text" to "hang on", "seq" to 0, "isFinal" to false)
+        // a followup window also keeps captions (it's still a listening state).
+        r.frame("conversation", "to" to "followup", "reason" to "tts-end")
+        assertThat(r.brain.interimTranscript.value).isEqualTo("hang on")
+    }
+
+    @Test
+    fun `after a clear, a new utterance's seq 0 shows again`() {
+        val r = Rig()
+        r.frame("transcript-interim", "text" to "one", "seq" to 0, "isFinal" to false)
+        r.frame("conversation", "to" to "idle", "reason" to "window-timeout") // clears
+        assertThat(r.brain.interimTranscript.value).isEmpty()
+        r.frame("transcript-interim", "text" to "two", "seq" to 0, "isFinal" to false)
+        assertThat(r.brain.interimTranscript.value).isEqualTo("two")
     }
 }

@@ -435,6 +435,12 @@ fun DockScreen() {
     val audioLevel by wiring.audioLevel.collectAsState()
     val pipelineStatus by wiring.pipelineStatus.collectAsState()
     val transcript by wiring.transcript.collectAsState()
+    // LIVE interim (partial) user-speech caption streamed from the station while the
+    // user is mid-utterance. When present it takes priority over the perception
+    // transcript flow (it's the freshest, growing text); it clears the moment the turn
+    // leaves listening/followup (RemoteBrain.clearInterim), at which point we fall back
+    // to the endpointed perception transcript / bot reply.
+    val interimTranscript by agent.interimTranscript.collectAsState()
 
     val facePresent by wiring.facePresent.collectAsState()
     val sttArmed by wiring.sttArmed.collectAsState()
@@ -678,8 +684,12 @@ fun DockScreen() {
                         pipelineStatus = pipelineStatus,
                         sttArmed = sttArmed,
                         botSubtitle = botSubtitle,
-                        transcriptText = transcript.text,
-                        transcriptFinal = transcript.isFinal,
+                        // Live interim wins while it's non-empty (freshest growing
+                        // partial); otherwise show the endpointed perception transcript.
+                        // An interim is never "final" (dim styling); the perception
+                        // transcript keeps its own final flag.
+                        transcriptText = interimTranscript.ifEmpty { transcript.text },
+                        transcriptFinal = if (interimTranscript.isNotEmpty()) false else transcript.isFinal,
                         agentState = agentState,
                         modifier = Modifier
                             .align(Alignment.BottomCenter)

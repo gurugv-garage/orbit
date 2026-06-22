@@ -321,6 +321,12 @@ export function brainModule(w: BrainWiring): StationModule {
         onAddressedFinal({ dockId: dock, text, startedAt: Date.now(), endedAt: Date.now() });
       };
       getTranscriptApi()?.onFinal((t) => { onAddressedFinal(t); });
+      // LIVE INTERIMS (caption UI): the gate — produce interims ONLY while the dock is
+      // in a listening/followup turn (bounds GPU cost to active turns, not ambient
+      // speech). The handler forwards each partial as a directed caption frame. Both
+      // are cosmetic: interims never start or alter a turn (that's onAddressedFinal).
+      getTranscriptApi()?.setListeningResolver((dock) => session(dock).isListening());
+      getTranscriptApi()?.onInterim((t) => { session(t.dockId).sendInterim(t.text, t.seq); });
 
       bus.on('agent', (msg) => {
         if (msg.source === 'station') return;
