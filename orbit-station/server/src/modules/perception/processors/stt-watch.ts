@@ -25,6 +25,7 @@ import type { RtpPacket } from 'werift';
 import type { MediaKind } from '../../media/tap.js';
 import type { StreamContext, StreamProcessor } from '../processor.js';
 import { makeSnapshot, type SnapshotStore } from '../snapshots.js';
+import { dockConditions } from '../../../core/conditions.js';
 
 const SIDECAR_URL = process.env.PERCEPTION_SIDECAR_URL ?? 'http://127.0.0.1:8078';
 /** A1.4: the echo-gate (drop audio while the dock speaks) is OFF by default — the
@@ -263,7 +264,14 @@ interface Transcription {
   inferMs: number | null;         // sidecar-reported transcription latency
 }
 
-async function transcribe(pcm: Int16Array): Promise<Transcription | null> {
+/** Result of one transcribe attempt. We DISTINGUISH "the sidecar is unreachable/
+ *  errored" from "the sidecar ran but heard nothing" — the former is a fault the
+ *  user should be told about (the dock is deaf), the latter is just silence. */
+type TranscribeResult =
+  | { ok: true; transcription: Transcription | null }   // ran; maybe empty (silence)
+  | { ok: false; error: string };                        // sidecar unreachable / errored
+
+async function transcribe(pcm: Int16Array): Promise<TranscribeResult> {
   try {
     const buf = Buffer.from(pcm.buffer, pcm.byteOffset, pcm.byteLength);
     const r = await fetch(`${SIDECAR_URL}/transcribe`, {
@@ -271,22 +279,26 @@ async function transcribe(pcm: Int16Array): Promise<Transcription | null> {
       body: JSON.stringify({ pcm_b64: buf.toString('base64'), sample_rate: SAMPLE_RATE }),
       signal: AbortSignal.timeout(30_000),
     });
-    if (!r.ok) return null;
+    if (!r.ok) return { ok: false, error: `STT sidecar returned ${r.status}` };
     const j = (await r.json()) as {
       text?: string; avg_logprob?: number | null; no_speech_prob?: number | null;
       compression_ratio?: number | null; latency_ms?: number;
     };
     const text = j.text?.trim();
-    if (!text) return null;
+    if (!text) return { ok: true, transcription: null };
     return {
-      text,
-      avgLogprob: j.avg_logprob ?? null,
-      noSpeechProb: j.no_speech_prob ?? null,
-      compressionRatio: j.compression_ratio ?? null,
-      inferMs: j.latency_ms != null ? Math.round(j.latency_ms) : null,
+      ok: true,
+      transcription: {
+        text,
+        avgLogprob: j.avg_logprob ?? null,
+        noSpeechProb: j.no_speech_prob ?? null,
+        compressionRatio: j.compression_ratio ?? null,
+        inferMs: j.latency_ms != null ? Math.round(j.latency_ms) : null,
+      },
     };
-  } catch {
-    return null;
+  } catch (e) {
+    // ECONNREFUSED (sidecar not running) / timeout / DNS — the dock is DEAF.
+    return { ok: false, error: e instanceof Error ? e.message : String(e) };
   }
 }
 
@@ -413,7 +425,19 @@ export function sttWatchProcessor(
       // Each completed (or force-flushed) utterance → one transcription → snapshot.
       // Returns a Promise so flushNow() can await the commit before summarizing.
       const commit = async (pcm: Int16Array, startedAt: Date, endedAt: Date): Promise<void> => {
-        const tr = await transcribe(pcm);
+        const res = await transcribe(pcm);
+        if (!res.ok) {
+          // The sidecar is unreachable/errored → the dock is DEAF. Record it so the
+          // brain can tell the user the real reason when they next try to talk
+          // (generic ambient-error channel — core/conditions.ts).
+          dockConditions.report(ctx.dockId, 'stt_unreachable',
+            "I can't hear you right now — my speech recognition service isn't running. "
+            + 'Please start the STT sidecar on the station.');
+          return;
+        }
+        // The sidecar answered → clear any prior deaf condition (recovered).
+        dockConditions.clear(ctx.dockId, 'stt_unreachable');
+        const tr = res.transcription;
         if (!tr) return;
         // Don't DROP shaky transcripts — a gasp / "oh!" / cut-off word can be
         // signal. TAG them lowConfidence (from Whisper's own logprob/no-speech/

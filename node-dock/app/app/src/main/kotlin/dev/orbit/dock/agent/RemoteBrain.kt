@@ -122,6 +122,10 @@ class RemoteBrain(
 
     @Volatile private var brainReady = false
 
+    // throttle for spoken ambient dock-errors (don't repeat on every tap).
+    @Volatile private var lastDockErrorCode = ""
+    @Volatile private var lastDockErrorAt = 0L
+
     // Recent event-log lines, kept as a ring so a feedback flag can ship the
     // last bit of device-side history up with the dump (feedback-flow). Guarded
     // by its own lock — trace() runs on many threads.
@@ -356,9 +360,27 @@ class RemoteBrain(
                 Timber.i("conversation → $to (${payload.str("reason")})")
                 _convMode.value = to
             }
+            "dock-error" -> onDockError(payload)
             "cancelled" -> trace("cancelled (station ack)")
             else -> Timber.d("RemoteBrain: unhandled agent frame '$kind'")
         }
+    }
+
+    /** A station-reported AMBIENT error (not tied to a turn) — e.g. the STT
+     *  sidecar is down so the dock is deaf. The station sends this when the user
+     *  tries to talk (the addressed tap); we just SPEAK the real reason so the
+     *  user knows what's wrong instead of being met with silence. Throttled so a
+     *  repeated condition doesn't repeat the line on every tap. */
+    private fun onDockError(payload: JsonObject) {
+        val code = payload.str("code")
+        val message = payload.str("message")
+        if (message.isBlank()) return
+        val now = System.currentTimeMillis()
+        if (code == lastDockErrorCode && now - lastDockErrorAt < DOCK_ERROR_THROTTLE_MS) return
+        lastDockErrorCode = code
+        lastDockErrorAt = now
+        trace("DOCK-ERROR $code: $message")
+        tools.speakSystem(message)
     }
 
     // ── turn lifecycle ──────────────────────────────────────────────────────
@@ -653,6 +675,8 @@ class RemoteBrain(
         const val EVENT_LOG_REPLAY = 40
         /** how many recent event-log lines a feedback dump ships up. */
         const val RECENT_LINES_CAP = 60
+        /** don't repeat the same spoken ambient-error within this window. */
+        const val DOCK_ERROR_THROTTLE_MS = 30_000L
         const val TRANSCRIPT_THROTTLE_MS = 100L
         /** Local silence ceiling — longer than the station's own 60s turn
          *  timeout, so it only fires when the station truly vanished. */

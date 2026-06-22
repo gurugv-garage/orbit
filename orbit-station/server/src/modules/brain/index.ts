@@ -23,6 +23,7 @@
 import type { Bus } from '../../core/bus.js';
 import { json } from '../../core/http.js';
 import type { Hub } from '../../core/hub.js';
+import { dockConditions } from '../../core/conditions.js';
 import { readFileSync } from 'node:fs';
 import type { RouteContext, StationModule } from '../../core/module.js';
 import type { Directory } from '../docks/directory.js';
@@ -356,12 +357,25 @@ export function brainModule(w: BrainWiring): StationModule {
               console.error(`[brain] ${dock}: turn crashed`, err);
             });
             break;
-          case 'addressed':
+          case 'addressed': {
             // A tap — TOGGLE the dock's addressed listening window (D1). Stamped
             // with the STATION clock so the utterance correlation (also station
             // clock) is skew-free. Tap on = open window; tap again = close it.
             session(dock).tap();
+            // TRANSPARENCY: the user is trying to talk. If the dock is in a known
+            // broken condition (e.g. the STT sidecar is down so it's deaf), tell
+            // it the real reason now so it can speak it — instead of silently
+            // failing to hear (core/conditions.ts, generic ambient-error channel).
+            const cond = dockConditions.current(dock);
+            if (cond) {
+              bus.publish({
+                topic: 'agent', kind: 'dock-error',
+                payload: { code: cond.code, message: cond.message },
+                source: 'station', toAddr: { dock, component: 'phone' },
+              });
+            }
             break;
+          }
           case 'vad':
             // VAD edge from the phone — active=true HOLDS the window open (no ceiling
             // while talking), active=false (a real silence end) releases to a short
