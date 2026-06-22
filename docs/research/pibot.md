@@ -21,6 +21,8 @@ edges — STT gating, barge-in, vision — against orbit's own.
   - [Browser vs Android (#9) — the substrate question, answered](#browser-vs-android-9--the-substrate-question-answered)
   - [Same brain, different wiring (#10, #11, #12)](#same-brain-different-wiring-10-11-12)
   - [Local-ML stack (context, not a takeaway)](#local-ml-stack-context-not-a-takeaway)
+  - [STT engine — Parakeet vs orbit's Whisper (#13)](#stt-engine--parakeet-vs-orbits-whisper-13)
+  - ["Pocket TTS" (Qwen3-TTS) — and the on-device question (#14)](#pocket-tts-qwen3-tts--and-the-on-device-question-14)
 - [Update log](#update-log)
 <!-- /TOC -->
 
@@ -81,6 +83,8 @@ act without re-reading the supporting analysis. Verdict legend:
 | 10 | `createLocalModel` + `PI_PROVIDER`/`PI_MODEL` env swap lets the **same pi harness** target local llama.cpp OR cloud with one var — a clean offline-fallback path. | steal | medium |
 | 11 | `beforeTool` **gates tool execution on TTS finishing** (say "let me look" → *then* the camera fires), and aborts the tool if a barge-in lands during the wait. | steal | medium |
 | 12 | Empty-assistant-response **auto-continuation** prompt — a workaround for weak *local* models. A tell of what local LLMs cost in robustness; orbit (cloud) doesn't need it. | skip | high |
+| 13 | **Parakeet STT** (TDT 0.6B, int8 ONNX, ~50× RT) is a real accuracy+speed upgrade over Whisper-small.en — BUT only 25 European languages (no Hindi/Indic). The bigger lever is his **interim-every-250ms streaming**, portable to any engine. | watch | high |
+| 14 | **"Pocket TTS" (Qwen3-TTS)** runs locally on a *Mac*, NOT on the *phone*. Better voice + cloning. **AEC is NOT lost** (orbit already renders TTS PCM through WebRTC's ADM = the AEC reference). Real cost is **station GPU contention** with the continuous vision loop (serialized single Metal GPU) — not RAM, not AEC. Measure synth latency under live vision. | watch | high |
 
 ### The two that are actually actionable
 
@@ -243,6 +247,106 @@ cloud, no keys, ~8–10 GB unified memory) but a large, brittle build surface (C
 Vulkan/Metal, Rust, two submodules, GGML op patches). It's a coherent *opposite* bet to
 orbit's cloud brain — relevant only if orbit ever pursues an offline mode (#10).
 
+### STT engine — Parakeet vs orbit's Whisper (#13)
+
+Source: the author's blog post,
+[mariozechner.at/posts/2026-05-30-shitty-robot](https://mariozechner.at/posts/2026-05-30-shitty-robot/)
+(researched 2026-06-22), plus the public Open-ASR leaderboard and the
+[NVIDIA Parakeet-TDT-0.6B-v3 model card](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3).
+
+> Note: the blog clarifies pibot's STT runs **int8 ONNX via `parakeet-rs`** at
+> "50x real time on my M1 Max" — the committed repo's `parakeet-cpp` (GGUF) worker
+> is a later/alternate path. Either way it's local Parakeet, not Whisper.
+
+His reasoning: "Whisper is essentially a batch model... its performance isn't super
+great. Parakeet is also a batch model, but much faster." His pipeline does Silero VAD
+on 32 ms chunks, an **interim transcript every 250 ms over the last 4000 ms**, and a
+final after 800 ms silence — the interims drive his snappy stop-word barge-in.
+
+Independent facts (not measured by me):
+- **English accuracy**: marginal difference vs Whisper (both ~2% WER clean). Parakeet
+  **-v3 beats Whisper-large-v3** on the diverse Open-ASR leaderboard at a fraction of
+  the size. Orbit is on Whisper-**small.en**, so a v3 Parakeet would plausibly be both
+  more accurate AND faster.
+- **Speed**: Parakeet's headline win — RTFx ~1700, fast even on CPU.
+- **Languages — the decision-maker**: Parakeet-TDT-0.6B-v3 = **25 European languages
+  ONLY** (no Hindi/Indic). Whisper = 99+. For an Indian-context dock that may need
+  Indic languages or code-switching, **Parakeet is a non-starter**; for English/European
+  it's an upgrade. badlogic uses German (in-set), so it's free for him.
+
+**Verdict**: model swap is conditional on staying English/European. The more valuable,
+engine-agnostic takeaway is his **interim-every-250 ms streaming** — orbit's
+[stt-watch.ts](../../orbit-station/server/src/modules/perception/processors/stt-watch.ts)
+transcribes ONCE at the endpoint, so it has no partial hypotheses to act on mid-utterance.
+Streaming interims would sharpen barge-in/stop-word latency regardless of Whisper vs Parakeet.
+
+### "Pocket TTS" (Qwen3-TTS) — and the on-device question (#14)
+
+Source: same blog post + the
+[QwenLM/Qwen3-TTS repo](https://github.com/QwenLM/Qwen3-TTS) (researched 2026-06-22).
+
+He dropped ElevenLabs ("super fucking costly, and I also don't want to send any data to
+them"), rejected Pocketflow-TTS and OmniVoice (poor German), and landed on **Qwen3-TTS
+1.7B base, 6-bit, MLX** via a custom Rust engine (`qwen3_tts_rs`): "4x real time on an
+M5 Max and 2x real time on my M1 Max", streaming PCM as the LLM emits each sentence.
+
+**Can it run on-device? Two different "devices":**
+- **On the station (a Mac): YES** — that's exactly his setup (MLX, 2–4× RT, local, no
+  keys, voice cloning). A 0.6B Q4/Q8 GGUF is a few hundred MB.
+- **On the dock PHONE: not realistically today** — Qwen3-TTS even at 0.6B is a
+  transformer needing MLX (Apple-only) or a mobile llama.cpp/ONNX runtime; there's no
+  smooth real-time Android build, and it would fight battery/thermals/RAM (~GBs). So
+  "pocket TTS" means *local-on-a-Mac*, **not** *on a phone*. badlogic's "local" = his Mac.
+  For orbit, "on-device" is the wrong frame anyway — the station IS the device that would
+  synthesize, and the phone just renders the PCM (it already does, see below).
+
+**Is it better than orbit's Android TTS?** Quality + voice-cloning: clearly yes. And the
+AEC objection — my first draft claimed moving TTS to the station would lose hardware AEC —
+**was WRONG**. Verified against the actual phone code:
+- orbit does NOT play TTS via Android's TTS engine directly. It synthesizes to a WAV,
+  resamples to 16k, and **renders it through WebRTC's ADM** via `WebRtcAudio.renderTtsPcm`,
+  which (per the code comment) "plays it out the speaker AND makes it the software-AEC
+  reference, so the station's STT no longer transcribes the dock's own voice"
+  ([DockTts.kt:241-273](../../node-dock/app/app/src/main/kotlin/dev/orbit/dock/tts/DockTts.kt#L241)).
+- So the AEC reference is **whatever WebRTC's ADM plays out** — it doesn't care if the PCM
+  came from a local `synthesizeToFile` or was streamed from the station. Swapping the
+  *source* to station-side Qwen3-TTS and feeding the same `renderTtsPcm` keeps AEC intact.
+  (This is also why the user pushed back: "I would just stream this into WebRTC from the
+  server, and then it should automatically do the cancellation." Correct.)
+- badlogic, by contrast, has no good AEC on his browser client — which is the whole reason
+  pibot needs its JS cross-correlation canceller (#2). Orbit's WebRTC-render path is better.
+
+**Real remaining costs** of moving TTS to the station:
+1. **Station GPU contention — the BIGGEST cost, and not free.** Today TTS runs on the
+   *phone's* Android engine ([DockTts.kt](../../node-dock/app/app/src/main/kotlin/dev/orbit/dock/tts/DockTts.kt))
+   — zero station GPU. Moving it to an MLX worker makes it compete for the station's single
+   serialized Metal GPU. **MLX/Metal is not thread-safe**, so every model runs one-at-a-time
+   on a dedicated thread, one model per process, and inference SERIALIZES at the GPU
+   ([sidecar.py:32-37](../../models/perception-sidecar/sidecar.py#L32),
+   [perception-pipeline.md §1a](../perception-pipeline.md) — "two transcribe requests queue
+   there; the GPU does them one at a time"). Today's always-on load: Qwen2.5-VL (~3 GB, runs
+   **back-to-back ~3–6 s/window continuously** while a dock streams) + Whisper (~1 GB, bursty
+   ~0.1–0.7 s) = ~4 GB. The collision is structural: TTS for a reply (seconds of GPU work)
+   overlaps EXACTLY with the continuous vision loop, during an active turn — so TTS would
+   queue behind a 3–6 s vision window precisely in the common case (dock talking right after
+   it looked). Memory is fine (36 GB box; +2–3 GB → ~6–7 GB, no swap); **GPU time is the
+   bottleneck, not RAM.**
+2. **Latency** — synthesis (2–4× RT) + the phone→station→phone hop, vs near-instant local
+   Android synth — *on top of* any GPU-queue wait from (1).
+3. **Playback-timing bookkeeping** — today `feedSynthesized` derives playback duration from
+   PCM length to drive the speaking-gate edges
+   ([DockTts.kt:278-285](../../node-dock/app/app/src/main/kotlin/dev/orbit/dock/tts/DockTts.kt#L278));
+   streamed PCM needs the same duration accounting (straightforward).
+
+**Verdict**: a legitimate option, not blocked by AEC — but the cost is **station GPU
+contention with the continuous vision loop**, not just latency or AEC. Single idle dock →
+fine. Single dock mid-conversation → TTS queues behind vision (the bad, common case). Two
+docks → GPU is the clear bottleneck. Mitigations: fire TTS async and accept jitter; or
+**throttle/pause vision while the dock speaks** (you're talking, not looking — frees the GPU
+exactly when TTS needs it); or keep phone TTS as default and offer station-TTS as an opt-in
+"nice voice" mode. **Prototype + MEASURE synth latency under concurrent vision load before
+committing** — that number, not the AEC question, decides it.
+
 ## Update log
 
 Append-only. On each revisit, add a dated row with both commits and per-takeaway
@@ -254,3 +358,28 @@ status. Do not edit findings above in place — strike through and explain inste
   (speech-gated tools); orbit is already ahead on STT confidence gating (#6) and vision
   (#7); browser was correctly rejected (#9). Corrected an earlier-draft error that
   called orbit "app-side heavy" — orbit is server-heavy (verified against real code).
+- **2026-06-22** (same day, follow-up) — Added engine deep-dives #13 (Parakeet STT) and
+  #14 (Qwen3 "pocket TTS"), sourced from badlogic's blog post
+  ([mariozechner.at/posts/2026-05-30-shitty-robot](https://mariozechner.at/posts/2026-05-30-shitty-robot/))
+  + public model cards/leaderboard. Method: web-fetch of the blog + web-search of
+  Parakeet/Qwen3-TTS facts; still **no benchmarks run by us**. Corrected the earlier
+  pibot-STT note: the blog says STT is int8 **ONNX via parakeet-rs** (~50× RT), not the
+  GGUF `parakeet.cpp` worker. Key conclusions: Parakeet is English/European-only (25 langs)
+  so it's a non-starter if orbit needs Indic; the portable win is interim-every-250ms
+  streaming. Pocket TTS runs local on a *Mac* not a *phone*.
+- **2026-06-22** (same day, correction) — Fixed an error in #14: I claimed station-side TTS
+  would lose hardware AEC. WRONG. Verified against [DockTts.kt:241-273](../../node-dock/app/app/src/main/kotlin/dev/orbit/dock/tts/DockTts.kt#L241):
+  orbit already renders TTS PCM through WebRTC's ADM (which IS the AEC reference), so the
+  audio source (local synth vs station-streamed) is irrelevant to AEC. Streaming Qwen3-TTS
+  PCM into the existing `renderTtsPcm` path keeps cancellation. #14 downgraded from
+  "skip (for now)" to "watch" — the real cost is latency, not AEC. (Prompted by user
+  pushback that streaming into WebRTC would cancel automatically — correct.)
+- **2026-06-22** (same day, refinement) — Quantified the station-overhead question (user
+  asked if the cost is free/negligible). It is NOT: the station runs a SINGLE serialized
+  Metal GPU (MLX not thread-safe — [sidecar.py:32-37](../../models/perception-sidecar/sidecar.py#L32)),
+  already busy with Qwen2.5-VL running back-to-back (~3–6 s/window, continuous) + bursty
+  Whisper. RAM is fine (36 GB box, +2–3 GB). The real cost in #14 is **GPU time contention**:
+  TTS would queue behind the continuous vision loop exactly during an active turn. Added a
+  "throttle vision while speaking" mitigation; the gating metric is synth latency under live
+  vision load. Inventory verified via perception-pipeline.md §1a/§8, models/BENCHMARKS.md,
+  perception-runbook.md, sidecars.ts.
