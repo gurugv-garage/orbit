@@ -65,7 +65,7 @@ class StationLink(
     private val url: String,
     /**
      * The dock name this device belongs to (runtime dock binding —
-     * docs/decision-traces/runtime-dock-binding.md). May be empty/null: an
+     * docs/modules/runtime-dock-binding.md). May be empty/null: an
      * UNCLAIMED device dials in with just its stable [appId] and LEARNS its dock
      * back from the station's welcome frame (delivered to [onDockLearned]).
      * Mutable so a console claim takes effect on the live link with no restart.
@@ -183,7 +183,7 @@ class StationLink(
         val s = client.webSocketSession(url)
         session = s
         // hello v2 (protocol.ts): this peer = the `phone` slot of its dock.
-        // Runtime dock binding (docs/decision-traces/runtime-dock-binding.md):
+        // Runtime dock binding (docs/modules/runtime-dock-binding.md):
         // OMIT dock/component when unclaimed — the station resolves them from its
         // deviceId→dock binding (keyed by appId) and tells us via `welcome`. When
         // we DO know our dock (cached from a prior welcome or a dev override), we
@@ -248,7 +248,7 @@ class StationLink(
 
     private fun handleInbound(text: String) {
         val frame = runCatching { json.parseToJsonElement(text).jsonObject }.getOrNull() ?: return
-        // Runtime dock binding (docs/decision-traces/runtime-dock-binding.md): the
+        // Runtime dock binding (docs/modules/runtime-dock-binding.md): the
         // station's `welcome` (sent on hello AND pushed on a console claim) tells
         // us our dock. Adopt it on the live link so a claim takes effect without a
         // reconnect; null dock ⇒ still UNCLAIMED. Not topic-wrapped — handle first.

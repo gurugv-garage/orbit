@@ -89,7 +89,7 @@ fun DockScreen() {
     // Forward ref so perception wiring below can publish via the station link
     // (the link is built after the tools).
     val stationLinkRef = remember { mutableStateOf<dev.orbit.dock.station.StationLink?>(null) }
-    // Runtime dock binding (docs/decision-traces/runtime-dock-binding.md): the dock
+    // Runtime dock binding (docs/modules/runtime-dock-binding.md): the dock
     // name is no longer compiled in. Start from the local cache (or a dev-override
     // BuildConfig.DOCK_NAME), and LEARN/refresh it from the station's welcome frame.
     // null ⇒ UNCLAIMED — drives the "claim me in the console" hint.
@@ -100,7 +100,7 @@ fun DockScreen() {
     }
     // Set true the moment we learn our dock CHANGED (a console move). Drives a
     // blocking overlay, then we restart the whole process so nothing dock-specific
-    // survives (docs/decision-traces/runtime-dock-binding.md).
+    // survives (docs/modules/runtime-dock-binding.md).
     var restarting by remember { mutableStateOf(false) }
     // Pre-turn identity sync: recognition fires when STT arms (parallel with the
     // user's speech); the turn start AWAITS it (bounded) so the prompt is
@@ -141,7 +141,7 @@ fun DockScreen() {
         dev.orbit.dock.station.StationLink(
             url = BuildConfig.STATION_URL,
             // empty/null when unclaimed — the station resolves + sends our dock
-            // back via welcome (docs/decision-traces/runtime-dock-binding.md).
+            // back via welcome (docs/modules/runtime-dock-binding.md).
             dock = boundDock,
             // ANDROID_ID: the uninstall-stable hardware key the station's
             // deviceId→dock binding is keyed on (DeviceId). `id` names the METAL
@@ -257,7 +257,7 @@ fun DockScreen() {
                     // the process. One clean code path: the device comes up fresh as
                     // its dock with no stale in-memory trace (MediaStreamer label,
                     // session id/logs, brain). Covers both first-claim (prev == null)
-                    // and move (prev != learned). docs/decision-traces/runtime-dock-binding.md
+                    // and move (prev != learned). docs/modules/runtime-dock-binding.md
                     learnedDock != null && learnedDock != prev -> {
                         dev.orbit.dock.station.DockBindingCache.set(ctx, learnedDock)
                         Timber.w("claimed dock '$prev' → '$learnedDock' — restarting app")
@@ -282,7 +282,7 @@ fun DockScreen() {
             faceTracker = faceTracker,
             // display/grouping label only; for a device stream the station prefers
             // the live peer's dock, so an unclaimed phone ("") still groups right
-            // once claimed (docs/decision-traces/runtime-dock-binding.md).
+            // once claimed (docs/modules/runtime-dock-binding.md).
             label = boundDock ?: "",
             publish = { kind, payload -> stationLink.publish("media", kind, payload) },
         ).also { mediaStreamerRef.value = it }
@@ -817,7 +817,7 @@ fun DockScreen() {
                             .align(Alignment.TopCenter)
                             .padding(top = 16.dp),
                     )
-                    // Runtime dock binding (docs/decision-traces/runtime-dock-binding.md):
+                    // Runtime dock binding (docs/modules/runtime-dock-binding.md):
                     // connected but no dock yet → tell the operator to claim this
                     // device in the station console. The brain/body stay idle until then.
                     if (stationConnected && boundDock == null) {

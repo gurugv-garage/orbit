@@ -24,7 +24,7 @@ import {
 
 /** The station's deviceId→dock binding, injected so the hub can resolve a
  *  device's dock from its stable id when it dials in without one, and persist a
- *  binding when a console claims it (docs/decision-traces/runtime-dock-binding.md). */
+ *  binding when a console claims it (docs/modules/runtime-dock-binding.md). */
 export interface DockBindings {
   lookup(deviceId: string): string | undefined;
   bind(deviceId: string, dock: string): void;
@@ -182,7 +182,7 @@ export class Hub {
 
   /**
    * Claim an unclaimed (or rebind a claimed) live device to a dock
-   * (docs/decision-traces/runtime-dock-binding.md). Persists the binding, mutates
+   * (docs/modules/runtime-dock-binding.md). Persists the binding, mutates
    * the live peer's dock/component in place, announces `peer-updated` so
    * dock-keyed modules re-resolve, and pushes a fresh welcome frame so the
    * device adopts + caches the name without reconnecting. The slot is derived
@@ -194,7 +194,7 @@ export class Hub {
     if (!peer) return undefined;
     const component = componentForKind(peer.kind) ?? peer.component;
     // Persist the binding + tell the device its dock via `welcome`. The DEVICE
-    // decides what to do with it (docs/decision-traces/runtime-dock-binding.md):
+    // decides what to do with it (docs/modules/runtime-dock-binding.md):
     // a FIRST claim (was unclaimed) is adopted live — nothing dock-specific was
     // built yet; a CHANGE of an existing dock makes the device RESTART ITSELF
     // (app: relaunch process; firmware: esp_restart) so no stale in-memory trace
@@ -299,7 +299,7 @@ export class Hub {
         peer.caps = f.caps;
         peer.build = f.build;
         peer.announced = true;
-        // Runtime dock binding (docs/decision-traces/runtime-dock-binding.md):
+        // Runtime dock binding (docs/modules/runtime-dock-binding.md):
         // the station's deviceId→dock binding is the SOURCE OF TRUTH. It ALWAYS
         // wins over whatever dock the device asserts in hello — a console claim
         // must never be silently overwritten by a device's stale compiled-in

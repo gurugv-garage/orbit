@@ -4,7 +4,7 @@ import android.content.Context
 
 /**
  * Local cache of the dock name this device last LEARNED from the station's
- * welcome frame (docs/decision-traces/runtime-dock-binding.md).
+ * welcome frame (docs/modules/runtime-dock-binding.md).
  *
  * The station's deviceId→dock binding is the source of truth; this cache only
  * lets the app re-announce its dock instantly on the next connect (send it in

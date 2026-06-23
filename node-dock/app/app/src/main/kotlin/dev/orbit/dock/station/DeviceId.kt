@@ -6,7 +6,7 @@ import android.provider.Settings
 
 /**
  * The app's STABLE hardware identity for the hello `id` and the station's
- * deviceId→dock binding (docs/decision-traces/runtime-dock-binding.md).
+ * deviceId→dock binding (docs/modules/runtime-dock-binding.md).
  *
  * Uses [Settings.Secure.ANDROID_ID]: on Android 8+ it's scoped to
  * (app signing key + user + device) and — crucially — survives app

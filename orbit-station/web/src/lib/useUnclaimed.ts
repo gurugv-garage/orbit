@@ -3,7 +3,7 @@ import { api } from './station';
 import { useStationEvents } from './useStation';
 
 /** A live device that has dialed in but isn't bound to any dock yet
- *  (docs/decision-traces/runtime-dock-binding.md). */
+ *  (docs/modules/runtime-dock-binding.md). */
 export interface UnclaimedDevice {
   id: string;
   kind?: string;

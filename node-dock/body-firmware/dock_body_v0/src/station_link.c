@@ -56,7 +56,7 @@ static bool    s_profile_sent = false;
 // hello-v2 `id` = the hardware instance: MAC-derived, never name-derived
 // (two boards must never share an id). Filled at start; BL_DEVICE_ID is the
 // fallback if the MAC read fails. The FULL 6-byte MAC ("body-aabbccddeeff") is
-// the station's deviceId→dock binding key (docs/decision-traces/runtime-dock-binding.md).
+// the station's deviceId→dock binding key (docs/modules/runtime-dock-binding.md).
 static char    s_device_id[24] = BL_DEVICE_ID;
 // Runtime dock binding: the dock this board belongs to. No longer compiled in —
 // learned from the station's welcome frame and persisted to NVS so it survives
@@ -68,7 +68,7 @@ static bool    s_stale_latched = false;
 static int64_t now_ms(void) { return esp_timer_get_time() / 1000; }
 
 // ── runtime dock binding: NVS-persisted dock name ──────────────────────────
-// docs/decision-traces/runtime-dock-binding.md. The station owns the
+// docs/modules/runtime-dock-binding.md. The station owns the
 // deviceId→dock binding; we cache the learned name in NVS so we re-announce it
 // instantly on the next boot (and it survives an app-partition reflash).
 #define DOCK_NVS_NS  "orbit"
@@ -94,7 +94,7 @@ static void dock_save_to_nvs(const char *dock) {
 // to NVS, then REBOOT for a clean reset. One code path — a fresh boot is the only
 // fail-proof way to guarantee no stale in-memory state (motion targets,
 // subscriptions, latches) carries into the new dock
-// (docs/decision-traces/runtime-dock-binding.md). On reboot dock_load_from_nvs
+// (docs/modules/runtime-dock-binding.md). On reboot dock_load_from_nvs
 // reads the new name and we re-announce; the welcome that echoes it then matches
 // s_dock (strcmp == 0) so we DON'T reboot again — no loop.
 static void dock_adopt(const char *dock) {
@@ -106,7 +106,7 @@ static void dock_adopt(const char *dock) {
 }
 
 // UNCLAIM: the station sent welcome{dock:null} — we were unbound, or DISPLACED by
-// another device claiming our slot (docs/decision-traces/runtime-dock-binding.md).
+// another device claiming our slot (docs/modules/runtime-dock-binding.md).
 // Clear NVS + RAM in place so our NEXT hello carries no dock and we redial
 // UNCLAIMED — NOT re-asserting our old dock (which would re-seed the binding and
 // ping-pong the slot). Like the phone, unclaim is idle (no reboot): the body just
@@ -178,7 +178,7 @@ static void send_hello(void) {
     cJSON_AddStringToObject(f, "id", s_device_id);
     // Runtime dock binding: send dock/component only when we KNOW our dock
     // (cached in NVS or a dev override). Unclaimed → omit; the station resolves
-    // it from its binding and tells us via welcome. (docs/decision-traces/runtime-dock-binding.md)
+    // it from its binding and tells us via welcome. (docs/modules/runtime-dock-binding.md)
     if (s_dock[0] != '\0') {
         cJSON_AddStringToObject(f, "dock", s_dock);
         cJSON_AddStringToObject(f, "component", "body");
@@ -400,7 +400,7 @@ esp_err_t station_link_start(void) {
     uint8_t mac[6];
     if (esp_read_mac(mac, ESP_MAC_WIFI_STA) == ESP_OK) {
         // FULL 6-byte MAC = the station's binding key (collision-safe across
-        // boards). docs/decision-traces/runtime-dock-binding.md.
+        // boards). docs/modules/runtime-dock-binding.md.
         snprintf(s_device_id, sizeof(s_device_id), "body-%02x%02x%02x%02x%02x%02x",
                  mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
     }

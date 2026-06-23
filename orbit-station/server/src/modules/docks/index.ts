@@ -21,7 +21,7 @@
  *   PUT    /api/docks/:name/manifest   edit a dock's expected components
  *   DELETE /api/docks/:name            forget a dock (refused while live)
  *
- * Runtime dock binding (docs/decision-traces/runtime-dock-binding.md): a device
+ * Runtime dock binding (docs/modules/runtime-dock-binding.md): a device
  * dials in with only its stable hardware id and learns its dock name back from
  * the station. An unbound device rides the roster "unclaimed" (no dock) and is
  * surfaced here to be claimed.
@@ -128,7 +128,7 @@ export function docksModule(
       }
 
       // Unclaimed devices: live, announced, non-browser peers with no dock yet
-      // (docs/decision-traces/runtime-dock-binding.md). Task peers (component
+      // (docs/modules/runtime-dock-binding.md). Task peers (component
       // 'task:*') are background jobs, never a claimable device.
       if (subPath === '/unclaimed' && req.method === 'GET') {
         const unclaimed = getHub().roster().filter(

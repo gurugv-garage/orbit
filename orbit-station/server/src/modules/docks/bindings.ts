@@ -1,6 +1,6 @@
 /**
  * Device→dock bindings — the station-owned source of truth for which dock a
- * physical device belongs to (docs/decision-traces/runtime-dock-binding.md).
+ * physical device belongs to (docs/modules/runtime-dock-binding.md).
  *
  * The dock name used to be compiled into each device (app local.properties,
  * firmware secrets.h). Instead, a device now dials in with only its STABLE

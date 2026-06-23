@@ -80,7 +80,7 @@ async function main() {
   //  - ProcessingHub: the SFU's media tap (perception processors).
   const configStore = new ConfigStore();
   // deviceId→dock bindings: the station-owned source of truth for which dock a
-  // device belongs to (docs/decision-traces/runtime-dock-binding.md).
+  // device belongs to (docs/modules/runtime-dock-binding.md).
   const bindings = new BindingStore();
   let processingHub: ProcessingHub | undefined;
   // SFU streamId→published-label lookup (set once the media module's SFU exists),
@@ -117,7 +117,7 @@ async function main() {
     // dockReady: gate out UNCLAIMED device streams (a roster peer with no dock),
     // so perception never files snapshots under a raw ws id. A browser/label
     // stream (no matching roster peer) is always ready.
-    // (docs/decision-traces/runtime-dock-binding.md)
+    // (docs/modules/runtime-dock-binding.md)
     (streamId) => {
       const peer = hub.roster().find((p) => p.id === streamId);
       return !peer || !!peer.dock;

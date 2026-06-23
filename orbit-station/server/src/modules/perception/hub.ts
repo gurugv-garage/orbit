@@ -49,7 +49,7 @@ interface Registered {
 export class ProcessingHub implements MediaTap {
   #bus: Bus;
   #resolveDock: (streamId: string) => string;
-  /** Gate (docs/decision-traces/runtime-dock-binding.md): false ⇒ this stream's
+  /** Gate (docs/modules/runtime-dock-binding.md): false ⇒ this stream's
    *  source is an UNCLAIMED device (a roster peer with no dock binding), so we
    *  must NOT start processors — their snapshots would be filed under a raw ws
    *  id and split the dock's timeline. Browser/label streams aren't gated. */
@@ -166,7 +166,7 @@ export class ProcessingHub implements MediaTap {
   #startOn(reg: Registered, streamId: string): void {
     if (reg.ctx.has(streamId)) return;
     // Unclaimed device → don't start; processors begin once it's claimed and a
-    // fresh track/fact arrives (docs/decision-traces/runtime-dock-binding.md).
+    // fresh track/fact arrives (docs/modules/runtime-dock-binding.md).
     if (!this.#dockReady(streamId)) return;
     const dockId = this.#resolveDock(streamId);
     const ctx: StreamContext = {

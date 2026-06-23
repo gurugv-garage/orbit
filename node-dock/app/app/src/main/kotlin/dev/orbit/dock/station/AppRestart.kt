@@ -8,7 +8,7 @@ import timber.log.Timber
 
 /**
  * Cleanly restart the dock app's OWN process (runtime dock binding —
- * docs/decision-traces/runtime-dock-binding.md).
+ * docs/modules/runtime-dock-binding.md).
  *
  * Why a full process restart: when this device is MOVED to a different dock, the
  * only fail-proof reset is to throw away ALL in-memory state — boundDock, the

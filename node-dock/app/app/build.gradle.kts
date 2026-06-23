@@ -54,7 +54,7 @@ android {
         buildConfigField(
             "String",
             "DOCK_NAME",
-            // Optional DEV OVERRIDE only (docs/decision-traces/runtime-dock-binding.md):
+            // Optional DEV OVERRIDE only (docs/modules/runtime-dock-binding.md):
             // empty by default — the dock name is assigned at RUNTIME via the
             // station's deviceId→dock binding (claim the device in the console). If
             // set here, the app self-binds to this name on first connect.

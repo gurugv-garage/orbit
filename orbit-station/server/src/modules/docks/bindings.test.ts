@@ -1,7 +1,7 @@
 /**
  * BindingStore — the station-owned deviceId→dock mapping that makes a device's
  * dock name survive app uninstall / firmware reflash
- * (docs/decision-traces/runtime-dock-binding.md). Seeded into an isolated
+ * (docs/modules/runtime-dock-binding.md). Seeded into an isolated
  * in-memory db, same pattern as the observability cost tests.
  *
  *   npm test --workspace server

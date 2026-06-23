@@ -9,7 +9,7 @@ root; all paths in these docs are relative to it.
 
 | Folder | What | State |
 |---|---|---|
-| `docs/` | PLAN.md (architecture + decision log), TODO.md (progress) — **read these first** | living |
+| `docs/` | PLAN.md (architecture + decision log), TODO.md (progress) — **read these first**; `decision-traces/` (why a thing was built, as it happened), `modules/` (frozen as-built docs for a self-contained feature/module, e.g. [runtime-dock-binding](docs/modules/runtime-dock-binding.md)) | living |
 | `node-dock/` | Stationary desk companion: an Android phone (face UI + camera/mic perception + TTS) and an ESP32 servo body. **The LLM brain and body control live in orbit-station** (server brain — [docs/decision-traces/server-brain-impl.md](docs/decision-traces/server-brain-impl.md)); the phone and ESP32 are both station WS clients and never talk to each other | **active** |
 | `node-rover/` | Mobile floor robot, linorobot2-based, ROS2. Sim works through nav; hardware/manipulation next | sim done |
 | `orbit-station/` | Central **brain + control plane**: Node/TS, one WebSocket for all firmware/apps, browser UI. Modules: **brain** (per-dock pi agent sessions — the dock's LLM loop), docks (registry + capability routing), observability (Session/Turn/Step traces), config push, bodylink (motion executor + console), bench viewer, ota (self-update for body + app — [docs/ota.md](docs/ota.md)). (Renamed from `plat`; the WebRTC/STT/TTS **media brain** from PLAN.md §5 is a separate later sidecar, not this.) | **active** |

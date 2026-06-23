@@ -1,5 +1,5 @@
 /**
- * Hub ↔ runtime dock binding (docs/decision-traces/runtime-dock-binding.md).
+ * Hub ↔ runtime dock binding (docs/modules/runtime-dock-binding.md).
  *
  * Exercises the real WS path end-to-end against a live Hub:
  *   - a device that dials in with NO dock gets a welcome { dock: null } (UNCLAIMED)

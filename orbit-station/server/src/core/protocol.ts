@@ -115,7 +115,7 @@ export interface WelcomeFrame {
   id: string;
   serverTime: number;
   /**
-   * The dock this device is bound to (docs/decision-traces/runtime-dock-binding.md).
+   * The dock this device is bound to (docs/modules/runtime-dock-binding.md).
    * Resolved from the station's deviceId→dock binding when the device dials in
    * with no `dock` of its own. `null` ⇒ UNCLAIMED — the device idles and shows
    * up in the console to be claimed. Re-sent (directed) the moment a console
@@ -157,7 +157,7 @@ export interface ComponentAddr {
 }
 
 /** Which dock slot a device's software fills, derived from its hello `kind`
- *  (docs/decision-traces/runtime-dock-binding.md). Lets a console claim assign a
+ *  (docs/modules/runtime-dock-binding.md). Lets a console claim assign a
  *  slot from the device alone — the operator only picks a dock NAME. Returns
  *  undefined for software with no canonical slot. */
 const KIND_COMPONENT: Record<string, string> = {

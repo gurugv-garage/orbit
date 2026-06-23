@@ -1,6 +1,6 @@
 // Playwright E2E: build & announce an app OTA through the browser, then observe
 // both online phones take the update while KEEPING their dock names (the whole
-// point of runtime dock binding — docs/decision-traces/runtime-dock-binding.md).
+// point of runtime dock binding — docs/modules/runtime-dock-binding.md).
 //
 // Run from orbit-station/:  node scripts/ota-e2e.mjs
 import { chromium } from 'playwright';
