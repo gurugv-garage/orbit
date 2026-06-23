@@ -13,6 +13,7 @@ import type { Server as HttpServer, IncomingMessage } from 'node:http';
 import { WebSocketServer, WebSocket } from 'ws';
 import { isDirected, type Bus } from './bus.js';
 import {
+  componentForKind,
   isInboundFrame,
   type EventFrame,
   type InboundFrame,
@@ -20,6 +21,15 @@ import {
   type PeerRole,
   type Topic,
 } from './protocol.js';
+
+/** The station's deviceId→dock binding, injected so the hub can resolve a
+ *  device's dock from its stable id when it dials in without one, and persist a
+ *  binding when a console claims it (docs/modules/runtime-dock-binding.md). */
+export interface DockBindings {
+  lookup(deviceId: string): string | undefined;
+  bind(deviceId: string, dock: string): void;
+  unbind(deviceId: string): boolean;
+}
 
 /** How long a silent socket lives. The hub pings every PING_INTERVAL_MS; a
  *  peer that misses PING_MISSES pongs is terminated, so a silently-dead phone
@@ -78,9 +88,11 @@ export class Hub {
   #peers = new Map<WebSocket, Peer>();
   #bus: Bus;
   #pingTimer: NodeJS.Timeout;
+  #bindings?: DockBindings;
 
-  constructor(server: HttpServer, bus: Bus) {
+  constructor(server: HttpServer, bus: Bus, bindings?: DockBindings) {
     this.#bus = bus;
+    this.#bindings = bindings;
     this.#wss = new WebSocketServer({ server, path: '/ws' });
     this.#wss.on('connection', (ws, req) => this.#onConnect(ws, req));
 
@@ -168,6 +180,78 @@ export class Hub {
     }));
   }
 
+  /**
+   * Claim an unclaimed (or rebind a claimed) live device to a dock
+   * (docs/modules/runtime-dock-binding.md). Persists the binding, mutates
+   * the live peer's dock/component in place, announces `peer-updated` so
+   * dock-keyed modules re-resolve, and pushes a fresh welcome frame so the
+   * device adopts + caches the name without reconnecting. The slot is derived
+   * from the device's `kind`. Returns the peer's resolved (dock, component), or
+   * undefined if no live announced peer has that id.
+   */
+  claim(deviceId: string, dock: string): { dock: string; component?: string } | undefined {
+    const peer = [...this.#peers.values()].find((p) => p.announced && p.id === deviceId);
+    if (!peer) return undefined;
+    const component = componentForKind(peer.kind) ?? peer.component;
+    // Persist the binding + tell the device its dock via `welcome`. The DEVICE
+    // decides what to do with it (docs/modules/runtime-dock-binding.md):
+    // a FIRST claim (was unclaimed) is adopted live — nothing dock-specific was
+    // built yet; a CHANGE of an existing dock makes the device RESTART ITSELF
+    // (app: relaunch process; firmware: esp_restart) so no stale in-memory trace
+    // survives. That old-vs-new compare lives on the device, so the station path
+    // stays a plain rebind — no special move handling here.
+    this.#bindings?.bind(deviceId, dock);
+    peer.dock = dock;
+    peer.component = component;
+    // Slot collision: a DIFFERENT live device already holding (dock, component)
+    // is unbound + dropped — it reconnects UNCLAIMED. One dock can't have two
+    // phones in its phone slot.
+    if (component) this.#displaceFromSlot(dock, component, deviceId);
+    this.#announce('peer-updated', {
+      role: peer.role, id: peer.id, label: peer.label, dock: peer.dock,
+      component: peer.component, kind: peer.kind, caps: peer.caps, build: peer.build,
+    });
+    this.#send(peer.ws, {
+      t: 'welcome', id: peer.id, serverTime: Date.now(),
+      dock: peer.dock, component: peer.component ?? null,
+    });
+    return { dock, component };
+  }
+
+  /** Un-claim a LIVE device: clear its dock/component in place, announce the
+   *  change, and push a welcome{dock:null} so it re-parks UNCLAIMED immediately
+   *  (without waiting for a reconnect). Returns true if a live peer was re-parked.
+   *  The binding-store delete is the caller's job (docks REST); this fixes the
+   *  live-roster side so the device doesn't linger as a ghost of its old dock. */
+  unclaim(deviceId: string): boolean {
+    const peer = [...this.#peers.values()].find((p) => p.announced && p.id === deviceId);
+    if (!peer || !peer.dock) return false;
+    peer.dock = undefined;
+    peer.component = undefined;
+    this.#announce('peer-updated', {
+      role: peer.role, id: peer.id, label: peer.label, dock: undefined,
+      component: undefined, kind: peer.kind, caps: peer.caps, build: peer.build,
+    });
+    this.#send(peer.ws, { t: 'welcome', id: peer.id, serverTime: Date.now(), dock: null, component: null });
+    return true;
+  }
+
+  /** Evict any live peer (other than `exceptId`) occupying (dock, component) so a
+   *  new claimant can take the slot. CRITICAL: we forget its binding AND push a
+   *  welcome{dock:null} BEFORE terminating — the welcome tells the device to clear
+   *  its cached dock, so when it redials it comes back UNCLAIMED. Without the
+   *  welcome, the displaced device would re-assert its stale hello.dock, the hub
+   *  would re-seed its binding, and the two devices would ping-pong the slot. */
+  #displaceFromSlot(dock: string, component: string, exceptId: string): void {
+    for (const other of this.#peers.values()) {
+      if (!other.announced || other.id === exceptId) continue;
+      if (other.dock !== dock || other.component !== component) continue;
+      this.#bindings?.unbind(other.id);
+      this.#send(other.ws, { t: 'welcome', id: other.id, serverTime: Date.now(), dock: null, component: null });
+      try { other.ws.terminate(); } catch { /* already gone */ }
+    }
+  }
+
   #onConnect(ws: WebSocket, req: IncomingMessage): void {
     const now = Date.now();
     const peer: Peer = {
@@ -215,6 +299,22 @@ export class Hub {
         peer.caps = f.caps;
         peer.build = f.build;
         peer.announced = true;
+        // Runtime dock binding (docs/modules/runtime-dock-binding.md):
+        // the station's deviceId→dock binding is the SOURCE OF TRUTH. It ALWAYS
+        // wins over whatever dock the device asserts in hello — a console claim
+        // must never be silently overwritten by a device's stale compiled-in
+        // DOCK_NAME. So: if a binding exists, use it (ignoring hello.dock). Only
+        // when there's NO binding does a device-supplied dock seed one (the
+        // first-run dev-override / self-claim convenience). A peer still
+        // dock-less after this is UNCLAIMED: it rides the roster, idles, and
+        // surfaces in the console to be claimed. The slot is derived from `kind`.
+        const bound = this.#bindings?.lookup(peer.id);
+        if (bound) {
+          peer.dock = bound;            // binding wins, even over hello.dock
+        } else if (peer.dock) {
+          this.#bindings?.bind(peer.id, peer.dock);  // seed from a self-claim
+        }
+        if (peer.dock) peer.component = componentForKind(peer.kind) ?? peer.component;
         // Address collision: a second peer claiming an occupied
         // (dock, component) displaces the old one — that's the hardware-swap
         // path (and the stale-socket-racing-a-reconnect path). Newest wins;
@@ -231,7 +331,10 @@ export class Hub {
             }
           }
         }
-        this.#send(peer.ws, { t: 'welcome', id: peer.id, serverTime: Date.now() });
+        this.#send(peer.ws, {
+          t: 'welcome', id: peer.id, serverTime: Date.now(),
+          dock: peer.dock ?? null, component: peer.component ?? null,
+        });
         this.#announce('peer-joined', {
           role: peer.role, id: peer.id, label: peer.label, dock: peer.dock,
           component: peer.component, kind: peer.kind, caps: peer.caps, build: peer.build,

@@ -25,8 +25,10 @@ android {
         applicationId = "dev.orbit.dock"
         minSdk = 26
         targetSdk = 35
-        versionCode = 9
-        versionName = "0.1.8"
+        // versionName is DERIVED from versionCode so build N is always v0.1.N —
+        // no hand-sync, no drift. Bump versionCode alone (it's the OTA gate).
+        versionCode = 12
+        versionName = "0.1.$versionCode"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
@@ -52,7 +54,11 @@ android {
         buildConfigField(
             "String",
             "DOCK_NAME",
-            "\"${localProps.getProperty("DOCK_NAME", "anne-bot")}\"",
+            // Optional DEV OVERRIDE only (docs/modules/runtime-dock-binding.md):
+            // empty by default — the dock name is assigned at RUNTIME via the
+            // station's deviceId→dock binding (claim the device in the console). If
+            // set here, the app self-binds to this name on first connect.
+            "\"${localProps.getProperty("DOCK_NAME", "")}\"",
         )
         // The git SHA this build was cut from — baked in so a feedback dump can
         // reproduce against an exact app build (feedback-flow). Uses the

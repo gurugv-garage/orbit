@@ -13,6 +13,7 @@
 - [Stable device id — the binding key](#stable-device-id--the-binding-key)
 - [Design overview](#design-overview)
   - [Decisions (user-confirmed)](#decisions-user-confirmed)
+  - [Moving a device between docks — restart, not live-mutate](#moving-a-device-between-docks--restart-not-live-mutate)
 - [Module audit — what changes, what doesn't](#module-audit--what-changes-what-doesnt)
 - [Implementation plan](#implementation-plan)
   - [Server (`orbit-station/server`)](#server-orbit-stationserver)
@@ -20,7 +21,9 @@
   - [Phone app (`node-dock/app`)](#phone-app-node-dockapp)
   - [Firmware (`node-dock/body-firmware/dock_body_v0`)](#firmware-node-dockbody-firmwaredock_body_v0)
 - [Lifecycle scenarios (validated against the audit)](#lifecycle-scenarios-validated-against-the-audit)
-- [Verification (end-to-end)](#verification-end-to-end)
+- [Test status (as of branch `dock-name-mgmt`)](#test-status-as-of-branch-dock-name-mgmt)
+  - [How to test the firmware (ESP32 body) — pending](#how-to-test-the-firmware-esp32-body--pending)
+  - [How to re-run the verified tests](#how-to-re-run-the-verified-tests)
 - [Rejected alternatives](#rejected-alternatives)
 <!-- /TOC -->
 
@@ -114,6 +117,46 @@ learned so it can re-announce instantly on reconnect, but the station's binding
 | Lifecycle state | **Implicit** — unclaimed ≡ `peer.dock == null` | modules already early-return on null dock; no new state machine |
 | Rename data | **Leave old state under old name** as history; device starts fresh under new name | historically honest; avoids cross-module rekeying |
 | Slot/component | **Derived from device `kind`**, not stored in the binding | "parts from anywhere" falls out for free |
+| **Move = restart** | On a dock CHANGE the **device restarts itself** (app: relaunch process; firmware: `esp_restart`) — not a live mutation, not just a reconnect | **fail-proof over uptime** (user's explicit call): a full process/boot wipe is the only way to guarantee no stale in-memory trace survives |
+
+### Moving a device between docks — restart, not live-mutate
+
+A move (re-claim to a different dock) is rarer and riskier than a first claim, so it
+optimizes for **correctness, not uptime**. An audit of all three runtimes found that a
+*live* dock swap (mutate `peer.dock`, no restart) leaves stale traces — e.g. the app's
+`MediaStreamer` SFU label is frozen at construction, the session id/logs in the UI
+persist, brain RPC/tasks keyed to the old dock dangle. A bare WS *reconnect* doesn't
+help either: the app's Compose process (and those captures) survives a reconnect.
+
+**Every CLAIM restarts the device — one code path, first-claim and move identical.**
+The goal is a perfectly consistent *end state* (no stale/corrupt leftover); the few
+transient seconds of the move don't need validating. So the device that learns ANY dock
+(from unclaimed, or from another dock) restarts into it fresh:
+
+- **App** — `onDockLearned`: a non-null dock that differs from `boundDock` shows a blocking
+  "dock changed — restarting" overlay and calls `AppRestart.now()`. That starts a fresh
+  launcher task **in-process** (`NEW_TASK | CLEAR_TASK`) AND arms a Doze-exempt waking
+  alarm (`setAndAllowWhileIdle`/`RTC_WAKEUP`) as a backstop, then `Runtime.exit(0)` — so an
+  always-on dock reliably comes back (the bare inexact alarm could be dropped in Doze). The
+  fresh process rebuilds every `remember{}`-ed object as the new dock. Auto, no tap.
+- **Firmware** — `dock_adopt()` persists the new dock to NVS (synchronous `nvs_commit`) then
+  `esp_restart()`s unconditionally; on reboot it reads the dock from NVS and re-announces.
+  The welcome that echoes the same name then `strcmp`-matches → no second reboot (no loop).
+- **First claim** (was UNCLAIMED) restarts too — after the reboot the device is **claimed
+  before it streams**, so the perception gate is open from the start (this is *why* every
+  claim restarts: it removes the "claimed-but-stream-already-gated-out" edge entirely).
+- **Post-restart there is no loop**: the device boots with its cached/NVS dock, sends it in
+  hello, the station's binding agrees, the welcome echoes it == current → no restart.
+- **Unbind** (dock → null) does NOT restart: the device clears its dock live, goes idle +
+  UNCLAIMED, and is re-claimed later (that claim restarts it). Keeps the common idle case
+  cheap.
+- **Station** `claim()` is a plain rebind: persist binding + push `welcome`; the device
+  decides restart (claim) vs idle (unclaim). A different device already in the target slot
+  is **re-parked unclaimed** — it's sent `welcome{dock:null}` (so it clears its cache and
+  redials unclaimed, NOT re-asserting its old dock and ping-ponging the slot) then dropped.
+  `unclaim()` does the same for an explicit unbind. The source dock briefly goes offline
+  during the restart — acceptable. The console **Move** dialog states the per-peer restart
+  behavior up front.
 
 ## Module audit — what changes, what doesn't
 
@@ -221,7 +264,17 @@ state under old name" is the *only* state question, cleanly answered.
     On boot read NVS → send in hello for instant re-announce; station binding still
     overrides via welcome. **Survives reflash** (NVS is a separate partition, not
     erased by app OTA).
-13. **Unclaimed behavior:** no dock ⇒ servos hold center (reuse the `STATION_URL`-empty
+13. **Claim → reboot (as-built):** `dock_adopt()` persists the dock to NVS
+    (synchronous `nvs_commit`) then `esp_restart()`s **on every claim** (first claim
+    and move alike) — a clean boot is the fail-proof reset. Post-reboot the welcome
+    that echoes the same NVS dock `strcmp`-matches → no second reboot (no loop).
+14. **Unclaim → `dock_clear()` (as-built):** on `welcome{dock:null}` (unbound, or
+    DISPLACED by another device claiming the slot) the firmware clears `s_dock` +
+    persists `""` to NVS so its next hello carries no dock and it redials UNCLAIMED
+    — NOT re-asserting its old dock (which would re-seed the binding and ping-pong
+    the slot). Idle, **no reboot** (matches the phone's unbind): the body holds
+    center until re-claimed.
+15. **Unclaimed behavior:** no dock ⇒ servos hold center (reuse the `STATION_URL`-empty
     idle path).
 
 ## Lifecycle scenarios (validated against the audit)
@@ -231,25 +284,56 @@ state under old name" is the *only* state question, cleanly answered.
 | Brand-new phone, never bound | hello `{id}` → unclaimed → idle (OTA/config only) → console claim → `peer-updated` → brain/perception/body come alive, no rebuild |
 | Phone **uninstall + reinstall** (same signing key) | same ANDROID_ID → station `lookup` hits → welcome returns dock → live immediately, **no console action** |
 | Board **reflash** (app partition) | NVS dock survives → re-announces instantly; binding also still in station |
-| **Rename** anne-bot → living-room | new binding; live peer mutated + `peer-updated`; new sessions/traces/cost under `living-room`; **old state stays under `anne-bot`** as history |
 | Swap to a **different phone** in same dock | new device id → unclaimed → claim into `anne-bot` → it *is* the phone slot (slot derived from `kind`); old phone, if gone, leaves an offline slot |
 | ANDROID_ID changes (factory reset / new signing key) | reappears unclaimed → one-click re-claim; no data loss |
+| **Move / rename** (claim to a different dock) | device **restarts itself** (phone: process relaunch; body: `esp_restart`) → reconnects fresh under the new dock; new sessions/traces/cost under the new name, **old state stays under the old name** as history; old dock left an offline ghost; binding table holds exactly one row. **Verified live on phones; firmware pending.** |
+| **Displace** (claim device B into device A's occupied slot) | A is sent `welcome{dock:null}` → clears cache/NVS → redials UNCLAIMED (no re-seed ping-pong); B takes the slot |
+| **Unbind** (`DELETE /api/docks/bind/:id`) | device re-parked UNCLAIMED **in place** (live `peer.dock` cleared + `welcome{null}`), goes idle, **no restart**; binding row deleted; shows in `/unclaimed` to re-claim. **Verified live on a phone.** |
 
-## Verification (end-to-end)
+## Test status (as of branch `dock-name-mgmt`)
 
-1. **Server unit:** `bindings.ts` round-trip (bind/lookup/unbind) like
-   `config/store` tests; hub resolves `peer.dock` from a pre-seeded binding when
-   hello omits dock (extend hub/brain tests). `cd orbit-station && npm test`.
-2. **Unclaimed flow (manual, `npm run dev` + `npm run smoke`):**
-   - Fake peer `hello {id:"test-1"}` (no dock) → in `GET /api/docks/unclaimed`, NOT in `GET /api/docks`.
-   - `POST /api/docks/bind {deviceId:"test-1", dock:"anne-bot"}` → peer gets binding frame; now in `GET /api/docks`.
-   - Reconnect `hello {id:"test-1"}` (still no dock) → welcome returns `dock:"anne-bot"` (binding survived).
-3. **Phone:** `./gradlew :app:installDebug` with empty `DOCK_NAME` → connects unclaimed
-   (hint shown, brain idle) → claim in console → live, no rebuild. **Uninstall +
-   reinstall** → auto-rebound (same ANDROID_ID), zero console action.
-4. **Firmware:** flash with empty `DOCK_NAME` → unclaimed → claim → live. Power-cycle →
-   re-announces from NVS. **Reflash app partition** → NVS dock persists; still bound.
-5. `cd node-dock/app && ./gradlew test` stays green.
+| Area | Status | Notes |
+|---|---|---|
+| Server unit (bindings + hub claim/unclaim/displace) | ✅ **passing** | 14/14 in `hub-binding.test.ts` + `bindings.test.ts`, incl. binding-wins-over-hello, displace-no-loop, unclaim. Full server suite green except one **pre-existing** `session.test.ts` timeout flake (unrelated). |
+| Web build / Android compile / firmware link | ✅ **all build** | `npm run build`, `:app:compileDebugKotlin`, `pio run` all clean. |
+| **Phone live** — OTA, claim, move, unbind | ✅ **passed on real device** | OTA'd two phones to build 12; MOVE → phone auto-restarted + rejoined the new dock (exactly one live peer, clean binding, offline ghost on old dock, **no loop**); UNBIND → instantly Unclaimed, online, **no restart**, binding deleted; round-trip restore landed clean. |
+| Phone uninstall/reinstall keeps dock | ✅ **passed earlier** | Same ANDROID_ID → auto-rebound, zero console action. |
+| **FIRMWARE (ESP32 body) live** | ⚠️ **NOT YET TESTED** | `dock_clear`/reboot-on-claim verified by **compile + reasoning only** — no board was connected. The body claim/move/displace/unclaim paths are unproven on hardware. **Test before relying on a body move.** |
+
+### How to test the firmware (ESP32 body) — pending
+
+Prereq: a flashed ESP32 body on the LAN, station running (`npm run dev`), `secrets.h`
+with empty `DOCK_NAME` (so it starts unclaimed). Build/flash: `pio run -t upload`.
+
+1. **Unclaimed boot:** power on → it should appear in `GET /api/docks/unclaimed`
+   (kind `dock-body-fw`), NOT in `GET /api/docks`; servos hold center.
+2. **First claim → reboot:** `POST /api/docks/bind {deviceId:"body-<mac>", dock:"anne-bot"}`
+   (or click claim in the Docks tab). Expect: serial log `claimed dock 'anne-bot' —
+   rebooting`, the board reboots (~1–2 s), reconnects, and shows live under `anne-bot`.
+   Watch serial (`pio device monitor`) to confirm one reboot, **no reboot loop**.
+3. **Move → reboot:** claim it to a different dock; expect another single reboot and a
+   clean land on the new dock (binding row updated, no duplicate).
+4. **Displace (optional, needs 2 bodies):** claim body-B into body-A's occupied
+   `body` slot; expect body-A to get `welcome{dock:null}`, clear NVS (`unclaimed by
+   station` log), and redial **unclaimed** — NOT ping-pong the slot.
+5. **Unbind:** `DELETE /api/docks/bind/body-<mac>` → body clears NVS, holds center,
+   appears in `/unclaimed`, **no reboot**.
+6. **Reflash survives:** reflash the app partition (`pio run -t upload`) → NVS dock
+   persists → it re-announces the same dock; still bound (NVS is a separate partition).
+
+If any step loops/ghosts, capture the serial log around `dock_adopt`/`dock_clear`
+(`src/station_link.c`) and the station `dock_bindings` table.
+
+### How to re-run the verified tests
+
+- **Server unit:** `cd orbit-station && npm test` (binding tests:
+  `npx tsx --test server/src/core/hub-binding.test.ts server/src/modules/docks/bindings.test.ts`).
+- **Unclaimed flow (manual):** `npm run dev`, fake-peer `hello {id:"test-1"}` (no dock)
+  → in `/api/docks/unclaimed`, not `/api/docks`; `POST /api/docks/bind` → moves to
+  `/api/docks`; reconnect with no dock → welcome returns the bound name.
+- **Phone:** build + OTA (Updates tab → Build & Announce; bump `versionCode` first),
+  then Docks tab → **move…** / **unbind**; watch the phone restart (move) or go idle
+  unclaimed (unbind).
 
 ## Rejected alternatives
 

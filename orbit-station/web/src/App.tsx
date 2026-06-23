@@ -3,6 +3,7 @@ import { useConnected } from './lib/useStation';
 import { DockStatus } from './components/DockStatus';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { Overview } from './modules/Overview';
+import { Docks } from './modules/Docks';
 import { Observability } from './modules/Observability';
 import { Brain } from './modules/Brain';
 import { Tasks } from './modules/Tasks';
@@ -22,6 +23,7 @@ interface ViewDef { id: string; label: string; ico: string; el: React.ReactNode;
 
 const VIEWS: ViewDef[] = [
   { id: 'overview', label: 'Overview', ico: '◎', el: <Overview /> },
+  { id: 'docks', label: 'Docks', ico: '🛰', el: <Docks /> },
   { id: 'observability', label: 'Observability', ico: '📡', el: <Observability /> },
   { id: 'cost', label: 'Cost', ico: '💰', el: <Cost /> },
   { id: 'brain', label: 'Brain', ico: '🗣', el: <Brain /> },

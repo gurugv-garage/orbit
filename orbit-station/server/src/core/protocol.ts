@@ -114,6 +114,16 @@ export interface WelcomeFrame {
   /** The id the station assigned/accepted for this peer. */
   id: string;
   serverTime: number;
+  /**
+   * The dock this device is bound to (docs/modules/runtime-dock-binding.md).
+   * Resolved from the station's deviceId→dock binding when the device dials in
+   * with no `dock` of its own. `null` ⇒ UNCLAIMED — the device idles and shows
+   * up in the console to be claimed. Re-sent (directed) the moment a console
+   * claim binds it, so it adopts without reconnecting.
+   */
+  dock?: string | null;
+  /** The slot the device fills, derived from its `kind` (phone/body). */
+  component?: string | null;
 }
 
 /** Fan-out of a topic message to subscribers. */
@@ -144,6 +154,18 @@ export function isInboundFrame(v: unknown): v is InboundFrame {
 export interface ComponentAddr {
   dock: string;
   component: string;
+}
+
+/** Which dock slot a device's software fills, derived from its hello `kind`
+ *  (docs/modules/runtime-dock-binding.md). Lets a console claim assign a
+ *  slot from the device alone — the operator only picks a dock NAME. Returns
+ *  undefined for software with no canonical slot. */
+const KIND_COMPONENT: Record<string, string> = {
+  'dock-android-app': 'phone',
+  'dock-body-fw': 'body',
+};
+export function componentForKind(kind?: string): string | undefined {
+  return kind ? KIND_COMPONENT[kind] : undefined;
 }
 
 // ── dock directory ───────────────────────────────────────────────────────────

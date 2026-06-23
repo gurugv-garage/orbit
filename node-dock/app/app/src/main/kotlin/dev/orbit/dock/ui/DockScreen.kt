@@ -89,6 +89,19 @@ fun DockScreen() {
     // Forward ref so perception wiring below can publish via the station link
     // (the link is built after the tools).
     val stationLinkRef = remember { mutableStateOf<dev.orbit.dock.station.StationLink?>(null) }
+    // Runtime dock binding (docs/modules/runtime-dock-binding.md): the dock
+    // name is no longer compiled in. Start from the local cache (or a dev-override
+    // BuildConfig.DOCK_NAME), and LEARN/refresh it from the station's welcome frame.
+    // null ⇒ UNCLAIMED — drives the "claim me in the console" hint.
+    var boundDock by remember {
+        mutableStateOf(
+            dev.orbit.dock.station.DockBindingCache.resolveInitial(ctx, BuildConfig.DOCK_NAME),
+        )
+    }
+    // Set true the moment we learn our dock CHANGED (a console move). Drives a
+    // blocking overlay, then we restart the whole process so nothing dock-specific
+    // survives (docs/modules/runtime-dock-binding.md).
+    var restarting by remember { mutableStateOf(false) }
     // Pre-turn identity sync: recognition fires when STT arms (parallel with the
     // user's speech); the turn start AWAITS it (bounded) so the prompt is
     // grounded with who's actually talking, not a stale identity.
@@ -127,10 +140,13 @@ fun DockScreen() {
     val stationLink = remember {
         dev.orbit.dock.station.StationLink(
             url = BuildConfig.STATION_URL,
-            dock = BuildConfig.DOCK_NAME,
-            // install UUID, not dock-derived: `id` names the METAL (hello v2) —
-            // a swapped/forgotten second phone must not impersonate this one.
-            appId = dev.orbit.dock.station.InstallId.get(ctx),
+            // empty/null when unclaimed — the station resolves + sends our dock
+            // back via welcome (docs/modules/runtime-dock-binding.md).
+            dock = boundDock,
+            // ANDROID_ID: the uninstall-stable hardware key the station's
+            // deviceId→dock binding is keyed on (DeviceId). `id` names the METAL
+            // (hello v2) — a swapped/forgotten second phone must not impersonate this one.
+            appId = dev.orbit.dock.station.DeviceId.get(ctx),
             scope = scope,
             build = BuildConfig.VERSION_CODE,
             // feed flat config pushes/snapshots into the cache.
@@ -231,6 +247,32 @@ fun DockScreen() {
                 bodyOnline = (payload["online"] as? kotlinx.serialization.json.JsonPrimitive)
                     ?.content?.toBooleanStrictOrNull() ?: false
             },
+            // Runtime dock binding: the station told us our dock (on connect, or
+            // when a console claim binds us). Persist it so we re-announce instantly
+            // next boot, and update the UI's claimed/unclaimed state.
+            onDockLearned = { learnedDock, _ ->
+                val prev = boundDock
+                when {
+                    // A CLAIM — learning a (new or changed) dock — always RESTARTS
+                    // the process. One clean code path: the device comes up fresh as
+                    // its dock with no stale in-memory trace (MediaStreamer label,
+                    // session id/logs, brain). Covers both first-claim (prev == null)
+                    // and move (prev != learned). docs/modules/runtime-dock-binding.md
+                    learnedDock != null && learnedDock != prev -> {
+                        dev.orbit.dock.station.DockBindingCache.set(ctx, learnedDock)
+                        Timber.w("claimed dock '$prev' → '$learnedDock' — restarting app")
+                        restarting = true
+                        dev.orbit.dock.station.AppRestart.now(ctx)
+                    }
+                    // UNBOUND (learned null while we had a dock) → go idle UNCLAIMED,
+                    // no restart (user choice): clear cache so nothing resurrects.
+                    learnedDock == null && prev != null -> {
+                        boundDock = null
+                        dev.orbit.dock.station.DockBindingCache.clear(ctx)
+                    }
+                    // else: welcome echoing our current dock on a plain reconnect — no-op.
+                }
+            },
         ).also { it.start(); stationLinkRef.value = it }
     }
     // The live A/V streamer. Publishes producer-offer/ICE via the station link.
@@ -238,7 +280,10 @@ fun DockScreen() {
         dev.orbit.dock.perception.MediaStreamer(
             context = ctx,
             faceTracker = faceTracker,
-            label = BuildConfig.DOCK_NAME,
+            // display/grouping label only; for a device stream the station prefers
+            // the live peer's dock, so an unclaimed phone ("") still groups right
+            // once claimed (docs/modules/runtime-dock-binding.md).
+            label = boundDock ?: "",
             publish = { kind, payload -> stationLink.publish("media", kind, payload) },
         ).also { mediaStreamerRef.value = it }
     }
@@ -772,6 +817,23 @@ fun DockScreen() {
                             .align(Alignment.TopCenter)
                             .padding(top = 16.dp),
                     )
+                    // Runtime dock binding (docs/modules/runtime-dock-binding.md):
+                    // connected but no dock yet → tell the operator to claim this
+                    // device in the station console. The brain/body stay idle until then.
+                    if (stationConnected && boundDock == null) {
+                        androidx.compose.material3.Text(
+                            text = "🔓 unclaimed — claim this device in the station console",
+                            color = Color(0xFFE0A030),
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.Medium,
+                            textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                            modifier = Modifier
+                                .align(Alignment.TopCenter)
+                                .padding(top = 84.dp, start = 24.dp, end = 24.dp)
+                                .background(Color(0xFF1A140A).copy(alpha = 0.9f), RoundedCornerShape(10))
+                                .padding(horizontal = 14.dp, vertical = 7.dp),
+                        )
+                    }
                     if (micGranted && !perceptionReady) {
                         dev.orbit.dock.ui.widgets.WakingUpPill(
                             modifier = Modifier
@@ -786,7 +848,9 @@ fun DockScreen() {
                     androidx.compose.material3.Text(
                         // Lead with the DOCK NAME so it's obvious at a glance which
                         // device this is (tab vs redmi vs …) — handy with several docks.
-                        text = "${BuildConfig.DOCK_NAME} · v${BuildConfig.VERSION_NAME} · build ${BuildConfig.VERSION_CODE}",
+                        // Runtime dock binding: the name is learned from the station
+                        // now (boundDock), not BuildConfig.DOCK_NAME (empty by default).
+                        text = "${boundDock ?: "unclaimed"} · v${BuildConfig.VERSION_NAME} · build ${BuildConfig.VERSION_CODE}",
                         color = Color.White.copy(alpha = 0.4f),
                         fontSize = 11.sp,
                         modifier = Modifier
@@ -850,6 +914,25 @@ fun DockScreen() {
                 onApproveAll = { agent.resolveConfirm(approved = true, approveAll = true) },
                 onDeny = { agent.resolveConfirm(false) },
             )
+        }
+
+        // Dock moved (runtime dock binding) → full-screen blocking overlay while the
+        // process self-restarts so nothing stale survives. Covers everything.
+        if (restarting) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color(0xFF0A0A0F).copy(alpha = 0.96f)),
+                contentAlignment = Alignment.Center,
+            ) {
+                androidx.compose.material3.Text(
+                    text = "↻ dock changed — restarting…",
+                    color = Color(0xFF6EC1FF),
+                    fontSize = 18.sp,
+                    fontWeight = FontWeight.Medium,
+                    textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                )
+            }
         }
     }
 }
