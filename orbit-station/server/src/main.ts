@@ -114,13 +114,15 @@ async function main() {
       hub.roster().find((p) => p.id === streamId)?.dock
         ?? labelOf?.(streamId)
         ?? streamId,
-    // dockReady: gate out UNCLAIMED device streams (a roster peer with no dock),
-    // so perception never files snapshots under a raw ws id. A browser/label
-    // stream (no matching roster peer) is always ready.
+    // dockReady: gate out UNCLAIMED *device* streams (a dock device peer with no
+    // dock binding), so perception never files snapshots under a raw ws id. A
+    // browser console stream (role 'browser', e.g. the Perception studio publishing
+    // this laptop) is NOT a device — it's always ready, else its mic/cam never gets
+    // STT/vision. A stream with no matching roster peer is ready too.
     // (docs/modules/runtime-dock-binding.md)
     (streamId) => {
       const peer = hub.roster().find((p) => p.id === streamId);
-      return !peer || !!peer.dock;
+      return !peer || peer.role === 'browser' || !!peer.dock;
     },
   );
   // record_video: capture a dock's live SFU stream to a WebM clip (under data/recordings/).

@@ -26,7 +26,7 @@ test('enroll + exact match', () => {
     const g = new Gallery(path);
     g.enroll('alice', vec(0.1));
     const m = g.match(vec(0.1));
-    assert.ok(m && m.name === 'alice' && m.distance === 0);
+    assert.ok(m && m.name === 'Alice' && m.distance === 0);
   } finally { rmSync(path, { force: true }); }
 });
 
@@ -38,7 +38,7 @@ test('nearest person wins among several', () => {
     g.enroll('bob', vec(0.5));
     // closer to bob
     const m = g.match(vec(0.48));
-    assert.equal(m?.name, 'bob');
+    assert.equal(m?.name, 'Bob');
   } finally { rmSync(path, { force: true }); }
 });
 
@@ -58,7 +58,7 @@ test('persists across instances', () => {
     const a = new Gallery(path);
     a.enroll('alice', vec(0.2));
     const b = new Gallery(path); // reload from disk
-    assert.deepEqual(b.names(), ['alice']);
+    assert.deepEqual(b.names(), ['Alice']);
     assert.ok(b.match(vec(0.2)));
   } finally { rmSync(path, { force: true }); }
 });
@@ -71,7 +71,7 @@ test('multiple descriptors per person; match uses the nearest', () => {
     g.enroll('alice', vec(0.9), undefined, true); // append a second angle
     // query near the second descriptor still matches alice
     const m = g.match(vec(0.92));
-    assert.equal(m?.name, 'alice');
+    assert.equal(m?.name, 'Alice');
   } finally { rmSync(path, { force: true }); }
 });
 
@@ -94,7 +94,7 @@ test('each enroll keeps its own photo; people() exposes per-sample photos', () =
     g.enroll('alice', vec(0.9), 'PHOTO_B', true); // 2nd angle, its own photo
     const people = g.people();
     assert.equal(people.length, 1);
-    assert.equal(people[0]!.name, 'alice');
+    assert.equal(people[0]!.name, 'Alice');
     assert.deepEqual(people[0]!.samples, [
       { index: 0, photo: 'PHOTO_A' },
       { index: 1, photo: 'PHOTO_B' },
@@ -111,7 +111,7 @@ test('removeSample drops one fingerprint; last one removes the person', () => {
     // drop the first sample → alice still matches near the second
     assert.equal(g.removeSample('alice', 0), true);
     assert.equal(g.people()[0]!.samples.length, 1);
-    assert.equal(g.match(vec(0.9))?.name, 'alice');
+    assert.equal(g.match(vec(0.9))?.name, 'Alice');
     // out-of-range is a no-op
     assert.equal(g.removeSample('alice', 5), false);
     // dropping the last sample removes the person entirely
@@ -181,5 +181,60 @@ test('voice re-enroll APPENDS for a known name instead of wiping samples', () =>
     // a brand-new name with the same call shape starts fresh
     g.enroll('Shweta', vec(0.9), undefined, g.has('Shweta'));
     assert.equal(g.has('Shweta'), true);
+  } finally { rmSync(path, { force: true }); }
+});
+
+test('display name is canonical Title Case regardless of typed case', () => {
+  const path = tmp();
+  try {
+    const g = new Gallery(path);
+    g.enroll('GURU', vec(0.1));
+    assert.equal(g.names()[0], 'Guru');         // canonicalized
+    g.enroll('guru', vec(0.2), undefined, true); // different case → same person, append
+    assert.equal(g.names().length, 1);
+    assert.equal(g.names()[0], 'Guru');          // display unchanged
+    assert.equal(g.match(vec(0.2))?.name, 'Guru');
+  } finally { rmSync(path, { force: true }); }
+});
+
+test('rename: simple, case-only, and merge', () => {
+  const path = tmp();
+  try {
+    const g = new Gallery(path);
+    g.enroll('alice', vec(0.1));
+    // simple rename
+    assert.deepEqual(g.rename('alice', 'alicia'), { ok: true, merged: false });
+    assert.equal(g.names()[0], 'Alicia');
+    assert.equal(g.match(vec(0.1))?.name, 'Alicia');
+    // case-only rename canonicalizes display, no merge
+    assert.deepEqual(g.rename('ALICIA', 'aLiCiA'), { ok: true, merged: false });
+    assert.equal(g.names()[0], 'Alicia');
+    // merge into an existing person (case-insensitive)
+    g.enroll('bob', vec(0.9));
+    assert.equal(g.rename('alicia', 'BOB').merged, true);
+    assert.equal(g.names().length, 1);
+    assert.equal(g.names()[0], 'Bob');
+    assert.ok(g.match(vec(0.1)) && g.match(vec(0.9)));  // both descriptors survive the merge
+    // rename a non-existent person is a no-op
+    assert.deepEqual(g.rename('ghost', 'x'), { ok: false, merged: false });
+  } finally { rmSync(path, { force: true }); }
+});
+
+test('reassignSample: move a photo to a new and an existing person', () => {
+  const path = tmp();
+  try {
+    const g = new Gallery(path);
+    g.enroll('alice', vec(0.1), 'A0');
+    g.enroll('alice', vec(0.2), 'A1', true);   // alice has 2 samples
+    // move alice's 2nd sample to a NEW person 'mara'
+    assert.deepEqual(g.reassignSample('alice', 1, 'mara'), { ok: true, removedSource: false });
+    assert.equal(g.names().sort().join(','), 'Alice,Mara');
+    assert.equal(g.match(vec(0.2))?.name, 'Mara');
+    // move alice's last sample to existing 'mara' → alice emptied + removed
+    assert.deepEqual(g.reassignSample('ALICE', 0, 'MARA'), { ok: true, removedSource: true });
+    assert.equal(g.names().join(','), 'Mara');
+    assert.ok(g.match(vec(0.1)) && g.match(vec(0.2)));
+    // bad index is a no-op
+    assert.deepEqual(g.reassignSample('mara', 9, 'x'), { ok: false, removedSource: false });
   } finally { rmSync(path, { force: true }); }
 });

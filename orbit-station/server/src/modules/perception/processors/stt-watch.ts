@@ -331,13 +331,30 @@ export class UtteranceDetector {
   }
 }
 
-/** Whisper output + its own confidence tells (null when the sidecar is old/quiet). */
+/** STT output + its own confidence tells (null when the sidecar is old/quiet). */
 interface Transcription {
   text: string;
+  model: string;                  // the STT model the sidecar actually ran (e.g. parakeet)
   avgLogprob: number | null;      // mean token log-prob; very negative = unsure
   noSpeechProb: number | null;    // P(silence/noise); high = likely hallucination
   compressionRatio: number | null; // gzip ratio; high = repetitive loop
   inferMs: number | null;         // sidecar-reported transcription latency
+}
+
+/** The STT model label: the sidecar's own report wins (per-call `model`, else its
+ *  /health `stt_model`); else a configurable env; else a neutral fallback. NEVER a
+ *  hardcoded engine name — the sidecar can be whisper, parakeet, … and the UI must
+ *  reflect what actually ran. The /health value is cached after the first probe. */
+const STT_MODEL_FALLBACK = process.env.PERCEPTION_STT_MODEL ?? 'stt-sidecar';
+let healthSttModel: string | undefined; // cached from the sidecar /health
+async function sidecarSttModel(): Promise<string> {
+  if (healthSttModel) return healthSttModel;
+  try {
+    const r = await fetch(`${SIDECAR_URL}/health`, { signal: AbortSignal.timeout(2000) });
+    const j = (await r.json()) as { stt_model?: string };
+    if (j.stt_model) healthSttModel = j.stt_model;
+  } catch { /* fall back below */ }
+  return healthSttModel ?? STT_MODEL_FALLBACK;
 }
 
 /** Result of one transcribe attempt. We DISTINGUISH "the sidecar is unreachable/
@@ -357,7 +374,7 @@ async function transcribe(pcm: Int16Array): Promise<TranscribeResult> {
     });
     if (!r.ok) return { ok: false, error: `STT sidecar returned ${r.status}` };
     const j = (await r.json()) as {
-      text?: string; avg_logprob?: number | null; no_speech_prob?: number | null;
+      text?: string; model?: string; avg_logprob?: number | null; no_speech_prob?: number | null;
       compression_ratio?: number | null; latency_ms?: number;
     };
     const text = j.text?.trim();
@@ -366,6 +383,9 @@ async function transcribe(pcm: Int16Array): Promise<TranscribeResult> {
       ok: true,
       transcription: {
         text,
+        // the per-call model wins; else the sidecar's /health stt_model (cached);
+        // else the env/neutral fallback. Trim the org prefix (mlx-community/…).
+        model: (j.model ?? await sidecarSttModel()).replace(/^.*\//, ''),
         avgLogprob: j.avg_logprob ?? null,
         noSpeechProb: j.no_speech_prob ?? null,
         compressionRatio: j.compression_ratio ?? null,
@@ -498,7 +518,7 @@ export function sttWatchProcessor(
    *  better DIARIZED transcript (online, e.g. Gemini flash-lite) to replace the live
    *  Whisper text in the snapshot. Async + best-effort — the live path never waits on
    *  it. Undefined = local-Whisper-only (the default). */
-  backgroundStt?: (pcm: Int16Array, sampleRate: number, dockId: string) => Promise<{ text: string; speaker?: number } | null>,
+  backgroundStt?: (pcm: Int16Array, sampleRate: number, dockId: string) => Promise<{ text: string; speaker?: number; model?: string } | null>,
   /** LIVE INTERIMS: emitted mid-utterance for the dock caption UI. Undefined = no
    *  interims (default). Best-effort, decoupled from the authoritative final path. */
   onInterim?: (e: InterimTranscriptEvent) => void,
@@ -564,7 +584,7 @@ export function sttWatchProcessor(
         const rec = makeSnapshot({
           dockId: ctx.dockId,
           source: { id: ctx.streamId, kind: 'speech', device: 'dock-webrtc', host: 'station' },
-          model: { name: 'whisper-small.en-mlx', endpoint: SIDECAR_URL },
+          model: { name: tr.model, endpoint: SIDECAR_URL },
           from: startedAt, to: endedAt,
           payload: {
             text: tr.text, lowConfidence, confTier: tier,
@@ -582,12 +602,15 @@ export function sttWatchProcessor(
           void backgroundStt(pcm, SAMPLE_RATE, ctx.dockId).then((up) => {
             if (up?.text) {
               store.update(rec, {
+                sttText: rec.payload.text as string, // PRESERVE the raw STT transcript (the
+                                                     // diarized text overwrites `text` below)
                 text: up.text,
                 ...(up.speaker != null ? { speaker: up.speaker } : {}),
-                bgModel: true, // marks this snapshot as background-upgraded
+                bgModel: true,                  // marks this snapshot as diarization-upgraded
+                ...(up.model ? { diarizeModel: up.model } : {}), // the DIARIZATION engine (distinct from STT model above)
               });
             }
-          }).catch(() => { /* keep the Whisper text */ });
+          }).catch(() => { /* keep the local STT text */ });
         }
         // confidence rides along so downstream sees Whisper's certainty, not a constant
         const conf = tr.avgLogprob != null ? Math.max(0, Math.min(1, 1 + tr.avgLogprob)) : 0.8;

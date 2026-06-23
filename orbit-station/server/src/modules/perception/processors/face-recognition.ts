@@ -82,30 +82,18 @@ export function faceRecognitionProcessor(gallery: Gallery): StreamProcessor & {
     },
 
     /**
-     * Enroll the face on screen under `name`. Captures SEVERAL frames over ~1.5s
-     * (the person naturally shifts a little) so the gallery holds multiple
-     * descriptors — a much more robust match than a single shot, which is what
-     * caused weak matches / "I don't recognize them". First descriptor overwrites
-     * any prior face for the name; the rest append.
+     * Enroll the face on screen under `name` — ONE capture per call. A new name
+     * starts the person; clicking Enroll again on the SAME name appends another
+     * angle (the operator decides how many to add). Each sample keeps its photo.
      */
     async enrollCurrent(streamId, name) {
       const s = streams.get(streamId);
       if (!s) return { ok: false, reason: 'dock not streaming' };
-      let captured = 0;
-      let thumb: string | undefined;
-      for (let i = 0; i < 5; i++) {
-        const jpeg = s.grabber.latest();
-        if (jpeg) {
-          const descriptor = await describeFace(jpeg);
-          if (descriptor) {
-            gallery.enroll(name, descriptor, thumb ? undefined : jpeg.toString('base64'), captured > 0);
-            thumb ??= jpeg.toString('base64');
-            captured++;
-          }
-        }
-        if (i < 4) await new Promise((r) => setTimeout(r, 350)); // ~1.4s of angles
-      }
-      if (captured === 0) return { ok: false, reason: 'no face detected in frame' };
+      const jpeg = s.grabber.latest();
+      if (!jpeg) return { ok: false, reason: 'no frame yet' };
+      const descriptor = await describeFace(jpeg);
+      if (!descriptor) return { ok: false, reason: 'no face detected in frame' };
+      gallery.enroll(name, descriptor, jpeg.toString('base64'), gallery.has(name)); // append if known
       return { ok: true };
     },
 
@@ -165,7 +153,8 @@ export function faceRecognitionProcessor(gallery: Gallery): StreamProcessor & {
       if (!jpeg) return { ok: false };
       const descriptor = await describeFace(jpeg);
       if (!descriptor) return { ok: false };
-      gallery.enroll(name, descriptor, undefined, true); // append (keep prior angles)
+      // keep the confirming frame's photo too, so the sample is viewable in the console.
+      gallery.enroll(name, descriptor, jpeg.toString('base64'), true); // append (keep prior angles)
       return { ok: true };
     },
 
