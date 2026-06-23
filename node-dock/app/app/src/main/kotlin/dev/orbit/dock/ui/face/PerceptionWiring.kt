@@ -42,6 +42,10 @@ class PerceptionWiring(
     /** The station's conversation mode flow (idle/listening/thinking/speaking/
      *  followup) — the phone renders this; it does NOT decide listening locally. */
     private val convMode: StateFlow<String>? = null,
+    /** Clock for the [PresenceGate]'s settle/leave debounce windows. Defaults to
+     *  wall-clock; tests inject a controllable source to drive ARRIVE/LEAVE edges
+     *  deterministically (the gate's timers are otherwise wall-clock-bound). */
+    private val nowMs: () -> Long = { System.currentTimeMillis() },
 ) {
     private val _audioLevel = MutableStateFlow(0f)
     val audioLevel: StateFlow<Float> = _audioLevel.asStateFlow()
@@ -193,7 +197,7 @@ class PerceptionWiring(
                         // edge. The raw FaceSeen still drives gaze + the snapshot below
                         // every frame; only the station-facing arrival/leave edge is
                         // gated (kills the on-off-on-off presence flap).
-                        when (presenceGate.onFace(event.x, event.y, event.size, System.currentTimeMillis())) {
+                        when (presenceGate.onFace(event.x, event.y, event.size, nowMs())) {
                             PresenceGate.Edge.ARRIVE -> sendFaceArrival()
                             PresenceGate.Edge.LEAVE -> sendFaceLeft()
                             PresenceGate.Edge.NONE -> {}
@@ -211,7 +215,7 @@ class PerceptionWiring(
                         // Feed the gate a "no face" tick — it debounces into a LEAVE
                         // only after the grace window (a brief look-away doesn't end
                         // presence). The station releases ONLY a face window (D2).
-                        if (presenceGate.onNoFace(System.currentTimeMillis()) == PresenceGate.Edge.LEAVE) {
+                        if (presenceGate.onNoFace(nowMs()) == PresenceGate.Edge.LEAVE) {
                             sendFaceLeft()
                         }
                         perception?.onFaceLost()

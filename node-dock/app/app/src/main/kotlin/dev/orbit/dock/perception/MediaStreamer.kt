@@ -50,6 +50,8 @@ class MediaStreamer(
     private var pc: PeerConnection? = null
     private var videoSource: VideoSource? = null
     private var audioSource: org.webrtc.AudioSource? = null
+    private var audioTrack: org.webrtc.AudioTrack? = null
+    private var videoTrack: org.webrtc.VideoTrack? = null
     private var capturer: FaceFrameCapturer? = null
     @Volatile private var started = false
 
@@ -152,6 +154,7 @@ class MediaStreamer(
         val audioSource = factory.createAudioSource(MediaConstraints())
         this.audioSource = audioSource
         val audioTrack = factory.createAudioTrack("dock-audio", audioSource)
+        this.audioTrack = audioTrack
         connection.addTrack(audioTrack)
 
         // Video: FaceTracker frames pushed into a VideoSource (~1 Hz slideshow).
@@ -161,6 +164,7 @@ class MediaStreamer(
         capturer = cap
         faceTracker.onBitmapFrame = { bmp -> cap.onFrame(bmp) }
         val videoTrack = factory.createVideoTrack("dock-video", vSource)
+        this.videoTrack = videoTrack
         connection.addTrack(videoTrack)
 
         // Resume the ADM capture now that the new audio source/PC sink exists (it
@@ -213,8 +217,22 @@ class MediaStreamer(
         // Pause the ADM's capture FIRST, so no buffer is in flight during disposal,
         // then dispose. start()/restart() resumes it after the rebuild.
         WebRtcAudio.pauseRecording()
-        try { pc?.close() } catch (_: Throwable) {}
+        // dispose(), not close(): close() stops the connection but leaves the
+        // native PeerConnection object allocated; dispose() frees it. Across
+        // repeated restart()s (ICE flaps), close()-only leaked native PC +
+        // RtpSender objects — the slow native-heap creep over long uptimes.
+        //
+        // DISPOSAL ORDER (webrtc-sdk 125): PeerConnection FIRST — it owns its
+        // senders/transceivers and frees them internally; disposing a track that
+        // a live sender still references is the crash-prone path. Then the tracks,
+        // then the sources the tracks wrap. The ADM is already paused (above), so
+        // no capture buffer is in flight into the freed native sink.
+        try { pc?.dispose() } catch (_: Throwable) {}
         pc = null
+        try { audioTrack?.dispose() } catch (_: Throwable) {}
+        audioTrack = null
+        try { videoTrack?.dispose() } catch (_: Throwable) {}
+        videoTrack = null
         try { videoSource?.dispose() } catch (_: Throwable) {}
         videoSource = null
         try { audioSource?.dispose() } catch (_: Throwable) {}

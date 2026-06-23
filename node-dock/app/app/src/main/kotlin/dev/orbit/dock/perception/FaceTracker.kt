@@ -11,9 +11,12 @@ import androidx.camera.core.ImageCapture
 import androidx.camera.core.ImageCaptureException
 import androidx.camera.core.ImageProxy
 import androidx.camera.core.Preview
+import androidx.camera.core.CameraState
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleOwner
+import androidx.lifecycle.LifecycleRegistry
 import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.face.Face
 import com.google.mlkit.vision.face.FaceDetection
@@ -38,7 +41,19 @@ import kotlin.coroutines.resume
  * nose / mouth). Throttles emissions to ~12 Hz to avoid swamping the bus
  * — the gaze controller doesn't need 30 FPS.
  */
-class FaceTracker(private val appContext: Context) : CameraFrameProvider {
+class FaceTracker(private val appContext: Context) : CameraFrameProvider, LifecycleOwner {
+
+    // The camera is bound to THIS lifecycle, NOT the Activity's. A dock is a
+    // kiosk: the camera ("the dock's eye") should stay live across transient
+    // Activity stops (screen dim, brief background, the system reshuffling
+    // camera priorities — `Camera2PresenceSrc onCameraAccessPrioritiesChanged`).
+    // Binding to the Activity lifecycle made CameraX auto-close the camera on
+    // ON_STOP, and the old start() guard never rebound it → the preview froze on
+    // its last frame for the rest of the session (the bug this fixes). We drive
+    // this registry to STARTED while running and never tear it down on a mere
+    // Activity stop; only stop()/shutdown() ends it.
+    private val lifecycleRegistry = LifecycleRegistry(this)
+    override val lifecycle: Lifecycle get() = lifecycleRegistry
 
     // Latest camera frame as a base64 JPEG, kept for attaching to a vision LLM
     // turn. Updated (throttled) on the analyzer thread; read on the agent
@@ -105,7 +120,6 @@ class FaceTracker(private val appContext: Context) : CameraFrameProvider {
     private var cameraProvider: ProcessCameraProvider? = null
     private var analysis: ImageAnalysis? = null
     private var imageCapture: ImageCapture? = null
-    private var owner: LifecycleOwner? = null
 
     // Optional on-screen preview. The UI's PreviewView hands us its
     // SurfaceProvider; we bind a CameraX Preview use-case alongside the
@@ -119,24 +133,44 @@ class FaceTracker(private val appContext: Context) : CameraFrameProvider {
     fun setPreviewSurface(provider: Preview.SurfaceProvider?) {
         surfaceProvider = provider
         val cp = cameraProvider
-        val o = owner
-        if (cp != null && o != null) {
-            ContextCompat.getMainExecutor(appContext).execute { bind(cp, o) }
+        if (cp != null) {
+            ContextCompat.getMainExecutor(appContext).execute { bind(cp) }
         }
     }
 
+    /**
+     * Start (or re-assert) face tracking. Idempotent and RE-BINDABLE: if already
+     * running it just rebinds the current provider — it does NOT dead-end the way
+     * the old `running` guard did (which left the camera unbound forever after a
+     * stop/start race). The [owner] parameter is kept for the call-site contract
+     * (callers invoke this from a CAMERA-permitted Context) but the camera is
+     * bound to our own [lifecycleRegistry], not [owner], so a transient Activity
+     * stop can't kill the eye.
+     */
     @SuppressLint("MissingPermission")
     fun start(owner: LifecycleOwner) {
-        if (running.getAndSet(true)) {
-            Timber.w("FaceTracker already running")
+        // Drive our lifecycle to STARTED (idempotent — re-setting the same state
+        // is a no-op in LifecycleRegistry). Must run on the main thread.
+        ContextCompat.getMainExecutor(appContext).execute {
+            if (lifecycleRegistry.currentState != Lifecycle.State.STARTED) {
+                lifecycleRegistry.currentState = Lifecycle.State.STARTED
+            }
+        }
+        running.set(true)
+        val existing = cameraProvider
+        if (existing != null) {
+            // Already have a provider — just rebind (e.g. start() called again
+            // after a config flap, or to re-include a newly-mounted preview).
+            ContextCompat.getMainExecutor(appContext).execute { bind(existing) }
             return
         }
         val providerFuture = ProcessCameraProvider.getInstance(appContext)
         providerFuture.addListener({
             try {
+                if (!running.get()) return@addListener // stopped while we waited
                 val provider = providerFuture.get()
                 cameraProvider = provider
-                bind(provider, owner)
+                bind(provider)
                 PerceptionBus.emit(PerceptionEvent.Status("face", "watching"))
             } catch (t: Throwable) {
                 Timber.e(t, "FaceTracker bind failed")
@@ -148,19 +182,26 @@ class FaceTracker(private val appContext: Context) : CameraFrameProvider {
 
     fun stop() {
         if (!running.getAndSet(false)) return
-        try {
-            cameraProvider?.unbindAll()
-        } catch (_: Throwable) {}
-        cameraProvider = null
-        analysis = null
-        imageCapture = null
-        preview = null
-        owner = null
+        ContextCompat.getMainExecutor(appContext).execute {
+            // CREATED (not DESTROYED) so the same FaceTracker can be start()ed
+            // again later; CameraX unbinds use-cases when we drop below STARTED.
+            lifecycleRegistry.currentState = Lifecycle.State.CREATED
+            try {
+                cameraProvider?.unbindAll()
+            } catch (_: Throwable) {}
+            cameraProvider = null
+            analysis = null
+            imageCapture = null
+            preview = null
+        }
         PerceptionBus.emit(FaceLost)
     }
 
     fun shutdown() {
         stop()
+        ContextCompat.getMainExecutor(appContext).execute {
+            lifecycleRegistry.currentState = Lifecycle.State.DESTROYED
+        }
         try { detector.close() } catch (_: Throwable) {}
         try { fer?.close() } catch (_: Throwable) {}
         fer = null
@@ -169,8 +210,8 @@ class FaceTracker(private val appContext: Context) : CameraFrameProvider {
         executor.shutdown()
     }
 
-    private fun bind(provider: ProcessCameraProvider, owner: LifecycleOwner) {
-        this.owner = owner
+    private fun bind(provider: ProcessCameraProvider) {
+        if (!running.get()) return
         provider.unbindAll()
         val selector = CameraSelector.Builder()
             .requireLensFacing(CameraSelector.LENS_FACING_FRONT)
@@ -231,7 +272,25 @@ class FaceTracker(private val appContext: Context) : CameraFrameProvider {
             preview = null
             arrayOf(a, cap)
         }
-        provider.bindToLifecycle(owner, selector, *useCases)
+        val camera = provider.bindToLifecycle(this, selector, *useCases)
+
+        // DEFENCE IN DEPTH: even bound to our own (always-STARTED) lifecycle, the
+        // camera can still be evicted by the OS — another app opens the front
+        // camera, or the HAL drops it. CameraX won't auto-recover from an
+        // OPEN-failed/closed state on its own. Observe CameraState and rebind the
+        // moment it lands in a recoverable error so the eye self-heals instead of
+        // freezing on its last frame.
+        camera.cameraInfo.cameraState.observe(this) { state ->
+            val err = state.error
+            if (err != null && state.type == CameraState.Type.CLOSED) {
+                Timber.w("FaceTracker: camera CLOSED (error code=${err.code}) — rebinding")
+                if (running.get()) {
+                    ContextCompat.getMainExecutor(appContext).execute {
+                        cameraProvider?.let { bind(it) }
+                    }
+                }
+            }
+        }
     }
 
     /**

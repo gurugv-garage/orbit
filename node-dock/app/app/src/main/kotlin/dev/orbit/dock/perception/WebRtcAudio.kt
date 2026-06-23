@@ -5,7 +5,6 @@ import android.media.AudioManager
 import android.media.MediaRecorder
 import android.os.Build
 import android.os.Handler
-import android.os.Looper
 import org.webrtc.DefaultVideoDecoderFactory
 import org.webrtc.DefaultVideoEncoderFactory
 import org.webrtc.EglBase
@@ -170,6 +169,14 @@ object WebRtcAudio {
     @Synchronized
     fun stopCapture() {
         sink = null
+        // Tear down the TTS-AEC loopback (its own second PeerConnectionFactory +
+        // speaker-routing listener). This is the genuine capture-ending point
+        // (MicCapture.awaitClose), NOT a per-STT-turn pause — those use
+        // pause/resumeRecording. Null it so renderTtsPcm rebuilds it lazily next
+        // time TTS plays. Drop any queued TTS PCM first so the drain stops.
+        stopTtsRender()
+        loopback?.let { try { it.stop() } catch (t: Throwable) { Timber.w(t, "loopback stop failed") } }
+        loopback = null
         adm?.let {
             try { it.requestStopRecording() } catch (_: Throwable) {}
             try { it.release() } catch (t: Throwable) { Timber.w(t, "ADM release failed") }
@@ -345,7 +352,14 @@ private class TtsAecLoopback(
     private val pull: (dst: java.nio.ByteBuffer, want: Int) -> Unit,
 ) {
     private val ctx = context.applicationContext
-    private val main = Handler(Looper.getMainLooper())
+    // The SDP offer/answer dance was previously posted to the MAIN Looper, which
+    // blocked the UI for ~500 ms on setup (profiled: "Skipped 31 frames", stack
+    // pointing here). Nothing in the handshake needs the main thread — it only
+    // needs SERIALIZED ordering of the WebRTC callbacks (which arrive on the
+    // signaling thread). A dedicated HandlerThread gives that serialization off
+    // the UI thread. AudioManager routing calls are thread-safe.
+    private val sdpThread = android.os.HandlerThread("tts-aec-sdp").apply { start() }
+    private val main = Handler(sdpThread.looper)
     private var senderFactory: PeerConnectionFactory? = null
     private var pcSend: PeerConnection? = null
     private var pcRecv: PeerConnection? = null
@@ -469,6 +483,25 @@ private class TtsAecLoopback(
                 am?.removeOnCommunicationDeviceChangedListener(l)
             } catch (t: Throwable) { Timber.w(t, "removeOnCommunicationDeviceChangedListener failed") }
         }
+    }
+
+    /**
+     * Fully tear down the loopback: unpin the speaker listener, dispose both
+     * PeerConnections + the sender-side factory, and quit the SDP thread. The
+     * loopback held a SECOND PeerConnectionFactory (its own threads + native
+     * buffers) for the life of the process with no teardown path — bounded (it's
+     * built once) but never reclaimed on capture release. [WebRtcAudio.stopCapture]
+     * calls this so a full release leaves nothing behind. Idempotent.
+     */
+    fun stop() {
+        releaseSpeakerPin()
+        try { pcSend?.dispose() } catch (_: Throwable) {}
+        pcSend = null
+        try { pcRecv?.dispose() } catch (_: Throwable) {}
+        pcRecv = null
+        try { senderFactory?.dispose() } catch (_: Throwable) {}
+        senderFactory = null
+        sdpThread.quitSafely()
     }
 
     private open class LoopObs(val n: String) : PeerConnection.Observer {

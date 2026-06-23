@@ -82,30 +82,90 @@ class PerceptionWiringTest {
 
     @Test
     fun faceSeenReportsArrivalUpOnceOnTheEdge() = runTest {
+        // FaceSeen no longer reports arrival DIRECTLY — it routes through the
+        // PresenceGate (NEAR + CENTERED + SUSTAINED), which only fires ARRIVE once,
+        // on the settled edge. So the report needs a NEAR+CENTERED face held for
+        // SUSTAIN_MS, and must fire EXACTLY ONCE no matter how many frames follow.
+        // We drive the gate's clock deterministically via the injected nowMs.
         var arrivals = 0
+        var clock = 0L
         val controller = FaceController()
-        val wiring = PerceptionWiring(controller, sendFaceArrival = { arrivals++ })
+        val wiring = PerceptionWiring(
+            controller, sendFaceArrival = { arrivals++ }, nowMs = { clock },
+        )
         val scope = CoroutineScope(UnconfinedTestDispatcher(testScheduler))
         wiring.attach(scope)
 
-        PerceptionBus.emit(PerceptionEvent.FaceSeen(0f, 0f, 0.1f))
-        PerceptionBus.emit(PerceptionEvent.FaceSeen(0f, 0f, 0.1f)) // still present → no 2nd arrival
+        // A near (size ≥ 0.22) + centered face. First frame starts the sustain
+        // timer; not yet long enough → no arrival. (Base clock is non-zero: the
+        // gate uses 0L as the "no timer" sentinel for qualifyingSince.)
+        clock = 10_000L
+        PerceptionBus.emit(PerceptionEvent.FaceSeen(0f, 0f, 0.3f))
+        advanceUntilIdle()
+        assertThat(arrivals).isEqualTo(0)
+
+        // Past SUSTAIN_MS (1500 ms) of continuous qualifying → ARRIVE fires once.
+        clock = 11_600L
+        PerceptionBus.emit(PerceptionEvent.FaceSeen(0f, 0f, 0.3f))
+        advanceUntilIdle()
+        assertThat(arrivals).isEqualTo(1)
+
+        // Still present → no second arrival.
+        clock = 12_000L
+        PerceptionBus.emit(PerceptionEvent.FaceSeen(0f, 0f, 0.3f))
         advanceUntilIdle()
         assertThat(arrivals).isEqualTo(1)
         scope.cancel()
     }
 
     @Test
-    fun faceLostReportsLeftUp() = runTest {
+    fun faceLostReportsLeftUpAfterArrival() = runTest {
+        // LEAVE is debounced and only meaningful AFTER an arrival: a bare FaceLost
+        // with no prior settled face produces nothing (the gate isn't "present").
+        // So: settle a face (ARRIVE), then FaceLost past the LEAVE_GRACE_MS window
+        // → exactly one LEAVE report.
+        var left = 0
+        var clock = 0L
+        val controller = FaceController()
+        val wiring = PerceptionWiring(controller, sendFaceLeft = { left++ }, nowMs = { clock })
+        val scope = CoroutineScope(UnconfinedTestDispatcher(testScheduler))
+        wiring.attach(scope)
+
+        // Settle a near+centered face so the gate is "present" (base clock non-zero
+        // — the gate uses 0L as its "no timer" sentinel).
+        clock = 10_000L
+        PerceptionBus.emit(PerceptionEvent.FaceSeen(0f, 0f, 0.3f))
+        clock = 11_600L // past SUSTAIN_MS → ARRIVE (we don't assert it here)
+        PerceptionBus.emit(PerceptionEvent.FaceSeen(0f, 0f, 0.3f))
+        advanceUntilIdle()
+
+        // First FaceLost starts the leave-grace timer; not yet elapsed → no LEAVE.
+        clock = 11_700L
+        PerceptionBus.emit(PerceptionEvent.FaceLost)
+        advanceUntilIdle()
+        assertThat(left).isEqualTo(0)
+
+        // Past LEAVE_GRACE_MS (2000 ms) since qualifying stopped → LEAVE fires once.
+        clock = 14_000L
+        PerceptionBus.emit(PerceptionEvent.FaceLost)
+        advanceUntilIdle()
+        assertThat(left).isEqualTo(1)
+        scope.cancel()
+    }
+
+    @Test
+    fun bareFaceLostWithoutArrivalReportsNothing() = runTest {
+        // Guard the gate contract: a FaceLost with no prior settled presence is a
+        // no-op (someone glimpsed at the edge / a flicker, never "here").
         var left = 0
         val controller = FaceController()
-        val wiring = PerceptionWiring(controller, sendFaceLeft = { left++ })
+        val wiring = PerceptionWiring(controller, sendFaceLeft = { left++ }, nowMs = { 0L })
         val scope = CoroutineScope(UnconfinedTestDispatcher(testScheduler))
         wiring.attach(scope)
 
         PerceptionBus.emit(PerceptionEvent.FaceLost)
         advanceUntilIdle()
-        assertThat(left).isEqualTo(1)
+        assertThat(left).isEqualTo(0)
         scope.cancel()
     }
 
@@ -122,10 +182,13 @@ class PerceptionWiringTest {
         assertThat(vad).isEqualTo(1)
         assertThat(controller.speaker.value).isEqualTo(Speaker.User)
 
-        // inactive VAD doesn't report (only onset extends a window)
+        // BOTH VAD edges report up: onset HOLDS the station's listening window open,
+        // the silence-end edge RELEASES it to a short endpoint (the window follows
+        // VAD, not a fixed timeout — see PerceptionWiring.sendVad). So an inactive
+        // edge reports too (vad → 2) and the face goes Silent.
         PerceptionBus.emit(PerceptionEvent.VoiceActivity(active = false, probability = 0.1f))
         advanceUntilIdle()
-        assertThat(vad).isEqualTo(1)
+        assertThat(vad).isEqualTo(2)
         assertThat(controller.speaker.value).isEqualTo(Speaker.Silent)
         scope.cancel()
     }
