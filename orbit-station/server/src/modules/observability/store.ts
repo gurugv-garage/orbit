@@ -258,6 +258,7 @@ export class ObsStore {
         const key = groupBy === 'source' ? source
           : groupBy === 'kind' ? kind
           : groupBy === 'model' ? (step.model || 'unknown')
+          : groupBy === 'usecase' ? costUseCase(turn, step.model)
           : utcDay(turn.startedAt);
         add(total, u);
         let g = groups.get(key);
@@ -273,7 +274,7 @@ export class ObsStore {
 
   /** Per-day cost series over [from,to], each day split by groupBy value — feeds
    *  the stacked time chart. */
-  costSeries(from: number, to: number, groupBy: 'source' | 'kind' | 'model'): CostSeriesPoint[] {
+  costSeries(from: number, to: number, groupBy: 'source' | 'kind' | 'model' | 'usecase'): CostSeriesPoint[] {
     const days = new Map<string, Record<string, number>>();
     for (const { turn, source } of this.#turnsInWindow(from, to)) {
       const kind = costKind(turn.trigger?.kind);
@@ -281,7 +282,10 @@ export class ObsStore {
       for (const step of turn.steps) {
         const cost = step.usage?.cost;
         if (!cost) continue;
-        const key = groupBy === 'source' ? source : groupBy === 'kind' ? kind : (step.model || 'unknown');
+        const key = groupBy === 'source' ? source
+          : groupBy === 'kind' ? kind
+          : groupBy === 'usecase' ? costUseCase(turn, step.model)
+          : (step.model || 'unknown');
         const row = days.get(day) ?? {};
         row[key] = (row[key] ?? 0) + cost;
         days.set(day, row);
@@ -384,6 +388,28 @@ function costKind(triggerKind: string | undefined): string {
   if (triggerKind === 'task') return 'task';
   if (triggerKind === 'perception') return 'perception';
   return 'user';
+}
+
+/** Map a perception role tag → its human-readable use-case label. The tag is the
+ *  `label` reportGeminiCost stamps (in trigger.text and the model-name suffix). */
+const USECASE_LABELS: Record<string, string> = {
+  'bg-stt': 'Speech-to-text',
+  summary: 'Summarizer',
+  'mem-embed': 'Memory embeddings',
+};
+
+/** The cost 'usecase' axis: the human-readable role a call plays, derived from the
+ *  turn's trigger and the per-call role tag perception stamps. Brain turns →
+ *  'Conversation' (user) / 'Background tasks' (task). Perception turns carry their
+ *  role in trigger.text; we also fall back to the legacy `model (role)` suffix so
+ *  historical rows (written before the tag existed) still classify. */
+function costUseCase(turn: TurnRecord, model: string | undefined): string {
+  if (turn.trigger?.kind === 'perception') {
+    const tag = turn.trigger.text || model?.match(/\(([^)]+)\)\s*$/)?.[1];
+    return (tag && USECASE_LABELS[tag]) || 'Perception';
+  }
+  if (turn.trigger?.kind === 'task') return 'Background tasks';
+  return 'Conversation';
 }
 
 /** UTC calendar day ('YYYY-MM-DD') of an epoch-ms timestamp. */

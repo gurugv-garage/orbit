@@ -82,6 +82,30 @@ test('costRollup by kind gives perception its own bucket (not folded into user)'
   assert.ok(Math.abs(r.groups.find((g) => g.group === 'user')!.cost - 0.10) < 1e-9);
 });
 
+test('costRollup by usecase labels each call by its role', () => {
+  const store = freshStore();
+  const now = Date.now();
+  // brain user + task turns
+  seedTurn(store, { source: 'deskA', sessionId: 's1', turnId: 't1', ts: now, kind: 'user', model: 'gemini-2.5-flash', cost: 0.10, input: 1, output: 1 });
+  seedTurn(store, { source: 'deskA', sessionId: 'task:x', turnId: 't1', ts: now, kind: 'task', model: 'm', cost: 0.03, input: 1, output: 1 });
+  // perception roles, classified via the legacy `model (role)` suffix (no trigger.text)
+  seedTurn(store, { source: 'deskA', sessionId: 'perception:deskA', turnId: 'p1', ts: now, kind: 'perception', model: 'gemini-2.5-flash-lite (bg-stt)', cost: 0.02, input: 1, output: 1 });
+  seedTurn(store, { source: 'deskA', sessionId: 'perception:deskA', turnId: 'p2', ts: now, kind: 'perception', model: 'gemini-2.5-flash (summary)', cost: 0.01, input: 1, output: 1 });
+  // perception role classified via trigger.text (what reportGeminiCost stamps now)
+  store.ingest({ sessionId: 'perception:station', turnId: 'e1', seq: 0, kind: 'TurnStart', ts: now, data: { trigger: { kind: 'perception', text: 'mem-embed' } } }, 'station');
+  store.ingest({ sessionId: 'perception:station', turnId: 'e1', seq: 1, kind: 'StepStart', ts: now }, 'station');
+  store.ingest({ sessionId: 'perception:station', turnId: 'e1', seq: 2, kind: 'StepEnd', ts: now, data: { model: 'gemini-embedding-001', usage: { inputTokens: 1, outputTokens: 0, cost: 0.005 } } }, 'station');
+  store.ingest({ sessionId: 'perception:station', turnId: 'e1', seq: 3, kind: 'TurnEnd', ts: now }, 'station');
+
+  const r = store.costRollup(now - DAY, now + DAY, 'usecase');
+  const by = Object.fromEntries(r.groups.map((g) => [g.group, g.cost]));
+  assert.ok(Math.abs(by['Conversation']! - 0.10) < 1e-9);
+  assert.ok(Math.abs(by['Background tasks']! - 0.03) < 1e-9);
+  assert.ok(Math.abs(by['Speech-to-text']! - 0.02) < 1e-9);
+  assert.ok(Math.abs(by['Summarizer']! - 0.01) < 1e-9);
+  assert.ok(Math.abs(by['Memory embeddings']! - 0.005) < 1e-9);
+});
+
 test('costRollup honors the time window', () => {
   const store = freshStore();
   const now = Date.now();

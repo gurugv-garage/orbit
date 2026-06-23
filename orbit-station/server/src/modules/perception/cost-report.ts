@@ -104,6 +104,8 @@ export function reportGeminiCost(
     ({ ...base, seq: 0, kind: 'TurnStart', ts, ...over } as AgentEventDto);
   // model name carries the call's role so the by-model breakdown is self-describing.
   const labeledModel = `${model.replace(/^models\//, '')} (${label})`;
+  // trigger.text carries the role tag (e.g. 'bg-stt') so the Cost tab's use-case
+  // axis can classify it without parsing the model-name suffix.
   obs.ingest(ev({ kind: 'TurnStart', data: { trigger: { kind: 'perception', text: label } } }), dockId);
   obs.ingest(ev({ kind: 'StepStart' }), dockId);
   obs.ingest(ev({ kind: 'StepEnd', data: { model: labeledModel, usage: { inputTokens, outputTokens, cost } } }), dockId);

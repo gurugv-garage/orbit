@@ -135,8 +135,10 @@ export interface TurnRecord {
 // ── cost aggregation (the Cost console tab) ─────────────────────────────────
 
 /** How a cost rollup is sliced. `kind` = the turn's trigger kind (user vs task);
- *  `source` = the dock; `model` = the LLM each step ran on; `day` = UTC date. */
-export type CostGroupBy = 'source' | 'kind' | 'model' | 'day';
+ *  `source` = the dock; `model` = the LLM each step ran on; `day` = UTC date;
+ *  `usecase` = the human-readable role each call plays (Conversation,
+ *  Speech-to-text, Summarizer, Memory, Background tasks). */
+export type CostGroupBy = 'source' | 'kind' | 'model' | 'day' | 'usecase';
 
 /** Summed usage for one group (or the grand total when `group` is absent). */
 export interface CostBucket {

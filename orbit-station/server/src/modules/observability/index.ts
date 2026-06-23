@@ -160,7 +160,8 @@ function costWindow(u: URL): { from: number; to: number } {
 }
 
 function costGroupBy(raw: string | null): CostGroupBy {
-  return raw === 'source' || raw === 'kind' || raw === 'model' || raw === 'day' ? raw : 'source';
+  return raw === 'source' || raw === 'kind' || raw === 'model' || raw === 'day' || raw === 'usecase'
+    ? raw : 'source';
 }
 
 import type { IncomingMessage } from 'node:http';
