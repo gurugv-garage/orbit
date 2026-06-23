@@ -13,6 +13,7 @@
 - [Stable device id — the binding key](#stable-device-id--the-binding-key)
 - [Design overview](#design-overview)
   - [Decisions (user-confirmed)](#decisions-user-confirmed)
+  - [Moving a device between docks — restart, not live-mutate](#moving-a-device-between-docks--restart-not-live-mutate)
 - [Module audit — what changes, what doesn't](#module-audit--what-changes-what-doesnt)
 - [Implementation plan](#implementation-plan)
   - [Server (`orbit-station/server`)](#server-orbit-stationserver)
@@ -114,6 +115,32 @@ learned so it can re-announce instantly on reconnect, but the station's binding
 | Lifecycle state | **Implicit** — unclaimed ≡ `peer.dock == null` | modules already early-return on null dock; no new state machine |
 | Rename data | **Leave old state under old name** as history; device starts fresh under new name | historically honest; avoids cross-module rekeying |
 | Slot/component | **Derived from device `kind`**, not stored in the binding | "parts from anywhere" falls out for free |
+| **Move = restart** | On a dock CHANGE the **device restarts itself** (app: relaunch process; firmware: `esp_restart`) — not a live mutation, not just a reconnect | **fail-proof over uptime** (user's explicit call): a full process/boot wipe is the only way to guarantee no stale in-memory trace survives |
+
+### Moving a device between docks — restart, not live-mutate
+
+A move (re-claim to a different dock) is rarer and riskier than a first claim, so it
+optimizes for **correctness, not uptime**. An audit of all three runtimes found that a
+*live* dock swap (mutate `peer.dock`, no restart) leaves stale traces — e.g. the app's
+`MediaStreamer` SFU label is frozen at construction, the session id/logs in the UI
+persist, brain RPC/tasks keyed to the old dock dangle. A bare WS *reconnect* doesn't
+help either: the app's Compose process (and those captures) survives a reconnect.
+
+So **the device restarts itself when it learns its dock CHANGED**:
+
+- **App** — `onDockLearned` compares new vs current `boundDock`; on a change it shows a
+  blocking "dock changed — restarting" overlay and calls `AppRestart.now()`
+  (AlarmManager-scheduled relaunch + `Runtime.exit`). The fresh process rebuilds every
+  `remember{}`-ed object as the new dock. Auto, no tap (device-owner).
+- **Firmware** — `dock_adopt()` `esp_restart()`s when the dock changes from a non-empty
+  value; on reboot it reads the new dock from NVS and re-announces. ~10s, auto-reconnect.
+- **First claim** (was UNCLAIMED, `dock == null`) is adopted **live** — nothing
+  dock-specific was built yet, so no restart.
+- **Station** `claim()` stays a plain rebind: persist binding + push `welcome` with the
+  new dock; the device decides (adopt-live vs restart). A different device already in the
+  target slot is unbound + dropped (it redials unclaimed). The source dock briefly goes
+  offline during the restart — acceptable. The console **Move** dialog states the per-peer
+  restart behavior up front.
 
 ## Module audit — what changes, what doesn't
 

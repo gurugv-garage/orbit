@@ -98,6 +98,10 @@ fun DockScreen() {
             dev.orbit.dock.station.DockBindingCache.resolveInitial(ctx, BuildConfig.DOCK_NAME),
         )
     }
+    // Set true the moment we learn our dock CHANGED (a console move). Drives a
+    // blocking overlay, then we restart the whole process so nothing dock-specific
+    // survives (docs/decision-traces/runtime-dock-binding.md).
+    var restarting by remember { mutableStateOf(false) }
     // Pre-turn identity sync: recognition fires when STT arms (parallel with the
     // user's speech); the turn start AWAITS it (bounded) so the prompt is
     // grounded with who's actually talking, not a stale identity.
@@ -247,11 +251,23 @@ fun DockScreen() {
             // when a console claim binds us). Persist it so we re-announce instantly
             // next boot, and update the UI's claimed/unclaimed state.
             onDockLearned = { learnedDock, _ ->
-                boundDock = learnedDock
-                // Persist a learned name; CLEAR the cache when displaced/unclaimed
-                // (learnedDock == null) so a stale dock can't resurrect next boot.
-                if (learnedDock != null) dev.orbit.dock.station.DockBindingCache.set(ctx, learnedDock)
-                else dev.orbit.dock.station.DockBindingCache.clear(ctx)
+                val prev = boundDock
+                if (learnedDock != null && prev != null && learnedDock != prev) {
+                    // A CHANGE of an already-known dock = a console move. Persist
+                    // the new name, then RESTART the process — the only fail-proof
+                    // reset (a reconnect leaves boundDock, the session id/logs, and
+                    // the remember{}-ed MediaStreamer/brain alive with the old dock).
+                    dev.orbit.dock.station.DockBindingCache.set(ctx, learnedDock)
+                    Timber.w("dock moved '$prev' → '$learnedDock' — restarting app")
+                    restarting = true
+                    dev.orbit.dock.station.AppRestart.now(ctx)
+                } else {
+                    // First claim (prev == null) adopted live — nothing dock-specific
+                    // built yet; or unclaimed (null) → clear so no stale resurrect.
+                    boundDock = learnedDock
+                    if (learnedDock != null) dev.orbit.dock.station.DockBindingCache.set(ctx, learnedDock)
+                    else dev.orbit.dock.station.DockBindingCache.clear(ctx)
+                }
             },
         ).also { it.start(); stationLinkRef.value = it }
     }
@@ -894,6 +910,25 @@ fun DockScreen() {
                 onApproveAll = { agent.resolveConfirm(approved = true, approveAll = true) },
                 onDeny = { agent.resolveConfirm(false) },
             )
+        }
+
+        // Dock moved (runtime dock binding) → full-screen blocking overlay while the
+        // process self-restarts so nothing stale survives. Covers everything.
+        if (restarting) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color(0xFF0A0A0F).copy(alpha = 0.96f)),
+                contentAlignment = Alignment.Center,
+            ) {
+                androidx.compose.material3.Text(
+                    text = "↻ dock changed — restarting…",
+                    color = Color(0xFF6EC1FF),
+                    fontSize = 18.sp,
+                    fontWeight = FontWeight.Medium,
+                    textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                )
+            }
         }
     }
 }

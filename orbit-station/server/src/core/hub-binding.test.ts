@@ -166,7 +166,7 @@ test('claim() mutates the live peer, persists the binding, announces peer-update
   }
 });
 
-test('claiming a device into an occupied slot DISPLACES the old one to unclaimed (no reconnect)', async () => {
+test('claiming a device into an occupied slot DROPS the old one (it reconnects unclaimed)', async () => {
   const rig = await makeRig();
   try {
     // Phone X already owns anne-bot/phone.
@@ -174,13 +174,8 @@ test('claiming a device into an occupied slot DISPLACES the old one to unclaimed
     const x = await helloAndWelcome(rig.url, { id: 'phone-x', ...PHONE });
     assert.equal(x.welcome.dock, 'anne-bot');
 
-    // X must receive a `displaced` frame when Y takes the slot.
-    const xDisplaced = new Promise<Record<string, unknown>>((resolve) => {
-      x.ws.on('message', (raw) => {
-        const f = JSON.parse(raw.toString());
-        if (f.t === 'displaced') resolve(f);
-      });
-    });
+    // X's socket must be terminated when Y takes the slot.
+    const xClosed = new Promise<void>((resolve) => x.ws.on('close', () => resolve()));
 
     // Phone Y dials in unclaimed, then is claimed (moved) into anne-bot.
     const y = await helloAndWelcome(rig.url, { id: 'phone-y', ...PHONE });
@@ -188,20 +183,13 @@ test('claiming a device into an occupied slot DISPLACES the old one to unclaimed
     const claimed = rig.hub.claim('phone-y', 'anne-bot');
     assert.deepEqual(claimed, { dock: 'anne-bot', component: 'phone' });
 
-    // X is told it lost the slot...
-    const d = await xDisplaced;
-    assert.equal(d.dock, 'anne-bot');
-    assert.equal(d.component, 'phone');
-    assert.equal(d.by, 'phone-y');
-
-    // ...and is reset to unclaimed in place: roster dock-less + binding forgotten.
-    const xEntry = rig.hub.roster().find((p) => p.id === 'phone-x');
-    assert.equal(xEntry?.dock, undefined, 'X reset to unclaimed in roster');
+    // X is dropped (socket closed) + its binding forgotten so it redials unclaimed.
+    await xClosed;
     assert.equal(rig.bindings.lookup('phone-x'), undefined, 'X binding forgotten');
     // Y owns the slot now.
     assert.equal(rig.hub.roster().find((p) => p.id === 'phone-y')?.dock, 'anne-bot');
 
-    x.ws.close(); y.ws.close();
+    y.ws.close();
   } finally {
     await rig.close();
   }

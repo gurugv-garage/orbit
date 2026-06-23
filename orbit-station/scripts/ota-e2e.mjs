@@ -29,24 +29,22 @@ try {
   log('docks:', await dockSnapshot());
   log('app  :', JSON.stringify(await appPeers()));
 
-  // 1) Updates page → Build & Announce (app card)
+  // 1) Updates page → Build & Announce on the APP card (the 2nd of the two cards).
   await page.goto(`${BASE}/#ota`);
   await page.waitForLoadState('networkidle');
   await sleep(800);
-  // The app card: find its "Build & Announce" button. There are two cards
-  // (body, app); click the one inside the app card.
-  log('clicking Build & Announce (app)…');
-  // Build & Announce opens a notes box, then a confirm "Build & Announce".
-  const buildBtn = page.locator('button', { hasText: /Build & Announce/ }).first();
-  await buildBtn.click();
+  log('opening app build panel…');
+  // Two "Build & Announce" .primary buttons (body, app). nth(1) = app card.
+  // Clicking it opens a notes textarea + [Build & Announce confirm] + [Cancel].
+  await page.locator('button.primary', { hasText: /Build & Announce/ }).nth(1).click();
   await sleep(400);
-  // notes textarea may appear; type a note then confirm
   const notes = page.locator('textarea').first();
-  if (await notes.count()) { await notes.fill('e2e: name-display + binding-precedence fix'); }
-  // confirm: the primary button now reads "Build & Announce" (or "Starting…")
-  const confirm = page.locator('button.primary', { hasText: /Build & Announce/ }).first();
-  if (await confirm.count()) { await confirm.click(); log('build confirmed'); }
-  else { log('no confirm dialog — single-click build path'); }
+  if (await notes.count()) await notes.fill('e2e: name-display + binding-precedence + version-sync');
+  // The confirm is the primary "Build & Announce" that sits next to Cancel — it's
+  // the LAST such primary button now visible (body=0, app-open=1, confirm=2).
+  const confirms = page.locator('button.primary', { hasText: /Build & Announce|Starting/ });
+  await confirms.last().click();
+  log('build confirmed — gradle starting');
 
   // 2) Poll the API until the artifact build increments (build finished + recorded)
   const startArtifact = (await appPeers()).artifact;

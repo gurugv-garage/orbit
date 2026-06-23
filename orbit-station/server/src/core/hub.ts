@@ -192,15 +192,28 @@ export class Hub {
   claim(deviceId: string, dock: string): { dock: string; component?: string } | undefined {
     const peer = [...this.#peers.values()].find((p) => p.announced && p.id === deviceId);
     if (!peer) return undefined;
+    const component = componentForKind(peer.kind) ?? peer.component;
+    // Persist the binding + tell the device its dock via `welcome`. The DEVICE
+    // decides what to do with it (docs/decision-traces/runtime-dock-binding.md):
+    // a FIRST claim (was unclaimed) is adopted live — nothing dock-specific was
+    // built yet; a CHANGE of an existing dock makes the device RESTART ITSELF
+    // (app: relaunch process; firmware: esp_restart) so no stale in-memory trace
+    // survives. That old-vs-new compare lives on the device, so the station path
+    // stays a plain rebind — no special move handling here.
     this.#bindings?.bind(deviceId, dock);
     peer.dock = dock;
-    peer.component = componentForKind(peer.kind) ?? peer.component;
-    // Slot collision: if a DIFFERENT live device already fills (dock, component),
-    // displace it GRACEFULLY — tell it, and reset it to unclaimed in place. No
-    // socket kill, no reconnect: it becomes aware via the `displaced` frame and
-    // re-parks itself (docs/decision-traces/runtime-dock-binding.md). One dock
-    // can't have two phones in its phone slot, so the old one steps aside.
-    if (peer.component) this.#displaceOccupant(dock, peer.component, peer.id);
+    peer.component = component;
+    // Slot collision: a DIFFERENT live device already holding (dock, component)
+    // is unbound + dropped — it reconnects UNCLAIMED. One dock can't have two
+    // phones in its phone slot.
+    if (component) {
+      for (const other of this.#peers.values()) {
+        if (!other.announced || other.id === deviceId) continue;
+        if (other.dock !== dock || other.component !== component) continue;
+        this.#bindings?.unbind(other.id);
+        try { other.ws.terminate(); } catch { /* already gone */ }
+      }
+    }
     this.#announce('peer-updated', {
       role: peer.role, id: peer.id, label: peer.label, dock: peer.dock,
       component: peer.component, kind: peer.kind, caps: peer.caps, build: peer.build,
@@ -209,27 +222,7 @@ export class Hub {
       t: 'welcome', id: peer.id, serverTime: Date.now(),
       dock: peer.dock, component: peer.component ?? null,
     });
-    return { dock: peer.dock, component: peer.component };
-  }
-
-  /** Reset any live peer (other than `exceptId`) holding (dock, component) back
-   *  to UNCLAIMED in place: forget its binding, clear its dock/component, tell it
-   *  via a `displaced` frame, and re-announce it dock-less. The displaced device
-   *  shows up in the console to be re-claimed. No reconnect. */
-  #displaceOccupant(dock: string, component: string, exceptId: string): void {
-    for (const other of this.#peers.values()) {
-      if (!other.announced || other.id === exceptId) continue;
-      if (other.dock !== dock || other.component !== component) continue;
-      // forget its binding so it doesn't silently re-grab the slot on reconnect
-      this.#bindings?.unbind(other.id);
-      this.#send(other.ws, { t: 'displaced', dock, component, by: exceptId });
-      other.dock = undefined;
-      other.component = undefined;
-      this.#announce('peer-updated', {
-        role: other.role, id: other.id, label: other.label, dock: undefined,
-        component: undefined, kind: other.kind, caps: other.caps, build: other.build,
-      });
-    }
+    return { dock, component };
   }
 
   #onConnect(ws: WebSocket, req: IncomingMessage): void {

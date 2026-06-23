@@ -141,22 +141,7 @@ export interface ErrorFrame {
   message: string;
 }
 
-/**
- * A device has been DISPLACED from its slot: another device was just claimed
- * into the same (dock, component), so this one no longer owns it
- * (docs/decision-traces/runtime-dock-binding.md). The device resets itself to
- * UNCLAIMED in place — clears its cached dock and re-announces dock-less — with
- * NO reconnect and no socket kill. `dock`/`component` are the slot it lost.
- */
-export interface DisplacedFrame {
-  t: 'displaced';
-  dock: string;
-  component: string;
-  /** the device id that took the slot (for logs). */
-  by: string;
-}
-
-export type OutboundFrame = WelcomeFrame | EventFrame | ErrorFrame | DisplacedFrame;
+export type OutboundFrame = WelcomeFrame | EventFrame | ErrorFrame;
 
 export function isInboundFrame(v: unknown): v is InboundFrame {
   return !!v && typeof v === 'object' && typeof (v as { t?: unknown }).t === 'string';

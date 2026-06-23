@@ -17,6 +17,7 @@
 
 #include <string.h>
 #include "esp_log.h"
+#include "esp_system.h"   // esp_restart (reboot on dock move)
 #include "esp_timer.h"
 #include "esp_websocket_client.h"
 #include "esp_mac.h"
@@ -91,11 +92,24 @@ static void dock_save_to_nvs(const char *dock) {
 
 // Adopt a dock name learned from the station's welcome frame: update RAM + NVS
 // (only when it actually changed, to spare flash wear).
+//
+// A CHANGE of an already-known dock = a console MOVE. We persist the new name,
+// then REBOOT — a clean boot is the only fail-proof reset so no stale in-memory
+// state (motion targets, subscriptions, latches) carries across the move
+// (docs/decision-traces/runtime-dock-binding.md). On reboot we load the new dock
+// from NVS and re-announce. A FIRST adoption (was empty/UNCLAIMED) needs no
+// reboot — nothing dock-specific was running yet.
 static void dock_adopt(const char *dock) {
     if (!dock || dock[0] == '\0' || strcmp(dock, s_dock) == 0) return;
+    bool was_claimed = (s_dock[0] != '\0');
     snprintf(s_dock, sizeof(s_dock), "%s", dock);
     dock_save_to_nvs(s_dock);
     ESP_LOGI(TAG, "learned dock '%s' from welcome (persisted to NVS)", s_dock);
+    if (was_claimed) {
+        ESP_LOGW(TAG, "dock changed (move) — rebooting for a clean reset");
+        vTaskDelay(pdMS_TO_TICKS(300));   // let the NVS commit + any publish flush
+        esp_restart();
+    }
 }
 
 // ── frame builders ───────────────────────────────────────────────────────

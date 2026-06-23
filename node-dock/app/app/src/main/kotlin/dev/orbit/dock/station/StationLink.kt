@@ -252,18 +252,6 @@ class StationLink(
         // station's `welcome` (sent on hello AND pushed on a console claim) tells
         // us our dock. Adopt it on the live link so a claim takes effect without a
         // reconnect; null dock ⇒ still UNCLAIMED. Not topic-wrapped — handle first.
-        // Displaced (docs/decision-traces/runtime-dock-binding.md): another device
-        // was claimed into our slot, so we no longer own it. Reset to UNCLAIMED in
-        // place — drop our dock and tell the UI (it clears the cache + shows the
-        // claim hint). No reconnect; the station already re-announced us dock-less.
-        if (frame["t"]?.jsonPrimitive?.content == "displaced") {
-            val slot = frame["dock"]?.jsonPrimitive?.contentOrNull
-            Timber.w("StationLink: displaced from '$slot' — resetting to unclaimed")
-            dock = null
-            runCatching { onDockLearned(null, null) }
-                .onFailure { Timber.d("onDockLearned(displaced) failed: ${it.message}") }
-            return
-        }
         if (frame["t"]?.jsonPrimitive?.content == "welcome") {
             val learnedDock = frame["dock"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() }
             val learnedComp = frame["component"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() }
