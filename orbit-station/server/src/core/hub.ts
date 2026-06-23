@@ -228,6 +228,9 @@ export class Hub {
     if (!peer || !peer.dock) return false;
     peer.dock = undefined;
     peer.component = undefined;
+    // Drop the stale "<dock> phone" label so the console shows it neutrally while
+    // unclaimed; the device re-sends "unclaimed phone" on its next hello anyway.
+    peer.label = undefined;
     this.#announce('peer-updated', {
       role: peer.role, id: peer.id, label: peer.label, dock: undefined,
       component: undefined, kind: peer.kind, caps: peer.caps, build: peer.build,

@@ -71,6 +71,40 @@ test('a live ephemeral dock still shows while connected, vanishes when its peer 
   assert.ok(!dir.docks().some((d) => d.name === 'web-test'));
 });
 
+test('forgetComponentEverywhere reaps a device from old docks, keeps exceptDock + siblings', () => {
+  const file = tmpFile();
+  writeFileSync(file, JSON.stringify({
+    // device X haunts two old docks as an offline phone ghost…
+    'old-a':   { manifest: ['phone'], lastKnown: { phone: { component: 'phone', id: 'X', ip: '192.168.1.9', build: 3 } } },
+    'old-b':   { manifest: ['phone'], lastKnown: { phone: { component: 'phone', id: 'X', ip: '192.168.1.9', build: 3 } } },
+    // …and 'keep' has BOTH X's stale phone AND a real body that must survive.
+    'keep':    { manifest: ['phone', 'body'], lastKnown: {
+      phone: { component: 'phone', id: 'X', ip: '192.168.1.9', build: 3 },
+      body:  { component: 'body',  id: 'B', ip: '192.168.1.5', build: 5 },
+    } },
+    // X's CURRENT dock (it's live here now) — must be left untouched.
+    'new-x':   { manifest: ['phone'], lastKnown: { phone: { component: 'phone', id: 'X', ip: '192.168.1.9', build: 3 } } },
+  }));
+  const dir = new Directory(() => [], file);
+
+  const touched = dir.forgetComponentEverywhere('X', 'new-x').sort();
+  assert.deepEqual(touched, ['keep', 'old-a', 'old-b'], 'reaped from every dock except new-x');
+
+  const names = dir.docks().map((d) => d.name).sort();
+  assert.ok(!names.includes('old-a'), 'old-a emptied → dropped');
+  assert.ok(!names.includes('old-b'), 'old-b emptied → dropped');
+  assert.ok(names.includes('new-x'), 'current dock untouched');
+  // 'keep' loses the phone ghost but keeps its real body
+  const keep = dir.dockInfo('keep');
+  assert.deepEqual(keep.components.map((c) => c.component), ['body'], 'phone ghost reaped, body kept');
+
+  // persisted to disk
+  const onDisk = JSON.parse(readFileSync(file, 'utf8'));
+  assert.ok(!('old-a' in onDisk) && !('old-b' in onDisk), 'emptied docks removed on disk');
+  assert.ok(!('phone' in onDisk['keep'].lastKnown), 'keep.phone ghost gone on disk');
+  assert.equal(onDisk['new-x'].lastKnown.phone.id, 'X', 'exceptDock preserved on disk');
+});
+
 test('pruneEphemeral drops persisted test/web cruft, keeps real + live-real docks', () => {
   const file = tmpFile();
   writeFileSync(file, JSON.stringify({

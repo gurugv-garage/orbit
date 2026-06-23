@@ -162,6 +162,36 @@ export class Directory {
     return had;
   }
 
+  /** Reap a device id from EVERY dock's last-known composition — call this when a
+   *  device leaves a dock (unbind / move / displace) so it stops haunting its old
+   *  dock as an offline ghost (docs/modules/runtime-dock-binding.md). A slot whose
+   *  last-known device is this one is removed (manifest + lastKnown); a dock left
+   *  with no slots is dropped. Returns the dock names that changed (so the caller
+   *  can announce dock-updated / dock-removed). The device's CURRENT dock (where
+   *  it's live now) is skipped via `exceptDock`. */
+  forgetComponentEverywhere(deviceId: string, exceptDock?: string): string[] {
+    const touched: string[] = [];
+    for (const [name, d] of this.#docks) {
+      if (name === exceptDock) continue;
+      let changed = false;
+      for (const [slot, snap] of Object.entries(d.lastKnown)) {
+        if (snap.id !== deviceId) continue;
+        delete d.lastKnown[slot];
+        const mi = d.manifest.indexOf(slot);
+        if (mi >= 0) d.manifest.splice(mi, 1);
+        changed = true;
+      }
+      if (changed) {
+        touched.push(name);
+        if (d.manifest.length === 0 && Object.keys(d.lastKnown).length === 0) {
+          this.#docks.delete(name);
+        }
+      }
+    }
+    if (touched.length) this.#save();
+    return touched;
+  }
+
   /** Drop persisted docks that are nothing but EPHEMERAL (test/web/sim) cruft —
    *  every persisted component is loopback + buildless and no REAL component is
    *  live. Going forward such peers are never persisted (see noteSeen), so this
