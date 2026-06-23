@@ -126,21 +126,35 @@ optimizes for **correctness, not uptime**. An audit of all three runtimes found 
 persist, brain RPC/tasks keyed to the old dock dangle. A bare WS *reconnect* doesn't
 help either: the app's Compose process (and those captures) survives a reconnect.
 
-So **the device restarts itself when it learns its dock CHANGED**:
+**Every CLAIM restarts the device — one code path, first-claim and move identical.**
+The goal is a perfectly consistent *end state* (no stale/corrupt leftover); the few
+transient seconds of the move don't need validating. So the device that learns ANY dock
+(from unclaimed, or from another dock) restarts into it fresh:
 
-- **App** — `onDockLearned` compares new vs current `boundDock`; on a change it shows a
-  blocking "dock changed — restarting" overlay and calls `AppRestart.now()`
-  (AlarmManager-scheduled relaunch + `Runtime.exit`). The fresh process rebuilds every
-  `remember{}`-ed object as the new dock. Auto, no tap (device-owner).
-- **Firmware** — `dock_adopt()` `esp_restart()`s when the dock changes from a non-empty
-  value; on reboot it reads the new dock from NVS and re-announces. ~10s, auto-reconnect.
-- **First claim** (was UNCLAIMED, `dock == null`) is adopted **live** — nothing
-  dock-specific was built yet, so no restart.
-- **Station** `claim()` stays a plain rebind: persist binding + push `welcome` with the
-  new dock; the device decides (adopt-live vs restart). A different device already in the
-  target slot is unbound + dropped (it redials unclaimed). The source dock briefly goes
-  offline during the restart — acceptable. The console **Move** dialog states the per-peer
-  restart behavior up front.
+- **App** — `onDockLearned`: a non-null dock that differs from `boundDock` shows a blocking
+  "dock changed — restarting" overlay and calls `AppRestart.now()`. That starts a fresh
+  launcher task **in-process** (`NEW_TASK | CLEAR_TASK`) AND arms a Doze-exempt waking
+  alarm (`setAndAllowWhileIdle`/`RTC_WAKEUP`) as a backstop, then `Runtime.exit(0)` — so an
+  always-on dock reliably comes back (the bare inexact alarm could be dropped in Doze). The
+  fresh process rebuilds every `remember{}`-ed object as the new dock. Auto, no tap.
+- **Firmware** — `dock_adopt()` persists the new dock to NVS (synchronous `nvs_commit`) then
+  `esp_restart()`s unconditionally; on reboot it reads the dock from NVS and re-announces.
+  The welcome that echoes the same name then `strcmp`-matches → no second reboot (no loop).
+- **First claim** (was UNCLAIMED) restarts too — after the reboot the device is **claimed
+  before it streams**, so the perception gate is open from the start (this is *why* every
+  claim restarts: it removes the "claimed-but-stream-already-gated-out" edge entirely).
+- **Post-restart there is no loop**: the device boots with its cached/NVS dock, sends it in
+  hello, the station's binding agrees, the welcome echoes it == current → no restart.
+- **Unbind** (dock → null) does NOT restart: the device clears its dock live, goes idle +
+  UNCLAIMED, and is re-claimed later (that claim restarts it). Keeps the common idle case
+  cheap.
+- **Station** `claim()` is a plain rebind: persist binding + push `welcome`; the device
+  decides restart (claim) vs idle (unclaim). A different device already in the target slot
+  is **re-parked unclaimed** — it's sent `welcome{dock:null}` (so it clears its cache and
+  redials unclaimed, NOT re-asserting its old dock and ping-ponging the slot) then dropped.
+  `unclaim()` does the same for an explicit unbind. The source dock briefly goes offline
+  during the restart — acceptable. The console **Move** dialog states the per-peer restart
+  behavior up front.
 
 ## Module audit — what changes, what doesn't
 

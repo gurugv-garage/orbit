@@ -168,8 +168,12 @@ export function docksModule(
       const unbind = subPath.match(/^\/bind\/([^/]+)$/);
       if (unbind && req.method === 'DELETE') {
         const deviceId = decodeURIComponent(unbind[1]!);
-        const ok = bindings.unbind(deviceId);
-        json(res, ok ? 200 : 404, { ok });
+        const removed = bindings.unbind(deviceId);
+        // Re-park the LIVE peer too (not just the DB): clear its dock in place,
+        // announce, push welcome{dock:null}. Without this the device lingers as a
+        // ghost of its old dock and never shows up in /unclaimed to be re-claimed.
+        const reparked = getHub().unclaim(deviceId);
+        json(res, removed || reparked ? 200 : 404, { ok: removed || reparked, reparked });
         return true;
       }
       const m = subPath.match(/^\/([^/]+)\/manifest$/);

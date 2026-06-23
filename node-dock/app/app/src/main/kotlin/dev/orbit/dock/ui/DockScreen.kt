@@ -252,21 +252,25 @@ fun DockScreen() {
             // next boot, and update the UI's claimed/unclaimed state.
             onDockLearned = { learnedDock, _ ->
                 val prev = boundDock
-                if (learnedDock != null && prev != null && learnedDock != prev) {
-                    // A CHANGE of an already-known dock = a console move. Persist
-                    // the new name, then RESTART the process — the only fail-proof
-                    // reset (a reconnect leaves boundDock, the session id/logs, and
-                    // the remember{}-ed MediaStreamer/brain alive with the old dock).
-                    dev.orbit.dock.station.DockBindingCache.set(ctx, learnedDock)
-                    Timber.w("dock moved '$prev' → '$learnedDock' — restarting app")
-                    restarting = true
-                    dev.orbit.dock.station.AppRestart.now(ctx)
-                } else {
-                    // First claim (prev == null) adopted live — nothing dock-specific
-                    // built yet; or unclaimed (null) → clear so no stale resurrect.
-                    boundDock = learnedDock
-                    if (learnedDock != null) dev.orbit.dock.station.DockBindingCache.set(ctx, learnedDock)
-                    else dev.orbit.dock.station.DockBindingCache.clear(ctx)
+                when {
+                    // A CLAIM — learning a (new or changed) dock — always RESTARTS
+                    // the process. One clean code path: the device comes up fresh as
+                    // its dock with no stale in-memory trace (MediaStreamer label,
+                    // session id/logs, brain). Covers both first-claim (prev == null)
+                    // and move (prev != learned). docs/decision-traces/runtime-dock-binding.md
+                    learnedDock != null && learnedDock != prev -> {
+                        dev.orbit.dock.station.DockBindingCache.set(ctx, learnedDock)
+                        Timber.w("claimed dock '$prev' → '$learnedDock' — restarting app")
+                        restarting = true
+                        dev.orbit.dock.station.AppRestart.now(ctx)
+                    }
+                    // UNBOUND (learned null while we had a dock) → go idle UNCLAIMED,
+                    // no restart (user choice): clear cache so nothing resurrects.
+                    learnedDock == null && prev != null -> {
+                        boundDock = null
+                        dev.orbit.dock.station.DockBindingCache.clear(ctx)
+                    }
+                    // else: welcome echoing our current dock on a plain reconnect — no-op.
                 }
             },
         ).also { it.start(); stationLinkRef.value = it }

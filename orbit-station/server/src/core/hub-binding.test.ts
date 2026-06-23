@@ -166,7 +166,7 @@ test('claim() mutates the live peer, persists the binding, announces peer-update
   }
 });
 
-test('claiming a device into an occupied slot DROPS the old one (it reconnects unclaimed)', async () => {
+test('claiming into an occupied slot re-parks the old one UNCLAIMED (welcome{null} before drop — no re-seed loop)', async () => {
   const rig = await makeRig();
   try {
     // Phone X already owns anne-bot/phone.
@@ -174,22 +174,58 @@ test('claiming a device into an occupied slot DROPS the old one (it reconnects u
     const x = await helloAndWelcome(rig.url, { id: 'phone-x', ...PHONE });
     assert.equal(x.welcome.dock, 'anne-bot');
 
-    // X's socket must be terminated when Y takes the slot.
-    const xClosed = new Promise<void>((resolve) => x.ws.on('close', () => resolve()));
+    // X MUST receive a welcome{dock:null} BEFORE its socket closes — that's what
+    // tells the device to clear its cache so it redials unclaimed instead of
+    // re-asserting 'anne-bot' and ping-ponging the slot with Y.
+    let xGotUnclaimWelcome = false;
+    const xClosed = new Promise<void>((resolve) => {
+      x.ws.on('message', (raw) => {
+        const f = JSON.parse(raw.toString());
+        if (f.t === 'welcome' && f.dock === null) xGotUnclaimWelcome = true;
+      });
+      x.ws.on('close', () => resolve());
+    });
 
-    // Phone Y dials in unclaimed, then is claimed (moved) into anne-bot.
+    // Phone Y dials in unclaimed, then is claimed into anne-bot (displacing X).
     const y = await helloAndWelcome(rig.url, { id: 'phone-y', ...PHONE });
     assert.equal(y.welcome.dock, null, 'Y starts unclaimed');
-    const claimed = rig.hub.claim('phone-y', 'anne-bot');
-    assert.deepEqual(claimed, { dock: 'anne-bot', component: 'phone' });
+    rig.hub.claim('phone-y', 'anne-bot');
 
-    // X is dropped (socket closed) + its binding forgotten so it redials unclaimed.
     await xClosed;
+    assert.ok(xGotUnclaimWelcome, 'X was told dock:null before being dropped');
     assert.equal(rig.bindings.lookup('phone-x'), undefined, 'X binding forgotten');
-    // Y owns the slot now.
-    assert.equal(rig.hub.roster().find((p) => p.id === 'phone-y')?.dock, 'anne-bot');
+    assert.equal(rig.hub.roster().find((p) => p.id === 'phone-y')?.dock, 'anne-bot', 'Y owns the slot');
 
     y.ws.close();
+  } finally {
+    await rig.close();
+  }
+});
+
+test('unclaim() re-parks a live peer in place — welcome{null}, dock cleared, binding caller-removed', async () => {
+  const rig = await makeRig();
+  try {
+    rig.bindings.bind('phone-z', 'anne-bot');
+    const z = await helloAndWelcome(rig.url, { id: 'phone-z', ...PHONE });
+    assert.equal(z.welcome.dock, 'anne-bot');
+
+    const reWelcome = new Promise<Record<string, unknown>>((resolve) => {
+      z.ws.on('message', (raw) => {
+        const f = JSON.parse(raw.toString());
+        if (f.t === 'welcome' && f.dock === null) resolve(f);
+      });
+    });
+
+    const ok = rig.hub.unclaim('phone-z');
+    assert.equal(ok, true, 'live peer was re-parked');
+    const w = await reWelcome;
+    assert.equal(w.dock, null, 'device told it is now unclaimed');
+    assert.equal(rig.hub.roster().find((p) => p.id === 'phone-z')?.dock, undefined, 'roster dock cleared');
+
+    // unclaim() of an offline / unknown id is a no-op false.
+    assert.equal(rig.hub.unclaim('nobody'), false);
+
+    z.ws.close();
   } finally {
     await rig.close();
   }

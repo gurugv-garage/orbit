@@ -30,11 +30,14 @@ object DockBindingCache {
             .getString(KEY, null)
             ?.takeIf { it.isNotBlank() }
 
-    /** Persist the dock name learned from a welcome frame (or a dev override). */
+    /** Persist the dock name learned from a welcome frame (or a dev override).
+     *  Uses commit() (synchronous): on a move we write the new name and then
+     *  immediately restart the process, so it MUST be on disk before exit — an
+     *  async apply() could be lost in that window and cause a wrong-dock boot. */
     fun set(context: Context, dock: String) {
         context.applicationContext
             .getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-            .edit().putString(KEY, dock).apply()
+            .edit().putString(KEY, dock).commit()
     }
 
     fun clear(context: Context) {

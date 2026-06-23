@@ -206,14 +206,7 @@ export class Hub {
     // Slot collision: a DIFFERENT live device already holding (dock, component)
     // is unbound + dropped — it reconnects UNCLAIMED. One dock can't have two
     // phones in its phone slot.
-    if (component) {
-      for (const other of this.#peers.values()) {
-        if (!other.announced || other.id === deviceId) continue;
-        if (other.dock !== dock || other.component !== component) continue;
-        this.#bindings?.unbind(other.id);
-        try { other.ws.terminate(); } catch { /* already gone */ }
-      }
-    }
+    if (component) this.#displaceFromSlot(dock, component, deviceId);
     this.#announce('peer-updated', {
       role: peer.role, id: peer.id, label: peer.label, dock: peer.dock,
       component: peer.component, kind: peer.kind, caps: peer.caps, build: peer.build,
@@ -223,6 +216,40 @@ export class Hub {
       dock: peer.dock, component: peer.component ?? null,
     });
     return { dock, component };
+  }
+
+  /** Un-claim a LIVE device: clear its dock/component in place, announce the
+   *  change, and push a welcome{dock:null} so it re-parks UNCLAIMED immediately
+   *  (without waiting for a reconnect). Returns true if a live peer was re-parked.
+   *  The binding-store delete is the caller's job (docks REST); this fixes the
+   *  live-roster side so the device doesn't linger as a ghost of its old dock. */
+  unclaim(deviceId: string): boolean {
+    const peer = [...this.#peers.values()].find((p) => p.announced && p.id === deviceId);
+    if (!peer || !peer.dock) return false;
+    peer.dock = undefined;
+    peer.component = undefined;
+    this.#announce('peer-updated', {
+      role: peer.role, id: peer.id, label: peer.label, dock: undefined,
+      component: undefined, kind: peer.kind, caps: peer.caps, build: peer.build,
+    });
+    this.#send(peer.ws, { t: 'welcome', id: peer.id, serverTime: Date.now(), dock: null, component: null });
+    return true;
+  }
+
+  /** Evict any live peer (other than `exceptId`) occupying (dock, component) so a
+   *  new claimant can take the slot. CRITICAL: we forget its binding AND push a
+   *  welcome{dock:null} BEFORE terminating — the welcome tells the device to clear
+   *  its cached dock, so when it redials it comes back UNCLAIMED. Without the
+   *  welcome, the displaced device would re-assert its stale hello.dock, the hub
+   *  would re-seed its binding, and the two devices would ping-pong the slot. */
+  #displaceFromSlot(dock: string, component: string, exceptId: string): void {
+    for (const other of this.#peers.values()) {
+      if (!other.announced || other.id === exceptId) continue;
+      if (other.dock !== dock || other.component !== component) continue;
+      this.#bindings?.unbind(other.id);
+      this.#send(other.ws, { t: 'welcome', id: other.id, serverTime: Date.now(), dock: null, component: null });
+      try { other.ws.terminate(); } catch { /* already gone */ }
+    }
   }
 
   #onConnect(ws: WebSocket, req: IncomingMessage): void {
