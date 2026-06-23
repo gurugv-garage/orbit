@@ -33,7 +33,7 @@ The full pipeline is **three kinds of process** (plus the dock app on a phone):
 | # | Process | Port | What it is | Needed for |
 |---|---|---|---|---|
 | 1 | **vision sidecar** (Python/MLX) | `:8080` | Qwen2.5-VL temporal — `/temporal` | 👁 vision snapshots |
-| 2 | **STT sidecar** (Python/MLX) | `:8078` | Whisper small.en — `/transcribe` | 🎙 speech snapshots |
+| 2 | **STT sidecar** (Python/MLX) | `:8078` | Parakeet-TDT (default) / Whisper — `/transcribe` | 🎙 speech snapshots |
 | 3 | **orbit-station** (Node/TS) | `:8099` | WS hub + SFU + all modules (brain, perception, memory, gate) + browser UI | everything |
 | 4 | **dock app** (Android) | — | the phone: camera/mic → WebRTC, face UI, TTS | a real dock (else use the `web-test` console peer) |
 
@@ -45,7 +45,7 @@ summarizer + memory embeddings — needs `GEMINI_API_KEY` in `.env`).
 ```
  phone cam+mic ──WebRTC──▶ station SFU ──tap──▶ processors:
                               :8099            ├─ vision  → POST :8080/temporal  (qwen)
-                                               ├─ speech  → POST :8078/transcribe (whisper)
+                                               ├─ speech  → POST :8078/transcribe (parakeet)
                                                ├─ identity/emotion (face-api, in-proc)
                                                └─ bodymotion (proprioception)
                                                        │ SnapshotStore (ring)
@@ -74,17 +74,23 @@ summarizer + memory embeddings — needs `GEMINI_API_KEY` in `.env`).
 ```bash
 cd /Users/guru/garage/orbit/models/perception-sidecar
 
-# STT (whisper small.en) on :8078
-python3 sidecar.py --port 8078 --model mlx-community/whisper-small.en-mlx &
+# STT on :8078 — defaults to --engine parakeet (NVIDIA Parakeet-TDT). Don't pass a
+# whisper --model here: the parakeet loader can't read a whisper repo and 404s.
+python3 sidecar.py --port 8078 &
+# Whisper small.en instead: select the engine AND its model together.
+# python3 sidecar.py --port 8078 --engine whisper --model mlx-community/whisper-small.en-mlx &
 
 # Vision (qwen temporal) on :8080, STT disabled on this one (one model per process —
 # MLX/Metal is not thread-safe; never load two models in one process).
 python3 sidecar.py --port 8080 --temporal --no-stt &
 ```
 
-Flags: `--temporal` preloads qwen at boot; `--no-stt` skips loading whisper; `--vision`
-(unused here) would preload md3. Defaults: `--host 127.0.0.1`, `--port 8078`,
-`--model …whisper-small.en-mlx`. **Verify:**
+Flags: `--temporal` preloads qwen at boot; `--no-stt` skips loading the STT model;
+`--vision` (unused here) would preload md3. `--engine` selects the STT engine —
+`parakeet` (default) or `whisper`; `--model` defaults per-engine
+(`mlx-community/parakeet-tdt-0.6b-v3` / `mlx-community/whisper-small.en-mlx`), so
+override it only when you also change `--engine`. Other defaults: `--host 127.0.0.1`,
+`--port 8078`. **Verify:**
 
 ```bash
 curl -s localhost:8078/health   # {ok, stt_model, vision_model}
