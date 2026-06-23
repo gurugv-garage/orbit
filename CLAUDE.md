@@ -97,7 +97,8 @@ fans it out to viewers; a **processing tap** lets STT/vision/recording observe
 each stream in-process or via a sidecar — [docs/media-processing.md](docs/media-processing.md)),
 **perception** (the on-device understanding pipeline built on the media tap: five
 shared-format snapshot streams — 👁 vision (qwen2.5-VL via MLX sidecar), 🎙 speech
-(whisper), 👤 identity + 😮 emotion (face-api), 🤖 bodymotion (robot proprioception/
+(parakeet-tdt MLX by default, whisper fallback; + an optional diarized Gemini
+background re-transcribe for the recall record), 👤 identity + 😮 emotion (face-api), 🤖 bodymotion (robot proprioception/
 ego-motion) — fused on demand by a Gemini summarizer; the **Perception Studio** console
 (`/#perception`) is the iterate-and-review playground with takes (A/B replay) —
 [docs/perception-pipeline.md](docs/perception-pipeline.md) for the as-built design +

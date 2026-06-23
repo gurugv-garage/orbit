@@ -17,6 +17,7 @@
   - [2b. The station](#2b-the-station)
   - [2c. A dock (real phone, optional)](#2c-a-dock-real-phone-optional)
   - [Env knobs (all optional, sane defaults)](#env-knobs-all-optional-sane-defaults)
+  - [2d. STT engine + the diarized background upgrade (the lab reality)](#2d-stt-engine--the-diarized-background-upgrade-the-lab-reality)
 - [3. Test the pipeline — automated](#3-test-the-pipeline--automated)
 - [4. Test the pipeline — console (Playwright headful)](#4-test-the-pipeline--console-playwright-headful)
 - [5. Test end-to-end — on a real phone](#5-test-end-to-end--on-a-real-phone)
@@ -152,6 +153,49 @@ curl -s localhost:8099/api/docks | python3 -m json.tool   # component "phone" on
 | `VISION_WINDOW_FRAMES` | `5` | frames per vision analysis |
 | `PERCEPTION_SNAPSHOT_CAP` | `1000` | snapshot ring size |
 | `STT_ENDPOINT_MS` | `1300` | trailing-silence to end an utterance |
+| `PERCEPTION_BG_STT_MODEL` | *(unset)* | **enables the diarized online background STT** (see §2c). Set to a Gemini id, e.g. `gemini-2.5-flash-lite`. Unset = local engine only. |
+
+### 2d. STT engine + the diarized background upgrade (the lab reality)
+
+**Live engine = Parakeet-TDT** (default since 2026-06-22), not Whisper. It's selected
+by the sidecar `--engine` flag (§2a): `parakeet` (default) or `whisper`. Both speak the
+same `/transcribe` contract — it's a sidecar flag, not a code change. Confirm which is
+loaded:
+
+```bash
+curl -s localhost:8078/health | python3 -m json.tool   # stt_model: …parakeet-tdt-0.6b-v3 | …whisper-small.en-mlx
+```
+
+Two trade-offs to keep in mind when choosing the engine:
+- **Parakeet** — faster (real utterances at ~114–240 ms) + lower WER on accented
+  far-field speech (incl. Indian loanwords like "Amma"/"puja"), but **English/European
+  only** (a full Hindi *sentence* will likely break) and returns **null** confidence
+  metrics, so the hallucination-tier safety net in `stt-watch.ts` is dormant under it.
+- **Whisper** (`--engine whisper --model mlx-community/whisper-small.en-mlx`) — the
+  fallback; slower but exposes `avg_logprob`/`no_speech_prob`/`compression_ratio` for
+  confidence gating, and handles more languages.
+
+**Enabling diarization (who-said-what) — the background online upgrade.** Neither local
+engine diarizes. To get speaker-labelled, context-aware transcripts in the **stored
+recall record**, set `PERCEPTION_BG_STT_MODEL=gemini-2.5-flash-lite` in
+`orbit-station/.env` (needs `GEMINI_API_KEY`). Then **per VAD-gated utterance**, the
+station async re-transcribes the same PCM with Gemini and patches the snapshot in place
+(`bgModel: true`, `speaker: N`) — best-effort, never blocking the live addressed-turn
+path, which stays on the local engine.
+
+```bash
+# Verify the background path is actually firing (look for bgModel:true / speaker on speech snapshots):
+curl -s "localhost:8099/api/perception/snapshots?limit=200" \
+  | python3 -c "import sys,json;rs=json.load(sys.stdin);bg=[r for r in (rs if isinstance(rs,list) else rs.get('snapshots',[])) if r.get('payload',{}).get('bgModel')];print(f'{len(bg)} background-upgraded speech snapshots');[print(' ',r['payload'].get('speaker'),repr(r['payload'].get('text',''))[:70]) for r in bg[-5:]]"
+```
+
+It only produces output while someone is actually speaking into a connected dock (it's
+utterance-triggered, not continuous/scheduled). Spend lands in the **Cost tab** tagged
+`bg-stt`. **Why it exists** (it's overkill for clean 1-on-1, where the local engine is
+fine): diarization + accuracy on hard, multi-speaker *ambient* audio for recall —
+latency doesn't matter there, speaker labels do. Full rationale, the cost table, and the
+hard-audio benchmark (Gemini flash-lite won, ~$3/mo speech-only):
+[docs/findings/recall-reliability.md](../findings/recall-reliability.md).
 
 ---
 
