@@ -61,6 +61,17 @@ export function docksModule(
     }
   }
 
+  /** A device left a dock (unbind / move): reap its last-known ghost from every
+   *  OTHER dock so it stops showing as an offline phantom there, and tell consoles
+   *  (dock-updated if the dock still has slots, dock-removed if it's now empty).
+   *  `exceptDock` = where the device is live now (its new/current dock). */
+  function reapGhosts(deviceId: string, exceptDock?: string): void {
+    for (const name of directory.forgetComponentEverywhere(deviceId, exceptDock)) {
+      if (directory.dockExists(name)) announce(name);
+      else bus.publish({ topic: 'station', kind: 'dock-removed', payload: { name }, source: 'station' });
+    }
+  }
+
   /** Publish the composed view: console broadcast + directed sibling presence. */
   function announce(dock: string): void {
     const info = directory.dockInfo(dock);
@@ -160,7 +171,9 @@ export function docksModule(
           return true;
         }
         // The peer-updated announce makes docksModule call directory.noteSeen,
-        // so the dock appears in GET /api/docks on the next tick.
+        // so the dock appears in GET /api/docks on the next tick. Reap this device
+        // from any OTHER dock's last-known so it doesn't haunt its old dock.
+        reapGhosts(deviceId, dock);
         json(res, 200, { ok: true, ...claimed, live: true });
         return true;
       }
@@ -173,6 +186,8 @@ export function docksModule(
         // announce, push welcome{dock:null}. Without this the device lingers as a
         // ghost of its old dock and never shows up in /unclaimed to be re-claimed.
         const reparked = getHub().unclaim(deviceId);
+        // Reap its last-known ghost from EVERY dock (it now belongs to none).
+        reapGhosts(deviceId);
         json(res, removed || reparked ? 200 : 404, { ok: removed || reparked, reparked });
         return true;
       }
