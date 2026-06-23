@@ -248,7 +248,10 @@ fun DockScreen() {
             // next boot, and update the UI's claimed/unclaimed state.
             onDockLearned = { learnedDock, _ ->
                 boundDock = learnedDock
+                // Persist a learned name; CLEAR the cache when displaced/unclaimed
+                // (learnedDock == null) so a stale dock can't resurrect next boot.
                 if (learnedDock != null) dev.orbit.dock.station.DockBindingCache.set(ctx, learnedDock)
+                else dev.orbit.dock.station.DockBindingCache.clear(ctx)
             },
         ).also { it.start(); stationLinkRef.value = it }
     }
@@ -825,7 +828,9 @@ fun DockScreen() {
                     androidx.compose.material3.Text(
                         // Lead with the DOCK NAME so it's obvious at a glance which
                         // device this is (tab vs redmi vs …) — handy with several docks.
-                        text = "${BuildConfig.DOCK_NAME} · v${BuildConfig.VERSION_NAME} · build ${BuildConfig.VERSION_CODE}",
+                        // Runtime dock binding: the name is learned from the station
+                        // now (boundDock), not BuildConfig.DOCK_NAME (empty by default).
+                        text = "${boundDock ?: "unclaimed"} · v${BuildConfig.VERSION_NAME} · build ${BuildConfig.VERSION_CODE}",
                         color = Color.White.copy(alpha = 0.4f),
                         fontSize = 11.sp,
                         modifier = Modifier

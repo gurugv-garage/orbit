@@ -25,8 +25,10 @@ android {
         applicationId = "dev.orbit.dock"
         minSdk = 26
         targetSdk = 35
-        versionCode = 9
-        versionName = "0.1.8"
+        // versionName is DERIVED from versionCode so build N is always v0.1.N —
+        // no hand-sync, no drift. Bump versionCode alone (it's the OTA gate).
+        versionCode = 11
+        versionName = "0.1.$versionCode"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 

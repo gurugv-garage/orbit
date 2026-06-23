@@ -12,10 +12,12 @@ import android.content.Context
  * that's fine: the station re-supplies the name via welcome (keyed by the
  * uninstall-stable [DeviceId]).
  *
- * A compile-time DOCK_NAME (BuildConfig) is treated as a one-time dev override:
- * if set and nothing is cached yet, we seed the cache with it (the app then
- * self-binds on the server). Empty default = no override; the app starts
- * unclaimed and is claimed from the console.
+ * A compile-time DOCK_NAME (BuildConfig) is a pure DEV OVERRIDE, honored ONLY
+ * when it's set AND nothing is cached. It is deliberately NOT persisted to the
+ * cache and NOT preferred over an existing cache — a stale baked name must never
+ * resurrect after a console claim (that bug re-bound a claimed device to its old
+ * hardcoded dock). The station's binding (keyed by the uninstall-stable
+ * [DeviceId]) is the source of truth; an unconfigured build dials in UNCLAIMED.
  */
 object DockBindingCache {
     private const val PREFS = "orbit_identity"
@@ -42,16 +44,15 @@ object DockBindingCache {
     }
 
     /**
-     * Resolve the dock to use at startup: the cached name if present, else the
-     * compile-time override (which we then seed into the cache). Returns null
-     * when neither is set — the app dials in UNCLAIMED.
+     * Resolve the dock to send at startup: the CACHED name (learned from a prior
+     * welcome) wins; only if nothing is cached does the dev-override apply. The
+     * override is NOT written to the cache — so once the station re-supplies the
+     * real name via welcome, that name takes over and the stale baked value never
+     * comes back. Returns null when neither is set — the app dials in UNCLAIMED
+     * and is claimed from the console.
      */
     fun resolveInitial(context: Context, buildOverride: String): String? {
         get(context)?.let { return it }
-        if (buildOverride.isNotBlank()) {
-            set(context, buildOverride)
-            return buildOverride
-        }
-        return null
+        return buildOverride.takeIf { it.isNotBlank() }
     }
 }
