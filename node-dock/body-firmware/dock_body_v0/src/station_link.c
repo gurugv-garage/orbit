@@ -105,6 +105,19 @@ static void dock_adopt(const char *dock) {
     esp_restart();
 }
 
+// UNCLAIM: the station sent welcome{dock:null} — we were unbound, or DISPLACED by
+// another device claiming our slot (docs/decision-traces/runtime-dock-binding.md).
+// Clear NVS + RAM in place so our NEXT hello carries no dock and we redial
+// UNCLAIMED — NOT re-asserting our old dock (which would re-seed the binding and
+// ping-pong the slot). Like the phone, unclaim is idle (no reboot): the body just
+// holds center until re-claimed (and that claim reboots it).
+static void dock_clear(void) {
+    if (s_dock[0] == '\0') return;             // already unclaimed — nothing to do
+    s_dock[0] = '\0';
+    dock_save_to_nvs("");                       // persist empty so reflash/reboot stays unclaimed
+    ESP_LOGW(TAG, "unclaimed by station (welcome dock:null) — holding center");
+}
+
 // ── frame builders ───────────────────────────────────────────────────────
 
 // Build the same capability `parts` object BodyLink's profile advertises,
@@ -321,7 +334,11 @@ static void on_ws_event(void *arg, esp_event_base_t base, int32_t id, void *data
                     // binds us). Adopt + persist it. A claim arrives as a SECOND
                     // welcome on the live socket — adopt it even after profile sent.
                     const cJSON *d = cJSON_GetObjectItemCaseSensitive(f, "dock");
-                    if (cJSON_IsString(d)) dock_adopt(d->valuestring);
+                    if (cJSON_IsString(d) && d->valuestring[0] != '\0') {
+                        dock_adopt(d->valuestring);     // claim → persist + reboot
+                    } else {
+                        dock_clear();                   // null/empty → unclaim, hold center
+                    }
                 }
                 if (strcmp(t->valuestring, "welcome") == 0 && !s_profile_sent) {
                     publish("bodylink", "profile", build_profile_payload());
