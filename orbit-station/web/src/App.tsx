@@ -12,7 +12,6 @@ import { Config } from './modules/Config';
 import { BodyLink } from './modules/BodyLink';
 import { Bench } from './modules/Bench';
 import { Ota } from './modules/Ota';
-import { LiveStream } from './modules/LiveStream';
 import { Perception } from './modules/Perception';
 import { Memory } from './modules/Memory';
 import { Capture } from './modules/Capture';
@@ -31,7 +30,6 @@ const VIEWS: ViewDef[] = [
   { id: 'skills', label: 'Skills', ico: '🧩', el: <Skills /> },
   { id: 'config', label: 'Config', ico: '⚙', el: <Config /> },
   { id: 'bodylink', label: 'Body', ico: '🦾', el: <BodyLink /> },
-  { id: 'live', label: 'Live', ico: '📹', el: <LiveStream /> },
   { id: 'perception', label: 'Perception', ico: '🧠', el: <Perception /> },
   { id: 'capture', label: 'Capture', ico: '⏺', el: <Capture /> },
   { id: 'memory', label: 'Memory', ico: '🗃', el: <Memory /> },
@@ -41,7 +39,9 @@ const VIEWS: ViewDef[] = [
 ];
 
 function currentHash(): string {
-  const h = location.hash.replace('#', '');
+  // tolerate a `?query` suffix on the hash (views may persist filters there,
+  // e.g. #cost?window=7d&group=usecase) — route on the bare view id only.
+  const h = location.hash.replace('#', '').split('?')[0] ?? '';
   return VIEWS.some((v) => v.id === h) ? h : 'overview';
 }
 

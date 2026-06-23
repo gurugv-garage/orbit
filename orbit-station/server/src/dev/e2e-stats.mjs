@@ -27,12 +27,18 @@ async function main() {
     window.RTCPeerConnection.prototype = Orig.prototype;
   });
 
-  await page.goto(`${BASE}/#live`, { waitUntil: 'domcontentloaded' });
+  await page.goto(`${BASE}/#perception`, { waitUntil: 'domcontentloaded' });
   await page.waitForTimeout(1500);
 
-  const cb = page.locator('input[type="checkbox"]').first();
-  await cb.waitFor({ state: 'visible', timeout: 15000 });
-  await cb.check();
+  // Pick the first streaming dock via its source chip (the Live Wall was folded
+  // into Perception). Selecting it renders the dock's live tile + recvonly PC.
+  const status = await page.evaluate(async (base) =>
+    (await (await fetch(`${base}/api/media/status`)).json()), BASE);
+  const producer = status?.producers?.find((p) => p.label !== 'console-perception');
+  if (!producer) throw new Error('no streaming dock to watch');
+  const chip = page.locator('button', { hasText: producer.label }).first();
+  await chip.waitFor({ state: 'visible', timeout: 15000 });
+  await chip.click();
   log('watching; letting media flow for 14s…');
   await page.waitForTimeout(14000);
 

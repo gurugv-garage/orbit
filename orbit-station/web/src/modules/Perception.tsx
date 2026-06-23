@@ -77,7 +77,7 @@ export function Perception() {
       <div style={{ marginBottom: 20 }}>
         <div className="side-section-label" style={{ marginBottom: 8 }}>Known faces ({gallery.length})</div>
         {gallery.length === 0 ? (
-          <div className="empty">No one enrolled yet. Tell the dock "remember I'm &lt;name&gt;", or use the 🪪 Enroll button on the Live wall.</div>
+          <div className="empty">No one enrolled yet. Tell the dock "remember I'm &lt;name&gt;", or pick a dock above and use its 🪪 Enroll button on the live tile.</div>
         ) : (
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12 }}>
             {gallery.map((p) => {

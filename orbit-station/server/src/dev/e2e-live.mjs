@@ -28,34 +28,36 @@ async function main() {
   log('opening', BASE);
   await page.goto(BASE, { waitUntil: 'domcontentloaded' });
 
-  // Navigate to the Live tab (hash route).
-  await page.goto(`${BASE}/#live`, { waitUntil: 'domcontentloaded' });
+  // Navigate to the Perception tab (the Live Wall was folded into it — hash route).
+  await page.goto(`${BASE}/#perception`, { waitUntil: 'domcontentloaded' });
   await page.waitForTimeout(1000);
   await page.screenshot({ path: SHOT('1-live-open') });
 
-  // Wait for a streaming dock to show up in the picker (checkbox + label chip).
+  // Wait for a streaming dock to show up, then pick it via its source chip (the
+  // chip's text contains the producer label). Selecting a dock renders its live tile.
   log('waiting for a dock to start streaming (up to', WAIT_MS, 'ms)…');
   const deadline = Date.now() + WAIT_MS;
-  let checkbox = null;
+  let chip = null;
   while (Date.now() < deadline) {
     const status = await page.evaluate(async (base) => {
       try { return await (await fetch(`${base}/api/media/status`)).json(); } catch { return null; }
     }, BASE);
-    if (status?.producers?.length) {
+    const producer = status?.producers?.find((p) => p.label !== 'console-perception');
+    if (producer) {
       log('producer(s):', JSON.stringify(status.producers.map((p) => ({ id: p.streamId, label: p.label, tracks: p.tracks }))));
-      checkbox = page.locator('input[type="checkbox"]').first();
-      if (await checkbox.count()) break;
+      chip = page.locator('button', { hasText: producer.label }).first();
+      if (await chip.count()) break;
     }
     await page.waitForTimeout(1500);
   }
-  if (!checkbox || !(await checkbox.count())) {
+  if (!chip || !(await chip.count())) {
     await page.screenshot({ path: SHOT('FAIL-no-producer') });
     throw new Error('no streaming dock appeared in time');
   }
 
   await page.screenshot({ path: SHOT('2-producer-listed') });
-  log('checking the dock to watch…');
-  await checkbox.check();
+  log('selecting the dock to watch…');
+  await chip.click();
 
   // A <video> tile should appear and start playing.
   const video = page.locator('video').first();

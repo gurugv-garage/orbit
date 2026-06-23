@@ -1,105 +1,16 @@
+/**
+ * LiveTile — one dock's live A/V tile: a recvonly RTCPeerConnection + <video>,
+ * signaled over the `media` topic, with a per-tile audio toggle (audio is OFF by
+ * default — the phone mic ↔ laptop speakers form a feedback loop) and an "enroll
+ * the face on screen" button. Extracted from the old Live Wall (LiveStream.tsx)
+ * so the Perception view can show the selected dock's live stream inline. See the
+ * SFU in orbit-station/server/src/modules/media.
+ */
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { api } from '../lib/station';
 import { useStationClient, useStationEvents } from '../lib/useStation';
 
-interface ProducerInfo {
-  streamId: string;          // the producer's unique peer id (addressing key)
-  label: string;             // friendly dock name (display)
-  tracks: { audio: boolean; video: boolean };
-  viewers: number;
-}
-interface MediaStatus {
-  producers: ProducerInfo[];
-  viewers: string[];
-  waiting: string[];
-}
-
-/**
- * Live A/V wall. Each connected dock is its own stream (keyed by streamId); the
- * operator checks which docks to watch and they play simultaneously in a grid —
- * one recvonly RTCPeerConnection per watched dock, signaled over the `media`
- * topic. Video plays for every tile; audio plays for only ONE tile at a time
- * (click a tile to make it the audio source) to avoid a cacophony. See the SFU
- * in orbit-station/server/src/modules/media.
- */
-export function LiveStream() {
-  const [status, setStatus] = useState<MediaStatus | null>(null);
-  const [watching, setWatching] = useState<Set<string>>(new Set());
-  const [audioStream, setAudioStream] = useState<string | null>(null);
-
-  const loadStatus = useCallback(() => {
-    api.get<MediaStatus>('/media/status').then(setStatus).catch(() => {});
-  }, []);
-  useEffect(loadStatus, [loadStatus]);
-
-  // Producer set changes (dock joins/leaves) → refresh the picker.
-  useStationEvents('media', useCallback(() => loadStatus(), [loadStatus]));
-  // Dock peers come/go on the station topic too — keep the picker live.
-  useStationEvents('station', useCallback((e) => {
-    if (e.kind === 'peer-joined' || e.kind === 'peer-left' || e.kind === 'dock-updated') loadStatus();
-  }, [loadStatus]));
-
-  const producers = status?.producers ?? [];
-
-  const toggle = (streamId: string) => {
-    setWatching((prev) => {
-      const next = new Set(prev);
-      if (next.has(streamId)) {
-        next.delete(streamId);
-        setAudioStream((a) => (a === streamId ? null : a)); // stop audio if this was the source
-      } else {
-        next.add(streamId);
-        // Audio stays OFF by default — the phone mic + laptop speakers form a
-        // feedback loop, so the operator must explicitly enable audio per tile.
-      }
-      return next;
-    });
-  };
-
-  // Enable audio for one tile (and only one — single audio source at a time).
-  const enableAudio = (streamId: string) => setAudioStream((a) => (a === streamId ? null : streamId));
-
-  return (
-    <section>
-      <h2 className="title">Live Wall</h2>
-      <p className="subtitle">
-        {producers.length
-          ? <>{producers.length} dock(s) streaming · watching {watching.size}</>
-          : 'No docks are streaming yet.'}
-      </p>
-
-      {producers.length > 0 && (
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 16 }}>
-          {producers.map((p) => (
-            <label key={p.streamId} className="chip" style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}>
-              <input type="checkbox" checked={watching.has(p.streamId)} onChange={() => toggle(p.streamId)} />
-              <span className="mono">{p.label}</span>
-              {p.tracks.video ? ' 📹' : ''}{p.tracks.audio ? ' 🎙' : ''}
-            </label>
-          ))}
-        </div>
-      )}
-
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))', gap: 12 }}>
-        {[...watching].map((streamId) => (
-          <StreamTile
-            key={streamId}
-            streamId={streamId}
-            label={producers.find((p) => p.streamId === streamId)?.label ?? streamId}
-            audioOn={audioStream === streamId}
-            onToggleAudio={() => enableAudio(streamId)}
-            onClose={() => toggle(streamId)}
-          />
-        ))}
-      </div>
-    </section>
-  );
-}
-
-/** One dock's live tile: its own recvonly PeerConnection + <video>. */
-function StreamTile({ streamId, label, audioOn, onToggleAudio, onClose }: {
-  streamId: string; label: string; audioOn: boolean; onToggleAudio: () => void; onClose: () => void;
-}) {
+export function LiveTile({ streamId, label }: { streamId: string; label: string }) {
   const client = useStationClient();
   const videoRef = useRef<HTMLVideoElement>(null);
   const pcRef = useRef<RTCPeerConnection | null>(null);
@@ -109,6 +20,7 @@ function StreamTile({ streamId, label, audioOn, onToggleAudio, onClose }: {
   // gets dropped → silent). Keep our own stream and add each inbound track to it.
   const streamRef = useRef<MediaStream>(new MediaStream());
   const [live, setLive] = useState(false);
+  const [audioOn, setAudioOn] = useState(false);
 
   const join = useCallback(() => {
     pcRef.current?.close();
@@ -170,7 +82,7 @@ function StreamTile({ streamId, label, audioOn, onToggleAudio, onClose }: {
   }, [audioOn, live]);
 
   return (
-    <div style={{ position: 'relative', borderRadius: 12, overflow: 'hidden', background: '#0b0e16', border: audioOn ? '2px solid #6aa2ff' : '2px solid transparent' }}>
+    <div style={{ position: 'relative', borderRadius: 12, overflow: 'hidden', background: '#0b0e16', border: audioOn ? '2px solid #6aa2ff' : '2px solid #1c2233' }}>
       <video
         ref={videoRef}
         autoPlay
@@ -183,14 +95,13 @@ function StreamTile({ streamId, label, audioOn, onToggleAudio, onClose }: {
       </div>
       {/* Audio is OFF by default (mic↔speaker feedback). Explicit per-tile enable. */}
       <button
-        onClick={onToggleAudio}
+        onClick={() => setAudioOn((a) => !a)}
         title={audioOn ? 'Mute audio' : 'Enable audio (may echo if near the dock)'}
         style={{ position: 'absolute', bottom: 6, left: 6, padding: '4px 8px' }}
       >
         {audioOn ? '🔊 Audio on' : '🔇 Enable audio'}
       </button>
       <EnrollButton streamId={streamId} />
-      <button onClick={onClose} style={{ position: 'absolute', top: 4, right: 4 }} aria-label="close">✕</button>
     </div>
   );
 }

@@ -14,6 +14,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useStationClient, useStationEvents } from '../lib/useStation';
 import { api } from '../lib/station';
+import { LiveTile } from './LiveTile';
 
 const STREAM_ID = 'console-perception'; // this console's producer peer id
 
@@ -349,6 +350,12 @@ export function PerceptionStudio() {
     setTimeout(() => setEnrollMsg(''), 3000);
   }, [enrollName, snaps]);
 
+  // The producer the tab is scoped to (source is keyed by stable LABEL). 'all' and
+  // this console's own browser stream ('console-perception', already shown as the
+  // local preview above) get no separate live tile; a remote dock gets one.
+  const selectedProducer = source === 'all' ? undefined : producers.find((p) => p.label === source);
+  const showLiveTile = !!selectedProducer && selectedProducer.label !== STREAM_ID;
+
   // Ordered by start; latest of each modality for the live captions.
   const ordered = [...snaps].sort((a, b) =>
     a.interval.from < b.interval.from ? -1 : a.interval.from > b.interval.from ? 1 : 0);
@@ -409,6 +416,38 @@ export function PerceptionStudio() {
           );
         })}
       </div>
+      {/* SOURCE selector — the focus for the WHOLE tab (live tile + captions +
+          snapshot feed + summarize). Pick a dock to see everything for it, or
+          '🖥 this browser' to publish + perceive this laptop's own cam/mic.
+          Processors run on ALL live streams regardless (perception-pipeline §1a);
+          this just focuses the view. */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap',
+        padding: '8px 12px', background: '#0b0e16', border: '1px solid #1c2233', borderRadius: 10 }}>
+        <span style={{ fontSize: 11, letterSpacing: '.12em', textTransform: 'uppercase', opacity: 0.6 }}>Source</span>
+        <SourceChip active={source === 'all'} onClick={() => setSource('all')}>🌐 all</SourceChip>
+        {producers.filter((p) => p.label !== STREAM_ID).map((p) => (
+          <SourceChip key={p.streamId} active={source === p.label} onClick={() => setSource(p.label)}
+            title={`${p.tracks.audio ? '🎙 audio ' : ''}${p.tracks.video ? '📹 video' : ''}`}>
+            📱 {p.label}{p.tracks.video ? ' 📹' : ''}{p.tracks.audio ? ' 🎙' : ''}
+          </SourceChip>
+        ))}
+        {/* This browser's own stream — selecting it focuses the local preview below. */}
+        <SourceChip active={source === STREAM_ID} onClick={() => setSource(STREAM_ID)}
+          title={publishing ? 'this laptop is streaming' : 'start the stream below to feed it'}>
+          🖥 this browser{publishing ? ' ●' : ''}
+        </SourceChip>
+        {selectedProducer === undefined && source !== 'all' && source !== STREAM_ID &&
+          <span style={{ fontSize: 11, color: '#ffc454' }} title="The selected source isn't producing right now">⚠ offline</span>}
+      </div>
+
+      {/* Selected dock's LIVE tile — its own recvonly stream (video + per-tile audio
+          + enroll). Only for a remote dock; 'this browser' shows the local preview. */}
+      {showLiveTile && selectedProducer && (
+        <div style={{ maxWidth: 480 }}>
+          <LiveTile streamId={selectedProducer.streamId} label={selectedProducer.label} />
+        </div>
+      )}
+
       {/* TOP: live video + publish | instruction + live captions */}
       <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap' }}>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8, width: 360 }}>
@@ -597,26 +636,10 @@ export function PerceptionStudio() {
       <div>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8, flexWrap: 'wrap', gap: 8 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-            <div className="side-section-label">Snapshots ({filtered.length}) · by start · IST</div>
-            {/* SOURCE selector — scope the feed + summarize to one producer. Every
-                live dock + this console's own browser stream. Processors run on ALL
-                streams regardless (perception-pipeline §1a); this just focuses the view. */}
-            <select value={source} onChange={(e) => setSource(e.target.value)} title="Which source to view + summarize"
-              style={{ fontSize: 12, background: '#10141f', color: '#cfe', border: '1px solid #1c2233', borderRadius: 7, padding: '3px 6px' }}>
-              <option value="all">🌐 all sources</option>
-              {producers.map((p) => {
-                // The SFU rekeys streamId to the ephemeral WS id, so identify this
-                // console's own stream by its stable LABEL, not the streamId.
-                const isWeb = p.label === STREAM_ID;
-                return (
-                  <option key={p.streamId} value={p.label}>
-                    {isWeb ? '🖥 ' : '📱 '}{p.label}{isWeb ? ' (web)' : ''} {p.tracks.audio ? '🎙' : ''}{p.tracks.video ? '📹' : ''}
-                  </option>
-                );
-              })}
-            </select>
-            {source !== 'all' && producers.every((p) => p.label !== source) &&
-              <span style={{ fontSize: 11, color: '#ffc454' }} title="The selected source isn't producing right now">⚠ offline</span>}
+            <div className="side-section-label">
+              Snapshots ({filtered.length}) · by start · IST
+              {source !== 'all' && <span style={{ opacity: 0.6 }}> · {source === STREAM_ID ? '🖥 this browser' : `📱 ${source}`}</span>}
+            </div>
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 14, fontSize: 12, opacity: 0.85 }}>
             <label style={{ display: 'flex', alignItems: 'center', gap: 5, cursor: 'pointer' }}>
@@ -692,6 +715,20 @@ export function PerceptionStudio() {
         </div>
       </div>
     </div>
+  );
+}
+
+/** A source-selector pill (the top dock chips). */
+function SourceChip({ active, onClick, title, children }: {
+  active: boolean; onClick: () => void; title?: string; children: React.ReactNode;
+}) {
+  return (
+    <button onClick={onClick} title={title}
+      style={{ padding: '5px 12px', borderRadius: 999, fontSize: 13, cursor: 'pointer',
+        background: active ? '#2563eb' : '#10141f', color: active ? '#fff' : '#9ab',
+        border: `1px solid ${active ? '#2563eb' : '#1c2233'}`, fontWeight: active ? 600 : 400 }}>
+      {children}
+    </button>
   );
 }
 
