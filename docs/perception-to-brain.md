@@ -600,9 +600,12 @@ phase surfaces a concrete need; the default is the existing autonomous-turn UX.
 - **Station — already built, just starved of audio.** `modules/perception/processors/stt-watch.ts`
   is a complete always-on server STT: it depacketizes WebRTC Opus → 16 kHz PCM, runs VAD
   **endpointing** (`ENDPOINT_MS=1300`, `MIN_UTTERANCE_MS`, `MAX_UTTERANCE_MS`), transcribes
-  each utterance once via the whisper sidecar, emits a `speech` snapshot + a `transcript`
-  bus event with Whisper-confidence, and exposes `flushAll()`. It currently receives **no
-  audio** because the phone doesn't publish a mic track.
+  each utterance once via the STT sidecar, emits a `speech` snapshot + a `transcript`
+  bus event with confidence, and exposes `flushAll()`. It currently receives **no
+  audio** because the phone doesn't publish a mic track. *(Later note: the sidecar's
+  default engine is now **Parakeet-TDT**, not Whisper — `--engine whisper` falls back;
+  see [perception-pipeline.md §3](perception-pipeline.md). Parakeet returns null
+  confidence metrics, so the Whisper-confidence tagging is dormant under it.)*
 - **Phone — publishes VIDEO-ONLY, on purpose.** `MediaStreamer` deliberately omits a mic
   track (see its own comment, `MediaStreamer.kt` ~L141-153): a WebRTC audio source opens a
   **second `VOICE_COMMUNICATION` capture** on the shared ADM, which **starves Android
@@ -663,7 +666,7 @@ Start with single-utterance; widen if it feels clipped.)
   on the phone.
 - **A1.3 — live transcript streaming to the dock (visualization).** Today the phone shows a
   finalized sentence. If cheap, stream **partial** transcripts down for live display +
-  correct-as-you-go. **Open / to measure:** Whisper here is utterance-final (one transcript
+  correct-as-you-go. **Open / to measure:** the local STT here is utterance-final (one transcript
   per endpoint), so true word-streaming needs either partial-decode passes or an interim
   signal — only do it if the latency/cost is acceptable; otherwise keep final-only and just
   move *where* it's rendered. Validate the round-trip (station transcript → phone overlay).

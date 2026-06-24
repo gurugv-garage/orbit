@@ -44,7 +44,7 @@ Key REST routes (all under `/api/perception`): `GET /snapshots`, `POST /snapshot
 - [1. The shape: one stream in, four parallel "snapshot" streams out](#1-the-shape-one-stream-in-four-parallel-snapshot-streams-out)
   - [1a. Multiple docks / streams at once — how N streams are sensed in parallel](#1a-multiple-docks--streams-at-once--how-n-streams-are-sensed-in-parallel)
 - [2. 👁 Vision — Qwen2.5-VL-3B (MLX 4-bit), latency-bound windows](#2--vision--qwen25-vl-3b-mlx-4-bit-latency-bound-windows)
-- [3. 🎙 Speech — Whisper small.en (MLX), VAD-endpointed](#3--speech--whisper-smallen-mlx-vad-endpointed)
+- [3. 🎙 Speech — Parakeet-TDT (MLX), VAD-endpointed, optional Gemini background upgrade](#3--speech--parakeet-tdt-mlx-vad-endpointed-optional-gemini-background-upgrade)
 - [4. 👤 Identity — face-api (TF.js), enroll-then-match, debounced](#4--identity--face-api-tfjs-enroll-then-match-debounced)
 - [5. 😮 Emotion — face-api expression, **hedged** (descriptive, not forced)](#5--emotion--face-api-expression-hedged-descriptive-not-forced)
 - [5b. 🤖 Body-motion — egocentric awareness (the camera moves)](#5b--body-motion--egocentric-awareness-the-camera-moves)
@@ -69,7 +69,7 @@ in-memory ring. A Gemini summarizer fuses a time-window of records on demand.
 
 ```
                          ┌── 👁 VISION    (qwen2.5-VL-3B, MLX sidecar)  what's happening
-  browser cam+mic        │   🎙 SPEECH    (whisper small.en, MLX sidecar) what's said
+  browser cam+mic        │   🎙 SPEECH    (parakeet-tdt, MLX sidecar)    what's said
   ──WebRTC──▶ station ───┤   👤 IDENTITY  (face-api, in-process)         who's present + where
               SFU  tap   │   😮 EMOTION   (face-api expression, in-proc)  soft expression hint
                          │   🤖 BODYMOTION(robot proprioception)          is the CAMERA moving
@@ -184,35 +184,69 @@ to be skeptical, and why **resolution is pinned at 512**.
 
 ---
 
-## 3. 🎙 Speech — Whisper small.en (MLX), VAD-endpointed
+## 3. 🎙 Speech — Parakeet-TDT (MLX), VAD-endpointed, optional Gemini background upgrade
 
 > Code: `processors/stt-watch.ts` (`ENDPOINT_MS=1300`, `SIDECAR_URL :8078`,
-> `isLowConfidence()` on `LOGPROB_MIN`/`NOSPEECH_MAX`); same sidecar binary.
+> `isLowConfidence()` on `LOGPROB_MIN`/`NOSPEECH_MAX`) + `processors/background-stt.ts`
+> (the optional online re-transcribe). The engine is chosen by the sidecar's
+> `--engine` flag (`models/perception-sidecar/sidecar.py`).
+
+> **Current reality (default since 2026-06-22):** the live STT engine is **NVIDIA
+> Parakeet-TDT** (`mlx-community/parakeet-tdt-0.6b-v3`) via `parakeet-mlx`, NOT
+> Whisper. A live far-field test on the dock beat whisper-small.en on speed (real
+> conversational utterances at **114–240 ms**) AND WER, including Indian loanwords
+> ("Amma", "puja"). **Pass `--engine whisper` to fall back to mlx-whisper.**
+> Much of the prose below was written for the Whisper era; the VAD/endpointing
+> design is engine-agnostic and still applies, but read engine-specific claims as
+> the Whisper-fallback story unless marked otherwise.
 
 **What:** the STT processor depacketizes WebRTC Opus → 16 kHz PCM in-process, runs
 a **voice-activity detector** over 30 ms frames, and on an utterance boundary
-(≥1.3 s trailing silence) sends the *whole utterance once* to the whisper sidecar
-(:8078 `/transcribe`). One clean transcript per thing said.
+(≥1.3 s trailing silence) sends the *whole utterance once* to the STT sidecar
+(:8078 `/transcribe`). One clean transcript per thing said. Both engines speak the
+same `/transcribe` contract — swapping is a sidecar flag, not a code change.
 
-**Why small.en (vs base.en):** measured by WER — small.en is meaningfully better on
-hard speech (Earnings-22 37.5% vs 41.0%) and still **8× real-time**. base.en is
-faster but worse on accents/jargon. Size (~1 GB) is acceptable.
+**Why Parakeet (over Whisper) for the live path:** faster (sub-250 ms vs Whisper's
+~0.1–0.7 s/utt) and lower WER on our real accented far-field audio. **Two trade-offs
+to remember:** (1) Parakeet is **English/European only** — a full Hindi *sentence*
+(not a loanword) will likely break, so keep `--engine whisper` in mind for
+multilingual work; (2) Parakeet returns **null** for Whisper's confidence tells
+(`avg_logprob`/`no_speech_prob`/`compression_ratio`), so the hallucination-tier
+safety net below is **inactive under it** (fine in a quiet room, riskier
+far-field/noisy — `confidenceTier()` treats null as "unknown", not "bad").
 
-**The key insight — Whisper wasn't bad, it was *mis-fed*.** Transcribing fixed
-rolling windows made it hallucinate on silence ("Thank you" / "I'm sorry" loops)
-and repeat overlaps. **VAD endpointing** (transcribe a detected utterance, never
-pure silence) fixed both. We then went further on robustness:
+**The Whisper insight (still true when `--engine whisper`) — Whisper wasn't bad, it
+was *mis-fed*.** Transcribing fixed rolling windows made it hallucinate on silence
+("Thank you" / "I'm sorry" loops) and repeat overlaps. **VAD endpointing**
+(transcribe a detected utterance, never pure silence) fixed both, and the endpointing
+benefits *both* engines. Under Whisper we additionally:
 
-- We surface Whisper's **own confidence metrics** (`avg_logprob`, `no_speech_prob`,
+- surface Whisper's **own confidence metrics** (`avg_logprob`, `no_speech_prob`,
   `compression_ratio`) and flag `lowConfidence` on them — far better than a phrase
   blacklist. **Validated:** 2 s of silence → Whisper emits "You" with
   `no_speech_prob 0.86` → correctly flagged regardless of the word it invents.
-- We **tag, never drop** shaky transcripts — a gasp / "oh!" can be signal; the
+  (Parakeet exposes none of these → the metric-based gating is dormant under it.)
+- **tag, never drop** shaky transcripts — a gasp / "oh!" can be signal; the
   summarizer decides noise vs. signal.
+
+**Background upgrade (optional, off by default) — diarized online re-transcription.**
+When `PERCEPTION_BG_STT_MODEL` is set (e.g. `gemini-2.5-flash-lite`), each VAD-gated
+utterance is **also** sent — async, best-effort, never blocking the live path — to an
+online model that re-transcribes it with **diarization** + context-awareness and
+*patches the stored snapshot in place* (`bgModel: true`, `speaker: N`). The live
+addressed-turn path stays on the local engine (Parakeet/Whisper); only the **stored
+recall record** is upgraded. **Why bother when the local path is fine in 1-on-1:** the
+local engines can't do **multi-speaker diarization** (who said what) and hallucinate
+to fill gaps on hard far-field audio — exactly the ambient/multi-person case that
+recall depends on. Latency doesn't matter for the record, accuracy + speaker labels
+do. The split + benchmark (Gemini flash-lite won on hard audio, ~$3/mo speech-only):
+[docs/findings/recall-reliability.md](findings/recall-reliability.md). VAD stays local
+so only detected-utterance PCM ever leaves the box — silence is never sent or billed.
 
 **Tradeoffs accepted:** the 1.3 s endpoint adds ~0.6 s before a final commit (so
 natural mid-sentence pauses don't split a thought); and WER is still nonzero on
-hard audio — hence `lowConfidence` tagging rather than trusting every word.
+hard audio — hence `lowConfidence` tagging (under Whisper) / the optional online
+upgrade (for the recall record) rather than trusting every word.
 
 ---
 
@@ -545,7 +579,7 @@ gate is the *where it lands in the agent*.
 | Stream | Component | Where | Footprint | Latency | Confidence signal | Main limitation |
 |---|---|---|---|---|---|---|
 | 👁 vision | Qwen2.5-VL-3B (MLX 4-bit) | sidecar :8080 | ~3 GB | ~3–6 s/window | (emit conf) | fabricates on thin frames; res-sensitive |
-| 🎙 speech | Whisper small.en (MLX) | sidecar :8078 | ~1 GB | ~0.1–0.7 s/utt | logprob / no_speech / compression | WER on hard audio |
+| 🎙 speech | Parakeet-TDT (MLX, default; `--engine whisper` falls back to whisper-small.en) | sidecar :8078 | ~1 GB | ~0.11–0.24 s/utt (Parakeet) | logprob / no_speech / compression (Whisper only; null under Parakeet) | WER + diarization on hard audio |
 | 👤 identity | face-api (TF.js) | in-process | ~0.15 GB | ~tens of ms | match distance | **false names** |
 | 😮 emotion | face-api expression | in-process | (shared) | (shared) | score + margin (gated) | weak at distance; hedged |
 | 🤖 bodymotion | robot proprioception | in-process (no media) | ~0 | on command | — | coarse (stationary/moving); dormant until robot wired |

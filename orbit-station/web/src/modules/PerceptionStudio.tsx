@@ -18,9 +18,14 @@ import { LiveTile } from './LiveTile';
 
 const STREAM_ID = 'console-perception'; // this console's producer peer id
 
+// `kind` is an open string, NOT a fixed union: the view is data-driven so a NEW
+// perception pipeline (battery, temperature, …) that emits snapshots in this shared
+// format gets its own lane + timeline rows automatically, with no UI change. Known
+// kinds get a curated icon/color/label; unknown kinds fall back to a generic style.
+type StreamKind = string;
 interface Snapshot {
   ts: string; tz: string;
-  source: { id: string; kind: 'vision' | 'speech' | 'identity' | 'emotion' | 'bodymotion'; device: string; host: string };
+  source: { id: string; kind: StreamKind; device: string; host: string };
   model: { name: string; endpoint?: string };
   interval: { from: string; to: string; durationMs: number };
   payload: {
@@ -28,11 +33,40 @@ interface Snapshot {
     inferMs?: number | null; confidence?: number; // perf + match confidence (all streams)
     // speech: low-confidence flag + Whisper's own metrics (for the playground)
     lowConfidence?: boolean; avgLogprob?: number | null; noSpeechProb?: number | null; compressionRatio?: number | null;
+    // speech diarization (the background Gemini upgrade): speaker index, a marker
+    // that this text was replaced by the diarized transcript, and the DIARIZATION
+    // model (distinct from source.model, which is the live STT engine).
+    speaker?: number; bgModel?: boolean; diarizeModel?: string;
+    // the RAW STT transcript, preserved when diarization overwrites `text` — so the
+    // 🎙 STT row shows what the live engine heard and the 🗣 diarization row shows the
+    // upgraded text. Absent on un-upgraded records (then the STT row uses `text`).
+    sttText?: string;
   };
 }
 
-const KIND_ICON: Record<Snapshot['source']['kind'], string> = { vision: '👁', speech: '🎙', identity: '👤', emotion: '😮', bodymotion: '🤖' };
-const KIND_COLOR: Record<Snapshot['source']['kind'], string> = { vision: '#dfe', speech: '#9ecbff', identity: '#ffd9a0', emotion: '#ff9ed4', bodymotion: '#a0e0c0' };
+/** Per-kind presentation. Add an entry to give a new pipeline a curated look;
+ *  anything not listed still renders via KIND_FALLBACK (so the UI never breaks on
+ *  an unknown stream). label = human name shown in the lane header. */
+const KIND_META: Record<string, { icon: string; color: string; label: string }> = {
+  vision:     { icon: '👁', color: '#dfe',    label: 'vision' },
+  // STT and DIARIZATION are SEPARATE concepts everywhere, though they ride the same
+  // 'speech' snapshot: STT = the live transcript (parakeet/whisper); diarization =
+  // the background Gemini upgrade that adds speaker labels + a cleaner transcript.
+  stt:         { icon: '🎙', color: '#9ecbff', label: 'STT' },
+  diarization: { icon: '🗣', color: '#c9b6ff', label: 'diarization' },
+  identity:   { icon: '👤', color: '#ffd9a0', label: 'identity' },
+  emotion:    { icon: '😮', color: '#ff9ed4', label: 'emotion' },
+  bodymotion: { icon: '🤖', color: '#a0e0c0', label: 'bodymotion' },
+};
+const KIND_FALLBACK = { icon: '◇', color: '#bcd', label: '' };
+function kindMeta(kind: string) {
+  return KIND_META[kind] ?? { ...KIND_FALLBACK, label: kind };
+}
+/** Preferred lane/filter order; unknown (future) kinds sort after, alphabetically. */
+const KIND_ORDER = ['vision', 'stt', 'diarization', 'identity', 'emotion', 'bodymotion'];
+/** Stable color per diarized speaker index (S0, S1, …) so the eye tracks turns. */
+const SPEAKER_PALETTE = ['#7ee0a0', '#ffb86b', '#9ecbff', '#ff9ed4', '#d0a0ff', '#e0d060'];
+function SPEAKER_COLOR(n: number): string { return SPEAKER_PALETTE[n % SPEAKER_PALETTE.length]!; }
 
 /** Trim a model id to its recognizable short name (drops the org/quant suffix). */
 function MODEL_SHORT(name: string): string {
@@ -48,6 +82,21 @@ interface SummaryResult {
   counts: { vision: number; speech: number; identity: number; emotion: number; bodymotion: number; keyframes: number };
   prompt: { system: string; transcript: string };
   window?: { from: string; to: string }; // exact IST bounds the server filtered on
+}
+
+/** Read a param from the hash query (e.g. #perception?src=dock-redmi&hide=vision). */
+function hashParam(key: string): string | null {
+  const q = location.hash.split('?')[1];
+  return q ? new URLSearchParams(q).get(key) : null;
+}
+/** Merge params into the hash query, preserving the bare view id. Empty value drops
+ *  the key. Replaces history (no new entry per filter click). */
+function setHashParams(patch: Record<string, string>): void {
+  const [view, q] = location.hash.replace(/^#/, '').split('?');
+  const params = new URLSearchParams(q ?? '');
+  for (const [k, v] of Object.entries(patch)) { if (v) params.set(k, v); else params.delete(k); }
+  const qs = params.toString();
+  history.replaceState(null, '', `#${view}${qs ? `?${qs}` : ''}`);
 }
 
 /** now − ms, as IST ISO (+05:30) — matches the server's isoIst() exactly. */
@@ -66,6 +115,11 @@ interface TakeMeta {
   counts: { vision: number; speech: number; identity: number; emotion: number; bodymotion: number; keyframes: number };
 }
 
+/** Known-faces gallery: each person has N enrolled samples (descriptor + maybe a
+ *  photo). Legacy entries carry one shared photo, so most samples are photo-less. */
+interface GallerySample { index: number; photo?: string }
+interface GalleryPerson { name: string; samples: GallerySample[] }
+
 /** GET /api/perception/sidecars — health of the two MLX apps. */
 interface SidecarHealth {
   name: string; kind: string; url: string; up: boolean;
@@ -82,15 +136,35 @@ export function PerceptionStudio() {
   const [micLevel, setMicLevel] = useState(0);
   const [resolution, setResolution] = useState<320 | 512>(512);
   const [snaps, setSnaps] = useState<Snapshot[]>([]);
-  // Which SOURCE the whole tab is scoped to (feed + summarize): 'all' = merged feed
-  // across every producer, or a specific dock/stream (e.g. 'anne-bot' = the phone,
-  // 'console-perception' = this browser's own cam/mic stream). The processors always
-  // run on EVERY live stream (perception-pipeline §1a) — this just focuses the view.
-  const [source, setSource] = useState<string>('all');
+  // Which SINGLE source the tab is scoped to: a dock/stream label (e.g. 'dock-redmi'
+  // = a phone, 'console-perception' = this browser's cam/mic). One stream at a time —
+  // to watch several at once, open multiple browser tabs with ?src=… . Empty until a
+  // default is picked (first live dock, else this browser). Survives refresh via the
+  // URL. The processors always run on EVERY live stream; this just focuses the view.
+  const [source, setSource] = useState<string>(() => hashParam('src') ?? '');
   const [producers, setProducers] = useState<{ streamId: string; label: string; tracks: { audio: boolean; video: boolean } }[]>([]);
-  const [showVision, setShowVision] = useState(true);
-  const [showSpeech, setShowSpeech] = useState(true);
-  const [showIdentity, setShowIdentity] = useState(true);
+  // Timeline filter: the set of view-kinds currently HIDDEN (a checkbox per type,
+  // data-driven — any kind present can be toggled, incl. future ones). Empty = all on.
+  // Initialized from the URL so filters survive refreshes.
+  const [hiddenKinds, setHiddenKinds] = useState<Set<string>>(
+    () => new Set((hashParam('hide') ?? '').split(',').filter(Boolean)));
+  // Summarize controls are collapsed by default — a compact button that expands its
+  // window/model/keyframes inline, so the controls area stays small.
+  const [showSummarizer, setShowSummarizer] = useState(false);
+  // Sidecar detail panel (model/latency + start/stop/restart) — collapsed; the bar
+  // shows just status dots until opened.
+  const [showSidecars, setShowSidecars] = useState(false);
+  // Vision-instruction editor — collapsed by default (the prompt is long); a bar
+  // button reveals it below.
+  const [showInstruction, setShowInstruction] = useState(false);
+  // Known-faces gallery — collapsed; a bar button reveals it (enroll + manage).
+  const [showFaces, setShowFaces] = useState(false);
+  const [gallery, setGallery] = useState<GalleryPerson[]>([]);
+  const [galleryOpen, setGalleryOpen] = useState<Set<string>>(new Set());
+  // LIVE STT — pushed on the `perception` bus the instant the STT processor emits
+  // (final on VAD endpoint, + interims during a turn), so the studio shows speech in
+  // REAL TIME instead of waiting for the 1.5s snapshot poll. Keyed by dockId.
+  const [liveStt, setLiveStt] = useState<{ dockId: string; text: string; isFinal: boolean; ts: number } | null>(null);
   const [autoScroll, setAutoScroll] = useState(true);
   const [limitToWindow, setLimitToWindow] = useState(false);
   const [enrollName, setEnrollName] = useState('');
@@ -102,6 +176,11 @@ export function PerceptionStudio() {
   // the studio shows up/down + model, with start/stop/restart buttons.
   const [sidecars, setSidecars] = useState<SidecarHealth[]>([]);
   const [sidecarBusy, setSidecarBusy] = useState<string | null>(null); // "<name>:<op>"
+  // Background diarized-STT (Gemini) pipeline — a live runtime toggle (was an env
+  // var). enabled = re-transcribe each utterance online for a better diarized
+  // transcript; off = local Whisper only.
+  const [bgStt, setBgStt] = useState<{ enabled: boolean; model: string }>({ enabled: false, model: 'gemini-2.5-flash-lite' });
+  const [bgSttBusy, setBgSttBusy] = useState(false);
 
   const pcRef = useRef<RTCPeerConnection | null>(null);
   const mediaRef = useRef<MediaStream | null>(null);
@@ -109,18 +188,87 @@ export function PerceptionStudio() {
   const meterRef = useRef<number | null>(null);
   const feedRef = useRef<HTMLDivElement>(null);
 
-  // Load instruction once.
+  // Load instruction + bg-stt state once.
   useEffect(() => {
     api.get<{ base: string; extra: string }>('/perception/instruction')
       .then((r) => { setBase(r.base); setExtra(r.extra); }).catch(() => {});
+    api.get<{ enabled: boolean; model: string }>('/perception/bg-stt')
+      .then(setBgStt).catch(() => {});
+  }, []);
+
+  // Known-faces gallery (load once + after each enroll).
+  const loadGallery = useCallback(() => {
+    api.get<{ people?: GalleryPerson[]; names?: string[] }>('/perception/gallery')
+      .then((g) => setGallery(g.people ?? (g.names ?? []).map((name) => ({ name, samples: [] }))))
+      .catch(() => {});
+  }, []);
+  useEffect(loadGallery, [loadGallery]);
+  const forgetFace = useCallback((name: string) => {
+    api.post('/perception/gallery/remove', { name }).then(loadGallery).catch(() => {});
+  }, [loadGallery]);
+  const removeFaceSample = useCallback((name: string, index: number) => {
+    api.post('/perception/gallery/sample/remove', { name, index }).then(loadGallery).catch(() => {});
+  }, [loadGallery]);
+  // Move ONE photo to another person (or a NEW name → creates them). Lets you fix
+  // mislabeled captures + split a wrong photo out into the right person.
+  const reassignSample = useCallback(async (from: string, index: number) => {
+    const to = window.prompt(`This photo is actually… (type a name — new or existing):`)?.trim();
+    if (!to) return;
+    try {
+      await api.post('/perception/gallery/sample/reassign', { from, index, to });
+      loadGallery();
+    } catch { /* */ }
+  }, [loadGallery]);
+  const renameFace = useCallback(async (from: string) => {
+    const to = window.prompt(`Rename "${from}" to:`, from)?.trim();
+    if (!to || to.toLowerCase() === from.toLowerCase()) {
+      // same name, different case → still apply (canonicalizes display)
+      if (to && to !== from) { await api.post('/perception/gallery/rename', { from, to }).catch(() => {}); loadGallery(); }
+      return;
+    }
+    try {
+      const r = await api.post<{ ok: boolean; merged: boolean }>('/perception/gallery/rename', { from, to });
+      if (r.merged) window.alert(`Merged "${from}" into existing "${to}".`);
+      loadGallery();
+    } catch { /* */ }
+  }, [loadGallery]);
+  const toggleFace = useCallback((name: string) => setGalleryOpen((prev) => {
+    const n = new Set(prev); n.has(name) ? n.delete(name) : n.add(name); return n;
+  }), []);
+  const cleanGallery = useCallback(async () => {
+    // Drop photo-less samples too (the pre-fix descriptor-only ones) so every kept
+    // sample is viewable. They still work for matching, so warn about the tradeoff.
+    if (!window.confirm('Remove samples that have no photo?\n\nThey still help face matching, but can\'t be shown. Re-enrolling a person captures a photo on every angle.')) return;
+    try {
+      const r = await api.post<{ samples: number; people: number }>('/perception/gallery/clean', { photoless: true });
+      window.alert(r.samples || r.people ? `Removed ${r.samples} photo-less/corrupt sample(s), ${r.people} now-empty person(s).` : 'Nothing to remove — every sample has a photo.');
+      loadGallery();
+    } catch { /* */ }
+  }, [loadGallery]);
+
+  // Persist source + timeline filters in the URL so they survive a refresh.
+  useEffect(() => {
+    setHashParams({
+      src: source,
+      hide: [...hiddenKinds].join(','),
+    });
+  }, [source, hiddenKinds]);
+
+  // Flip the diarized-STT pipeline (or change its model) live.
+  const setBgSttState = useCallback(async (patch: { enabled?: boolean; model?: string }) => {
+    setBgSttBusy(true);
+    try { setBgStt(await api.post<{ enabled: boolean; model: string }>('/perception/bg-stt', patch)); }
+    catch { /* leave prior state */ }
+    finally { setBgSttBusy(false); }
   }, []);
 
   // Poll the LIVE snapshot ring (ordered by interval.from). Paused while a take is
   // loaded — then the feed holds the take's frozen records, not the live ring.
   useEffect(() => {
     if (activeTake) return; // showing frozen data; don't clobber it
+    if (!source) { setSnaps([]); return; } // no source picked yet
     let alive = true;
-    const q = `limit=400${source !== 'all' ? `&dock=${encodeURIComponent(source)}` : ''}`;
+    const q = `limit=400&dock=${encodeURIComponent(source)}`;
     const load = () => api.get<Snapshot[]>(`/perception/snapshots?${q}`)
       .then((r) => { if (alive) setSnaps(r); }).catch(() => {});
     load();
@@ -138,6 +286,15 @@ export function PerceptionStudio() {
     const t = setInterval(load, 3000);
     return () => { alive = false; clearInterval(t); };
   }, []);
+
+  // Default the source once producers are known (no ?src= in the URL): prefer the
+  // first live remote dock, else this browser. Single-stream view — no 'all'.
+  useEffect(() => {
+    if (source) return;
+    const dock = producers.find((p) => p.label !== STREAM_ID);
+    if (dock) setSource(dock.label);
+    else if (producers.some((p) => p.label === STREAM_ID)) setSource(STREAM_ID);
+  }, [producers, source]);
 
   // Poll sidecar health (every 4s — a /health ping each; cheap).
   useEffect(() => {
@@ -163,7 +320,7 @@ export function PerceptionStudio() {
 
   useEffect(() => {
     if (autoScroll && feedRef.current) feedRef.current.scrollTop = feedRef.current.scrollHeight;
-  }, [snaps, autoScroll, showVision, showSpeech, showIdentity]);
+  }, [snaps, autoScroll, hiddenKinds]);
 
   const onFeedScroll = useCallback(() => {
     const el = feedRef.current;
@@ -221,6 +378,17 @@ export function PerceptionStudio() {
   }, [client]);
 
   useEffect(() => () => stop(), [stop]);
+
+  // LIVE STT push — the perception bus emits a `transcript` result the moment STT
+  // produces text (no poll wait). Show it instantly in ● Now for the selected source.
+  useStationEvents('perception', useCallback((e) => {
+    if (e.kind === 'enroll-result') { loadGallery(); return; }
+    if (e.kind !== 'transcript') return;
+    const r = e.payload as { dockId?: string; ts?: number; payload?: { text?: string; isFinal?: boolean } } | null;
+    const text = r?.payload?.text?.trim();
+    if (!r?.dockId || !text) return;
+    setLiveStt({ dockId: r.dockId, text, isFinal: !!r.payload?.isFinal, ts: r.ts ?? 0 });
+  }, [loadGallery]));
 
   // SFU's producer-answer/ice for our one producer PC.
   useStationEvents('media', useCallback((e) => {
@@ -345,22 +513,40 @@ export function PerceptionStudio() {
       const r = await api.post<{ ok: boolean; reason?: string }>('/perception/enroll',
         { streamId: realStreamId, name });
       setEnrollMsg(r.ok ? `✓ enrolled ${name}` : `✗ ${r.reason ?? 'failed'}`);
-      if (r.ok) setEnrollName('');
+      if (r.ok) { setEnrollName(''); loadGallery(); } // reflect the new face immediately
     } catch { setEnrollMsg('✗ error'); }
     setTimeout(() => setEnrollMsg(''), 3000);
-  }, [enrollName, snaps]);
+  }, [enrollName, snaps, loadGallery]);
 
-  // The producer the tab is scoped to (source is keyed by stable LABEL). 'all' and
-  // this console's own browser stream ('console-perception', already shown as the
-  // local preview above) get no separate live tile; a remote dock gets one.
-  const selectedProducer = source === 'all' ? undefined : producers.find((p) => p.label === source);
-  const showLiveTile = !!selectedProducer && selectedProducer.label !== STREAM_ID;
+  // The remote dock currently in view (undefined for 'this browser' → local preview,
+  // or if the selected source isn't producing right now). Single stream — one tile.
+  const selectedProducer = source && source !== STREAM_ID
+    ? producers.find((p) => p.label === source) : undefined;
 
   // Ordered by start; latest of each modality for the live captions.
   const ordered = [...snaps].sort((a, b) =>
     a.interval.from < b.interval.from ? -1 : a.interval.from > b.interval.from ? 1 : 0);
-  const showByKind: Record<Snapshot['source']['kind'], boolean> =
-    { vision: showVision, speech: showSpeech, identity: showIdentity, emotion: showIdentity, bodymotion: showIdentity };
+
+  // Expand snapshots into TIMELINE ROWS. STT and DIARIZATION are separate row types
+  // even though they ride one 'speech' snapshot: a diarized utterance yields BOTH a
+  // 🎙 STT row (the live engine's transcript) AND a 🗣 diarization row (Gemini +
+  // speaker). Every other kind is one row, keyed by its own kind. `viewKind` is what
+  // the per-type filter + icon/model use.
+  const rows: { snap: Snapshot; viewKind: string }[] = ordered.flatMap((s) => {
+    if (s.source.kind === 'speech') {
+      const out = [{ snap: s, viewKind: 'stt' }];
+      if (s.payload.bgModel) out.push({ snap: s, viewKind: 'diarization' });
+      return out;
+    }
+    return [{ snap: s, viewKind: s.source.kind }];
+  });
+  // The view-kinds actually present (for the data-driven filter checkboxes), in
+  // preferred order, then any unknown kind alphabetically.
+  const presentKinds = [...new Set(rows.map((r) => r.viewKind))].sort((a, b) => {
+    const ia = KIND_ORDER.indexOf(a), ib = KIND_ORDER.indexOf(b);
+    if (ia !== -1 || ib !== -1) return (ia === -1 ? 99 : ia) - (ib === -1 ? 99 : ib);
+    return a.localeCompare(b);
+  });
   // When "limit to window" is on, show ONLY the records the LLM would get. After a
   // Summarize, pin to the FROZEN window the server actually used (pinnedWindow /
   // sumResult.window) so the log matches the summary exactly; before that, preview
@@ -369,11 +555,10 @@ export function PerceptionStudio() {
   const win = sumResult?.window ?? pinnedWindow;
   const from = win?.from ?? istIso(sumWindow);
   const to = win?.to ?? istIso(0);
-  const filtered = ordered
-    .filter((s) => showByKind[s.source.kind])
-    .filter((s) => !limitToWindow || (s.interval.to >= from && s.interval.from <= to));
+  const filtered = rows
+    .filter((r) => !hiddenKinds.has(r.viewKind))
+    .filter((r) => !limitToWindow || (r.snap.interval.to >= from && r.snap.interval.from <= to));
   const latestVision = [...ordered].reverse().find((s) => s.source.kind === 'vision');
-  const latestSpeech = [...ordered].reverse().find((s) => s.source.kind === 'speech');
   const istTime = (iso: string) => iso.slice(11, 19);
   const secs = (ms: number) => `${(ms / 1000).toFixed(1)}s`;
   const visionModel = latestVision?.model.name ?? snaps.find((s) => s.source.kind === 'vision')?.model.name ?? 'qwen2.5-vl';
@@ -386,144 +571,111 @@ export function PerceptionStudio() {
         @keyframes perc-indeterminate { 0% { left: -30px; } 100% { left: 80px; } }
         .perc-indeterminate { animation: perc-indeterminate 1s ease-in-out infinite; }
       `}</style>
-      {/* SIDECARS: the two out-of-process MLX apps — status + start/stop/restart. */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap',
-        padding: '8px 12px', background: '#0b0e16', border: '1px solid #1c2233', borderRadius: 10 }}>
-        <span style={{ fontSize: 11, letterSpacing: '.12em', textTransform: 'uppercase', opacity: 0.6 }}>⚙ Sidecars</span>
-        {sidecars.length === 0 && <span style={{ fontSize: 12, opacity: 0.5 }}>checking…</span>}
-        {sidecars.map((s) => {
-          const busy = sidecarBusy?.startsWith(`${s.name}:`);
-          const btn = (op: 'start' | 'stop' | 'restart', label: string, color: string) => (
-            <button key={op} disabled={!!sidecarBusy} onClick={() => void sidecarOp(s.name, op)}
-              title={op} style={{ padding: '2px 8px', borderRadius: 6, fontSize: 11, cursor: sidecarBusy ? 'default' : 'pointer',
-                background: '#10182a', color, border: '1px solid #1c2233', opacity: sidecarBusy ? 0.5 : 1 }}>{label}</button>
-          );
-          return (
-            <div key={s.name} style={{ display: 'flex', alignItems: 'center', gap: 8,
-              padding: '4px 8px', background: '#10141f', borderRadius: 8, border: '1px solid #161c2b' }}>
-              <span style={{ width: 8, height: 8, borderRadius: '50%',
-                background: s.up ? '#3ad29f' : '#f6555a', boxShadow: s.up ? '0 0 6px #3ad29f' : 'none' }} />
-              <span style={{ fontSize: 12, fontWeight: 600, color: '#cfe' }}>{s.name === 'vision' ? '👁' : '🎙'} {s.name}</span>
-              <span style={{ fontSize: 11, opacity: 0.55 }}>
-                {busy ? <b style={{ color: '#ffc454' }}>{sidecarBusy!.split(':')[1]}…</b>
-                  : s.up ? `${(s.model ?? s.kind).split('/').pop()} · ${s.latencyMs}ms`
-                  : (s.error ?? 'down')}
-              </span>
-              {s.up
-                ? <>{btn('restart', '↻', '#9cd')}{btn('stop', '■', '#f88')}</>
-                : btn('start', '▶ start', '#6f6')}
-            </div>
-          );
-        })}
-      </div>
-      {/* SOURCE selector — the focus for the WHOLE tab (live tile + captions +
-          snapshot feed + summarize). Pick a dock to see everything for it, or
-          '🖥 this browser' to publish + perceive this laptop's own cam/mic.
-          Processors run on ALL live streams regardless (perception-pipeline §1a);
-          this just focuses the view. */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap',
-        padding: '8px 12px', background: '#0b0e16', border: '1px solid #1c2233', borderRadius: 10 }}>
-        <span style={{ fontSize: 11, letterSpacing: '.12em', textTransform: 'uppercase', opacity: 0.6 }}>Source</span>
-        <SourceChip active={source === 'all'} onClick={() => setSource('all')}>🌐 all</SourceChip>
+      {/* ONE compact control bar. Left: SOURCE chips (the primary control — what you're
+          watching). Right (secondary): Summarize, the diarization toggle, and tiny
+          sidecar status dots. Everything that expands (Summarize options, takes,
+          result) drops BELOW this bar, only when opened — so the resting height is one
+          row, not three stacked panels. */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap',
+        padding: '6px 10px', background: '#0b0e16', border: '1px solid #1c2233', borderRadius: 10 }}>
+        {/* SOURCE chips — one live stream at a time. (Watch several → open more tabs
+            with ?src=… ; there is no merged 'all' view.) */}
         {producers.filter((p) => p.label !== STREAM_ID).map((p) => (
           <SourceChip key={p.streamId} active={source === p.label} onClick={() => setSource(p.label)}
             title={`${p.tracks.audio ? '🎙 audio ' : ''}${p.tracks.video ? '📹 video' : ''}`}>
             📱 {p.label}{p.tracks.video ? ' 📹' : ''}{p.tracks.audio ? ' 🎙' : ''}
           </SourceChip>
         ))}
-        {/* This browser's own stream — selecting it focuses the local preview below. */}
         <SourceChip active={source === STREAM_ID} onClick={() => setSource(STREAM_ID)}
           title={publishing ? 'this laptop is streaming' : 'start the stream below to feed it'}>
           🖥 this browser{publishing ? ' ●' : ''}
         </SourceChip>
-        {selectedProducer === undefined && source !== 'all' && source !== STREAM_ID &&
+        {!selectedProducer && source && source !== STREAM_ID &&
           <span style={{ fontSize: 11, color: '#ffc454' }} title="The selected source isn't producing right now">⚠ offline</span>}
+
+        {/* secondary controls, pushed right — compact, small font, each labeled */}
+        <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', fontSize: 11 }}>
+          {/* VISION INSTRUCTION — toggles the prompt editor below the bar */}
+          <button onClick={() => setShowInstruction((v) => !v)}
+            title="Steer the vision model's instruction"
+            style={{ padding: '4px 10px', borderRadius: 8, fontSize: 11, cursor: 'pointer',
+              background: showInstruction ? '#1e3a5f' : '#13243a', color: '#cfe', border: '1px solid #2c4a6f' }}>
+            👁 vision prompt {showInstruction ? '▾' : '▸'}
+          </button>
+          {/* KNOWN FACES — enroll + manage the gallery, below the bar */}
+          <button onClick={() => setShowFaces((v) => !v)}
+            title="Enrolled faces — enroll the current source, view/forget"
+            style={{ padding: '4px 10px', borderRadius: 8, fontSize: 11, cursor: 'pointer',
+              background: showFaces ? '#1e3a5f' : '#13243a', color: '#cfe', border: '1px solid #2c4a6f' }}>
+            👤 faces ({gallery.length}) {showFaces ? '▾' : '▸'}
+          </button>
+          {/* SUMMARIZE — toggles its options/result below the bar */}
+          <button onClick={() => setShowSummarizer((v) => !v)} disabled={sumBusy}
+            title="Summarize the recent window (expand for window/model/keyframes)"
+            style={{ padding: '4px 10px', borderRadius: 8, fontSize: 11, cursor: sumBusy ? 'default' : 'pointer',
+              background: showSummarizer ? '#1e3a5f' : '#13243a', color: '#cfe', border: '1px solid #2c4a6f' }}>
+            🧠 summarize {showSummarizer ? '▾' : '▸'}
+          </button>
+          {/* DIARIZATION toggle */}
+          <button disabled={bgSttBusy} onClick={() => void setBgSttState({ enabled: !bgStt.enabled })}
+            title={bgStt.enabled ? `diarization ON (${bgStt.model}) — click to turn off` : 'diarization OFF (local STT only) — click to turn on'}
+            style={{ display: 'flex', alignItems: 'center', gap: 5, padding: '4px 10px', borderRadius: 8, fontSize: 11, cursor: bgSttBusy ? 'default' : 'pointer',
+              background: bgStt.enabled ? '#13301f' : '#10182a', color: bgStt.enabled ? '#7ee0a0' : '#9cd',
+              border: `1px solid ${bgStt.enabled ? '#2c6f4a' : '#1c2233'}` }}>
+            <span style={{ width: 7, height: 7, borderRadius: '50%', background: bgStt.enabled ? '#3ad29f' : '#5a6172' }} />
+            🗣 diarize {bgSttBusy ? '…' : bgStt.enabled ? 'on' : 'off'}
+          </button>
+          {/* SIDECARS — status dots + label; click for the full panel */}
+          <button onClick={() => setShowSidecars((v) => !v)} title="sidecar health (vision / speech) — click for controls"
+            style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '4px 10px', borderRadius: 8, fontSize: 11,
+              background: '#10141f', color: '#9ab', border: '1px solid #161c2b', cursor: 'pointer' }}>
+            ⚙ sidecars {sidecars.length === 0 ? <span style={{ opacity: 0.5 }}>…</span> : sidecars.map((s) => (
+              <span key={s.name} style={{ display: 'flex', alignItems: 'center', gap: 2 }}>
+                <span style={{ width: 7, height: 7, borderRadius: '50%', background: s.up ? '#3ad29f' : '#f6555a' }} />
+                {s.name === 'vision' ? '👁' : '🎙'}
+              </span>
+            ))} {showSidecars ? '▾' : '▸'}
+          </button>
+        </div>
       </div>
 
-      {/* Selected dock's LIVE tile — its own recvonly stream (video + per-tile audio
-          + enroll). Only for a remote dock; 'this browser' shows the local preview. */}
-      {showLiveTile && selectedProducer && (
-        <div style={{ maxWidth: 480 }}>
-          <LiveTile streamId={selectedProducer.streamId} label={selectedProducer.label} />
+      {/* SIDECAR panel — expanded on demand: model/latency + start/stop/restart. */}
+      {showSidecars && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap',
+          padding: '8px 12px', background: '#0b0e16', border: '1px solid #1c2233', borderRadius: 10 }}>
+          <span style={{ fontSize: 11, letterSpacing: '.12em', textTransform: 'uppercase', opacity: 0.6 }}>⚙ Sidecars</span>
+          {sidecars.map((s) => {
+            const busy = sidecarBusy?.startsWith(`${s.name}:`);
+            const btn = (op: 'start' | 'stop' | 'restart', label: string, color: string) => (
+              <button key={op} disabled={!!sidecarBusy} onClick={() => void sidecarOp(s.name, op)}
+                title={op} style={{ padding: '2px 8px', borderRadius: 6, fontSize: 11, cursor: sidecarBusy ? 'default' : 'pointer',
+                  background: '#10182a', color, border: '1px solid #1c2233', opacity: sidecarBusy ? 0.5 : 1 }}>{label}</button>
+            );
+            return (
+              <div key={s.name} style={{ display: 'flex', alignItems: 'center', gap: 8,
+                padding: '4px 8px', background: '#10141f', borderRadius: 8, border: '1px solid #161c2b' }}>
+                <span style={{ width: 8, height: 8, borderRadius: '50%',
+                  background: s.up ? '#3ad29f' : '#f6555a', boxShadow: s.up ? '0 0 6px #3ad29f' : 'none' }} />
+                <span style={{ fontSize: 12, fontWeight: 600, color: '#cfe' }}>{s.name === 'vision' ? '👁' : '🎙'} {s.name}</span>
+                <span style={{ fontSize: 11, opacity: 0.55 }}>
+                  {busy ? <b style={{ color: '#ffc454' }}>{sidecarBusy!.split(':')[1]}…</b>
+                    : s.up ? `${(s.model ?? s.kind).split('/').pop()} · ${s.latencyMs}ms`
+                    : (s.error ?? 'down')}
+                </span>
+                {s.up
+                  ? <>{btn('restart', '↻', '#9cd')}{btn('stop', '■', '#f88')}</>
+                  : btn('start', '▶ start', '#6f6')}
+              </div>
+            );
+          })}
         </div>
       )}
 
-      {/* TOP: live video + publish | instruction + live captions */}
-      <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap' }}>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 8, width: 360 }}>
-          <video ref={videoRef} muted playsInline
-            style={{ width: 360, height: 270, background: '#070a11', borderRadius: 10, objectFit: 'cover', display: 'block' }} />
-          <button onClick={publishing ? stop : start}
-            style={{ padding: '8px 14px', borderRadius: 8, background: publishing ? '#3a1320' : '#13243a', color: '#cfe', border: '1px solid #1c2233' }}>
-            {publishing ? '■ Stop stream' : '● Start stream (mic + cam over WebRTC)'}
-          </button>
-          {publishing && (
-            <div style={{ fontSize: 12, display: 'flex', alignItems: 'center', gap: 10 }}>
-              <span>📹 {tracks.video ? <b style={{ color: '#6f6' }}>on</b> : <b style={{ color: '#f66' }}>off</b>}</span>
-              <span>🎙 {tracks.audio ? <b style={{ color: '#6f6' }}>on</b> : <b style={{ color: '#f66' }}>off</b>}</span>
-              <div style={{ flex: 1, height: 6, background: '#1c2233', borderRadius: 3, overflow: 'hidden' }}>
-                <div style={{ height: '100%', width: `${Math.min(100, micLevel * 300)}%`, background: '#6f6', transition: 'width 80ms' }} />
-              </div>
-            </div>
-          )}
-          {/* model is fixed (qwen); resolution is real — it changes what the model sees */}
-          <div style={{ display: 'flex', alignItems: 'center', gap: 14, fontSize: 12 }}>
-            <span style={{ opacity: 0.6 }}>model: <b style={{ color: '#cfe' }}>{visionModel}</b></span>
-            <Toggle label="Resolution" value={String(resolution)}
-              options={[['320', '320px'], ['512', '512px']]}
-              onChange={(v) => switchResolution(Number(v) as 320 | 512)} />
-          </div>
-          {/* Enroll a face → name (so vision says the name, not "a person") */}
-          {publishing && (
-            <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12 }}>
-              <input value={enrollName} onChange={(e) => setEnrollName(e.target.value)}
-                placeholder="name this face…"
-                style={{ flex: 1, background: '#0b0e16', color: '#cfe', border: '1px solid #1c2233', borderRadius: 6, padding: '4px 8px', fontSize: 12 }} />
-              <button onClick={enroll}
-                style={{ padding: '4px 10px', borderRadius: 6, background: '#13243a', color: '#cfe', border: '1px solid #1c2233', cursor: 'pointer' }}>
-                Enroll
-              </button>
-              {enrollMsg && <span style={{ color: enrollMsg.startsWith('✓') ? '#6f6' : '#f88' }}>{enrollMsg}</span>}
-            </div>
-          )}
-        </div>
-
-        <div style={{ flex: 1, minWidth: 280, display: 'flex', flexDirection: 'column', gap: 6 }}>
-          <div className="side-section-label">Vision instruction</div>
-          <div style={{ fontSize: 12, opacity: 0.6, lineHeight: 1.5 }}>{base}</div>
-          <textarea value={extra} onChange={(e) => setExtra(e.target.value)}
-            placeholder="Steer it… e.g. 'flag when he holds a cup' or 'watch the door'"
-            style={{ minHeight: 56, background: '#0b0e16', color: '#cfe', border: '1px solid #1c2233', borderRadius: 8, padding: 8, fontSize: 13 }} />
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-            <button onClick={saveInstruction}
-              style={{ padding: '6px 12px', borderRadius: 8, background: '#13243a', color: '#cfe', border: '1px solid #1c2233' }}>
-              Apply to live stream
-            </button>
-            {saved && <span style={{ color: '#6f6', fontSize: 13 }}>✓ Applied</span>}
-          </div>
-          <div style={{ marginTop: 6 }}>
-            <div className="side-section-label">🎙 Latest speech</div>
-            <div style={{ marginTop: 4, padding: '10px 12px', minHeight: 40, background: '#0b0e16',
-              border: '1px solid #1c2233', borderRadius: 8, fontSize: 15, lineHeight: 1.4,
-              color: latestSpeech ? '#9ecbff' : '#566' }}>
-              {latestSpeech ? latestSpeech.payload.text : 'waiting for speech…'}
-            </div>
-          </div>
-          <div>
-            <div className="side-section-label">👁 Latest vision</div>
-            <div style={{ marginTop: 4, padding: '10px 12px', minHeight: 56, background: '#0b0e16',
-              border: '1px solid #1c2233', borderRadius: 8, fontSize: 14, lineHeight: 1.45,
-              color: latestVision ? '#dfe' : '#566' }}>
-              {latestVision ? latestVision.payload.text : 'waiting for video…'}
-            </div>
-          </div>
-        </div>
-      </div>
-
-      {/* SUMMARIZE — the playground: window + model + keyframes, full prompt shown */}
-      <div style={{ border: '1px solid #1c2233', borderRadius: 10, padding: 12, background: '#0a0d14' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap' }}>
-          <div className="side-section-label">🧠 Summarize</div>
+      {/* SUMMARIZE options + result — only when expanded, dropping below the bar. */}
+      {(showSummarizer || sumBusy || sumResult || takes.length > 0) && (
+      <div style={{ border: '1px solid #1c2233', borderRadius: 10, padding: '8px 12px', background: '#0a0d14' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+          {showSummarizer && <>
           <div style={{ display: 'flex', gap: 2, background: '#0b0e16', borderRadius: 8, padding: 2 }}>
             {WINDOWS.map(([ms, lbl]) => (
               <button key={ms} onClick={() => pickWindow(ms)}
@@ -551,6 +703,7 @@ export function PerceptionStudio() {
             style={{ padding: '6px 12px', borderRadius: 8, background: 'transparent', color: '#9cb', border: '1px solid #1c3322', cursor: sumBusy ? 'default' : 'pointer', fontSize: 12, opacity: sumBusy ? 0.4 : 1 }}>
             💾 Save take
           </button>
+          </>}
           {/* PROGRESS indicator — which phase the summarize is in (so it's never a
               silent wait). Animated dot + label + indeterminate bar. */}
           {sumBusy && (
@@ -631,26 +784,107 @@ export function PerceptionStudio() {
           </div>
         )}
       </div>
+      )}
 
+      {/* VISION INSTRUCTION — collapsed by default (long prompt); toggled from the bar. */}
+      {showInstruction && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6, padding: '10px 12px',
+          background: '#0a0d14', border: '1px solid #1c2233', borderRadius: 10 }}>
+          <div className="side-section-label">👁 Vision instruction</div>
+          <div style={{ fontSize: 12, opacity: 0.6, lineHeight: 1.5 }}>{base}</div>
+          <textarea value={extra} onChange={(e) => setExtra(e.target.value)}
+            placeholder="Steer it… e.g. 'flag when he holds a cup' or 'watch the door'"
+            style={{ minHeight: 56, background: '#0b0e16', color: '#cfe', border: '1px solid #1c2233', borderRadius: 8, padding: 8, fontSize: 13 }} />
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <button onClick={saveInstruction}
+              style={{ padding: '6px 12px', borderRadius: 8, background: '#13243a', color: '#cfe', border: '1px solid #1c2233' }}>
+              Apply to live stream
+            </button>
+            {saved && <span style={{ color: '#6f6', fontSize: 13 }}>✓ Applied</span>}
+            <span style={{ marginLeft: 'auto', fontSize: 12, opacity: 0.6 }}>vision model: <b style={{ color: '#cfe' }}>{visionModel}</b></span>
+          </div>
+        </div>
+      )}
+
+      {/* KNOWN FACES — collapsible: enroll the current source + manage the gallery. */}
+      {showFaces && (
+        <KnownFaces
+          gallery={gallery} open={galleryOpen} onToggle={toggleFace}
+          onForget={forgetFace} onRemoveSample={removeFaceSample} onClean={cleanGallery} onRename={renameFace} onReassign={reassignSample}
+          enrollName={enrollName} setEnrollName={setEnrollName} onEnroll={enroll} enrollMsg={enrollMsg}
+          canEnroll={!!snaps.length} />
+      )}
+
+      {/* VIDEO + ● NOW side by side — the live tile (selected dock, or this browser's
+          own publish preview) on the left; the live per-stream read on the right. */}
+      <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', alignItems: 'flex-start' }}>
+        {source === STREAM_ID ? (
+          // this browser: the local cam/mic preview + publish controls
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8, width: 420 }}>
+            <video ref={videoRef} muted playsInline
+              style={{ width: 420, aspectRatio: '4 / 3', background: '#070a11', borderRadius: 10, objectFit: 'cover', display: 'block' }} />
+            <button onClick={publishing ? stop : start}
+              style={{ padding: '8px 14px', borderRadius: 8, background: publishing ? '#3a1320' : '#13243a', color: '#cfe', border: '1px solid #1c2233' }}>
+              {publishing ? '■ Stop stream' : '● Start stream (mic + cam over WebRTC)'}
+            </button>
+            {publishing && (
+              <div style={{ fontSize: 12, display: 'flex', alignItems: 'center', gap: 10 }}>
+                <span>📹 {tracks.video ? <b style={{ color: '#6f6' }}>on</b> : <b style={{ color: '#f66' }}>off</b>}</span>
+                <span>🎙 {tracks.audio ? <b style={{ color: '#6f6' }}>on</b> : <b style={{ color: '#f66' }}>off</b>}</span>
+                <div style={{ flex: 1, height: 6, background: '#1c2233', borderRadius: 3, overflow: 'hidden' }}>
+                  <div style={{ height: '100%', width: `${Math.min(100, micLevel * 300)}%`, background: '#6f6', transition: 'width 80ms' }} />
+                </div>
+              </div>
+            )}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 14, fontSize: 12 }}>
+              <Toggle label="Resolution" value={String(resolution)}
+                options={[['320', '320px'], ['512', '512px']]}
+                onChange={(v) => switchResolution(Number(v) as 320 | 512)} />
+            </div>
+            {/* enrollment moved to the 👤 faces control up top */}
+          </div>
+        ) : selectedProducer ? (
+          // a dock: its recvonly live tile (video + per-tile audio + enroll)
+          <div style={{ width: 420, maxWidth: '100%' }}>
+            <LiveTile streamId={selectedProducer.streamId} label={selectedProducer.label} />
+          </div>
+        ) : (
+          <div style={{ width: 420, aspectRatio: '4 / 3', display: 'grid', placeItems: 'center',
+            background: '#0b0e16', border: '1px solid #1c2233', borderRadius: 10, color: '#566', fontSize: 13 }}>
+            {producers.length ? 'pick a source above' : 'no stream yet'}
+          </div>
+        )}
+
+        {/* NOW — the live at-a-glance: latest result per active stream, beside the
+            video. liveStt is the REAL-TIME STT push (no poll wait) for this source. */}
+        <div style={{ flex: 1, minWidth: 280 }}>
+          <LiveNow snaps={ordered} liveStt={liveStt && liveStt.dockId === source ? liveStt : null} />
+        </div>
+      </div>
       {/* OUTPUT: the single snapshot timeline (vision + speech, by start, IST) */}
       <div>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8, flexWrap: 'wrap', gap: 8 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
             <div className="side-section-label">
               Snapshots ({filtered.length}) · by start · IST
-              {source !== 'all' && <span style={{ opacity: 0.6 }}> · {source === STREAM_ID ? '🖥 this browser' : `📱 ${source}`}</span>}
+              {source && <span style={{ opacity: 0.6 }}> · {source === STREAM_ID ? '🖥 this browser' : `📱 ${source}`}</span>}
             </div>
           </div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 14, fontSize: 12, opacity: 0.85 }}>
-            <label style={{ display: 'flex', alignItems: 'center', gap: 5, cursor: 'pointer' }}>
-              <input type="checkbox" checked={showVision} onChange={(e) => setShowVision(e.target.checked)} /> 👁 vision
-            </label>
-            <label style={{ display: 'flex', alignItems: 'center', gap: 5, cursor: 'pointer' }}>
-              <input type="checkbox" checked={showSpeech} onChange={(e) => setShowSpeech(e.target.checked)} /> 🎙 speech
-            </label>
-            <label style={{ display: 'flex', alignItems: 'center', gap: 5, cursor: 'pointer' }}>
-              <input type="checkbox" checked={showIdentity} onChange={(e) => setShowIdentity(e.target.checked)} /> 👤 who
-            </label>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12, fontSize: 12, opacity: 0.85, flexWrap: 'wrap' }}>
+            {/* ONE checkbox per row type present (data-driven — STT, diarization,
+                vision, identity, emotion, bodymotion, + any future kind). */}
+            {presentKinds.map((k) => {
+              const km = kindMeta(k);
+              return (
+                <label key={k} style={{ display: 'flex', alignItems: 'center', gap: 5, cursor: 'pointer', color: km.color }}>
+                  <input type="checkbox" checked={!hiddenKinds.has(k)}
+                    onChange={(e) => setHiddenKinds((prev) => {
+                      const n = new Set(prev); e.target.checked ? n.delete(k) : n.add(k); return n;
+                    })} />
+                  {km.icon} {km.label}
+                </label>
+              );
+            })}
             <label style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}
               title={win ? `Pinned to the window the last Summarize used: ${win.from.slice(11,19)}–${win.to.slice(11,19)} IST` : 'Show ONLY records inside the selected Summarize window — exactly what goes to the LLM'}>
               <input type="checkbox" checked={limitToWindow} onChange={(e) => setLimitToWindow(e.target.checked)} />
@@ -674,25 +908,51 @@ export function PerceptionStudio() {
             background: '#0b0e16', borderRadius: 10, padding: 10, fontSize: 13, lineHeight: 1.5 }}>
           {filtered.length === 0
             ? <div className="empty">No snapshots yet. Start the stream — vision runs latency-bound, speech per utterance.</div>
-            : filtered.map((s, i) => {
+            : filtered.map(({ snap: s, viewKind }, i) => {
               const p = s.payload;
+              const m = kindMeta(viewKind);
+              const isDiar = viewKind === 'diarization';
+              const isStt = viewKind === 'stt';
+              // model per row type: diarization → the Gemini engine; everything else
+              // (incl. STT) → the snapshot's own model.
+              const modelName = isDiar ? (p.diarizeModel ?? 'gemini') : s.model.name;
               const conf = p.confidence != null ? `${Math.round(p.confidence * 100)}%` : null;
+              // STT row shows the RAW transcript (preserved); diarization row shows the
+              // upgraded text. When they're identical, the diarization row's value was
+              // ONLY the speaker label — say so instead of repeating the words.
+              const sttText = p.sttText ?? p.text;
+              const diarSameWords = isDiar && p.text.trim() === sttText.trim();
               return (
-                <div key={i} style={{ display: 'flex', gap: 8, color: KIND_COLOR[s.source.kind], alignItems: 'baseline' }}>
-                  <span style={{ opacity: 0.45, fontVariantNumeric: 'tabular-nums', width: 138, fontSize: 12 }}>
-                    {istTime(s.interval.from)}–{istTime(s.interval.to)}
-                    <span style={{ opacity: 0.6 }}> ({secs(s.interval.durationMs)})</span>
+                <div key={i} style={{ display: 'flex', gap: 8, color: m.color, alignItems: 'baseline',
+                  // the diarization row is a CHILD of its STT row — indent + dim so the
+                  // pair reads as "utterance → enriched by diarization", not two equals.
+                  ...(isDiar ? { opacity: 0.82, paddingLeft: 14 } : {}) }}>
+                  <span style={{ opacity: 0.45, fontVariantNumeric: 'tabular-nums', width: isDiar ? 124 : 138, fontSize: 12 }}>
+                    {isDiar
+                      ? <span style={{ opacity: 0.7 }}>↳ diarized</span>
+                      : <>{istTime(s.interval.from)}–{istTime(s.interval.to)}<span style={{ opacity: 0.6 }}> ({secs(s.interval.durationMs)})</span></>}
                   </span>
-                  <span style={{ width: 18 }}>{KIND_ICON[s.source.kind]}</span>
-                  {/* WHAT MODEL produced this (the actual model in use) */}
+                  <span style={{ width: 18 }} title={m.label}>{m.icon}</span>
+                  {/* WHAT MODEL produced this row */}
                   <span title={s.model.endpoint ?? ''}
                     style={{ width: 116, opacity: 0.5, fontSize: 11, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                    {MODEL_SHORT(s.model.name)}
+                    {MODEL_SHORT(modelName)}
                   </span>
                   <span style={{ flex: 1 }}>
-                    {p.text}
-                    {s.source.kind === 'speech' && p.lowConfidence && (
-                      <span title="Whisper flagged this transcript as shaky (sent to the LLM tagged [low-confidence])"
+                    {/* DIARIZATION row: speaker tag (S0/S1/…) from the Gemini upgrade. */}
+                    {isDiar && p.speaker != null && (
+                      <span title="diarized speaker" style={{ marginRight: 6, fontSize: 11, fontWeight: 700, color: SPEAKER_COLOR(p.speaker) }}>
+                        S{p.speaker}
+                      </span>
+                    )}
+                    {isDiar
+                      ? (diarSameWords
+                          ? <span style={{ opacity: 0.5, fontStyle: 'italic' }}>{p.speaker != null ? '(same words)' : p.text}</span>
+                          : p.text)
+                      : sttText}
+                    {/* low-confidence is an STT (Whisper/parakeet) tell — only on the STT row. */}
+                    {isStt && p.lowConfidence && (
+                      <span title="the STT engine flagged this transcript as shaky (sent to the LLM tagged [low-confidence])"
                         style={{ marginLeft: 6, fontSize: 10, color: '#e0a060', border: '1px solid #5a3d20', borderRadius: 4, padding: '0 4px' }}>
                         low-conf
                       </span>
@@ -701,10 +961,10 @@ export function PerceptionStudio() {
                   {/* PERF + CONFIDENCE meta, right-aligned, tabular */}
                   <span style={{ fontVariantNumeric: 'tabular-nums', fontSize: 10, opacity: 0.5, textAlign: 'right', whiteSpace: 'nowrap', display: 'flex', gap: 8 }}>
                     {conf && <span title="match/expression confidence">◷ {conf}</span>}
-                    {p.inferMs != null && <span title="inference latency (sidecar/in-process compute)">⚡{fmtMs(p.inferMs)}</span>}
-                    {s.source.kind === 'vision' && p.frames != null && <span title="frames sampled this window">🎞{p.frames}</span>}
-                    {s.source.kind === 'speech' && p.noSpeechProb != null && (
-                      <span title="Whisper metrics — avg_logprob / no_speech_prob / compression_ratio">
+                    {!isDiar && p.inferMs != null && <span title="inference latency (sidecar/in-process compute)">⚡{fmtMs(p.inferMs)}</span>}
+                    {viewKind === 'vision' && p.frames != null && <span title="frames sampled this window">🎞{p.frames}</span>}
+                    {isStt && p.noSpeechProb != null && (
+                      <span title="STT metrics — avg_logprob / no_speech_prob / compression_ratio">
                         lp{p.avgLogprob?.toFixed(2)} ns{p.noSpeechProb.toFixed(2)} cr{p.compressionRatio?.toFixed(1)}
                       </span>
                     )}
@@ -714,6 +974,177 @@ export function PerceptionStudio() {
             })}
         </div>
       </div>
+    </div>
+  );
+}
+
+/** NOW — compact live read: the latest result per active stream. STT and diarization
+ *  shown separately (diarization shows its speaker). Data-driven: any present kind
+ *  (incl. future ones) gets a line; nothing present → a waiting hint. */
+function LiveNow({ snaps, liveStt }: {
+  snaps: Snapshot[];
+  liveStt?: { text: string; isFinal: boolean } | null;
+}) {
+  // latest snapshot per view-kind (speech → both stt + its diarized form).
+  const latest = new Map<string, Snapshot>();
+  for (const s of snaps) {
+    if (s.source.kind === 'speech') {
+      latest.set('stt', s);
+      if (s.payload.bgModel) latest.set('diarization', s);
+    } else latest.set(s.source.kind, s);
+  }
+  const kinds = [...latest.keys()].sort((a, b) => {
+    const ia = KIND_ORDER.indexOf(a), ib = KIND_ORDER.indexOf(b);
+    if (ia !== -1 || ib !== -1) return (ia === -1 ? 99 : ia) - (ib === -1 ? 99 : ib);
+    return a.localeCompare(b);
+  });
+  // The STT line prefers the LIVE push (instant) over the polled snapshot (≤1.5s old).
+  const sttMeta = kindMeta('stt');
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 4, padding: '8px 10px',
+      background: '#0b0e16', border: '1px solid #1c2233', borderRadius: 10 }}>
+      <div className="side-section-label" style={{ marginBottom: 2 }}>● Now</div>
+      {/* Real-time STT line — shown the instant the bus pushes it (even before the
+          poll). A non-final (interim) transcript is dimmed + marked '…'. */}
+      {liveStt && (
+        <div style={{ display: 'flex', gap: 8, alignItems: 'baseline', color: sttMeta.color, fontSize: 14, lineHeight: 1.35 }}>
+          <span title="live STT" style={{ width: 20 }}>{sttMeta.icon}</span>
+          <span style={{ flex: 1, opacity: liveStt.isFinal ? 1 : 0.7, fontStyle: liveStt.isFinal ? 'normal' : 'italic' }}>
+            {liveStt.text}{!liveStt.isFinal && ' …'}
+          </span>
+          <span style={{ fontSize: 9, opacity: 0.5, color: '#7ee0a0' }}>live</span>
+        </div>
+      )}
+      {kinds.length === 0 && !liveStt
+        ? <div style={{ fontSize: 13, color: '#566' }}>waiting for the stream…</div>
+        : kinds.map((k) => {
+          // the live push already covers STT — skip the (staler) polled STT line.
+          if (k === 'stt' && liveStt) return null;
+          const s = latest.get(k)!;
+          const m = kindMeta(k);
+          const p = s.payload;
+          const text = k === 'stt' ? (p.sttText ?? p.text) : p.text;
+          return (
+            <div key={k} style={{ display: 'flex', gap: 8, alignItems: 'baseline', color: m.color, fontSize: 14, lineHeight: 1.35 }}>
+              <span title={m.label} style={{ width: 20 }}>{m.icon}</span>
+              <span style={{ flex: 1 }}>
+                {k === 'diarization' && p.speaker != null && <b style={{ marginRight: 5, color: SPEAKER_COLOR(p.speaker) }}>S{p.speaker}</b>}
+                {text || <span style={{ opacity: 0.4 }}>…</span>}
+              </span>
+              <span style={{ fontSize: 10, opacity: 0.35, fontVariantNumeric: 'tabular-nums' }}>{s.interval.from.slice(11, 19)}</span>
+            </div>
+          );
+        })}
+    </div>
+  );
+}
+
+/** KNOWN FACES — enroll the current source + manage the gallery. Photo-less samples
+ *  (valid descriptors with no captured image — from "yes that's me" confirmations)
+ *  are NOT shown as empty 👤 boxes; they're summarized as a "+N no photo" note. */
+function KnownFaces({ gallery, open, onToggle, onForget, onRemoveSample, onClean, onRename, onReassign, enrollName, setEnrollName, onEnroll, enrollMsg, canEnroll }: {
+  gallery: GalleryPerson[]; open: Set<string>; onToggle: (n: string) => void;
+  onForget: (n: string) => void; onRemoveSample: (n: string, i: number) => void; onClean: () => void;
+  onRename: (n: string) => void; onReassign: (n: string, i: number) => void;
+  enrollName: string; setEnrollName: (s: string) => void; onEnroll: () => void; enrollMsg: string;
+  canEnroll: boolean;
+}) {
+  // Lightbox: the base64 photo currently zoomed (null = closed). Esc closes it.
+  const [zoom, setZoom] = useState<string | null>(null);
+  useEffect(() => {
+    if (!zoom) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setZoom(null); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [zoom]);
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 10, padding: '10px 12px',
+      background: '#0a0d14', border: '1px solid #1c2233', borderRadius: 10 }}>
+      {/* Enroll the face currently on the selected source. */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+        <div className="side-section-label">👤 Known faces ({gallery.length})</div>
+        <input value={enrollName} onChange={(e) => setEnrollName(e.target.value)}
+          onKeyDown={(e) => { if (e.key === 'Enter') onEnroll(); }}
+          placeholder={canEnroll ? 'name the face on screen…' : 'start/select a stream first'}
+          disabled={!canEnroll}
+          style={{ width: 200, background: '#0b0e16', color: '#cfe', border: '1px solid #1c2233', borderRadius: 6, padding: '4px 8px', fontSize: 12, opacity: canEnroll ? 1 : 0.5 }} />
+        <button onClick={onEnroll} disabled={!canEnroll || !enrollName.trim()}
+          style={{ padding: '4px 12px', borderRadius: 6, fontSize: 12, background: '#13243a', color: '#cfe', border: '1px solid #1c2233',
+            cursor: canEnroll && enrollName.trim() ? 'pointer' : 'default', opacity: canEnroll && enrollName.trim() ? 1 : 0.5 }}>
+          🪪 Enroll
+        </button>
+        {enrollMsg && <span style={{ fontSize: 12, color: enrollMsg.startsWith('✓') ? '#6f6' : '#f88' }}>{enrollMsg}</span>}
+        {gallery.length > 0 && (
+          <button onClick={onClean} title="Prune corrupt samples (bad descriptors) + empty people"
+            style={{ marginLeft: 'auto', padding: '4px 10px', borderRadius: 6, fontSize: 11, background: 'transparent', color: '#9ab', border: '1px solid #1c2233', cursor: 'pointer' }}>
+            🧹 clean
+          </button>
+        )}
+      </div>
+
+      {gallery.length === 0
+        ? <div className="empty">No one enrolled yet. Name the face on screen above, or tell the dock "remember I'm &lt;name&gt;".</div>
+        : (
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12 }}>
+          {gallery.map((p) => {
+            const withPhoto = p.samples.filter((s) => s.photo);
+            const noPhoto = p.samples.length - withPhoto.length;
+            const cover = withPhoto[0];
+            const isOpen = open.has(p.name);
+            return (
+              <div key={p.name} style={{ display: 'flex', flexDirection: 'column', gap: 6, padding: 8, borderRadius: 12, background: '#0b0e16', alignItems: 'center' }}>
+                {/* cover photo — click to ZOOM (lightbox). */}
+                {cover?.photo
+                  ? <img src={`data:image/jpeg;base64,${cover.photo}`} alt={p.name} onClick={() => setZoom(cover.photo!)}
+                      title="Click to zoom"
+                      style={{ width: 72, height: 72, borderRadius: 10, objectFit: 'cover', background: '#070a11', cursor: 'zoom-in' }} />
+                  : <div style={{ width: 72, height: 72, borderRadius: 10, background: '#070a11', display: 'grid', placeItems: 'center', fontSize: 28 }}>👤</div>}
+                <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                  <span className="mono" style={{ fontSize: 12 }}>{p.name}</span>
+                  {/* ×N also expands/collapses the per-sample photos. */}
+                  <button onClick={() => onToggle(p.name)} title={isOpen ? 'Collapse' : `Show all ${withPhoto.length} photo${withPhoto.length === 1 ? '' : 's'}`}
+                    style={{ fontSize: 11, opacity: 0.6, background: 'transparent', border: 'none', color: 'inherit', cursor: 'pointer', padding: 0 }}>
+                    ×{p.samples.length} {withPhoto.length > 1 ? (isOpen ? '▾' : '▸') : ''}
+                  </button>
+                  <button onClick={() => onRename(p.name)} title={`Rename ${p.name}`} style={{ padding: '0 4px' }}>✎</button>
+                  <button onClick={() => onForget(p.name)} title={`Forget ${p.name} entirely`} style={{ padding: '0 4px' }}>✕</button>
+                </div>
+
+                {/* Expanded: each photo sample — click to ZOOM; ✎ reassign, ✕ delete. */}
+                {isOpen && (
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, maxWidth: 168, justifyContent: 'center', borderTop: '1px solid #1c2233', paddingTop: 6 }}>
+                    {withPhoto.map((s) => (
+                      <div key={s.index} style={{ position: 'relative' }}>
+                        <img src={`data:image/jpeg;base64,${s.photo}`} alt={`${p.name} #${s.index}`} onClick={() => setZoom(s.photo!)}
+                          title="Click to zoom"
+                          style={{ width: 48, height: 48, borderRadius: 8, objectFit: 'cover', background: '#070a11', cursor: 'zoom-in' }} />
+                        <button onClick={() => onReassign(p.name, s.index)} title="This photo is actually someone else → move it"
+                          style={{ position: 'absolute', top: -4, left: -4, width: 18, height: 18, lineHeight: '14px', padding: 0, borderRadius: 9, fontSize: 10 }}>✎</button>
+                        <button onClick={() => onRemoveSample(p.name, s.index)} title="Delete this face"
+                          style={{ position: 'absolute', top: -4, right: -4, width: 18, height: 18, lineHeight: '14px', padding: 0, borderRadius: 9, fontSize: 11 }}>✕</button>
+                      </div>
+                    ))}
+                    {noPhoto > 0 && (
+                      <span style={{ fontSize: 10, opacity: 0.5, alignSelf: 'center' }}
+                        title="extra fingerprints captured without a photo (still used for matching)">+{noPhoto} no photo</span>
+                    )}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {/* LIGHTBOX — click any photo to zoom; click the backdrop (or Esc) to close. */}
+      {zoom && (
+        <div onClick={() => setZoom(null)}
+          style={{ position: 'fixed', inset: 0, zIndex: 1000, background: 'rgba(0,0,0,0.85)',
+            display: 'grid', placeItems: 'center', cursor: 'zoom-out' }}>
+          <img src={`data:image/jpeg;base64,${zoom}`} alt="zoomed face"
+            style={{ maxWidth: '90vw', maxHeight: '90vh', borderRadius: 12, boxShadow: '0 8px 40px #000' }} />
+        </div>
+      )}
     </div>
   );
 }

@@ -21,6 +21,14 @@ export function LiveTile({ streamId, label }: { streamId: string; label: string 
   const streamRef = useRef<MediaStream>(new MediaStream());
   const [live, setLive] = useState(false);
   const [audioOn, setAudioOn] = useState(false);
+  // Whether video frames are actually decoding. A producer can be advertised with
+  // video:true yet send no RTP (a half-dead/idle dock stream) — the PC still
+  // connects, so 'connecting…' clears but the picture stays black. We poll
+  // getStats for advancing frames/packets and surface a clear overlay so it's
+  // obvious it's the dock, not the viewer: distinguish "audio only (no camera)"
+  // from "nothing flowing" — an audio-only dock is working, just has no picture.
+  const [videoFlowing, setVideoFlowing] = useState(false);
+  const [audioFlowing, setAudioFlowing] = useState(false);
 
   const join = useCallback(() => {
     pcRef.current?.close();
@@ -70,6 +78,29 @@ export function LiveTile({ streamId, label }: { streamId: string; label: string 
     }
   }, [client, streamId]));
 
+  // Poll inbound stats: a track is "flowing" only if its counter keeps advancing
+  // (video → framesDecoded, audio → packetsReceived). Reset whenever the streamId
+  // changes (new tile). Tracked separately so audio-only docks read as working.
+  useEffect(() => {
+    setVideoFlowing(false); setAudioFlowing(false);
+    let lastV = -1, lastA = -1, alive = true;
+    const t = setInterval(async () => {
+      const pc = pcRef.current;
+      if (!pc || !alive) return;
+      let frames = 0, audioPkts = 0;
+      (await pc.getStats()).forEach((s) => {
+        if (s.type !== 'inbound-rtp') return;
+        const r = s as RTCInboundRtpStreamStats;
+        if (r.kind === 'video') frames = r.framesDecoded ?? 0;
+        if (r.kind === 'audio') audioPkts = r.packetsReceived ?? 0;
+      });
+      setVideoFlowing(frames > lastV && frames > 0);
+      setAudioFlowing(audioPkts > lastA && audioPkts > 0);
+      lastV = frames; lastA = audioPkts;
+    }, 2000);
+    return () => { alive = false; clearInterval(t); };
+  }, [streamId]);
+
   // Keep the element's mute state in sync and (re)start playback when this tile
   // becomes the audio source — unmuting a media element can require a fresh
   // play() in some browsers, and the user's click on the tile is the gesture
@@ -93,6 +124,21 @@ export function LiveTile({ streamId, label }: { streamId: string; label: string 
       <div style={{ position: 'absolute', top: 6, left: 8, fontSize: 12, color: '#cbd5e1', textShadow: '0 1px 2px #000' }}>
         <span className="mono">{label}</span> {!live && '· connecting…'}
       </div>
+      {/* Connected but no video frames → either audio-only (working, no camera) or
+          nothing flowing (dead stream). Distinguish them instead of a silent black
+          box that always reads as "broken". */}
+      {live && !videoFlowing && (
+        <div style={{ position: 'absolute', inset: 0, display: 'grid', placeItems: 'center',
+          background: 'rgba(7,10,17,0.78)', color: '#8aa', fontSize: 13, textAlign: 'center', padding: 16 }}>
+          <div>
+            <div style={{ fontSize: 24, marginBottom: 6, opacity: 0.7 }}>{audioFlowing ? '🎙' : '📵'}</div>
+            {audioFlowing ? 'audio only' : 'no live video'}<br />
+            <span style={{ opacity: 0.6, fontSize: 12 }}>
+              {audioFlowing ? `${label} is streaming audio but no camera` : `connected, but ${label} isn’t streaming frames`}
+            </span>
+          </div>
+        </div>
+      )}
       {/* Audio is OFF by default (mic↔speaker feedback). Explicit per-tile enable. */}
       <button
         onClick={() => setAudioOn((a) => !a)}

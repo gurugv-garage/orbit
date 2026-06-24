@@ -208,6 +208,13 @@ export function getMemoryStore(): MemoryStore | undefined {
   return memoryStoreRef.current;
 }
 
+/** RUNTIME state of the background diarized-STT (Gemini) pipeline — flippable live
+ *  from the Perception Studio (GET/POST /api/perception/bg-stt). `enabled` gates
+ *  whether each utterance gets re-transcribed online; `model` is which Gemini model
+ *  does it. Seeded from PERCEPTION_BG_STT_MODEL at module init. */
+const bgStt_ = { enabled: false, model: 'gemini-2.5-flash-lite' };
+export function getBgStt() { return { ...bgStt_ }; }
+
 /**
  * The proactive ATTENTION GATE control surface (docs/perception-to-brain.md Phase 5).
  * The brain registers `onRaise` so a gate firing becomes a self-thought
@@ -337,12 +344,16 @@ export function perceptionModule(getHub: () => ProcessingHub): StationModule {
     onInterim: (fn) => { interimHandler = fn; },
     setListeningResolver: (fn) => { listeningResolver = fn; },
   };
-  // BACKGROUND STT (production split, docs/findings/recall-reliability.md): when
-  // PERCEPTION_BG_STT_MODEL is set (e.g. 'gemini-2.5-flash-lite'), each VAD-gated
-  // utterance is async re-transcribed online to UPGRADE the snapshot with a better,
-  // diarized transcript for recall. The live addressed-turn path stays local Whisper.
-  // Off by default (env unset) → local-Whisper-only, exactly as before.
-  const bgSttModel = process.env.PERCEPTION_BG_STT_MODEL;
+  // BACKGROUND STT (production split, docs/findings/recall-reliability.md): each
+  // VAD-gated utterance is async re-transcribed online (Gemini) to UPGRADE the
+  // snapshot with a better, DIARIZED transcript for recall. The live addressed-turn
+  // path stays local Whisper. This is now a RUNTIME toggle (the Perception Studio
+  // flips it live) rather than a fixed env var: PERCEPTION_BG_STT_MODEL only seeds
+  // the model name + the initial enabled state, so existing setups behave as before
+  // (env set → on at boot; env unset → off, but still flippable on at runtime).
+  const DEFAULT_BG_STT_MODEL = 'gemini-2.5-flash-lite';
+  bgStt_.model = process.env.PERCEPTION_BG_STT_MODEL || DEFAULT_BG_STT_MODEL;
+  bgStt_.enabled = !!process.env.PERCEPTION_BG_STT_MODEL;
   // CONTEXT-AWARE: assemble the recent-discussion context for a dock (rolling summary
   // + who's present) so Gemini disambiguates names/topic/homophones. Cheap (a few
   // hundred chars; audio dominates the cost).
@@ -359,10 +370,17 @@ export function perceptionModule(getHub: () => ProcessingHub): StationModule {
     if (names.length) parts.push(`People present: ${names.join(', ')}.`);
     return parts.join('\n');
   };
-  const bgStt = bgSttModel
-    ? (pcm: Int16Array, rate: number, dockId: string) =>
-        backgroundTranscribe(pcm, rate, bgSttModel, bgContext(dockId), dockId)
-    : undefined;
+  // Always wired; gated at CALL time on the runtime toggle so it can flip live
+  // without rebuilding the processor. Disabled → returns null (the stt-watch path
+  // then keeps the local-Whisper text, exactly like the old env-unset case).
+  const bgStt = async (pcm: Int16Array, rate: number, dockId: string) => {
+    if (!bgStt_.enabled) return null;
+    const model = bgStt_.model; // snapshot the model used for THIS call (it can flip live)
+    const up = await backgroundTranscribe(pcm, rate, model, bgContext(dockId), dockId);
+    // tag the result with the diarization model so the snapshot records STT and
+    // diarization models SEPARATELY (the two stages are distinct engines).
+    return up ? { ...up, model } : null;
+  };
   const stt = sttWatchProcessor(
     snapshots,
     (e) => finalHandler?.(e),
@@ -950,6 +968,19 @@ export function perceptionModule(getHub: () => ProcessingHub): StationModule {
         json(res, 200, { base: visionBase(), extra: getVisionExtra() });
         return true;
       }
+      // Diarized background-STT (Gemini) pipeline toggle. GET → {enabled, model};
+      // POST {enabled?, model?} flips it live (no restart). Off ⇒ local-Whisper only.
+      if (req.method === 'GET' && subPath === '/bg-stt') {
+        json(res, 200, getBgStt());
+        return true;
+      }
+      if (req.method === 'POST' && subPath === '/bg-stt') {
+        const body = await parseBody<{ enabled?: boolean; model?: string }>(req);
+        if (typeof body.enabled === 'boolean') bgStt_.enabled = body.enabled;
+        if (typeof body.model === 'string' && body.model) bgStt_.model = body.model;
+        json(res, 200, getBgStt());
+        return true;
+      }
       // DEBUG: dump the current decoded frame the face processor sees, to inspect
       // what's actually being recognized.  GET /api/perception/frame/:streamId
       if (req.method === 'GET' && subPath.startsWith('/frame/')) {
@@ -984,6 +1015,8 @@ export function perceptionModule(getHub: () => ProcessingHub): StationModule {
           return true;
         }
         const result = await face.enrollCurrent(body.streamId, body.name.trim());
+        // broadcast so every console (this tab + any other) refreshes the gallery.
+        bus.publish({ topic: 'perception', kind: 'enroll-result', payload: { name: body.name.trim(), ok: result.ok, reason: result.reason }, source: 'station' });
         json(res, result.ok ? 200 : 409, result);
         return true;
       }
@@ -991,6 +1024,30 @@ export function perceptionModule(getHub: () => ProcessingHub): StationModule {
         const body = await parseBody<{ name?: string }>(req);
         const removed = body.name ? gallery.remove(body.name) : false;
         json(res, 200, { removed });
+        return true;
+      }
+      // Reassign ONE sample to another person ("this photo is actually X").
+      if (req.method === 'POST' && subPath === '/gallery/sample/reassign') {
+        const body = await parseBody<{ from?: string; index?: number; to?: string }>(req);
+        const r = body.from && body.to && typeof body.index === 'number'
+          ? gallery.reassignSample(body.from, body.index, body.to)
+          : { ok: false, removedSource: false };
+        json(res, 200, r);
+        return true;
+      }
+      // Rename a person (case-insensitive; merges into an existing name).
+      if (req.method === 'POST' && subPath === '/gallery/rename') {
+        const body = await parseBody<{ from?: string; to?: string }>(req);
+        const r = body.from && body.to ? gallery.rename(body.from, body.to) : { ok: false, merged: false };
+        json(res, 200, r);
+        return true;
+      }
+      // Prune corrupt samples (bad/missing descriptors) + now-empty people. With
+      // { photoless: true } also drop valid-but-photo-less samples (so every kept
+      // sample is viewable — at a small cost to matching robustness).
+      if (req.method === 'POST' && subPath === '/gallery/clean') {
+        const body = await parseBody<{ photoless?: boolean }>(req);
+        json(res, 200, gallery.clean(!!body.photoless));
         return true;
       }
       if (req.method === 'GET' && subPath.length > 1) {

@@ -42,6 +42,12 @@ interface LegacyEntry {
 /** Names are matched case/space-insensitively ("Guru" == "guru " == "GURU"). */
 const key = (name: string) => name.trim().toLowerCase();
 
+/** Canonical DISPLAY casing — Title Case, so the same person always shows the same
+ *  way no matter what case was typed ("GURU"/"guru " → "Guru"). The match `key` is
+ *  what enforces identity; this is purely how the name is rendered everywhere. */
+const displayName = (name: string) =>
+  name.trim().toLowerCase().replace(/\b\w/g, (c) => c.toUpperCase());
+
 export interface MatchResult {
   name: string;
   /** euclidean distance to the nearest enrolled descriptor (lower = closer). */
@@ -88,7 +94,12 @@ export function classifyDistance(distance: number): MatchVerdict {
  * which the console renders as a "no photo" placeholder).
  */
 function migrate(e: GalleryEntry | LegacyEntry): GalleryEntry {
-  if (Array.isArray((e as GalleryEntry).samples)) return e as GalleryEntry;
+  // Normalize the display name to canonical casing on the way in (so old entries
+  // saved with arbitrary casing render consistently everywhere).
+  if (Array.isArray((e as GalleryEntry).samples)) {
+    const g = e as GalleryEntry;
+    return { ...g, name: displayName(g.name) };
+  }
   const legacy = e as LegacyEntry;
   const descriptors = legacy.descriptors ?? [];
   const samples: FaceSample[] = descriptors.map((descriptor, i) => ({
@@ -96,7 +107,7 @@ function migrate(e: GalleryEntry | LegacyEntry): GalleryEntry {
     photo: i === 0 ? legacy.photo : undefined,
     addedAt: legacy.enrolledAt ?? Date.now(),
   }));
-  return { name: legacy.name, samples, enrolledAt: legacy.enrolledAt ?? Date.now() };
+  return { name: displayName(legacy.name), samples, enrolledAt: legacy.enrolledAt ?? Date.now() };
 }
 
 export function euclidean(a: number[], b: number[]): number {
@@ -126,8 +137,10 @@ export class Gallery {
     const prev = this.#people.get(k);
     const e: GalleryEntry = append && prev
       ? prev
-      : { name: name.trim(), samples: [], enrolledAt: Date.now() };
-    e.name = name.trim(); // refresh display name to the latest casing
+      : { name: displayName(name), samples: [], enrolledAt: Date.now() };
+    // Canonical display casing; an existing person keeps their established name
+    // (typing a different case just appends, it doesn't rewrite the display).
+    e.name = prev?.name ?? displayName(name);
     e.samples.push({ descriptor, photo, addedAt: Date.now() });
     if (e.samples.length > 5) e.samples.shift();
     this.#people.set(k, e);
@@ -138,6 +151,26 @@ export class Gallery {
     const had = this.#people.delete(key(name));
     if (had) this.#save();
     return had;
+  }
+
+  /**
+   * Move ONE sample (by index) from `from` to person `to` — i.e. "this photo is
+   * actually someone else". Creates `to` if new, merges if existing (cap 5). If
+   * `from` is left empty it's removed. Case-insensitive on both names.
+   * Returns { ok, removedSource } (removedSource = `from` had no samples left).
+   */
+  reassignSample(from: string, index: number, to: string): { ok: boolean; removedSource: boolean } {
+    const src = this.#people.get(key(from));
+    if (!src || index < 0 || index >= src.samples.length || !to.trim()) return { ok: false, removedSource: false };
+    const [sample] = src.samples.splice(index, 1);
+    const toK = key(to);
+    const dest = this.#people.get(toK) ?? { name: displayName(to), samples: [], enrolledAt: Date.now() };
+    dest.samples = [...dest.samples, sample!].slice(-5);
+    this.#people.set(toK, dest);
+    let removedSource = false;
+    if (src.samples.length === 0) { this.#people.delete(key(from)); removedSource = true; }
+    this.#save();
+    return { ok: true, removedSource };
   }
 
   /**
@@ -154,7 +187,32 @@ export class Gallery {
     return true;
   }
 
-  /** Display names (original casing). */
+  /**
+   * Rename a person. Case-insensitive on both sides. If `to` already exists (a
+   * different person, case-insensitively), the two are MERGED — `from`'s samples
+   * fold into `to` (capped at 5, newest kept). No-op if `from` doesn't exist or the
+   * names are the same key. Returns { ok, merged }.
+   */
+  rename(from: string, to: string): { ok: boolean; merged: boolean } {
+    const fromK = key(from), toK = key(to);
+    const e = this.#people.get(fromK);
+    if (!e || !to.trim()) return { ok: false, merged: false };
+    if (fromK === toK) { e.name = displayName(to); this.#save(); return { ok: true, merged: false }; }
+    const target = this.#people.get(toK);
+    if (target) {
+      // merge from→target, newest samples win, cap 5
+      target.samples = [...target.samples, ...e.samples].slice(-5);
+      this.#people.delete(fromK);
+    } else {
+      e.name = displayName(to);
+      this.#people.delete(fromK);
+      this.#people.set(toK, e);
+    }
+    this.#save();
+    return { ok: true, merged: !!target };
+  }
+
+  /** Display names (canonical Title Case). */
   names(): string[] { return [...this.#people.values()].map((e) => e.name); }
 
   /** Whether `name` is already enrolled (case/space-insensitive). */
@@ -170,6 +228,27 @@ export class Gallery {
     }));
   }
   size(): number { return this.#people.size; }
+
+  /**
+   * Prune samples. Always drops CORRUPT ones (descriptor missing or not the 128-d
+   * face-api vector — they can never match). With `dropPhotoless`, also drops valid
+   * descriptors that have NO photo (the pre-fix confirmations) — they keep working
+   * for matching but can't be shown; removing them trades a little recognition
+   * robustness for a gallery where every sample is viewable. A person left with zero
+   * samples is removed. Returns how many samples + people were pruned.
+   */
+  clean(dropPhotoless = false): { samples: number; people: number } {
+    let samples = 0, people = 0;
+    for (const [k, e] of [...this.#people]) {
+      const before = e.samples.length;
+      e.samples = e.samples.filter((s) =>
+        Array.isArray(s.descriptor) && s.descriptor.length === 128 && (!dropPhotoless || !!s.photo));
+      samples += before - e.samples.length;
+      if (e.samples.length === 0) { this.#people.delete(k); people++; }
+    }
+    if (samples || people) this.#save();
+    return { samples, people };
+  }
 
   /**
    * Best match for a query descriptor, or null if the gallery is empty or no one
