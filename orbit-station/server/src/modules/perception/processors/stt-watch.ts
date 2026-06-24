@@ -2,16 +2,24 @@
  * SttWatchProcessor — always-on server-side speech-to-text (perception pyramid
  * tier-1 audio sensor, docs/perception-pipeline.md §9), with VAD ENDPOINTING.
  *
+ * Engine note: the actual transcriber is the STT sidecar (:8078), whose engine is
+ * a sidecar flag — PARAKEET-TDT by default (since 2026-06-22), whisper as fallback.
+ * Comments here that name "Whisper" describe behaviour first observed under it; the
+ * silence-hallucination / confidence-metric details are Whisper-specific (Parakeet
+ * returns null for all three metrics, so the metric-based gates below are DORMANT
+ * under it — see isLowConfidence/confidenceTier). The VAD/endpointing is engine-
+ * agnostic. See docs/perception-pipeline.md §3.
+ *
  * Per producer it depacketizes the WebRTC Opus audio RTP, decodes it in-process to
  * 16 kHz mono PCM (opusscript), and runs a voice-activity detector over 30 ms
  * frames. Instead of blindly transcribing fixed rolling windows (which caused
- * overlap-repeats and Whisper silence-hallucinations), it detects UTTERANCES:
+ * overlap-repeats and silence-hallucinations), it detects UTTERANCES:
  *
  *   silence … → [speech starts] → buffer while voiced → [≥ENDPOINT_MS silence]
  *             → transcribe the WHOLE utterance ONCE → emit one clean `transcript`.
  *
  * This is the right shape for streaming STT: one final transcript per thing the
- * person says, no windowing artifacts, and Whisper never sees pure silence (so it
+ * person says, no windowing artifacts, and the engine never sees pure silence (so it
  * can't hallucinate "Thank you"/"I'm sorry" loops). A max-utterance cap flushes a
  * very long monologue so we don't buffer forever.
  *
@@ -33,7 +41,7 @@ const SIDECAR_URL = process.env.PERCEPTION_SIDECAR_URL ?? 'http://127.0.0.1:8078
  *  barge-in. Set STT_ECHO_GATE=1 to re-enable on a device with weak AEC. */
 const ECHO_GATE = process.env.STT_ECHO_GATE === '1';
 const OPUS_RATE = 48_000; // WebRTC Opus is 48 kHz
-const SAMPLE_RATE = 16_000; // whisper wants 16 kHz
+const SAMPLE_RATE = 16_000; // the STT sidecar (parakeet/whisper) wants 16 kHz
 const FRAME_MS = 30;
 const FRAME_SAMPLES = (SAMPLE_RATE * FRAME_MS) / 1000;
 
@@ -52,8 +60,8 @@ const SILENCE_RMS = Number(process.env.STT_SILENCE_RMS ?? 0.012);
 const ENDPOINT_MS = Number(process.env.STT_ENDPOINT_MS ?? 1300);
 /** Ignore "utterances" shorter than this (clicks, stray noise). 180ms (was 350)
  *  so short real words — "hi", "yes", "no", "ok" — register as turns; 350 dropped
- *  a bare "hi" as noise. Whisper's own confidence (no_speech_prob) still filters a
- *  genuine click that sneaks past this. */
+ *  a bare "hi" as noise. The engine's own confidence (no_speech_prob, Whisper only)
+ *  still filters a genuine click that sneaks past this. */
 const MIN_UTTERANCE_MS = Number(process.env.STT_MIN_UTTERANCE_MS ?? 180);
 /** Force-flush a monologue this long even without an endpoint — a safety cap so we
  *  don't buffer audio forever, NOT a normal endpoint. 60s (was 15s, which chopped a
@@ -65,12 +73,13 @@ const MAX_UTTERANCE_MS = Number(process.env.STT_MAX_UTTERANCE_MS ?? 60_000);
 const PREROLL_MS = 200;
 
 // --------------------------------------------------------------------------- //
-// Whisper silence-hallucination backstop (the VAD should pre-empt these).
+// STT silence-hallucination backstop (the VAD should pre-empt these).
 // --------------------------------------------------------------------------- //
-// Canonical Whisper silence outputs — stock sign-off / caption phrases it emits from
-// faint room noise. These are essentially NEVER real addressed speech, so they're
-// dropped from becoming a turn UNCONDITIONALLY (still kept as a lowConfidence snapshot
-// for the record). Observed live: "Thank you" → phantom "You're very welcome!".
+// Canonical silence outputs — stock sign-off / caption phrases the engine emits from
+// faint room noise (first seen under Whisper; the phrase list is engine-neutral). These
+// are essentially NEVER real addressed speech, so they're dropped from becoming a turn
+// UNCONDITIONALLY (still kept as a lowConfidence snapshot for the record). Observed
+// live: "Thank you" → phantom "You're very welcome!".
 const HALLUCINATION_PHRASES = new Set([
   'you', 'thank you', 'thanks for watching', 'thank you for watching',
   "i'm sorry", 'bye', 'bye.', '.', 'so', 'okay', 'the end',
@@ -79,8 +88,9 @@ const HALLUCINATION_PHRASES = new Set([
 
 // Short backchannels ("yeah", "mm hmm", "oh", "aww", "one sec") are AMBIGUOUS: a real
 // confident "yeah" is a valid answer to the dock's question, but the same token from
-// near-silence is a hallucination. So these are dropped as a turn ONLY when Whisper is
-// also UNSURE (lowConfidence) — a voiced, confident "yeah" still becomes a turn.
+// near-silence is a hallucination. So these are dropped as a turn ONLY when the engine
+// is also UNSURE (lowConfidence) — a voiced, confident "yeah" still becomes a turn.
+// (Under Parakeet, "unsure" can only come from the text heuristics — no metrics.)
 const SOFT_BACKCHANNELS = new Set([
   'yeah', 'yep', 'mm', 'mm hmm', 'mhm', 'uh huh', 'hmm', 'oh', 'ah', 'aww', 'one sec',
 ]);
@@ -91,7 +101,7 @@ export function isLowConfBackchannel(text: string, lowConfidence: boolean): bool
 
 /** The dock's listening on/off BEEP (a ToneGenerator blip) isn't an AEC reference
  *  (only TTS is rendered through the WebRTC loopback), so the mic hears it and
- *  Whisper transcribes it as "beep"/"beep beep". Drop a transcript that is ONLY
+ *  the STT engine transcribes it as "beep"/"beep beep". Drop a transcript that is ONLY
  *  beep tokens so it never becomes an agent turn (the dock was replying to its own
  *  beep). A real sentence that merely CONTAINS "beep" still passes. */
 function isBeepArtifact(text: string): boolean {
@@ -101,7 +111,7 @@ function isBeepArtifact(text: string): boolean {
 }
 
 /** A transcript with no actual WORDS — pure punctuation / whitespace / a stray token
- *  like "!", ".", "?!". Whisper emits these on a brief unvoiced blip. They carry zero
+ *  like "!", ".", "?!". The STT engine emits these on a brief unvoiced blip. They carry zero
  *  content, so they must NEVER become an agent turn (observed: a lone "!" → the dock
  *  replied "Is there something you'd like to tell me?"). Kept as a snapshot upstream;
  *  just never addressed. Threshold <2 alphanumerics (so "!" / "." / "" are out, but a
@@ -398,15 +408,18 @@ async function transcribe(pcm: Int16Array): Promise<TranscribeResult> {
   }
 }
 
-// Confidence gates on Whisper's OWN metrics — the real hallucination tells, far
-// better than a phrase blacklist. Defaults are conservative (only flag clearly bad
-// transcripts); all env-tunable from the perception playground.
+// Confidence gates on the engine's OWN metrics — the real hallucination tells, far
+// better than a phrase blacklist. WHISPER ONLY: Parakeet returns null for all three,
+// so under it these gates are dormant and only the text heuristics in isLowConfidence
+// fire. Defaults are conservative (only flag clearly bad transcripts); all env-tunable
+// from the perception playground.
 const LOGPROB_MIN = Number(process.env.STT_LOGPROB_MIN ?? -1.0);   // below → unsure
 const NOSPEECH_MAX = Number(process.env.STT_NOSPEECH_MAX ?? 0.5);  // above → likely noise
 const COMPRESSION_MAX = Number(process.env.STT_COMPRESSION_MAX ?? 2.4); // above → repetitive loop
 
-/** Decide lowConfidence from Whisper metrics first, falling back to text heuristics
- *  (so it still works against an older sidecar that returns only text). We TAG, not
+/** Decide lowConfidence from the engine's metrics first, falling back to text heuristics
+ *  (so it still works against Parakeet / an older sidecar that returns null metrics —
+ *  every `!= null` guard short-circuits and only the text rule remains). We TAG, not
  *  drop — a flagged "oh!" / gasp can still be signal; the summarizer LLM decides. */
 function isLowConfidence(t: Transcription): boolean {
   if (t.avgLogprob != null && t.avgLogprob < LOGPROB_MIN) return true;
@@ -421,11 +434,13 @@ function isLowConfidence(t: Transcription): boolean {
  *  still KEEP the record (tagged, raw text intact for the console/ring), but the
  *  grounding renders it as "[unclear speech]" so nothing downstream treats the
  *  garbled words as a fact. Tunable from the playground. */
-// The RELIABLE garbage tell is a REPETITION LOOP (high compression ratio): Whisper
-// emitting the same clause over and over on unclear audio. That caught every real
-// hallucination in the captured data with zero false positives. Raw logprob/noSpeech
-// alone are too aggressive (they nuke short legit utterances like "Thank you" / "Okay"
-// that are quiet) — so they only escalate to GARBAGE when BOTH are bad together.
+// The RELIABLE garbage tell is a REPETITION LOOP: the engine emitting the same clause
+// over and over on unclear audio. Compression ratio catches it WHEN present (Whisper);
+// under Parakeet (null metrics) only the text-based isRepetitionLoop() fires. That
+// caught every real hallucination in the captured data with zero false positives. Raw
+// logprob/noSpeech alone are too aggressive (they nuke short legit utterances like
+// "Thank you" / "Okay" that are quiet) — so they only escalate to GARBAGE when BOTH are
+// bad together. (All metric branches are Whisper-only; dormant under Parakeet.)
 //
 // The combined (logprob AND no_speech) condition is WHISPER'S OWN silence/hallucination
 // rule — OpenAI's transcribe.py marks a segment as silence only when
@@ -455,8 +470,9 @@ export function confidenceTier(t: {
 }
 
 /** A repetition-loop hallucination: the same short clause repeated many times
- *  ("I am a child. I am a child. …", "sir, sir, sir, …"). Whisper does this on
- *  unclear/far audio. Compression ratio usually catches it, but check text too. */
+ *  ("I am a child. I am a child. …", "sir, sir, sir, …"). STT engines do this on
+ *  unclear/far audio. Compression ratio catches it under Whisper; this text check is
+ *  the only loop tell under Parakeet (null metrics), so check text regardless. */
 function isRepetitionLoop(text: string): boolean {
   const norm = text.toLowerCase().replace(/[^a-z\s]/g, ' ').replace(/\s+/g, ' ').trim();
   const words = norm.split(' ').filter(Boolean);
@@ -485,8 +501,9 @@ export interface FinalTranscriptEvent {
   endedAt: number;
   lowConfidence: boolean;
   confTier?: ConfTier;
-  /** Whisper's own confidence metrics, carried through so observability shows WHY a
-   *  transcript was tagged (and the addressed-decision trace can record them). */
+  /** The engine's own confidence metrics, carried through so observability shows WHY a
+   *  transcript was tagged (and the addressed-decision trace can record them). Null
+   *  under Parakeet (Whisper-only), in which case nothing tagged the transcript by metric. */
   avgLogprob?: number | null;
   noSpeechProb?: number | null;
   compressionRatio?: number | null;
@@ -516,8 +533,8 @@ export function sttWatchProcessor(
   isSpeaking?: (dockId: string) => boolean,
   /** PRODUCTION background STT upgrade: given a finished utterance's PCM, return a
    *  better DIARIZED transcript (online, e.g. Gemini flash-lite) to replace the live
-   *  Whisper text in the snapshot. Async + best-effort — the live path never waits on
-   *  it. Undefined = local-Whisper-only (the default). */
+   *  local-engine text in the snapshot. Async + best-effort — the live path never waits
+   *  on it. Undefined = local engine only (Parakeet/Whisper; the default). */
   backgroundStt?: (pcm: Int16Array, sampleRate: number, dockId: string) => Promise<{ text: string; speaker?: number; model?: string } | null>,
   /** LIVE INTERIMS: emitted mid-utterance for the dock caption UI. Undefined = no
    *  interims (default). Best-effort, decoupled from the authoritative final path. */
@@ -576,9 +593,9 @@ export function sttWatchProcessor(
         const tr = res.transcription;
         if (!tr) return;
         // Don't DROP shaky transcripts — a gasp / "oh!" / cut-off word can be
-        // signal. TAG them lowConfidence (from Whisper's own logprob/no-speech/
-        // compression metrics, falling back to text heuristics) and let the
-        // summarizer LLM decide noise vs signal.
+        // signal. TAG them lowConfidence (from the engine's own logprob/no-speech/
+        // compression metrics under Whisper, falling back to text heuristics — which
+        // is all there is under Parakeet) and let the summarizer LLM decide noise vs signal.
         const tier = confidenceTier(tr);
         const lowConfidence = tier !== 'good'; // back-compat flag (shaky OR garbage)
         const rec = makeSnapshot({
@@ -594,8 +611,8 @@ export function sttWatchProcessor(
           },
         });
         store.add(rec);
-        // BACKGROUND UPGRADE (production split): the snapshot lands NOW with Whisper
-        // text (fast); if a background engine is wired, async re-transcribe this
+        // BACKGROUND UPGRADE (production split): the snapshot lands NOW with the local
+        // engine's text (fast); if a background engine is wired, async re-transcribe this
         // utterance with the better diarized model and PATCH the snapshot in place.
         // Best-effort — never blocks the live addressed-turn path below.
         if (backgroundStt) {
@@ -612,12 +629,13 @@ export function sttWatchProcessor(
             }
           }).catch(() => { /* keep the local STT text */ });
         }
-        // confidence rides along so downstream sees Whisper's certainty, not a constant
+        // confidence rides along so downstream sees the engine's certainty, not a constant.
+        // Whisper gives a real logprob; Parakeet has none → the 0.8 neutral default.
         const conf = tr.avgLogprob != null ? Math.max(0, Math.min(1, 1 + tr.avgLogprob)) : 0.8;
         ctx.emit({ kind: 'transcript', source: 'stt-watch', payload: { text: tr.text, isFinal: true }, confidence: conf });
         // A1.2: hand the final transcript + its utterance window to the brain's
         // addressed latch so a tapped utterance can become an agent turn — UNLESS
-        // it's the dock's own listening beep ("beep beep") or a Whisper silence-
+        // it's the dock's own listening beep ("beep beep") or an STT silence-
         // hallucination ("Thank you" / "Yeah" / "Okay" / "you" emitted from near-
         // silence). Both still land as snapshots above for the record, but neither
         // may become an agent turn — otherwise the dock answers things no one said
