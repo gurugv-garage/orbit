@@ -26,7 +26,7 @@ All paths under `orbit-station/server/src/modules/perception/`.
 | 🤖 **Bodymotion** | `processors/bodymotion-watch.ts` | `bodyMotionWatchProcessor(store)`; `pushCommand()`, `current()` |
 | 🧠 **Fusion** | `summarizer.ts` | `stitch()` + `summarize(records, opts)` → Gemini |
 | **Memory** (persistent per-dock store — outlives the ring) | `memory/store.ts` + `memory/embedder.ts` | `MemoryStore` (sqlite; recall/inspect/remember/update/forget). Full ref: [memory.md](memory.md) |
-| **The tap** (stream lifecycle → processors) | `hub.ts` | `ProcessingHub` (the SFU media tap; `mediaKinds:[]` lifecycle-only path) |
+| **The tap** (stream lifecycle → processors) | `hub.ts` | `ProcessingHub` (the SFU media tap; `mediaKinds:[]` lifecycle-only path). Full ref: [modules/perception-hub.md](modules/perception-hub.md) |
 | **Frame decode** (one ffmpeg/dock, shared) | `face/frame-grabber.ts` | `currentFrame(streamId)` — vision reads the face processor's grabber |
 | **Takes** (A/B replay) | `takes.ts` | `TakeStore` |
 | **Sidecars** (the 2 MLX apps) | `sidecars.ts` | `SidecarSupervisor`; `GET/POST /api/perception/sidecars[/:name/...]` |
