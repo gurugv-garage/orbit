@@ -126,6 +126,14 @@ interface SidecarHealth {
   model?: string | null; latencyMs?: number; error?: string;
 }
 
+/** One memory-curator pass (GET /api/perception/curator → recent[]). */
+interface CuratePass {
+  ts: number; dockId: string; op: 'consolidate' | 'reconcile';
+  reviewed: number; created?: number; revised?: number; forgot?: number;
+  reason?: 'flood' | 'age' | 'quiet';
+  skipped?: string; changes: Array<{ kind: 'create' | 'revise' | 'forget'; id?: string; claim?: string }>;
+}
+
 export function PerceptionStudio() {
   const client = useStationClient();
   const [publishing, setPublishing] = useState(false);
@@ -181,6 +189,15 @@ export function PerceptionStudio() {
   // transcript; off = local Whisper only.
   const [bgStt, setBgStt] = useState<{ enabled: boolean; model: string }>({ enabled: false, model: 'gemini-2.5-flash-lite' });
   const [bgSttBusy, setBgSttBusy] = useState(false);
+  // MEMORY CURATOR — the pipeline's belief-maintenance loop. Live toggle + a feed of
+  // recent passes (what it revised/forgot) + a "run now" debug button.
+  const [showCurator, setShowCurator] = useState(false);
+  const [curator, setCurator] = useState<{ enabled: boolean; recent: CuratePass[] }>({ enabled: false, recent: [] });
+  const [curatorBusy, setCuratorBusy] = useState(false);
+  // curator live-tunable config (ALL docks) + per-knob bounds/notes from the server.
+  const [curatorCfg, setCuratorCfg] = useState<Record<string, number>>({});
+  const [curatorMeta, setCuratorMeta] = useState<Record<string, { min: number; max: number; unit: string; note: string }>>({});
+  const [cfgSaved, setCfgSaved] = useState<string | null>(null); // last-applied knob (flash "✓")
 
   const pcRef = useRef<RTCPeerConnection | null>(null);
   const mediaRef = useRef<MediaStream | null>(null);
@@ -194,6 +211,43 @@ export function PerceptionStudio() {
       .then((r) => { setBase(r.base); setExtra(r.extra); }).catch(() => {});
     api.get<{ enabled: boolean; model: string }>('/perception/bg-stt')
       .then(setBgStt).catch(() => {});
+  }, []);
+
+  // Memory curator — load on mount, poll while the panel is open (so the recent feed
+  // stays live), and expose toggle + run-now.
+  const loadCurator = useCallback(() => {
+    api.get<{ enabled: boolean; recent: CuratePass[] }>('/perception/curator')
+      .then(setCurator).catch(() => {});
+  }, []);
+  useEffect(loadCurator, [loadCurator]);
+  useEffect(() => {
+    if (!showCurator) return;
+    const t = setInterval(loadCurator, 4000);
+    return () => clearInterval(t);
+  }, [showCurator, loadCurator]);
+  const toggleCurator = useCallback(async () => {
+    setCuratorBusy(true);
+    try { const r = await api.post<{ enabled: boolean }>('/perception/curator', { enabled: !curator.enabled });
+      setCurator((c) => ({ ...c, enabled: r.enabled })); }
+    finally { setCuratorBusy(false); }
+  }, [curator.enabled]);
+  const runCurator = useCallback(async () => {
+    setCuratorBusy(true);
+    try { await api.post('/perception/curator/run', {}); loadCurator(); }
+    finally { setCuratorBusy(false); }
+  }, [loadCurator]);
+  // curator config (knobs) — load when the panel opens; apply a single knob live.
+  const loadCuratorCfg = useCallback(() => {
+    api.get<{ config: Record<string, number>; meta: typeof curatorMeta }>('/perception/curator/config')
+      .then((r) => { setCuratorCfg(r.config); setCuratorMeta(r.meta); }).catch(() => {});
+  }, []);
+  useEffect(() => { if (showCurator) loadCuratorCfg(); }, [showCurator, loadCuratorCfg]);
+  const applyKnob = useCallback(async (key: string, value: number) => {
+    // server clamps to bounds + returns the resulting config — we adopt THAT (honest feedback:
+    // the field shows what actually applied, not what was typed, if clamped).
+    const r = await api.post<{ config: Record<string, number> }>('/perception/curator/config', { [key]: value });
+    setCuratorCfg(r.config);
+    setCfgSaved(key); setTimeout(() => setCfgSaved((k) => (k === key ? null : k)), 1500);
   }, []);
 
   // Known-faces gallery (load once + after each enroll).
@@ -636,8 +690,86 @@ export function PerceptionStudio() {
               </span>
             ))} {showSidecars ? '▾' : '▸'}
           </button>
+          {/* MEMORY CURATOR — status dot + label; click for the control/watch panel */}
+          <button onClick={() => setShowCurator((v) => !v)}
+            title="Memory curator — the pipeline's belief-maintenance loop; click to toggle/watch/run"
+            style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '4px 10px', borderRadius: 8, fontSize: 11,
+              background: '#10141f', color: '#9ab', border: '1px solid #161c2b', cursor: 'pointer' }}>
+            <span style={{ width: 7, height: 7, borderRadius: '50%', background: curator.enabled ? '#3ad29f' : '#5a6172' }} />
+            🧹 curator {showCurator ? '▾' : '▸'}
+          </button>
         </div>
       </div>
+
+      {/* MEMORY CURATOR panel — enable toggle, run-now, and the recent-passes feed
+          (what it reviewed/revised/forgot). The "watchable/debuggable" surface. */}
+      {showCurator && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8,
+          padding: '8px 12px', background: '#0b0e16', border: '1px solid #1c2233', borderRadius: 10 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+            <span style={{ fontSize: 11, letterSpacing: '.12em', textTransform: 'uppercase', opacity: 0.6 }}>🧹 Memory curator</span>
+            <span title="this config applies to ALL docks (the curator is one station-wide loop), not a single dock"
+              style={{ fontSize: 10, padding: '1px 6px', borderRadius: 4, background: '#1a2433', color: '#8ab', border: '1px solid #243245' }}>all docks</span>
+            <button disabled={curatorBusy} onClick={() => void toggleCurator()}
+              title={curator.enabled ? 'maintenance ON — click to pause' : 'maintenance OFF — click to enable'}
+              style={{ display: 'flex', alignItems: 'center', gap: 5, padding: '3px 10px', borderRadius: 8, fontSize: 11, cursor: curatorBusy ? 'default' : 'pointer',
+                background: curator.enabled ? '#13301f' : '#10182a', color: curator.enabled ? '#7ee0a0' : '#9cd',
+                border: `1px solid ${curator.enabled ? '#2c6f4a' : '#1c2233'}` }}>
+              <span style={{ width: 7, height: 7, borderRadius: '50%', background: curator.enabled ? '#3ad29f' : '#5a6172' }} />
+              {curatorBusy ? '…' : curator.enabled ? 'on' : 'off'}
+            </button>
+            <button disabled={curatorBusy} onClick={() => void runCurator()} title="Force a curation pass now (bypasses the interval)"
+              style={{ padding: '3px 10px', borderRadius: 8, fontSize: 11, cursor: curatorBusy ? 'default' : 'pointer',
+                background: '#10182a', color: '#9cd', border: '1px solid #1c2233', opacity: curatorBusy ? 0.5 : 1 }}>▶ run now</button>
+            <span style={{ fontSize: 11, opacity: 0.5 }}>consolidate speech → beliefs, reconcile (revise/forget) — long-term memory</span>
+          </div>
+          {/* live-tunable knobs (ALL docks) — each applies on the NEXT pass, no restart.
+              The server clamps to bounds + returns the result, so the field reflects what
+              ACTUALLY applied (honest feedback) and flashes ✓. */}
+          {Object.keys(curatorCfg).length > 0 && (
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, padding: '2px 0' }}>
+              {Object.entries(curatorCfg).map(([key, val]) => {
+                const m = curatorMeta[key];
+                return (
+                  <label key={key} title={m ? `${m.note} (${m.min}–${m.max} ${m.unit})` : key}
+                    style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 11, color: '#9ab' }}>
+                    {key}
+                    <input type="number" defaultValue={val} min={m?.min} max={m?.max}
+                      key={`${key}:${val}`} /* re-mount when server value changes so clamps show */
+                      onBlur={(e) => { const n = Number(e.target.value); if (Number.isFinite(n) && n !== val) void applyKnob(key, n); }}
+                      onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); }}
+                      style={{ width: 74, padding: '2px 5px', fontSize: 11, borderRadius: 5,
+                        background: '#0b0e16', color: '#cfe', border: '1px solid #243245' }} />
+                    {cfgSaved === key && <span style={{ color: '#7ee0a0', fontSize: 11 }}>✓</span>}
+                    {m && <span style={{ opacity: 0.35, fontSize: 10 }}>{m.unit}</span>}
+                  </label>
+                );
+              })}
+            </div>
+          )}
+          {/* recent passes feed */}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 4, maxHeight: 200, overflowY: 'auto' }}>
+            {curator.recent.length === 0
+              ? <span style={{ fontSize: 11, opacity: 0.4 }}>no passes yet</span>
+              : curator.recent.map((p, i) => (
+                <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 11,
+                  padding: '3px 8px', background: '#10141f', borderRadius: 6, border: '1px solid #161c2b' }}>
+                  <span style={{ opacity: 0.5, fontVariantNumeric: 'tabular-nums' }}>{new Date(p.ts).toLocaleTimeString()}</span>
+                  <span style={{ color: '#cfe' }}>{p.dockId}</span>
+                  <span style={{ padding: '0 5px', borderRadius: 4, fontSize: 10,
+                    background: p.op === 'consolidate' ? '#13243a' : '#1a1330',
+                    color: p.op === 'consolidate' ? '#8cf' : '#c9a0ff' }}>{p.op}</span>
+                  {p.reason && <span style={{ opacity: 0.45, fontSize: 10 }}>{p.reason}</span>}
+                  <span style={{ opacity: 0.6 }}>reviewed {p.reviewed}</span>
+                  {(p.created ?? 0) > 0 && <span style={{ color: '#7ee0a0' }}>+{p.created} created</span>}
+                  {(p.revised ?? 0) > 0 && <span style={{ color: '#ffc454' }}>~{p.revised} revised</span>}
+                  {(p.forgot ?? 0) > 0 && <span style={{ color: '#f88' }}>-{p.forgot} forgotten</span>}
+                  {p.skipped && <span style={{ opacity: 0.5, fontStyle: 'italic' }}>skipped: {p.skipped}</span>}
+                </div>
+              ))}
+          </div>
+        </div>
+      )}
 
       {/* SIDECAR panel — expanded on demand: model/latency + start/stop/restart. */}
       {showSidecars && (

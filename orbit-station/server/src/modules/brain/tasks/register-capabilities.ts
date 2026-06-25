@@ -71,5 +71,12 @@ export function buildCapabilityRegistry(d: CapabilityDeps): CapabilityRegistry {
     },
   });
 
+  // NOTE: memory is NOT a capability. It's a sqlite file (`.data/orbit.db`) + an
+  // embedder that needs only the env GEMINI key — all reconstructible from the SHARED
+  // code + `.env` a task already has. So a task reaches memory DIRECTLY (a `this.memory`
+  // store on the Task base class), like it runs its own LLM. Capabilities are reserved
+  // for the station's LIVE in-process state (decoded video, the body link) that a
+  // separate process genuinely can't reconstruct. See tasks.md "direct vs. the wire".
+
   return reg;
 }

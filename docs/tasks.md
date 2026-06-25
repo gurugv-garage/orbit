@@ -17,6 +17,7 @@ framework: [decision-traces/tasks-design-history.md](decision-traces/tasks-desig
 - [1. The shape](#1-the-shape)
   - [Layout](#layout)
 - [2. The Task base class (`_harness/task.ts`)](#2-the-task-base-class-_harnesstaskts)
+  - [Direct vs. the wire — the rule for reaching the station](#direct-vs-the-wire--the-rule-for-reaching-the-station)
 - [3. The wire contract (the `tasks` topic)](#3-the-wire-contract-the-tasks-topic)
 - [4. The supervisor (`modules/brain/tasks/supervisor.ts`)](#4-the-supervisor-modulesbraintaskssupervisorts)
   - [Runner: `child` (default) vs. `tmux`](#runner-child-default-vs-tmux)
@@ -116,11 +117,44 @@ parent agent, and nothing more):
 | `await this.askAgentInput(prompt)` | ask the user and AWAIT their answer (the STUCK path) |
 | `this.finish(summary?)` / `this.errored(why)` | the terminal outcome |
 | `await this.sleep(ms \| "5s")` | wait. **NOT interruptible** — a stop kills the whole process |
+| `await this.getAgent()` / `await this.ask(content)` | **the task's OWN LLM** — a ready-to-use pi Agent (the dock's model + env key, lazy-loaded). `ask([{type:'text',…}])` is the one-shot; `getAgent()` for multi-turn/tools. Spend rolls up in the dock's Cost tab |
 
-There is deliberately **no `askVlm`/`frame`/`move`**. A task is a real Node
-process: if it needs the camera or body it sends its own WS message. We don't
-curate a capability menu. It can `import` any node module, run shell commands,
-call HTTP — it's an ordinary process.
+### Direct vs. the wire — the rule for reaching the station
+
+A task is a **separate process**, but it runs from the **same src tree** and the
+**same `.env`** as the station. So it shares all the station's CODE and SECRETS — it
+just doesn't share the station's **live in-process objects** (a different address
+space). That single distinction sets where each thing lives:
+
+- **DIRECT (the default — maximum capability).** Anything reconstructible from shared
+  code + `.env` + disk, the task does **itself**, calling the station's own
+  classes/SDK directly — no wire, no round-trip. Run an LLM (`this.agent`, the env
+  key). Read/write **memory** (`this.memory` — a `MemoryStore` on the shared
+  `.data/orbit.db`, same class the station uses). Call HTTP, Slack (`this.sendToSlack`,
+  the env token), import any module.
+- **OVER THE WIRE (capabilities — the exception).** Only what depends on the station's
+  **live in-process runtime state** that a separate process genuinely cannot rebuild:
+  the decoded SFU video sitting in the FrameGrabber, the body's live MotionExecutor
+  connection. These are `register(...)`ed station-side and invoked via
+  `this.request(op)` / a typed helper:
+
+  | capability | helper | needs | live state it reaches |
+  |---|---|---|---|
+  | `frame` / `recognize` | `this.frame()` | camera | the decoded camera frame in RAM |
+  | `move` | `this.move(steps)` | servo | the MotionExecutor's body link |
+
+**The test:** *does it need the station's live in-memory state, or just its code + env?*
+Live state → wire. Code + env → direct. (Memory was briefly a capability; it failed
+the test — sqlite + an env-keyed embedder is "the environment," not live state — so it
+is now `this.memory`, direct.)
+
+**Boundary helpers on the base class make the line explicit.** Direct accessors
+(`this.agent`, `this.memory`, `this.sendToSlack`) advertise "this is local, full
+power"; capability helpers (`this.frame`, `this.move`) advertise "this crosses to the
+station's live state." A task author reads the method and knows which side they're on.
+
+`this.memory` is **dock-scoped** — the dock is bound from the task's verified identity,
+never an argument, so a task can only touch its own dock's beliefs (`memory.test.ts`).
 
 **One-shot vs. recurring is just code.** A one-time job does its work then calls
 `this.finish()` so it stops; a recurring job loops forever and is ended by a stop.
@@ -330,11 +364,6 @@ an **open session** (the same 409 guard), which opens on the first chat turn.
 - **Station restart kills running tasks** — by design with the `child` runner (no
   rehydration; nothing to manage). A long "remind me in 2 hours" does **not** survive
   a station restart. Persisting instance specs to re-arm on boot is deferred.
-- **No camera/body capability over the wire yet.** A task that needs a frame/VLM/
-  motion would send its own `tasks`-topic request and have the station service it;
-  that request/response capability layer is a future addition (deliberately not a
-  curated `ctx.client` menu).
-- **No per-task model/persona.** A task is a script, not a reasoning agent with its
-  own brain; if a task needs an LLM call it makes its own (e.g. via an imported
-  client). The earlier "child pi session as the task's memory" idea was dropped.
+- **Station restart kills running tasks** (above) — instance-spec persistence to
+  re-arm on boot is still deferred.
 

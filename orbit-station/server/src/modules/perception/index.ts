@@ -29,13 +29,16 @@ import { backgroundTranscribe } from './processors/background-stt.js';
 import { bodyMotionWatchProcessor, type MotionCommand } from './processors/bodymotion-watch.js';
 import { SnapshotStore, isoIst, sampleEvenly, type SnapshotRecord } from './snapshots.js';
 import { TakeStore } from './takes.js';
-import { summarize } from './summarizer.js';
+import { summarize, geminiText } from './summarizer.js';
 import { buildGrounding, type LastSummary } from './grounding.js';
 import { SidecarSupervisor } from './sidecars.js';
 import { MemoryStore, type MemoryRow, type MemoryType, type RecallFilter, type LineageEdge } from './memory/store.js';
 import { geminiEmbedder } from './memory/embedder.js';
 import { startGateWatcher, type RaisedThought } from './attention/gate-watcher.js';
 import { startAutoSummarizer } from './auto-summarizer.js';
+import { startLongTermMemoryCurator, CONFIG_META as CURATOR_CONFIG_META, type CuratorHandle } from './memory/longterm/curator.js';
+import { pendingObservations, pendingStats } from './memory/longterm/sources.js';
+import type { BeliefHit } from './memory/longterm/reconcile.js';
 import { DEFAULT_GATE_CONFIG, type GateConfig, type GateOutcome } from './attention/gate.js';
 import { orbitDb } from '../../core/db.js';
 import { setVisionExtra, getVisionExtra, visionBase } from './vision-instruction.js';
@@ -232,6 +235,13 @@ const gateRef: { current?: GateApi } = {};
 /** The live GateApi (set when the perception module inits). */
 export function getGateApi(): GateApi | undefined {
   return gateRef.current;
+}
+
+const curatorRef: { current?: CuratorHandle } = {};
+/** The live memory-curator handle (toggle + recent passes + run-now) — backs the
+ *  Perception Studio's curator panel. Set when the perception module inits. */
+export function getMemoryCuratorApi(): CuratorHandle | undefined {
+  return curatorRef.current;
 }
 
 /**
@@ -557,6 +567,57 @@ export function perceptionModule(getHub: () => ProcessingHub): StationModule {
           log: (m) => console.log(m),
         });
       }
+
+      // LONG-TERM MEMORY CURATOR: the pipeline layer that tends durable (long-term)
+      // memory from short-term sources (the snapshot stream). Two ops on their own
+      // clocks (docs/decision-traces/long-term-memory-curator.md):
+      //   • consolidate — accumulation-driven: promote salient speech (diarized) into
+      //     new derived beliefs, event-time aligned (who was present when said), lineage'd.
+      //   • reconcile  — slow interval: revise/forget existing beliefs (the maintain pass).
+      // In-process (reaches MemoryStore + the snapshot ring directly); LLM via the
+      // summarizer's gemini path. Always STARTED so the console can flip it live; enabled
+      // seeded from PERCEPTION_CURATE (off when =0). Backs GET/POST /api/perception/curator.
+      const toBeliefHit = (m: MemoryRow): BeliefHit =>
+        ({ id: m.id, type: m.type, subject: m.subject, claim: m.claim, confidence: m.confidence });
+      /** who was present as-of an event-time iso (event-time alignment via stateAt). */
+      const presentAt = (iso: string): string | undefined => {
+        const rec = snapshots.stateAt('identity', iso);
+        const t = rec?.payload.text;
+        return typeof t === 'string' && t !== 'no one in view' ? t : undefined;
+      };
+      const sourceCtx = { store: snapshots, presentAt };
+      /** docks with durable memory OR any snapshot activity — the curation candidates. */
+      const curatorDocks = (): string[] => {
+        const set = new Set<string>(memory.docks());
+        for (const r of snapshots.list()) set.add(r.dockId);
+        return [...set];
+      };
+      curatorRef.current = startLongTermMemoryCurator({
+        enabled: process.env.PERCEPTION_CURATE !== '0',
+        activeDocks: curatorDocks,
+        // load-aware: pending = unconsolidated speech after the watermark. The cadence
+        // (cadence.ts) decides flood/age/quiet from these stats; consolidate takes a
+        // bounded oldest chunk so a flood drains over ticks, exactly-once.
+        pendingStats: (dockId, watermarkIso) => pendingStats(snapshots, dockId, watermarkIso),
+        pendingObservations: (dockId, watermarkIso, limit) =>
+          pendingObservations(sourceCtx, dockId, watermarkIso, limit),
+        // restart-safe watermark: newest event-time already consolidated (belief lineage).
+        // lineage source_id is `<kind>@<iso>`; the watermark compares against the bare iso.
+        watermarkSeed: (dockId) => {
+          const src = memory.latestConsolidatedSource(dockId); // e.g. 'speech@2026-…+05:30'
+          const at = src?.indexOf('@') ?? -1;
+          return src && at >= 0 ? src.slice(at + 1) : '';
+        },
+        beliefs: async (dockId, limit) => (await memory.recall({ dockId, limit })).map(toBeliefHit),
+        reflect: (prompt, dockId, purpose) => geminiText(prompt, dockId, purpose),
+        create: (dockId, b) => memory.remember({
+          dockId, type: b.type as MemoryType, subject: b.subject, claim: b.claim,
+          confidence: b.confidence, derivation: 'derived', lineage: b.lineage,
+        }),
+        revise: (id, patch) => memory.revise(id, patch),
+        forget: (id) => memory.forget(id),
+        log: (m) => console.log(m),
+      });
       gateRef.current = {
         setEnabled: (on) => { gateCfg.enabled = on; },
         isEnabled: () => gateCfg.enabled,
@@ -773,6 +834,47 @@ export function perceptionModule(getHub: () => ProcessingHub): StationModule {
         const b = await parseBody<{ enabled?: boolean }>(req);
         gateRef.current?.setEnabled(b.enabled === true);
         json(res, 200, { ok: true, enabled: gateRef.current?.isEnabled() ?? false });
+        return true;
+      }
+
+      // ── MEMORY CURATOR — the console's curator panel (control + watch + debug). ──
+      // GET /curator → { enabled, recent: [ {ts,dockId,reviewed,revised,forgot,skipped,changes} ] }
+      if (req.method === 'GET' && subPath === '/curator') {
+        json(res, 200, {
+          enabled: curatorRef.current?.isEnabled() ?? false,
+          recent: curatorRef.current?.recent(30) ?? [],
+        });
+        return true;
+      }
+      // POST /curator {enabled} → toggle the maintenance loop live
+      if (req.method === 'POST' && subPath === '/curator') {
+        const b = await parseBody<{ enabled?: boolean }>(req);
+        curatorRef.current?.setEnabled(b.enabled === true);
+        json(res, 200, { ok: true, enabled: curatorRef.current?.isEnabled() ?? false });
+        return true;
+      }
+      // POST /curator/run → force a pass NOW (bypasses the per-dock interval) for debugging
+      if (req.method === 'POST' && subPath === '/curator/run') {
+        if (!curatorRef.current) { json(res, 503, { error: 'curator not ready' }); return true; }
+        await curatorRef.current.tick();
+        json(res, 200, { ok: true, recent: curatorRef.current.recent(5) });
+        return true;
+      }
+      // GET /curator/config → { scope, config, meta } — the live-tunable knobs (ALL docks).
+      if (req.method === 'GET' && subPath === '/curator/config') {
+        if (!curatorRef.current) { json(res, 503, { error: 'curator not ready' }); return true; }
+        json(res, 200, { scope: 'all-docks', config: curatorRef.current.getConfig(), meta: CURATOR_CONFIG_META });
+        return true;
+      }
+      // POST /curator/config {<knob>:<value>,…} → patch live; clamped to bounds; applies
+      // NEXT TICK (no restart). Returns the resulting config so the UI confirms what applied.
+      if (req.method === 'POST' && subPath === '/curator/config') {
+        if (!curatorRef.current) { json(res, 503, { error: 'curator not ready' }); return true; }
+        const b = await parseBody<Record<string, unknown>>(req);
+        const patch: Record<string, number> = {};
+        for (const k of Object.keys(CURATOR_CONFIG_META)) if (typeof b[k] === 'number') patch[k] = b[k] as number;
+        const config = curatorRef.current.setConfig(patch);
+        json(res, 200, { ok: true, scope: 'all-docks', config, meta: CURATOR_CONFIG_META });
         return true;
       }
 
