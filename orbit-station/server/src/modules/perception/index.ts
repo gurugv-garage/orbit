@@ -30,7 +30,7 @@ import { bodyMotionWatchProcessor, type MotionCommand } from './processors/bodym
 import { SnapshotStore, isoIst, sampleEvenly, type SnapshotRecord } from './snapshots.js';
 import { TakeStore } from './takes.js';
 import { summarize, geminiText } from './summarizer.js';
-import { buildGrounding, type LastSummary } from './grounding.js';
+import { buildGrounding, memoryGroundingSlice, type LastSummary } from './grounding.js';
 import { SidecarSupervisor } from './sidecars.js';
 import { MemoryStore, type MemoryRow, type MemoryType, type RecallFilter, type LineageEdge } from './memory/store.js';
 import { geminiEmbedder } from './memory/embedder.js';
@@ -97,6 +97,15 @@ function dominantDock(recs: { dockId: string }[]): string {
   let best = '', n = 0;
   for (const [d, c] of tally) if (c > n) { best = d; n = c; }
   return best;
+}
+
+/** Named people in the LATEST identity record of a dock's recent records — used to
+ *  bias the grounding memory slice toward beliefs about who's actually here. Only
+ *  RECOGNISED names (not 'unknown'/null); empty if no identity yet. */
+function presentNamesFromRecent(recent: SnapshotRecord[]): string[] {
+  const id = [...recent].reverse().find((r) => r.source.kind === 'identity');
+  const faces = (id?.payload.faces as Array<{ name: string | null }> | undefined) ?? [];
+  return faces.map((f) => f.name).filter((n): n is string => !!n);
 }
 import { makeResult, type PerceptionResult } from './result.js';
 import { classifyDistance, TENTATIVE_THRESHOLD } from './face/gallery.js';
@@ -493,7 +502,25 @@ export function perceptionModule(getHub: () => ProcessingHub): StationModule {
             now,
             nowIso: isoIst(new Date(now)),
           });
-          return block ?? undefined;
+          // PASSIVE long-term memory: append a small, confidence-ranked slice of durable
+          // beliefs about WHO IS PRESENT (so the agent knows what it knows without calling
+          // recall_memory). Best-effort + synchronous: read recent active beliefs for this
+          // dock and let the pure slice filter/rank/cap. Present-subject relevance is a
+          // light filter — if we can name who's here, prefer their beliefs.
+          let memBlock = '';
+          try {
+            const present = presentNamesFromRecent(recent);   // names in the latest identity record
+            const rows = memory.recent(dockId, 40);            // active beliefs, recent-first
+            const cand = rows
+              // prefer beliefs about a present person; if we know nobody's here, keep all
+              // (high-confidence general facts still worth surfacing).
+              .filter((m) => present.length === 0 || !m.subject || present.includes(m.subject))
+              .map((m) => ({ subject: m.subject, claim: m.claim, confidence: m.confidence }));
+            memBlock = memoryGroundingSlice(cand);
+          } catch { /* grounding must never fail on the memory read */ }
+
+          const out = [block, memBlock].filter(Boolean).join('\n\n');
+          return out || undefined;
         },
         async forceCurrent(dockId, streamId, windowMs) {
           // Flush the in-flight tail (so "right now" is captured), then summarize a TIGHT

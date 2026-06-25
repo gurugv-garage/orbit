@@ -304,8 +304,17 @@ agent's *agency* over memory — perceive / discover / inspect / mutate):
 | `remember_face` (the gallery) | face tools | the `type:'person'` specialization (see §7) |
 
 Descriptions/schemas live in `schemas.ts` (`RECALL_MEMORY_DESC`, `rememberSchema`, …).
-Memory recall also feeds **grounding** indirectly (the brain can pull a memory mid-turn);
-the per-turn perception grounding block is separate — see [perception-to-brain.md](perception-to-brain.md) Decision 3.
+**Memory now also feeds grounding directly (PASSIVE awareness).** Beyond the pull
+tool, the per-turn grounding block ([grounding.ts](../orbit-station/server/src/modules/perception/grounding.ts)
+`memoryGroundingSlice`) appends a **small, confidence-ranked slice of durable beliefs
+about who is currently present** — so the agent *passively knows what it knows* without
+having to call `recall_memory`. It's deliberately curated to respect the noisy-derived-
+belief risk: filtered by confidence (`GROUNDING_BELIEF_MIN_CONF`, default 0.4), capped
+(`GROUNDING_BELIEF_MAX`, default 6), biased to **present** subjects (joined from the
+latest identity record), and **tagged as "beliefs — weigh by confidence"** so the agent
+hedges rather than treating them as hard fact. The live perception grounding (last
+summary + raw-since) is still the first part of the block — see
+[perception-to-brain.md](perception-to-brain.md) Decision 3.
 
 ---
 

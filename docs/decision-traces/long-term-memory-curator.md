@@ -336,9 +336,10 @@ in-memory, **capacity-evicted** FIFO. Implications worth stating plainly:
 - **Subject attribution** (the big one, deferred) — beliefs mostly lack a "who" because
   identity/vision isn't stable. Once it is, anchor each belief to the present person /
   speaker so recall ("what does Guru believe about robots?") works. Tracked in §8b.
-- **NEXT STEP — surfacing this to the user-facing agent.** We now have a real corpus of
-  derived beliefs to play with. The open question is *how the dock brain consumes them*:
-  it already has `recall_memory` (pull on demand), but the richer question is whether
-  consolidated beliefs should also **proactively shape grounding** (the per-turn context),
-  and how recall ranks derived (lower-confidence, possibly noisy) beliefs vs. explicitly
-  recorded ones. This is the next design thread, not part of the curator itself.
+- **Surfacing to the user-facing agent — partly DONE.** The brain consumes beliefs two
+  ways now: (1) `recall_memory` (pull on demand — surfaces derived beliefs with their
+  confidence/derivation); (2) **passive grounding** — the per-turn block now appends a
+  small, confidence-ranked, present-biased slice of durable beliefs, hedge-tagged
+  (`grounding.ts` `memoryGroundingSlice`; see memory.md §6). So the agent passively knows
+  what it knows. **Still open:** confidence-aware recall *ranking* (derived vs. explicit),
+  and tuning the grounding slice's size/relevance once subject-attribution improves.
