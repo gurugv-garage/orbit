@@ -35,8 +35,31 @@ test('phrase buried mid-sentence does NOT wake (not addressed-from-idle)', () =>
 
 test('partial / wrong phrase does not match', () => {
   assert.equal(matchesWake('hey there', P), false);
-  assert.equal(matchesWake('orbit', P), false);     // missing "hey" lead
   assert.equal(matchesWake('hey jarvis', P), false);
+});
+
+test('the NAME alone wakes — STT often drops/mangles "hey" but lands "orbit"', () => {
+  assert.equal(matchesWake('orbit', P), true);          // bare name
+  assert.equal(matchesWake('Orbit?', P), true);
+  assert.equal(matchesWake('orbit are you there', P), true); // name first + trailing
+});
+
+test('a single short filler before the name wakes (the observed STT mishears)', () => {
+  assert.equal(matchesWake('okay orbit', P), true);     // "hey"→"okay"
+  assert.equal(matchesWake('K orbit.', P), true);       // "hey"→"k"
+  assert.equal(matchesWake('hi orbit', P), true);
+  assert.equal(matchesWake('yo orbit', P), true);
+});
+
+test('name as a substring of another word does NOT wake', () => {
+  assert.equal(matchesWake('orbital mechanics', P), false); // whole-word only
+  assert.equal(matchesWake('exorbitant', P), false);
+});
+
+test('two non-filler words before the name does NOT wake', () => {
+  // only ONE short filler is allowed before the bare name (rule 2); a real lead-in
+  // ("i said orbit") is not a wake-from-idle call.
+  assert.equal(matchesWake('i said orbit', P), false);
 });
 
 test('empty inputs are safe', () => {

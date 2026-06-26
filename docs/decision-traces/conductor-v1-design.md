@@ -190,7 +190,12 @@ of a behaviour. The conductor holds the tunings (phrase/prompt/enabled) and togg
 the brain's `WakeApi.setWakeConfig`; the *match* (`matchesWake`) lives where the finals already
 are. As built:
   - `brain/index.ts: matchesWake(text, phrase)` — the lenient phrase match (unit-tested in
-    `brain/wake.test.ts`).
+    `brain/wake.test.ts`). Matches the **full phrase** ("hey orbit") near the start, OR the
+    **name alone** (the phrase's last word) as the first real word with ≤1 short filler before
+    it — so STT's "okay orbit" / "k orbit" / bare "orbit" all wake (whole-word, so "orbital"
+    doesn't). Every wake logs `[wake] FIRED`; an idle utterance that mentions the name but
+    didn't match logs `[wake] near-miss`, so unaccepted renderings stay visible (widened on
+    hardware 2026-06-26 — §8 step 6).
   - In `onAddressedFinal`: when the dock is **not listening** and the final matches the wake
     phrase, call `session.wake(prompt)` → `tapOpen()` + enqueue an autonomous turn that speaks
     the prompt verbatim.
@@ -282,8 +287,10 @@ thing `decide`, and start/stop to match. It is **re-evaluated by two triggers** 
   over `decide` for both kinds.
 - **Idempotent + self-correcting:** each reconcile matches desired vs actual, so a missed
   start/stop heals on the next tick (same discipline as the lease/heartbeat). A faceFollow task
-  started under an open session that then closes simply dies and is restarted next tick — that's
-  how a session-scoped task becomes a session-INDEPENDENT conducted thing with no new machinery.
+  started under an open session that *churns* is restarted next tick — but if the session is
+  fully **closed** there's nothing to start under, so it can't run until a new session opens
+  (the cold-start gap, §9). So a session-scoped task is session-independent *only while a session
+  exists*; making it truly session-independent is the deferred §9 fix.
 - **No always-on LLM** (vision §5 held). The conductor is rules + cheap reads.
 - **Body arbitration is NOT the conductor's job** — the lease already handles "two things
   want the body." The conductor decides *whether a thing runs at all*; the lease decides
@@ -319,14 +326,35 @@ thing `decide`, and start/stop to match. It is **re-evaluated by two triggers** 
 4. **Wired into the station** (`main.ts` — one conductor, ticking ~1 Hz, online docks only).
 5. **Console Conductor tab** (faceFollow + wakeUp, kind badge + instrumentedAt + override + knobs;
    Tasks tab left as-is + a dock-filter freebie).
-6. **Hardware test (pending — needs the dock body connected + watching):** no conversation 5 min
-   → faceFollow window opens, it looks around/follows; 15 min → it sleeps; a brain turn preempts
-   mid-follow (lease); say "hey orbit" while idle → wakeUp speaks "did you call me?" + opens
-   listening; Run now forces a thing on; toggle `enabled=false` → it stops. All visible in
-   `[cond]` + `/holder`. (Activate timers tuned down for the test, then restored.)
+6. **Hardware test — PASSED (2026-06-26, dock-redmi, timers tuned to 8s/60s then restored):**
+   - conductor conducts the online dock; faceFollow window opens on the idle timer; the task
+     starts and acquires the body lease at **priority 30** (`holder=task:…`); the head **tracked
+     and locked** on a face; ran stably (no flapping once a session was open);
+   - a `brain-turn` move **preempted** mid-follow — lease holder flipped 30→**60**→released;
+   - `enabled=false` stopped it and released the lease; **Run now** forced it on *despite*
+     `enabled=false` (override beats the rule), **Stop**/**Auto** behaved;
+   - **wakeUp** fired from idle and spoke "did you call me?" — but only when STT rendered the
+     phrase cleanly (see the matcher fix below). All visible in `[cond]` / `[wake]` / `/holder`.
+   - **Two real findings on hardware** (this is *why* we hardware-test before merge):
+     (a) **session-gating** — faceFollow can't `startTask` with no open brain session, which is
+     exactly the long-idle case it's for; see §9. (b) **wake matcher too literal** — STT renders
+     "hey orbit" as "okay orbit"/"k orbit"/bare "orbit"; widened `matchesWake` to accept the NAME
+     as the first word with ≤1 short filler (whole-word, so "orbital" doesn't wake), + `[wake]`
+     FIRED/near-miss logging. wakeUp now also wakes on bare "orbit". 12 wake unit tests.
 
 ## 9. Open / deferred (kept OUT of v1 deliberately)
 
+- **Cold-start session gating** *(known issue, found on hardware 2026-06-26)* — a `kind:'task'`
+  conducted thing is started **under the dock's open brain session**; with no open session,
+  `startTask` returns null and the conductor flaps (`start`→no-op→`start`). In normal use this is
+  fine: a session idle-closes only after **`SESSION_IDLE_MIN` = 30 min**, while faceFollow's
+  window opens at **`activateAfterMs` = 5 min** — so faceFollow reliably auto-starts ~5 min after
+  any conversation, session still open, **no manual step**. The gap is only the **cold start**:
+  if the dock has had *no* conversation for >30 min there's no session at all, and nothing opens
+  one but a conversation/brain-turn — so faceFollow won't run on its own until someone next talks
+  to it. Clean future fix: let a standing task open/hold a lightweight session — `maybeIdleClose`
+  already exempts sessions with running tasks, so the guard exists; no new lifecycle machinery.
+  Deferred; doesn't block v1 (faceFollow is proven, and the everyday path works).
 - **Learned write-back** (the reasoning task that tunes the variables) — v2. v1 ships fixed
   defaults + console editing; the tunings are structured so v2 is a pure add.
 - **`decide` as injected code-logic** — the signature allows it; no behaviour needs it yet.

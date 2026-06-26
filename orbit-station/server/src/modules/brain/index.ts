@@ -65,19 +65,36 @@ export function getBrainAccess(): BrainAccess | undefined {
   return brainRef.current;
 }
 
-/** WAKE-PHRASE match (conductor's `wakeUp`): true if the utterance opens with the wake phrase.
- *  Lenient — case-insensitive, ignores punctuation/leading filler, allows a small lead-in
- *  ("um, hey orbit") and trailing words ("hey orbit are you there") — STT phrasing varies. */
+/** Short filler tokens STT commonly emits in place of (or mangling) the wake-phrase lead-in
+ *  — "hey" gets rendered as "okay"/"k"/"hi"/etc. The NAME ("orbit") is the high-signal token;
+ *  the lead-in is throwaway. We accept the name preceded by at most one of these (or nothing). */
+const WAKE_FILLER = new Set(['hey', 'hay', 'hi', 'ok', 'okay', 'k', 'kay', 'yo', 'a', 'ay', 'eh', 'um', 'uh', 'hello', 'hej', 'he']);
+
+/** WAKE-PHRASE match (conductor's `wakeUp`): true if the utterance is a wake-from-idle call.
+ *  Lenient because STT phrasing varies a lot on the throwaway lead-in. Two ways to match, both
+ *  case/punctuation-insensitive and required NEAR THE START (not buried mid-sentence):
+ *   1) the FULL phrase ("hey orbit") as a whole-word run, with ≤2 filler words before it; or
+ *   2) the NAME alone (the phrase's last word, "orbit") as the first real word, optionally
+ *      preceded by exactly one short filler token — catches STT's "okay orbit" / "k orbit" /
+ *      bare "orbit" when it drops/mangles "hey". The name must be a whole word, so "orbital"
+ *      does NOT wake.
+ *  Hardware-observed misses that motivated (2): "Okay orbit." / "K orbit." (2026-06-26). */
 export function matchesWake(text: string, phrase: string): boolean {
   const norm = (s: string) => s.toLowerCase().replace(/[^a-z0-9 ]/g, ' ').replace(/\s+/g, ' ').trim();
   const t = norm(text); const p = norm(phrase);
   if (!t || !p) return false;
-  // match the phrase as a whole-word run anywhere in the first few words (allows light filler
-  // before it), so "hey orbit", "um hey orbit?", "ok, hey orbit you there" all wake.
+  // (1) FULL phrase near the start.
   const idx = (' ' + t + ' ').indexOf(' ' + p + ' ');
-  if (idx < 0) return false;
-  const before = t.slice(0, Math.max(0, idx - 1)).trim();
-  return before.split(' ').filter(Boolean).length <= 2; // phrase near the start
+  if (idx >= 0) {
+    const before = t.slice(0, Math.max(0, idx - 1)).trim();
+    if (before.split(' ').filter(Boolean).length <= 2) return true;
+  }
+  // (2) NAME (phrase's last word) as the first real word, with ≤1 short-filler lead-in.
+  const name = p.split(' ').filter(Boolean).pop()!;
+  const words = t.split(' ').filter(Boolean);
+  if (words[0] === name) return true;                                   // "orbit …"
+  if (words.length >= 2 && words[1] === name && WAKE_FILLER.has(words[0]!)) return true; // "okay orbit …"
+  return false;
 }
 
 /** WakeApi — the conductor's `wakeUp` behaviour governs the wake check through this:
@@ -388,9 +405,16 @@ export function brainModule(w: BrainWiring): StationModule {
         if (wakeCfg.get(t.dockId)?.enabled && !session(t.dockId).isListening()) {
           const w = wakeCfg.get(t.dockId)!;
           if (matchesWake(t.text, w.phrase)) {
+            console.log(`[wake] ${t.dockId} FIRED on "${t.text}" (phrase="${w.phrase}", tier=${t.confTier ?? '?'})`);
             trace('wake');
             session(t.dockId).wake(w.prompt);
             return;
+          }
+          // INSTRUMENT near-misses: idle utterance that mentions the name but didn't match —
+          // so STT renderings we don't yet accept are visible (don't theorize, observe).
+          const name = w.phrase.toLowerCase().split(' ').filter(Boolean).pop();
+          if (name && t.text.toLowerCase().includes(name)) {
+            console.log(`[wake] ${t.dockId} near-miss (no wake) on "${t.text}" (phrase="${w.phrase}", tier=${t.confTier ?? '?'})`);
           }
         }
         // GARBAGE STT: a far-field-mush / repetition-loop transcript must not become a
