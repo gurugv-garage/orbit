@@ -49,7 +49,12 @@ fun EventLog(
         modifier = modifier.width(280.dp).padding(6.dp),
         verticalArrangement = Arrangement.Bottom,
     ) {
-        LazyColumn(state = listState) {
+        // userScrollEnabled=false: this is an ambient tail -f, scrolled PROGRAMMATICALLY
+        // (animateScrollToItem above). A scrollable LazyColumn would otherwise consume
+        // pointer events across its 280dp-wide full-height area — a dead zone for the
+        // screen-wide tap-to-listen gesture behind it. Disabling user-scroll lets taps
+        // fall through to the listen gesture while the auto-scroll still works.
+        LazyColumn(state = listState, userScrollEnabled = false) {
             items(lines) { line ->
                 Text(
                     line,

@@ -28,7 +28,7 @@ import { readFileSync } from 'node:fs';
 import type { RouteContext, StationModule } from '../../core/module.js';
 import type { Directory } from '../docks/directory.js';
 import type { MotionExecutor } from '../bodylink/motion.js';
-import { getFaceTools, getPerceptionGrounding, getMemoryApi, getGateApi, getTranscriptApi } from '../perception/index.js';
+import { getFaceTools, getPerceptionGrounding, getMemoryApi, getGateApi, getTranscriptApi, getPerceiveStore } from '../perception/index.js';
 import { isRecording } from '../capture/index.js';
 import type { VideoRecorderApi } from '../perception/record/recorder.js';
 import { RpcBroker } from './rpc.js';
@@ -64,6 +64,64 @@ const brainRef: { current?: BrainAccess } = {};
 export function getBrainAccess(): BrainAccess | undefined {
   return brainRef.current;
 }
+
+/** Short filler tokens STT commonly emits in place of (or mangling) the wake-phrase lead-in
+ *  — "hey" gets rendered as "okay"/"k"/"hi"/etc. The NAME ("orbit") is the high-signal token;
+ *  the lead-in is throwaway. We accept the name preceded by at most one of these (or nothing). */
+const WAKE_FILLER = new Set(['hey', 'hay', 'hi', 'ok', 'okay', 'k', 'kay', 'yo', 'a', 'ay', 'eh', 'um', 'uh', 'hello', 'hej', 'he']);
+
+/** WAKE-PHRASE match (conductor's `wakeUp`): true if the utterance is a wake-from-idle call.
+ *  Lenient because STT phrasing varies a lot on the throwaway lead-in. Two ways to match, both
+ *  case/punctuation-insensitive and required NEAR THE START (not buried mid-sentence):
+ *   1) the FULL phrase ("hey orbit") as a whole-word run, with ≤2 filler words before it; or
+ *   2) the NAME alone (the phrase's last word, "orbit") as the first real word, optionally
+ *      preceded by exactly one short filler token — catches STT's "okay orbit" / "k orbit" /
+ *      bare "orbit" when it drops/mangles "hey". The name must be a whole word, so "orbital"
+ *      does NOT wake.
+ *  Hardware-observed misses that motivated (2): "Okay orbit." / "K orbit." (2026-06-26). */
+export function matchesWake(text: string, phrase: string): boolean {
+  const norm = (s: string) => s.toLowerCase().replace(/[^a-z0-9 ]/g, ' ').replace(/\s+/g, ' ').trim();
+  const t = norm(text); const p = norm(phrase);
+  if (!t || !p) return false;
+  // (1) FULL phrase near the start.
+  const idx = (' ' + t + ' ').indexOf(' ' + p + ' ');
+  if (idx >= 0) {
+    const before = t.slice(0, Math.max(0, idx - 1)).trim();
+    if (before.split(' ').filter(Boolean).length <= 2) return true;
+  }
+  // (2) NAME (phrase's last word) as the first real word, with ≤1 short-filler lead-in.
+  const name = p.split(' ').filter(Boolean).pop()!;
+  const words = t.split(' ').filter(Boolean);
+  if (words[0] === name) return true;                                   // "orbit …"
+  if (words.length >= 2 && words[1] === name && WAKE_FILLER.has(words[0]!)) return true; // "okay orbit …"
+  return false;
+}
+
+/** WakeApi — the conductor's `wakeUp` behaviour governs the wake check through this:
+ *  enable/disable + the phrase/prompt, per dock. */
+export interface WakeApi {
+  setWakeConfig(dock: string, cfg: { enabled: boolean; phrase: string; prompt: string } | null): void;
+}
+const wakeApiRef: { current?: WakeApi } = {};
+/** The live WakeApi (set when the brain module inits) — for the conductor. */
+export function getWakeApi(): WakeApi | undefined { return wakeApiRef.current; }
+
+/** ConductorAccess — the narrow surface the conductor needs from the brain: the dock's
+ *  conversation mode + start/stop/list of background tasks (keeps the supervisor encapsulated).
+ *  faceFollow starts under the open session; if it closes, the task dies and the conductor's
+ *  idempotent reconcile simply restarts it next tick — that's how a session-scoped task becomes
+ *  a session-INDEPENDENT behaviour (design §4.1) without new task-lifecycle machinery. */
+export interface ConductorAccess {
+  convMode(dock: string): string | null;
+  listTasks(dock: string): Array<{ name: string; instanceId: string; parentSessionId?: string; startedAt: number; state: string }>;
+  /** start a packaged task by name under the dock's open session; returns instanceId | null
+   *  (null if no open session / unknown task). */
+  startTask(dock: string, taskName: string): string | null;
+  stopTask(dock: string, instanceId: string): void;
+}
+const condAccessRef: { current?: ConductorAccess } = {};
+/** The live ConductorAccess (set when the brain module inits) — for the conductor. */
+export function getConductorAccess(): ConductorAccess | undefined { return condAccessRef.current; }
 
 const IDLE_SWEEP_MS = 60_000;
 /** How often to re-push the task-digest to live docks so the app HUD self-corrects
@@ -104,6 +162,10 @@ export function brainModule(w: BrainWiring): StationModule {
   // Captures text + the mode/window at decision time + the decision, so a live repro of
   // "replied after listening went off" shows EXACTLY which gate let it through.
   const addrTrace: Array<Record<string, unknown>> = [];
+  // WAKE (conductor's `wakeUp` behaviour): per-dock wake config, set by the conductor via
+  // the exported WakeApi. Absent/disabled → no wake check (the default). The match runs in
+  // onAddressedFinal (the single point every final transcript lands).
+  const wakeCfg = new Map<string, { enabled: boolean; phrase: string; prompt: string }>();
   // Set in init(): simulate a tapped addressed utterance (debug self-test seam).
   let injectAddressed: (dock: string, text: string) => void = () => {};
   const tasksRoot = defaultTasksRoot();
@@ -112,6 +174,9 @@ export function brainModule(w: BrainWiring): StationModule {
     { root: userTasks, source: 'generated' as const }, // generated first, then packaged
     { root: tasksRoot, source: 'packaged' as const },
   ];
+  // Task defs the CONDUCTOR may start (resolved in init so ConductorAccess.startTask is
+  // synchronous). v1: just face-follow.
+  const condTaskDefs = new Map<string, { name: string; filePath: string; manifest: { model?: string } }>();
   let bus: Bus;
   let rpc: RpcBroker;
 
@@ -168,6 +233,7 @@ export function brainModule(w: BrainWiring): StationModule {
   // handlers + a broker that serves `request` frames.
   const capabilities = buildCapabilityRegistry({
     directory: w.directory, motion: w.motion, getFaces: getFaceTools,
+    getPerceive: getPerceiveStore,
   });
   const capBroker = new CapabilityBroker(capabilities, sendToTask);
 
@@ -178,7 +244,12 @@ export function brainModule(w: BrainWiring): StationModule {
     const sessionId = store.openSession(dock)?.sessionId ?? null;
     const tasks = supervisor.list(dock)
       .filter((i) => i.state === 'running' || i.state === 'stuck')
-      .map((i) => ({ instanceId: i.instanceId, name: i.name, state: i.state, lastSignal: i.lastSignal ?? null }));
+      .map((i) => ({
+        instanceId: i.instanceId, name: i.name, state: i.state, lastSignal: i.lastSignal ?? null,
+        // surface the followed person's name for the face-follow indicator (named mode);
+        // undefined in salient mode (the phone then falls back to the recognized identity).
+        ...(typeof i.params?.target === 'string' && i.params.target ? { target: i.params.target as string } : {}),
+      }));
     bus.publish({
       topic: 'agent', kind: 'task-digest',
       payload: { sessionId, tasks },
@@ -203,6 +274,8 @@ export function brainModule(w: BrainWiring): StationModule {
         getTaskTools: (d, parentSessionId) => buildTaskTools({
           dock: d, supervisor, tasksRoot, userTasksRoot: userTasks, parentSessionId, config: w.config,
           capabilityAd: capabilities.advertiseFor(d),
+          knowsPerson: (name) => getFaceTools()?.knowsPerson(name) ?? false,
+          knownNames: () => getFaceTools()?.knownNames() ?? [],
         }),
       });
       sessions.set(dock, s);
@@ -238,6 +311,28 @@ export function brainModule(w: BrainWiring): StationModule {
     dockOf,
   };
 
+  // WakeApi for the conductor's `wakeUp` behaviour — set/clear the per-dock wake config.
+  wakeApiRef.current = {
+    setWakeConfig: (dock, cfg) => { if (cfg) wakeCfg.set(dock, cfg); else wakeCfg.delete(dock); },
+  };
+
+  // ConductorAccess — conversation mode + task start/stop/list for the per-dock conductor.
+  condAccessRef.current = {
+    convMode: (dock) => sessions.get(dock)?.conversation().mode ?? null,
+    listTasks: (dock) => supervisor.list(dock).map((i) => ({
+      name: i.name, instanceId: i.instanceId, parentSessionId: i.parentSessionId,
+      startedAt: i.startedAt, state: i.state,
+    })),
+    startTask: (dock, taskName) => {
+      const parent = store.openSession(dock)?.sessionId;
+      if (!parent) return null; // no session to nest under (rare); reconcile retries next tick
+      const def = condTaskDefs.get(taskName);
+      if (!def) return null;
+      return supervisor.start({ dock, name: def.name, filePath: def.filePath, params: {}, parentSessionId: parent, model: def.manifest.model });
+    },
+    stopTask: (_dock, instanceId) => { supervisor.stop(instanceId); },
+  };
+
   return {
     name: 'brain',
     topic: 'agent',
@@ -246,6 +341,15 @@ export function brainModule(w: BrainWiring): StationModule {
     init(b) {
       bus = b;
       rpc = new RpcBroker(bus, w.directory);
+
+      // Resolve the task defs the conductor may start (so ConductorAccess.startTask is
+      // sync). Fire-and-forget — populated well before the first ~1Hz conductor tick.
+      void (async () => {
+        for (const name of ['face-follow']) {
+          try { const d = await findTaskDef(taskRoots, name); condTaskDefs.set(name, { name: d.name, filePath: d.filePath, manifest: d.manifest }); }
+          catch { /* def missing → conductor startTask returns null, reconcile retries */ }
+        }
+      })();
 
       // PROACTIVE GATE (docs/perception-to-brain.md Phase 5): a raised attention thought
       // becomes a self-thought turn on the dock's session — the SAME autonomous-turn
@@ -294,6 +398,25 @@ export function brainModule(w: BrainWiring): StationModule {
         // the dock must NOT respond (we want clean ambient perception). The mic/cam
         // keep capturing + transcribing upstream; we just don't turn it into a reply.
         if (isRecording(t.dockId)) { trace('skip:recording'); return; }
+        // WAKE (conductor's `wakeUp` behaviour): when the dock is NOT in a listening window
+        // and this utterance matches the wake phrase, WAKE — open listening + speak the prompt
+        // — and consume the utterance (it was just "hey orbit", not a turn). Governed by the
+        // conductor via setWakeConfig (enabled/phrase/prompt); off by default until armed.
+        if (wakeCfg.get(t.dockId)?.enabled && !session(t.dockId).isListening()) {
+          const w = wakeCfg.get(t.dockId)!;
+          if (matchesWake(t.text, w.phrase)) {
+            console.log(`[wake] ${t.dockId} FIRED on "${t.text}" (phrase="${w.phrase}", tier=${t.confTier ?? '?'})`);
+            trace('wake');
+            session(t.dockId).wake(w.prompt);
+            return;
+          }
+          // INSTRUMENT near-misses: idle utterance that mentions the name but didn't match —
+          // so STT renderings we don't yet accept are visible (don't theorize, observe).
+          const name = w.phrase.toLowerCase().split(' ').filter(Boolean).pop();
+          if (name && t.text.toLowerCase().includes(name)) {
+            console.log(`[wake] ${t.dockId} near-miss (no wake) on "${t.text}" (phrase="${w.phrase}", tier=${t.confTier ?? '?'})`);
+          }
+        }
         // GARBAGE STT: a far-field-mush / repetition-loop transcript must not become a
         // confident agent turn (we'd reply to words that were never said). The snapshot
         // is still kept (tagged) upstream; we just don't act on it. Shaky still runs —

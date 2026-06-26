@@ -73,6 +73,14 @@ export class ProcessingHub implements MediaTap {
     this.#bus.on(CLIENT_TOPIC, (m) => this.#onBusFact(m));
   }
 
+  /** The dock a stream/peer id is grouped under — the same mapping snapshots use
+   *  (peer→dock from the roster, else the SFU label, else the raw id). Exposed so a
+   *  module can resolve a WS frame's `source` peer to its dock (e.g. the `perceive`
+   *  stream files its live face-track under the dock, not the raw ws id). */
+  resolveDock(streamId: string): string {
+    return this.#resolveDock(streamId);
+  }
+
   // ── registry (runtime add/remove — dynamic watchers) ───────────────────────
 
   register(p: StreamProcessor): () => void {

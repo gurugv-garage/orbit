@@ -96,6 +96,14 @@ class PerceptionWiring(
         // narrower "listening" only (followup is post-speech, no cue).
         val attending = mode == "listening" || mode == "followup"
         val cueOn = mode == "listening"
+        // Leaving the listening window (idle/thinking/speaking) ENDS the user-speech
+        // caption: drop a lingering endpointed transcript so a stale partial can't
+        // sit on the face after the window closed (the post-restart "transcribing
+        // when not listening" symptom — the interim already clears in RemoteBrain;
+        // this is the endpointed-transcript half). The bot reply / status takes over.
+        if (!attending && _transcript.value.text.isNotEmpty()) {
+            _transcript.value = TranscriptState()
+        }
         if (cueOn != listeningRendered) {
             listeningRendered = cueOn
             if (cueOn) {
@@ -209,6 +217,10 @@ class PerceptionWiring(
                             x = (event.x * 0.7f).coerceIn(-1f, 1f),
                             y = (event.y * 0.5f).coerceIn(-1f, 1f),
                         ))
+                    }
+                    is PerceptionEvent.PerceiveFrame -> {
+                        // The rich MLKit detail is forwarded to the station by
+                        // PerceiveForwarder; the UI wiring drives off FaceSeen, so ignore here.
                     }
                     is PerceptionEvent.FaceLost -> {
                         _facePresent.value = false

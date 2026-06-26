@@ -8,6 +8,7 @@ import assert from 'node:assert/strict';
 import { makeSnapshot, isoIst, type SnapshotRecord, type SnapshotSource } from './snapshots.js';
 import {
   buildGrounding, staleness, RAW_FALLBACK_MS, MAX_RAW_LINES, type LastSummary,
+  memoryGroundingSlice, type GroundingBelief,
 } from './grounding.js';
 
 const DOCK = 'desk-1';
@@ -114,4 +115,39 @@ test('grounding is dock-agnostic in the builder (caller filters); records pass t
   const recent = [rec('speech', 5_000, 'from this dock', 'other-dock')];
   const block = buildGrounding({ last: null, recent, now: NOW, nowIso })!;
   assert.match(block, /from this dock/);
+});
+
+// ── memoryGroundingSlice (the passive long-term-memory awareness block) ──────────
+
+const b = (subject: string, claim: string, confidence: number): GroundingBelief => ({ subject, claim, confidence });
+
+test('slice: filters below min confidence, sorts high→low, caps, hedge-tags', () => {
+  const out = memoryGroundingSlice([
+    b('guru', 'prefers tea', 0.9),
+    b('guru', 'maybe likes jazz', 0.3),   // below 0.4 → dropped
+    b('sam', 'works on firmware', 0.6),
+  ], 0.4, 6);
+  // kept high→low, dropped the 0.3
+  assert.match(out, /What you already know/);
+  assert.match(out, /belief, conf 0\.90/);
+  assert.doesNotMatch(out, /jazz/);
+  // order: 0.9 before 0.6
+  assert.ok(out.indexOf('prefers tea') < out.indexOf('works on firmware'));
+});
+
+test('slice: caps to max', () => {
+  const many = Array.from({ length: 10 }, (_, i) => b('x', `fact ${i}`, 0.9));
+  const out = memoryGroundingSlice(many, 0.4, 3);
+  assert.equal(out.split('\n').filter((l) => l.startsWith('•')).length, 3);
+});
+
+test('slice: empty when nothing clears the bar (grounding then omits the section)', () => {
+  assert.equal(memoryGroundingSlice([b('x', 'low', 0.1)], 0.4, 6), '');
+  assert.equal(memoryGroundingSlice([], 0.4, 6), '');
+});
+
+test('slice: a subjectless belief still renders (no "undefined:")', () => {
+  const out = memoryGroundingSlice([b('', 'the kettle is broken', 0.7)], 0.4, 6);
+  assert.match(out, /• the kettle is broken/);
+  assert.doesNotMatch(out, /undefined/);
 });

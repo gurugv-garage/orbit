@@ -191,6 +191,23 @@ export class MemoryStore {
   }
 
   /**
+   * The newest `source_id` this dock has ALREADY consolidated from, among lineage edges
+   * of `sourceKind` (e.g. 'snapshot'). Source ids are `<kind>@<iso>` event-times that
+   * sort lexicographically by time, so MAX gives the latest. This is the curator's
+   * RESTART-SAFE watermark: the durable beliefs ARE the checkpoint — derive "where I'm
+   * at" from what's actually in long-term memory, never a separate (drift-prone) record.
+   * Returns undefined if the dock has consolidated nothing of that kind yet.
+   */
+  latestConsolidatedSource(dockId: string, sourceKind = 'snapshot'): string | undefined {
+    const r = this.#db.prepare(
+      `SELECT MAX(l.source_id) AS m FROM memory_lineage l
+         JOIN memory m ON m.id = l.memory_id
+        WHERE m.dock_id = ? AND l.source_kind = ?`)
+      .get(dockId, sourceKind) as { m: string | null };
+    return r.m ?? undefined;
+  }
+
+  /**
    * REVISE a memory: insert a new active version (carrying over axes unless
    * overridden) and mark the old one `revised` (kept for history), linked via
    * `supersedes`. Returns the new id, or null if `id` isn't an active memory.
@@ -273,6 +290,14 @@ export class MemoryStore {
       `SELECT DISTINCT subject FROM memory WHERE dock_id = ? AND status='active' AND subject != '' ORDER BY subject`)
       .all(dockId) as Array<{ subject: string }>;
     return rows.map((r) => r.subject);
+  }
+
+  /** Distinct docks that have any active memory (drives the curator's per-dock loop). */
+  docks(): string[] {
+    const rows = this.#db.prepare(
+      `SELECT DISTINCT dock_id FROM memory WHERE status='active' ORDER BY dock_id`)
+      .all() as Array<{ dock_id: string }>;
+    return rows.map((r) => r.dock_id);
   }
 
   /** The most recent active memories (orientation tool). */

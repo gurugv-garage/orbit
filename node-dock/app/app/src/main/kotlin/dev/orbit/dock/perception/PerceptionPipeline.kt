@@ -19,6 +19,17 @@ import timber.log.Timber
  *   - mic RMS levels for the UI meter
  *   - All events fan out via [PerceptionBus]
  *
+ * ⚠️ DEAD — the on-device WAKE-WORD + VAD path here is LEGACY and FIRES NOTHING USEFUL:
+ *   • [PorcupineWakeWord] is DISABLED (no PORCUPINE_ACCESS_KEY) and its keyword is "jarvis",
+ *     not "orbit" — it never wakes the dock.
+ *   • [SileroVad] is known BROKEN (LSTM state diverges; prob frozen ~0.0005).
+ *   • Waking the dock on a phrase now happens SERVER-SIDE: orbit-station's conductor governs a
+ *     `wakeUp` behaviour (hardcoded in the brain) that matches the wake phrase on the STT
+ *     transcript and opens listening (docs/decision-traces/conductor-v1-design.md). Listening
+ *     is otherwise tap/palm-only.
+ * This on-phone wake/VAD wiring is kept only because it's woven into MicCapture/the bus/tests;
+ * removing it is a separate cleanup. Do NOT build on runWake/runVad — they're inert.
+ *
  * The pipeline owns its own scope; `stop()` cancels everything cleanly.
  *
  * **A1 — the always-on-mic shift (docs/perception-to-brain.md).** The on-device

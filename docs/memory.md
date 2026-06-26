@@ -6,15 +6,16 @@
 > integration reference**; the *design rationale* (why these axes, the keystone
 > argument) is [perception-to-brain.md](perception-to-brain.md) Decision 4.
 
-Status: **built + tested.** Lives in the perception module (its intended role is to
-hold what perception observes — though **today the only writer is the agent**, not the
-perception pipeline; see [§0](#0-what-actually-populates-memory-today)); consumed by the
-brain through a facade.
+Status: **built + tested.** Lives in the perception module; written by the agent/operator
+(explicit) and the **long-term memory curator** (the pipeline — consolidates salient
+speech, reconciles existing beliefs; see [§0](#0-what-actually-populates-memory-today) /
+[§5a](#5a-the-long-term-memory-curator-in-process-pipeline)); consumed by the brain
+through a facade.
 
-> **What memory is NOT:** it is **not** a transcript archive. It holds only the discrete
-> facts the agent (or a console operator) *chose* to record — see [§0](#0-what-actually-populates-memory-today)
-> for exactly what writes it and what does not (session chat, old sessions, and perception
-> snapshots **do not** flow in today).
+> **What memory is NOT:** it is **not** a transcript archive, and **not** a bulk dump of
+> perception. It holds discrete beliefs — recorded by the agent/operator, or
+> **selectively + grounded-ly consolidated** from speech by the curator. Session chat,
+> old sessions, and raw snapshot *fusions* do not flow in wholesale — see [§0](#0-what-actually-populates-memory-today).
 
 > **Terms used below** (defined elsewhere — this doc only references them):
 > • **Snapshot** — one timestamped observation from one sensor stream (👁 vision / 🎙 speech /
@@ -37,7 +38,9 @@ brain through a facade.
 - [3. The store API (`MemoryStore`)](#3-the-store-api-memorystore)
 - [4. Recall — structured ∧ semantic (`recall()`)](#4-recall--structured--semantic-recall)
 - [5. Integration point A — perception (the home + the facade)](#5-integration-point-a--perception-the-home--the-facade)
+  - [5a. The long-term memory curator (in-process pipeline)](#5a-the-long-term-memory-curator-in-process-pipeline)
 - [6. Integration point B — the brain (the tools)](#6-integration-point-b--the-brain-the-tools)
+- [6a. Integration point C — tasks (DIRECT, not the wire)](#6a-integration-point-c--tasks-direct-not-the-wire)
 - [7. The face gallery — the first `type:'person'` memory](#7-the-face-gallery--the-first-typeperson-memory)
 - [8. What's NOT wired yet (honest gaps)](#8-whats-not-wired-yet-honest-gaps)
 - [See also](#see-also)
@@ -47,13 +50,25 @@ brain through a facade.
 
 ## 0. What actually populates memory today
 
-Memory is **sparse and deliberate** — it is written through exactly **two** paths,
-both explicit. **Nothing populates it automatically.**
+Memory is written by a few deliberate paths — the agent/operator (explicit), and the
+**long-term memory curator** (the pipeline, automatic): it **consolidates** salient
+perception (speech) into new derived beliefs AND **reconciles** existing ones. **Tasks**
+may also touch memory directly as a side-effect. Raw snapshots are NOT bulk-distilled —
+consolidate is selective + grounded (it promotes only the salient, traceable few).
 
-| Writes memory today | How | Path |
+| Touches memory today | How | Path |
 |---|---|---|
 | **The agent, mid-conversation** | the brain decides a fact is worth keeping | `remember` / `update_memory` / `forget_memory` tools (`tools.ts`, conf 0.7) |
 | **A console operator** | typing into the 4c memory inspector | `POST` / `PATCH` / forget on `/api/perception/memory*` |
+| **The long-term memory CURATOR** (auto, in-process) | **consolidate** salient speech → NEW derived beliefs (event-time aligned, lineage'd), AND **reconcile** existing ones (revise/forget). Load-aware + restart-safe | `memory/longterm/` (§5a) |
+| **A task / behaviour** (side effect) | a task that *acts* may record a side-effect belief — **directly** (shared code + db), not over the wire | `this.memory` on the Task base class (§6a) |
+
+> **Two memory tiers.** The snapshot ring is **short-term** memory (real-time,
+> volatile); this store is **long-term** (durable). The curator bridges + maintains the
+> long-term tier — *that producing/maintaining memory artifacts is the pipeline's job
+> (not a behaviour's, whose job is to ACT)* is the **purpose-rule**
+> ([behaviour-conductor.md](decision-traces/behaviour-conductor.md) §4a). The
+> as-built curator: [decision-traces/long-term-memory-curator.md](decision-traces/long-term-memory-curator.md).
 
 ### What does NOT flow into memory (the common misconception)
 
@@ -65,12 +80,14 @@ both explicit. **Nothing populates it automatically.**
   LLM digest of the transcript — but it writes `store.setSummary()` (the brain session
   index, used to **seed the next session's prompt**), **not** `memory.remember()`. That
   summary is *never* promoted to a memory row.
-- **Perception snapshots / fusions.** Vision/speech/identity/emotion snapshots and
-  Gemini fusions are **never** auto-distilled into memory. Perception reaches memory
-  **only indirectly, via the agent**: the fused understanding is injected into the brain
-  as the per-turn **grounding** block ([perception-to-brain.md](perception-to-brain.md) Decision 3),
-  and *if the brain decides* it's worth keeping, it calls `remember`. Grounding itself
-  then evaporates — there is no automatic perception→memory link ([§8](#8-whats-not-wired-yet-honest-gaps)).
+- **Most perception snapshots / fusions.** Vision/identity/emotion/bodymotion snapshots
+  and Gemini *fusions* are **not** auto-distilled — they reach memory only indirectly via
+  the agent (injected as the per-turn **grounding** block,
+  [perception-to-brain.md](perception-to-brain.md) Decision 3; the brain calls `remember`
+  *if it chooses*; grounding then evaporates). **The one exception is SPEECH:** the
+  curator's consolidate op promotes salient diarized utterances into derived beliefs
+  ([§5a](#5a-the-long-term-memory-curator-in-process-pipeline)) — selectively + grounded,
+  not the whole stream. Other streams feeding consolidate is future ([§8](#8-whats-not-wired-yet-honest-gaps)).
 - **The face gallery.** Enrolled faces are still their own JSON file, not memory rows ([§7](#7-the-face-gallery--the-first-typeperson-memory)).
 
 **The two stores, side by side:**
@@ -80,8 +97,10 @@ both explicit. **Nothing populates it automatically.**
 | **Brain session store** | JSONL, `.data/brain/` | full turn transcripts + per-session close summary | bounded ring; summary seeds the next session |
 | **Memory store** (this doc) | sqlite, `.data/orbit.db` | discrete agent-/operator-recorded facts | durable, supersede-not-delete |
 
-So: a memory row exists **only because the agent or a human explicitly recorded it.**
-Everything the robot merely *saw* or *said* lives elsewhere and ages out.
+So a memory row comes from one of: an explicit agent/operator record, the **curator
+consolidating** salient observed speech (selective + grounded, not bulk-distilled), or a
+task's side-effect write. Everything the robot merely *saw* or *said* otherwise lives in
+the short-term ring and ages out.
 
 ---
 
@@ -95,10 +114,12 @@ All paths under `orbit-station/server/src/`.
 | **The embedder** | `modules/perception/memory/embedder.ts` | `geminiEmbedder()` — text → vector for semantic recall |
 | **Shared db** | `core/db.ts` | `orbitDb()` — the one `.data/orbit.db` (also backs config/cost) |
 | **Facade (perception → brain seam)** | `modules/perception/index.ts` | `MemoryApi` interface + `getMemoryApi()` |
+| **Long-term curator** | `modules/perception/memory/longterm/` | in-process loop: consolidate (create) + reconcile (revise/forget); load-aware; restart-safe (§5a) |
 | **Brain tools** | `modules/brain/tools.ts` | `buildMemoryTools(dock, getMemory)` — the 7 model-facing tools |
+| **Task access (direct)** | `tasks/_harness/memory.ts` | `this.memory` — `DockMemory` over the same store, dock-scoped (§6a) |
 | **Tool schemas/descriptions** | `modules/brain/schemas.ts` | `RECALL_MEMORY_DESC`, `rememberSchema`, … |
 | **REST (the 4c inspector)** | `modules/perception/index.ts` | `/api/perception/memory*` routes |
-| **Tests** | `modules/perception/memory/store.test.ts` | store unit tests; tool tests in `brain/tools.test.ts` |
+| **Tests** | `memory/store.test.ts`, `memory/longterm/longterm.test.ts`, `tasks/_harness/memory.test.ts` | store + curator (cadence/guards/restart) + direct task-access; tool tests in `brain/tools.test.ts` |
 
 ---
 
@@ -218,6 +239,48 @@ const memory = new MemoryStore(orbitDb(), geminiEmbedder());
    - `PATCH /memory/item/:id {claim?,confidence?,subject?}` → revise (supersede)
    - `DELETE` / forget paths likewise.
 
+### 5a. The long-term memory curator (in-process pipeline)
+
+`memory/longterm/` is an always-on **pipeline** loop that tends durable memory from the
+**short-term tier** (the snapshot ring). It runs in-process (reaches `MemoryStore` + the
+ring directly), LLM via the summarizer's `geminiText`. Full design + rationale:
+[decision-traces/long-term-memory-curator.md](decision-traces/long-term-memory-curator.md).
+Here, the as-built shape:
+
+**Two operations** (one loop, one console panel):
+- **consolidate** (`consolidate.ts`) — **CREATE.** Promotes salient speech from a window
+  into NEW `derivation:'derived'` beliefs, **event-time aligned** (who was present when
+  said, via `stateAt`) and **lineage'd** back to the source snapshot. The LLM judges
+  salience; a **grounding-guard** drops any belief whose support isn't an observation it
+  was shown (no fabrication from nothing).
+- **reconcile** (`reconcile.ts`) — **MAINTAIN.** Reviews existing beliefs, `revise`s
+  drifted/contradictory ones (supersede, history kept) and `forget`s the stale.
+  **Id-guarded**: only ids it was shown can be touched.
+
+**Load-aware cadence** (`cadence.ts`, pure + tested) — speech is bursty (trickle ↔
+flood), so consolidate is driven by a per-dock **watermark** (last-consolidated
+event-time); "pending" = speech after it. It fires on **flood** (≥K pending) / **age**
+(oldest pending too old → overrides the floor so the ring can't drop it) / **quiet**
+(speech stopped). Each pass takes a **bounded oldest chunk** (`maxBatch`) and advances
+the watermark over exactly what it sent → a flood drains over ticks, **exactly-once**, no
+duplicates; an LLM error doesn't advance the watermark (retry, no loss). Reconcile is a
+slow ~30 min interval.
+
+**Restart-safe.** The watermark is **derived from belief lineage** on startup
+(`MemoryStore.latestConsolidatedSource(dock)` = newest source event-time already
+consolidated), so a restart resumes instead of re-consolidating the ring into duplicates.
+The durable beliefs ARE the checkpoint — no separate stored cursor.
+
+Config (few knobs, env-overridable — `PERCEPTION_CURATE` master on/off,
+`PERCEPTION_CONSOLIDATE_AT|MAX_AGE_MS|QUIET_MS|MAX_BATCH|FLOOR_MS`, `PERCEPTION_RECONCILE_MS|MIN`,
+`PERCEPTION_CONSOLIDATE_CONF`). Console: a 🧹 curator panel — enable toggle, run-now, and
+a per-pass feed (op + reason + created/revised/forgot). Backs `/api/perception/curator*`.
+
+Tests: `longterm/longterm.test.ts` (cadence flood/age/quiet, the flood-drains-exactly-once
++ restart-safety, both guards, event-time source alignment). (Prototyped as a `daydream`
+*task*, rehomed here once the purpose-rule made clear its goal is maintaining memory
+artifacts, not acting — [behaviour-conductor.md](decision-traces/behaviour-conductor.md) §4a.)
+
 ---
 
 ## 6. Integration point B — the brain (the tools)
@@ -241,8 +304,47 @@ agent's *agency* over memory — perceive / discover / inspect / mutate):
 | `remember_face` (the gallery) | face tools | the `type:'person'` specialization (see §7) |
 
 Descriptions/schemas live in `schemas.ts` (`RECALL_MEMORY_DESC`, `rememberSchema`, …).
-Memory recall also feeds **grounding** indirectly (the brain can pull a memory mid-turn);
-the per-turn perception grounding block is separate — see [perception-to-brain.md](perception-to-brain.md) Decision 3.
+**Memory now also feeds grounding directly (PASSIVE awareness).** Beyond the pull
+tool, the per-turn grounding block ([grounding.ts](../orbit-station/server/src/modules/perception/grounding.ts)
+`memoryGroundingSlice`) appends a **small, confidence-ranked slice of durable beliefs
+about who is currently present** — so the agent *passively knows what it knows* without
+having to call `recall_memory`. It's deliberately curated to respect the noisy-derived-
+belief risk: filtered by confidence (`GROUNDING_BELIEF_MIN_CONF`, default 0.4), capped
+(`GROUNDING_BELIEF_MAX`, default 6), biased to **present** subjects (joined from the
+latest identity record), and **tagged as "beliefs — weigh by confidence"** so the agent
+hedges rather than treating them as hard fact. The live perception grounding (last
+summary + raw-since) is still the first part of the block — see
+[perception-to-brain.md](perception-to-brain.md) Decision 3.
+
+---
+
+## 6a. Integration point C — tasks (DIRECT, not the wire)
+
+A **task** (a background process — see [tasks.md](tasks.md)) reaches memory **directly**,
+not over the WS. A task shares the station's code + `.env`, and memory is just a sqlite
+file + an env-keyed embedder — fully reconstructible in the task process. So the Task
+base class exposes `this.memory` (`tasks/_harness/memory.ts`): a `DockMemory` that opens
+the **same `MemoryStore`** on the **same `.data/orbit.db`**, lazily.
+
+This is the "touch memory **as a side effect**" affordance the purpose-rule permits a
+task whose *goal* is acting (it may record that it acted). Two properties:
+
+- **Dock-scoped** — the dock is **bound at construction** from the task's verified
+  identity (`this.#ident.dock`), never an argument. `recall` only sees that dock;
+  `revise`/`forget`/`inspect` refuse a belief belonging to another dock.
+- **Direct, not a capability** — memory failed the "needs live in-process state" test
+  (it's sqlite + env), so it is NOT a wire capability (only the decoded frame / body
+  link are). See [tasks.md](tasks.md) "Direct vs. the wire".
+
+> **One-writer note.** A task opening its own `MemoryStore` is a *second* sqlite
+> connection to the same file (alongside the station's). `better-sqlite3` serialises
+> writes per the WAL; at this scale that's fine. A task's write is NOT observed live by
+> the station's in-memory consumers (the curator's feed, the brain facade) — they see
+> it on their next read. Nothing today needs live cross-process write-notification; if
+> that changes, an event seam would be the fix, not the wire.
+
+Tested in `tasks/_harness/memory.test.ts` (round-trips, supersede, the dock-scoping
+guards) over a real in-memory store.
 
 ---
 
@@ -261,12 +363,20 @@ unaffected (design + migration: [perception-to-brain.md](perception-to-brain.md)
 
 ## 8. What's NOT wired yet (honest gaps)
 
-- **No automatic ingestion at all** (the full inventory is [§0](#0-what-actually-populates-memory-today)).
-  Nothing distills snapshot fusions *or* session summaries into `derived` memories — the
-  `derivation:'derived'` + lineage machinery exists and is exercised by `revise`, but the
-  always-on "observations become memories" loop is future (ties to the pyramid's T2, see
-  [perception-pipeline.md](perception-pipeline.md) §9). The obvious near-term win: have
-  `#compactSummary`'s session digest *also* write a `summary`-type, `derived` memory.
+- **Consolidate creates from SPEECH only, with first-guess knobs.** The curator (§5a)
+  *does* now create derived beliefs — but only from the **diarized speech** source; it
+  does not yet consolidate vision/identity or session summaries, and the cadence knobs
+  (K/maxAge/quiet/maxBatch) are tuned-by-eye until observed against a real flood. The
+  richer **multi-source, event-time alignment** (vision lag, late-emitting streams) is
+  the documented fragile delta ([long-term-memory-curator.md](decision-traces/long-term-memory-curator.md) §8a).
+- **Not live-verified end-to-end.** Consolidate's create path is covered by unit tests
+  but hasn't been seen promoting a real belief from a live conversation (needs actual
+  speech at a dock; tested rooms have been silent).
+- **Curator console surface — built.** Perception Studio has a 🧹 curator panel:
+  enable/disable toggle, a recent-passes feed (per pass: op + reason + created/revised/
+  forgot / skipped-reason), and a **run-now** button (`GET/POST /api/perception/curator`,
+  `POST /curator/run`). What's still thin: no per-belief diff drill-down (only counts +
+  the change ids on the pass record), and no per-dock filter in the UI.
 - **Retention/rollup tiers** (how long raw vs summaries; per-dock budgets) — designed
   (4.6), not enforced; nothing ages out yet.
 - **Gallery → unified-store migration** (§7).

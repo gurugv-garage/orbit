@@ -5,10 +5,12 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.animation.core.animateFloat
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -168,6 +170,7 @@ fun DockScreen() {
                     build = p("build")?.content?.toIntOrNull(),
                     url = p("url")?.content,
                     sha256 = p("sha256")?.content,
+                    version = p("version")?.content,
                 )
             },
             // route WebRTC signaling (producer-answer / producer-ice) to the streamer.
@@ -379,6 +382,10 @@ fun DockScreen() {
             tts.applyVoice(dev.orbit.dock.ui.face.FaceRegistry.byId(id).voice)
             dev.orbit.dock.ui.face.FaceStylePrefs.set(ctx, id)
         }
+        // Persist mic mute so "mic off" survives an app restart (a restart must not
+        // silently re-open the mic). Restore the last value at startup.
+        controller.onMicMutedChanged = { muted -> dev.orbit.dock.ui.face.MicMutePrefs.set(ctx, muted) }
+        controller.restoreMicMuted(dev.orbit.dock.ui.face.MicMutePrefs.get(ctx))
         // Restore the last local choice (sticky over a config default).
         controller.restoreFaceStyle(dev.orbit.dock.ui.face.FaceStylePrefs.get(ctx))
         // Apply whatever faceStyle the station already had cached (default if no
@@ -393,6 +400,28 @@ fun DockScreen() {
     }
 
     LaunchedEffect(Unit) { wiring.attach(scope) }
+
+    // Forward the on-device MLKit perception (face geometry + emotion/gesture/identity) to
+    // the station as the `perceive` stream — the fast face source for faceFollow + the
+    // pipeline. Dedups/throttles internally (see PerceiveForwarder). Reads the live
+    // StationLink each publish so it survives reconnects.
+    LaunchedEffect(Unit) {
+        dev.orbit.dock.perception.PerceiveForwarder({ stationLinkRef.value }, scope)
+    }
+
+    // DEBUG telemetry: publish the FaceTracker's 1 Hz detection-health report over the WS
+    // (perceive/telemetry) so a stream STALL is diagnosable station-side without adb.
+    LaunchedEffect(Unit) {
+        faceTracker.onTelemetry = { framesIn, facePasses, faceHits, lastFaceMsAgo, intervalMs ->
+            stationLinkRef.value?.publish("perceive", "telemetry", kotlinx.serialization.json.buildJsonObject {
+                put("framesIn", kotlinx.serialization.json.JsonPrimitive(framesIn))
+                put("facePasses", kotlinx.serialization.json.JsonPrimitive(facePasses))
+                put("faceHits", kotlinx.serialization.json.JsonPrimitive(faceHits))
+                put("lastFaceMsAgo", kotlinx.serialization.json.JsonPrimitive(lastFaceMsAgo))
+                put("intervalMs", kotlinx.serialization.json.JsonPrimitive(intervalMs))
+            })
+        }
+    }
 
     // Rest the screen when nobody's around: dim the backlight after ~1 min with
     // no face, no voice, and no interaction; snap back to full bright on any of
@@ -501,6 +530,13 @@ fun DockScreen() {
     // leaves listening/followup (RemoteBrain.clearInterim), at which point we fall back
     // to the endpointed perception transcript / bot reply.
     val interimTranscript by agent.interimTranscript.collectAsState()
+    // The station's conversation mode. The user-speech caption (interim or endpointed
+    // transcript) belongs to an OPEN listening window only — outside it (idle/thinking/
+    // speaking) the words are stale and must not paint, which is the "transcribing when
+    // not listening" symptom (esp. after a restart, when a window-close 'idle' frame can
+    // be missed). We gate the caption on this rather than trust the transcript flow alone.
+    val convMode by agent.convMode.collectAsState()
+    val listeningWindow = convMode == "listening" || convMode == "followup"
     // Listening-window countdown: the station sends the absolute close time; we tick a
     // local clock so the on-face badge shows seconds remaining. A screenshot then proves
     // BOTH that it's in listening mode AND how long is left (debugging "UI says listening
@@ -548,6 +584,11 @@ fun DockScreen() {
     val micReady = micLive && streamUp
 
     LaunchedEffect(micGranted, micMuted) {
+        // Mic OFF = ONE real switch: disable the WebRTC audio track so the STATION
+        // receives silence (no STT, no listening, no caption) — the station needs to
+        // know nothing, it just hears nothing. Also stop the local VAD/wake pipeline
+        // (power saving; the on-phone meter goes quiet too).
+        mediaStreamerRef.value?.setMuted(micMuted)
         if (micGranted && !micMuted) PerceptionService.start(ctx)
         else PerceptionService.stop(ctx)
     }
@@ -666,6 +707,22 @@ fun DockScreen() {
             }
         }
     }
+
+    // DEBUG face-follow indicator: track the live on-device face position so the overlay can
+    // show SEARCHING (no face) vs IN-VIEW + how centered. Mirror-corrected NDC from FaceSeen
+    // (x,y ∈ [-1,1]); we keep the last seen + whether it's currently present (a short grace
+    // so a 1-frame miss doesn't flicker the indicator). Drives FaceFollowIndicator below.
+    var ffFaceX by remember { mutableStateOf(0f) }
+    var ffFaceY by remember { mutableStateOf(0f) }
+    var ffSeenAtMs by remember { mutableStateOf(0L) }
+    var ffNowMs by remember { mutableStateOf(0L) }
+    LaunchedEffect(Unit) {
+        PerceptionBus.events.collect { ev ->
+            if (ev is PerceptionEvent.FaceSeen) { ffFaceX = ev.x; ffFaceY = ev.y; ffSeenAtMs = System.currentTimeMillis() }
+            else if (ev is PerceptionEvent.FaceLost) { ffSeenAtMs = 0L }
+        }
+    }
+    LaunchedEffect(Unit) { while (true) { ffNowMs = System.currentTimeMillis(); kotlinx.coroutines.delay(200) } }
 
     Box(
         modifier = Modifier
@@ -793,7 +850,12 @@ fun DockScreen() {
                         // partial); otherwise show the endpointed perception transcript.
                         // An interim is never "final" (dim styling); the perception
                         // transcript keeps its own final flag.
-                        transcriptText = interimTranscript.ifEmpty { transcript.text },
+                        // GATE: the user-speech caption shows only inside an open
+                        // listening/followup window. Outside it the words are stale —
+                        // the always-on STT keeps producing transcripts the dock isn't
+                        // "listening" to, and a missed window-close frame (restart) would
+                        // otherwise leave them painted. The bot reply has its own band.
+                        transcriptText = if (listeningWindow) interimTranscript.ifEmpty { transcript.text } else "",
                         transcriptFinal = if (interimTranscript.isNotEmpty()) false else transcript.isFinal,
                         agentState = agentState,
                         modifier = Modifier
@@ -834,7 +896,12 @@ fun DockScreen() {
                                 .padding(horizontal = 14.dp, vertical = 7.dp),
                         )
                     }
-                    if (micGranted && !perceptionReady) {
+                    // "waking up…" = the perception pipeline is still starting. Don't
+                    // show it when the mic is MUTED: perception is stopped on purpose
+                    // then (PerceptionService.stop on mute), so !perceptionReady is the
+                    // intended OFF state, not a wake-up — the pill there read as "still
+                    // coming up" when the user had deliberately turned the mic off.
+                    if (micGranted && !micMuted && !perceptionReady) {
                         dev.orbit.dock.ui.widgets.WakingUpPill(
                             modifier = Modifier
                                 .align(Alignment.Center)
@@ -857,12 +924,23 @@ fun DockScreen() {
                             .align(Alignment.TopStart)
                             .padding(12.dp)
                             .pointerInput(Unit) {
-                                detectTapGestures(onLongPress = {
-                                    agentRef.value?.sendFeedback(null)
-                                    android.widget.Toast.makeText(
-                                        ctx, "Feedback flagged for this session", android.widget.Toast.LENGTH_SHORT,
-                                    ).show()
-                                })
+                                detectTapGestures(
+                                    // TAP the build number = force an OTA update check (ask the
+                                    // station to re-offer if this dock is behind). The app is
+                                    // otherwise passive; this saves waiting for the next re-announce.
+                                    onTap = {
+                                        otaUpdater.requestCheck()
+                                        android.widget.Toast.makeText(
+                                            ctx, "Checking for update…", android.widget.Toast.LENGTH_SHORT,
+                                        ).show()
+                                    },
+                                    onLongPress = {
+                                        agentRef.value?.sendFeedback(null)
+                                        android.widget.Toast.makeText(
+                                            ctx, "Feedback flagged for this session", android.widget.Toast.LENGTH_SHORT,
+                                        ).show()
+                                    },
+                                )
                             },
                     )
                     // The dock's "eye": a live thumbnail of what the camera (and
@@ -883,10 +961,12 @@ fun DockScreen() {
             StatusBar(
                 audioLevel = audioLevel,
                 speaker = speaker,
-                // Real OS capture state, not inferred: shows OFF the instant the
-                // framework stops/silences our mic, ON whenever it's truly live
-                // (incl. during TTS, since AEC keeps it capturing for barge-in).
-                micOn = micLive,
+                // The icon reflects the user's INTENT (micMuted), so a mute tap
+                // visibly flips it — the whole point of the toggle. (Previously bound
+                // to micLive/OS-capture, which never changed on mute, so the tap
+                // looked dead.) micReady still drives the "connecting…" amber pulse:
+                // the mic is on but the WebRTC stream isn't delivering yet.
+                micOn = !micMuted,
                 micReady = micReady,
                 camOn = camGranted && !camMuted,
                 // && stationConnected: with the link down the digest is stale —
@@ -934,6 +1014,136 @@ fun DockScreen() {
                 )
             }
         }
+
+        // DEBUG face-follow indicator (top-most overlay) — ONLY while a face-follow task is
+        // actually running (from the station's task-digest the app already tracks). Four
+        // states: SEARCH (red), WAIT (amber pulse, ~30s lost-lock hold), TRACK (amber dot,
+        // off-center), LOCK (green dot+ring, centered). In named mode it shows the target
+        // name; in salient mode it shows the recognized identity when known.
+        val faceFollow = debugInfo.tasks.firstOrNull { it.name == "face-follow" }
+        if (faceFollow != null) {
+            // target = who it's LOOKING FOR (named mode; empty in salient). seen = who is
+            // actually recognized in view right now (station identity). The indicator compares
+            // them so it never claims "LOCK Sia" while it's actually seeing — and ignoring —
+            // someone else: a wrong person reads as "SEARCH Sia — not them".
+            FaceFollowIndicator(
+                faceX = ffFaceX, faceY = ffFaceY,
+                present = ffSeenAtMs != 0L && (ffNowMs - ffSeenAtMs) < 2500L,
+                msSinceSeen = if (ffSeenAtMs == 0L) Long.MAX_VALUE else (ffNowMs - ffSeenAtMs),
+                target = faceFollow.target,
+                seen = if (senses.facePresent) (senses.identity ?: "") else "",
+                modifier = Modifier.align(Alignment.TopEnd),
+            )
+        }
+
+        // OTA opt-in: when the station offers a newer build, show a TAPPABLE banner instead of
+        // silently auto-installing (the dev-dock workflow — no surprise restart mid-test). Tap
+        // applies it; the banner then shows live apply progress. Top-start, out of the way.
+        val otaAvail by otaUpdater.available.collectAsState()
+        otaAvail?.let { upd ->
+            androidx.compose.material3.Surface(
+                color = Color(0xCC1A2A1A), shape = androidx.compose.foundation.shape.RoundedCornerShape(8.dp),
+                modifier = Modifier.align(Alignment.TopStart).padding(8.dp)
+                    .pointerInput(upd.build) { detectTapGestures(onTap = { otaUpdater.startPendingUpdate() }) },
+            ) {
+                androidx.compose.material3.Text(
+                    text = upd.progress?.let { "update v${upd.version}: $it" } ?: "⬆ build ${upd.build} available — tap to update",
+                    color = Color(0xFF8FE0A0), fontSize = 11.sp, fontWeight = FontWeight.Medium,
+                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                )
+            }
+        }
+    }
+}
+
+/** Small debug overlay: the dock's eye-view. A center crosshair = frame center; a dot at the
+ *  live face position (NDC x,y ∈ [-1,1], y+ = down) when present (GREEN, brighter as it nears
+ *  center), or a RED "searching" ring when no face. Lets you watch detection + centering live
+ *  without instrumentation. Top-right, small, non-interactive. */
+@Composable
+private fun FaceFollowIndicator(faceX: Float, faceY: Float, present: Boolean, msSinceSeen: Long, target: String = "", seen: String = "", modifier: Modifier = Modifier) {
+    // States (debug tool for face-follow), derived on-device:
+    //   • LOCK <name>  — following them, centered (green dot + ring)
+    //   • TRACK <name> — following them, off-center, correcting (amber dot)
+    //   • SEARCH <target> — not them / nobody → sweeping (red ring). In NAMED mode, if it
+    //     SEES the wrong person, it says "SEARCH <target> — not them" + a MUTED dot, so it
+    //     never falsely reads "LOCK <target>" while actually seeing+ignoring someone else.
+    //   • WAIT — lost a face recently (≤30s), holding (amber pulsing ring).
+    val box = 96.dp
+    // NAMED mode: a present face only counts as the TARGET when the recognized identity matches.
+    // A present-but-wrong person (or unrecognized while we want a specific name) is NOT a follow.
+    val named = target.isNotEmpty()
+    val isTarget = if (named) (seen.isNotEmpty() && seen.equals(target, ignoreCase = true)) else true
+    val following = present && isTarget          // genuinely tracking who we want
+    val wrongPerson = present && named && !isTarget // sees someone, but not the target
+    // HYSTERESIS on LOCK↔TRACK so jitter at the deadband edge doesn't flicker the label.
+    val enterBand = 0.20f; val exitBand = 0.30f
+    var wasLocked by remember { mutableStateOf(false) }
+    val band = if (wasLocked) exitBand else enterBand
+    val centered = following && kotlin.math.abs(faceX) < band && kotlin.math.abs(faceY) < band
+    if (following) wasLocked = centered
+    val waiting = !present && msSinceSeen < 30_000L
+    // the name to show: who we're FOLLOWING (target or recognized salient face).
+    val who = if (named) target else (seen.ifEmpty { "" })
+    val label = when {
+        following && centered -> if (who.isNotEmpty()) "LOCK $who" else "LOCK"
+        following -> if (who.isNotEmpty()) "TRACK $who" else "TRACK"
+        wrongPerson -> if (seen.isNotEmpty()) "SEARCH $target (saw $seen)" else "SEARCH $target — not them"
+        waiting -> "WAIT" + (if (who.isNotEmpty()) " $who" else "")
+        else -> if (named) "SEARCH $target" else "SEARCH"
+    }
+    val labelColor = when {
+        following && centered -> Color(0xFF49E07A)
+        following -> Color(0xFFE0B84A)
+        waiting -> Color(0xFFE0B84A)
+        else -> Color(0xFFE0504A) // searching / wrong-person → red (not following)
+    }
+    // pulse for WAITING (a slow breathing alpha so it reads as "holding, not lost")
+    val pulse by androidx.compose.animation.core.rememberInfiniteTransition(label = "ffpulse").animateFloat(
+        initialValue = 0.25f, targetValue = 0.9f,
+        animationSpec = androidx.compose.animation.core.infiniteRepeatable(
+            androidx.compose.animation.core.tween(900), androidx.compose.animation.core.RepeatMode.Reverse), label = "ffpulseA")
+    Box(modifier = modifier.padding(8.dp).size(box).background(Color(0x66000000), androidx.compose.foundation.shape.RoundedCornerShape(8.dp))) {
+        androidx.compose.foundation.Canvas(modifier = Modifier.fillMaxSize().padding(6.dp)) {
+            val w = size.width; val h = size.height
+            val cx = w / 2f; val cy = h / 2f
+            drawCircle(Color(0x55FFFFFF), radius = 4f, center = androidx.compose.ui.geometry.Offset(cx, cy))
+            drawLine(Color(0x33FFFFFF), androidx.compose.ui.geometry.Offset(cx, 0f), androidx.compose.ui.geometry.Offset(cx, h), strokeWidth = 1f)
+            drawLine(Color(0x33FFFFFF), androidx.compose.ui.geometry.Offset(0f, cy), androidx.compose.ui.geometry.Offset(w, cy), strokeWidth = 1f)
+            if (following) {
+                // FOLLOWING the target: green (centered/LOCK) or amber (off-center/TRACK) dot.
+                val px = cx + (faceX.coerceIn(-1f, 1f)) * (w / 2f)
+                val py = cy + (faceY.coerceIn(-1f, 1f)) * (h / 2f)
+                val dot = androidx.compose.ui.geometry.Offset(px, py)
+                if (centered) {
+                    val green = Color(0xFF49E07A)
+                    drawLine(green, androidx.compose.ui.geometry.Offset(cx, cy), dot, strokeWidth = 2f)
+                    drawCircle(green, radius = 7f, center = dot)
+                    drawCircle(green, radius = 14f, center = dot, style = androidx.compose.ui.graphics.drawscope.Stroke(width = 2.5f))
+                } else {
+                    val amber = Color(0xFFE0B84A)
+                    drawLine(amber, androidx.compose.ui.geometry.Offset(cx, cy), dot, strokeWidth = 2f)
+                    drawCircle(amber, radius = 7f, center = dot)
+                }
+            } else if (wrongPerson) {
+                // SEES SOMEONE, but NOT the target → a MUTED grey dot at their position (so it's
+                // clearly "noticed, not following") + the red searching ring underneath.
+                drawCircle(Color(0xFFE0504A), radius = w / 2.6f, center = androidx.compose.ui.geometry.Offset(cx, cy), style = androidx.compose.ui.graphics.drawscope.Stroke(width = 1.5f))
+                val px = cx + (faceX.coerceIn(-1f, 1f)) * (w / 2f)
+                val py = cy + (faceY.coerceIn(-1f, 1f)) * (h / 2f)
+                drawCircle(Color(0x99AAAAAA), radius = 6f, center = androidx.compose.ui.geometry.Offset(px, py))
+            } else if (waiting) {
+                // WAITING: amber pulsing ring (holding the lost lock, not yet searching).
+                drawCircle(Color(0xFFE0B84A).copy(alpha = pulse), radius = w / 2.6f, center = androidx.compose.ui.geometry.Offset(cx, cy), style = androidx.compose.ui.graphics.drawscope.Stroke(width = 2.5f))
+            } else {
+                // SEARCH: a solid red ring.
+                drawCircle(Color(0xFFE0504A), radius = w / 2.6f, center = androidx.compose.ui.geometry.Offset(cx, cy), style = androidx.compose.ui.graphics.drawscope.Stroke(width = 2f))
+            }
+        }
+        androidx.compose.material3.Text(
+            text = label, color = labelColor, fontSize = 9.sp, fontWeight = FontWeight.Bold,
+            modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 2.dp),
+        )
     }
 }
 

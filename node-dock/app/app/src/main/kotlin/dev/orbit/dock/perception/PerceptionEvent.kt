@@ -64,6 +64,36 @@ sealed class PerceptionEvent {
     data object FaceLost : PerceptionEvent()
 
     /**
+     * RICH per-frame face detail from the on-device MLKit detector — everything the
+     * single detection pass already computes that [FaceSeen] (gaze/UI) throws away.
+     * Emitted alongside FaceSeen on each ~1 Hz analysis tick. Forwarded to the station
+     * as the `perceive` stream (the fast face source for faceFollow + the perception
+     * pipeline) by PerceiveForwarder; phone UI does NOT consume this (it uses FaceSeen).
+     *
+     * Coordinates match FaceSeen: NDC, mirror-corrected, x∈[-1,+1] (right+), y∈[-1,+1]
+     * (down+). Angles are MLKit head Euler degrees. `landmarks` are up to 11 named
+     * points in the same NDC space. All optional fields are null when MLKit didn't
+     * provide them (e.g. probabilities can be absent).
+     */
+    data class PerceiveFrame(
+        val faces: List<FaceDetail>,
+        /** CameraX current zoom FRAMING (read-only this build). */
+        val zoomRatio: Float,
+        val zoomMin: Float,
+        val zoomMax: Float,
+    ) : PerceptionEvent() {
+        data class FaceDetail(
+            val x: Float, val y: Float, val size: Float,        // NDC center + width frac
+            val bl: Float, val bt: Float, val br: Float, val bb: Float, // NDC bbox
+            val yaw: Float, val pitch: Float, val roll: Float,  // MLKit head Euler (deg)
+            val trackingId: Int?,                                // stable across frames
+            val smile: Float?, val leftEyeOpen: Float?, val rightEyeOpen: Float?,
+            val landmarks: List<Landmark>,                       // up to 11 named points (NDC)
+        )
+        data class Landmark(val type: String, val x: Float, val y: Float)
+    }
+
+    /**
      * On-device HAND gesture status from the camera (MediaPipe Gesture
      * Recognizer; see PalmDetector). `gesture` is the recognizer's current label
      * ("Open_Palm", "Closed_Fist", "None", …) or null when no hand is in frame;

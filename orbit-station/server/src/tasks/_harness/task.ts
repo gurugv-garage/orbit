@@ -38,6 +38,7 @@
 import { WebSocket } from 'ws';
 import type { Agent, AgentMessage } from '@earendil-works/pi-agent-core';
 import { durationMs } from './types.js';
+import { DockMemory } from './memory.js';
 
 /** Liveness: the station's hub pings every ~2s. If a task hears nothing at all for
  *  this long, it assumes the station died abruptly (SIGKILL/crash — no clean WS
@@ -306,6 +307,20 @@ export abstract class Task {
   protected frame(): Promise<string | undefined> { return this.request('frame'); }
   /** drive the dock body with move steps (fire-and-forget on the station side). */
   protected move(steps: unknown[]): Promise<void> { return this.request('move', { steps }); }
+
+  // ── Memory (DIRECT — not a capability) ───────────────────────────────────────
+  // Memory is a sqlite file + an env-keyed embedder, all reconstructible from the
+  // SHARED code + `.env` a task already has — so a task opens it DIRECTLY, no wire.
+  // (Capabilities, above, are only for the station's LIVE in-process state — the
+  // decoded camera frame, the body link — that a separate process can't rebuild.)
+  // `this.memory` is dock-SCOPED: the dock is bound here (the task's verified
+  // identity), never an argument, so a task can only touch its own dock's beliefs.
+  // Lazily constructed (and the heavy deps imported) on first use.
+  #memory?: DockMemory;
+  protected get memory(): DockMemory {
+    if (!this.#memory) this.#memory = new DockMemory(this.#ident.dock);
+    return this.#memory;
+  }
 
   // ── Slack (a SELF action — NOT a station capability) ─────────────────────────
   // A task runs in the station's environment (same .env, node_modules), so it
