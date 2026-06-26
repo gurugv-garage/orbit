@@ -103,6 +103,42 @@ export function buildCapabilityRegistry(d: CapabilityDeps): CapabilityRegistry {
     },
   });
 
+  // ACTUATOR LEASE (facefollow decision trace §4) — a continuous body-holder (faceFollow,
+  // the mock follower) acquires the body at a PRIORITY, renews it each tick, and checks
+  // whether it still holds it (a higher-priority mover — a brain turn — preempts). The lease
+  // is keyed to this task's source tag (`task:<id>`), so the task's own `move`s admit and a
+  // crash auto-releases the body within one TTL.
+  reg.register({
+    op: 'acquireBody', requires: 'servo',
+    describe: 'await this.request("acquireBody", {priority}) → { ok } — hold the body at a priority',
+    when: 'a continuous behaviour that drives the body (faceFollow) — call once before tracking',
+    handler: (ctx, args) => {
+      const priority = typeof args.priority === 'number' ? args.priority : 30;
+      const lease = d.motion.acquire(ctx.dock, `task:${ctx.instanceId}`, priority);
+      return { ok: lease != null };
+    },
+  });
+  reg.register({
+    op: 'bodyHeld', requires: 'servo',
+    describe: 'await this.request("bodyHeld") → { held, holder } — do WE still hold the body? (renews)',
+    when: 'each control tick: renew our hold + detect a preempt (held=false → a higher mover took it)',
+    handler: (ctx) => {
+      // renew (via a fresh acquire at our priority — admit/acquire is idempotent for the same
+      // holder) and report whether WE are the current holder.
+      const cur = d.motion.bodyHolder(ctx.dock);
+      const mine = `task:${ctx.instanceId}`;
+      const held = cur?.holder === mine;
+      if (held) d.motion.acquire(ctx.dock, mine, cur!.priority); // renew
+      return { held, holder: cur?.holder ?? null };
+    },
+  });
+  reg.register({
+    op: 'releaseBody', requires: 'servo',
+    describe: 'await this.request("releaseBody") → { ok } — give the body back',
+    when: 'when a behaviour stops driving the body (so a waiter can take it immediately)',
+    handler: (ctx) => { d.motion.releaseBody(ctx.dock, `task:${ctx.instanceId}`); return { ok: true }; },
+  });
+
   // NOTE: memory is NOT a capability. It's a sqlite file (`.data/orbit.db`) + an
   // embedder that needs only the env GEMINI key — all reconstructible from the SHARED
   // code + `.env` a task already has. So a task reaches memory DIRECTLY (a `this.memory`

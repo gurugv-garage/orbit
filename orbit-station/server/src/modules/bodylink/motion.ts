@@ -24,6 +24,7 @@
 import type { Bus } from '../../core/bus.js';
 import type { Directory } from '../docks/directory.js';
 import { DEGREE_LIMITS, degreesToUs, stepJoints, type MoveStep } from '../brain/schemas.js';
+import { ActuatorLease, priorityForSource, type Lease, type LeaseOpts } from './lease.js';
 
 const IDLE_HEARTBEAT_MS = 1_000;
 const ACTIVE_HEARTBEAT_MS = 100;
@@ -56,12 +57,33 @@ export class MotionExecutor {
   #directory: Directory;
   #docks = new Map<string, DockMotion>();
   #timer: NodeJS.Timeout;
+  #lease: ActuatorLease;
 
-  constructor(bus: Bus, directory: Directory) {
+  constructor(bus: Bus, directory: Directory, leaseOpts?: LeaseOpts) {
     this.#bus = bus;
     this.#directory = directory;
+    this.#lease = new ActuatorLease({ log: (l) => console.log(l), ...leaseOpts });
     this.#timer = setInterval(() => this.#heartbeatSweep(), ACTIVE_HEARTBEAT_MS);
     this.#timer.unref?.();
+  }
+
+  /** EXPLICIT lease for a continuous body-holder (faceFollow): acquire at a priority, renew
+   *  each tick, release when done; `onPreempt` fires if a higher priority takes the body.
+   *  Returns null if a higher-priority holder currently owns it. The body's arbiter (§4 of
+   *  the facefollow decision trace). Fire-and-forget callers don't need this — they go
+   *  through the implicit admit() path inside runSteps/setTargets/playGesture. */
+  acquire(dock: string, holder: string, priority: number, onPreempt?: () => void): Lease | null {
+    return this.#lease.acquire(dock, holder, priority, onPreempt);
+  }
+
+  /** The current effective body-holder of a dock (after TTL expiry), for the console/debug. */
+  bodyHolder(dock: string): { holder: string; priority: number } | undefined {
+    return this.#lease.current(dock);
+  }
+
+  /** Release a hold by its holder tag (the task's `releaseBody`). No-op if not the holder. */
+  releaseBody(dock: string, holder: string): void {
+    this.#lease.releaseByHolder(dock, holder);
   }
 
   /** Is a servo-bearing component of this dock online? */
@@ -78,6 +100,12 @@ export class MotionExecutor {
   runSteps(dock: string, steps: MoveStep[], source = 'station'): string {
     if (!this.isOnline(dock)) throw new Error(`the body of ${dock} is not responding (offline)`);
     if (!Array.isArray(steps) || steps.length === 0) throw new Error('move needs at least one step');
+    // LEASE: a higher-priority holder owns the body → this move is declined (not an error —
+    // the caller simply doesn't get the body right now). Equal/higher admits (last-write-wins).
+    if (!this.#lease.admit(dock, source, priorityForSource(source))) {
+      const h = this.#lease.current(dock);
+      return `body busy: ${h?.holder ?? 'another holder'} has it`;
+    }
     const described: string[] = [];
     for (const step of steps) {
       const joints = stepJoints(step);
@@ -101,6 +129,7 @@ export class MotionExecutor {
   playGesture(dock: string, expression: string, gestures: Record<string, MoveStep[]>, source = 'brain-turn'): void {
     const steps = gestures[expression];
     if (!steps || steps.length === 0 || !this.isOnline(dock)) return;
+    if (!this.#lease.admit(dock, source, priorityForSource(source))) return; // a higher holder owns the body
     void this.#runSequence(dock, steps, source);
   }
 
@@ -123,6 +152,7 @@ export class MotionExecutor {
 
   /** Direct single set_target (the console's slider path) — same master. */
   setTargets(dock: string, partsUs: Record<string, number>, durationMs = DEFAULT_STEP_DURATION_MS, source = 'console'): void {
+    if (!this.#lease.admit(dock, source, priorityForSource(source))) return; // a higher holder owns the body
     this.stop(dock); // a manual command supersedes a running sequence (last write wins)
     this.#send(dock, partsUs, durationMs, source);
   }

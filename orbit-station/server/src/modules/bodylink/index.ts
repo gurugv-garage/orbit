@@ -172,16 +172,25 @@ export function bodylinkModule(deps: {
         json(res, 200, dock ? { dock, online: deps.motion.isOnline(dock), state: body(dock).state, targets: deps.motion.targets(dock) } : {});
         return true;
       }
+      // who currently HOLDS the body (the actuator lease) + last real mover — for watching
+      // acquire/preempt/expire during lease validation, and a future console badge.
+      if (subPath === '/holder' && req.method === 'GET') {
+        const dock = pickDock();
+        json(res, 200, dock ? { dock, holder: deps.motion.bodyHolder(dock) ?? null, lastMover: deps.motion.lastMover(dock) ?? null } : {});
+        return true;
+      }
       // operator-driven timed choreography → the brain's `move` runner (the
       // console's dance/gesture buttons). Fire-and-forget like the move tool:
       // returns the status string immediately; the sequence runs server-side
       // with the normal heartbeat. A new play/command supersedes it.
       if (subPath === '/play' && req.method === 'POST') {
-        const cmd = JSON.parse(await readBody(req)) as { dock?: string; steps?: unknown };
+        const cmd = JSON.parse(await readBody(req)) as { dock?: string; steps?: unknown; source?: string };
         const dock = cmd.dock ?? pickDock();
         if (!dock) { json(res, 400, { error: 'which dock? pass {dock}' }); return true; }
         try {
-          const status = deps.motion.runSteps(dock, (cmd.steps ?? []) as MoveStep[]);
+          // forward an optional `source` so the lease arbitrates this move at the right
+          // priority (default 'console'); lets the console / a test drive any priority.
+          const status = deps.motion.runSteps(dock, (cmd.steps ?? []) as MoveStep[], cmd.source ?? 'console');
           maybeDigest(dock, true);
           json(res, 200, { dock, status });
         } catch (e) {
