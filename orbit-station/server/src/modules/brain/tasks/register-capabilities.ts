@@ -19,6 +19,7 @@
 import type { Directory } from '../../docks/directory.js';
 import type { MotionExecutor } from '../../bodylink/motion.js';
 import type { FaceToolsApi } from '../../perception/index.js';
+import type { PerceiveStore } from '../../perception/perceive.js';
 import type { MoveStep } from '../schemas.js';
 import { CapabilityRegistry } from './capabilities.js';
 
@@ -26,6 +27,9 @@ export interface CapabilityDeps {
   directory: Directory;
   motion: MotionExecutor;
   getFaces: () => FaceToolsApi | undefined;
+  /** the live per-dock on-device face-track store (the `perceive` stream) — the FAST
+   *  face source the faceFollow `face-track` capability reads. */
+  getPerceive: () => PerceiveStore | undefined;
 }
 
 /** The dock's live camera streamId (the SFU producer serving 'camera'), or undefined. */
@@ -60,16 +64,87 @@ export function buildCapabilityRegistry(d: CapabilityDeps): CapabilityRegistry {
     handler: (ctx) => d.getFaces()?.recognize({ streamId: streamFor(d, ctx.dock) }),
   });
 
+  // The on-device MLKit face-track (the `perceive` stream, docs/decision-traces/
+  // facefollow-and-actuator-lease.md §7) — the FAST, low-latency face source for the
+  // faceFollow control loop. Requires 'face' (the phone's on-device perception cap)
+  // rather than 'camera': this reads the phone's MLKit output, not the SFU video.
+  reg.register({
+    op: 'face-track', requires: 'face',
+    describe: 'await this.request("face-track") → { faces, noFace } — the latest on-device '
+      + 'face boxes (each with an eye-midpoint anchor). The fast tracking source (~5 Hz), not station face-api',
+    when: 'for a tight control loop that needs WHERE faces are right now (e.g. faceFollow)',
+    handler: (ctx) => {
+      const store = d.getPerceive();
+      const faces = store?.toFollowFaces(store.latest(ctx.dock)) ?? [];
+      return { faces, noFace: faces.length === 0 };
+    },
+  });
+
   reg.register({
     op: 'move', requires: 'servo',
     describe: 'await this.move(steps) → drive the body through timed move steps',
     when: 'to physically turn/gesture the body (e.g. sweep to find someone, nod)',
     handler: (ctx, args) => {
       const steps = (Array.isArray(args.steps) ? args.steps : []) as MoveStep[];
-      d.motion.runSteps(ctx.dock, steps);
+      // TAG the move with this task's id so a standing behaviour (faceFollow) can tell its
+      // OWN moves from a foreign mover (a brain turn / console / another task) and yield.
+      d.motion.runSteps(ctx.dock, steps, `task:${ctx.instanceId}`);
       return { ok: true };
     },
   });
+
+  reg.register({
+    op: 'bodyMover', requires: 'servo',
+    describe: 'await this.request("bodyMover") → { tag, at } | null — who last drove the body',
+    when: 'to detect when ANOTHER mover took the body (a standing behaviour yields + cools down)',
+    handler: (ctx) => {
+      const mv = d.motion.lastMover(ctx.dock);
+      return mv ? { tag: mv.tag, at: mv.at } : null;
+    },
+  });
+
+  // ACTUATOR LEASE (facefollow decision trace §4) — a continuous body-holder (faceFollow,
+  // the mock follower) acquires the body at a PRIORITY, renews it each tick, and checks
+  // whether it still holds it (a higher-priority mover — a brain turn — preempts). The lease
+  // is keyed to this task's source tag (`task:<id>`), so the task's own `move`s admit and a
+  // crash auto-releases the body within one TTL.
+  reg.register({
+    op: 'acquireBody', requires: 'servo',
+    describe: 'await this.request("acquireBody", {priority}) → { ok } — hold the body at a priority',
+    when: 'a continuous behaviour that drives the body (faceFollow) — call once before tracking',
+    handler: (ctx, args) => {
+      const priority = typeof args.priority === 'number' ? args.priority : 30;
+      const lease = d.motion.acquire(ctx.dock, `task:${ctx.instanceId}`, priority);
+      return { ok: lease != null };
+    },
+  });
+  reg.register({
+    op: 'bodyHeld', requires: 'servo',
+    describe: 'await this.request("bodyHeld") → { held, holder } — do WE still hold the body? (renews)',
+    when: 'each control tick: renew our hold + detect a preempt (held=false → a higher mover took it)',
+    handler: (ctx) => {
+      // renew (via a fresh acquire at our priority — admit/acquire is idempotent for the same
+      // holder) and report whether WE are the current holder.
+      const cur = d.motion.bodyHolder(ctx.dock);
+      const mine = `task:${ctx.instanceId}`;
+      const held = cur?.holder === mine;
+      if (held) d.motion.acquire(ctx.dock, mine, cur!.priority); // renew
+      return { held, holder: cur?.holder ?? null };
+    },
+  });
+  reg.register({
+    op: 'releaseBody', requires: 'servo',
+    describe: 'await this.request("releaseBody") → { ok } — give the body back',
+    when: 'when a behaviour stops driving the body (so a waiter can take it immediately)',
+    handler: (ctx) => { d.motion.releaseBody(ctx.dock, `task:${ctx.instanceId}`); return { ok: true }; },
+  });
+
+  // NOTE: memory is NOT a capability. It's a sqlite file (`.data/orbit.db`) + an
+  // embedder that needs only the env GEMINI key — all reconstructible from the SHARED
+  // code + `.env` a task already has. So a task reaches memory DIRECTLY (a `this.memory`
+  // store on the Task base class), like it runs its own LLM. Capabilities are reserved
+  // for the station's LIVE in-process state (decoded video, the body link) that a
+  // separate process genuinely can't reconstruct. See tasks.md "direct vs. the wire".
 
   return reg;
 }

@@ -23,6 +23,26 @@ function geminiKey(): string | undefined {
   return process.env.GEMINI_API_KEY_PAID_ACC || process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
 }
 
+/** A one-shot text→text Gemini call, sharing this module's key/base/cost-reporting.
+ *  Used by other pipeline processors that need a quick LLM reflection (e.g. the
+ *  memory curator) without standing up their own client. Throws if no key / on a
+ *  non-OK response; `purpose` tags the spend in the Cost tab. */
+export async function geminiText(
+  prompt: string, dockId: string, purpose = 'curate', model = MODEL,
+): Promise<string> {
+  const key = geminiKey();
+  if (!key) throw new Error('no GEMINI_API_KEY');
+  const r = await fetch(`${GEMINI_BASE}/${model}:generateContent?key=${key}`, {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] }),
+    signal: AbortSignal.timeout(60_000),
+  });
+  const data = (await r.json()) as any;
+  if (!r.ok) throw new Error(`gemini ${r.status}: ${JSON.stringify(data).slice(0, 200)}`);
+  reportGeminiCost(dockId, model, purpose, data?.usageMetadata, Date.now());
+  return data?.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || '';
+}
+
 const SYSTEM = [
   'You are the situational awareness of a personal robot. From a noisy perception',
   'feed of a room you produce the brief the robot acts on: what is actually going on',

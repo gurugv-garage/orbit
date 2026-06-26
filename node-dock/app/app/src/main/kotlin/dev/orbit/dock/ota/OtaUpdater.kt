@@ -10,6 +10,9 @@ import android.content.pm.PackageInstaller
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.withContext
@@ -55,12 +58,21 @@ class OtaUpdater(
         private const val INSTALL_ACTION = "dev.orbit.dock.ota.INSTALL_RESULT"
     }
 
+    /** A newer build the station has offered, awaiting the user's tap. Null = nothing pending.
+     *  OPT-IN model (this dev dock): we do NOT silently auto-install — the UI shows a "build N
+     *  available" affordance and the user taps to apply (startPendingUpdate). Avoids a surprise
+     *  restart mid-test. `progress` reflects an in-flight apply ("downloading"/"verifying"/…). */
+    data class Available(val build: Int, val version: String, val url: String, val sha256: String, val progress: String? = null)
+    private val _available = MutableStateFlow<Available?>(null)
+    val available: StateFlow<Available?> = _available.asStateFlow()
+
     /**
-     * Handle an `ota/available` offer payload { target:"app", build, version,
-     * url, sha256, size }. No-op unless `target=="app"`, the offer is strictly
-     * newer, and no install is already running.
+     * Handle an `ota/available` offer payload { target:"app", build, version, url, sha256,
+     * size }. No-op unless `target=="app"`, strictly newer, and not already installing. Does
+     * NOT install — it records the offer as PENDING for the UI; the user applies it via
+     * [startPendingUpdate]. (Was silent auto-install; made opt-in per the dev-dock workflow.)
      */
-    fun onOffer(target: String?, build: Int?, url: String?, sha256: String?) {
+    fun onOffer(target: String?, build: Int?, url: String?, sha256: String?, version: String? = null) {
         if (target != "app") return
         if (build == null || url == null || sha256 == null) {
             Timber.w("OTA: malformed app offer — ignoring"); return
@@ -68,13 +80,40 @@ class OtaUpdater(
         if (build <= currentVersionCode) {
             Timber.i("OTA: offer build $build <= current $currentVersionCode — skipping"); return
         }
+        // Record (or refresh) the pending offer for the UI; don't clobber an in-flight apply.
+        if (_available.value?.progress == null) {
+            _available.value = Available(build, version ?: "0.1.$build", url, sha256)
+            Timber.i("OTA: build $build available (awaiting user tap)")
+        }
+    }
+
+    /** User tapped the build number → ask the station to RE-CHECK for an update and
+     *  re-offer if this dock is behind. The app is otherwise passive (it waits for the
+     *  station's push); this is a manual poke so you don't have to wait for the next
+     *  peer-join/heartbeat re-announce. Publishes an `ota/check` frame carrying our
+     *  current build; the station replies with an `ota/available` offer iff it has a
+     *  newer artifact (handled by [onOffer]). No-op visible here if already up to date. */
+    fun requestCheck() {
+        Timber.i("OTA: manual update check (current build $currentVersionCode)")
+        publish("check", buildJsonObject {
+            put("target", "app")
+            put("build", currentVersionCode)
+        })
+    }
+
+    /** User tapped "update": apply the pending offer (download → verify → install). Safe to
+     *  call repeatedly — ignored if nothing pending or an apply is already running. */
+    fun startPendingUpdate() {
+        val offer = _available.value ?: return
         scope.launch {
-            if (!installing.tryLock()) { Timber.i("OTA: already installing — ignoring offer"); return@launch }
+            if (!installing.tryLock()) { Timber.i("OTA: already installing — ignoring tap"); return@launch }
             try {
-                runUpdate(build, url, sha256)
+                _available.value = offer.copy(progress = "starting")
+                runUpdate(offer.build, offer.url, offer.sha256)
             } catch (t: Throwable) {
                 Timber.e(t, "OTA: update failed")
-                result(build, ok = false, error = t.message ?: "update failed")
+                _available.value = offer.copy(progress = "failed: ${t.message ?: "error"}")
+                result(offer.build, ok = false, error = t.message ?: "update failed")
             } finally {
                 installing.unlock()
             }
@@ -165,10 +204,13 @@ class OtaUpdater(
         return dpm.isDeviceOwnerApp(context.packageName)
     }
 
-    private fun progress(phase: String, pct: Int?) =
+    private fun progress(phase: String, pct: Int?) {
+        // mirror to the UI's pending-offer state so the affordance shows live apply progress.
+        _available.value = _available.value?.copy(progress = if (pct != null) "$phase ${pct}%" else phase)
         publish("progress", buildJsonObject {
             put("target", "app"); put("phase", phase); if (pct != null) put("pct", pct)
         })
+    }
 
     private fun result(build: Int, ok: Boolean, error: String?) =
         publish("result", buildJsonObject {

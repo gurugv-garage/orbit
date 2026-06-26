@@ -62,7 +62,7 @@ test('a task pulls a REAL decoded camera frame (committed VP8 file â†’ grabber â
       dock === DOCK && cap === 'camera' ? { id: STREAM } : undefined,
   } as never;
   const getFaces = () => ({ frame: (id: string) => face.currentFrame(id)?.toString('base64') } as never);
-  const registry = buildCapabilityRegistry({ directory, motion: {} as never, getFaces });
+  const registry = buildCapabilityRegistry({ directory, motion: {} as never, getFaces, getPerceive: () => undefined });
   const broker = new CapabilityBroker(registry, sendToTask);
 
   bus.on('tasks', (msg) => {

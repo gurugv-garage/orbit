@@ -175,7 +175,7 @@ export function typecheckTaskFile(filePath: string): string | undefined {
   // a missing method on the Task base class) but NOT noImplicitAny — an LLM
   // shouldn't have to annotate every callback param; that pedantry causes fix-loops.
   const r = spawnSync('npx', ['tsc', '--noEmit', '--skipLibCheck', '--module', 'nodenext',
-    '--moduleResolution', 'nodenext', '--target', 'es2022',
+    '--moduleResolution', 'nodenext', '--target', 'es2022', '--lib', 'es2023',
     '--strictNullChecks', '--noImplicitThis', '--noImplicitAny', 'false', filePath],
     { encoding: 'utf8', cwd: serverCwd(), timeout: 30_000 });
   if (r.status === 0) return undefined;

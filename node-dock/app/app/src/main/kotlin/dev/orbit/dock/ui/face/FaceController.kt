@@ -79,6 +79,10 @@ class FaceController(
      *  Set by the app; null in tests. */
     var onFaceStyleChanged: ((String) -> Unit)? = null
 
+    /** Side-effect invoked whenever the mic mute changes (persist it so "mic off"
+     *  survives an app restart). Set by the app; null in tests. */
+    var onMicMutedChanged: ((Boolean) -> Unit)? = null
+
     // ── intents ──────────────────────────────────────────────────────
 
     fun wake() {
@@ -218,8 +222,16 @@ class FaceController(
     /** Toggle the camera mute. Updates `privacy` to reflect the composite. */
     fun toggleCam() = setCamMuted(!_camMuted.value)
 
+    /** Seed the mic mute from persisted state at startup (so "mic off" survives an
+     *  app restart). Does NOT fire onMicMutedChanged — it's a restore, not a change. */
+    fun restoreMicMuted(muted: Boolean) {
+        _micMuted.value = muted
+        syncPrivacyAndSpeaker()
+    }
+
     private fun setMicMuted(muted: Boolean) {
         _micMuted.value = muted
+        onMicMutedChanged?.invoke(muted)
         syncPrivacyAndSpeaker()
     }
 

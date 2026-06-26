@@ -124,7 +124,7 @@ export function buildGrantTools(
       `Move the body of "${target}" — another robot you are allowed to control. ${S.MOVE_DESC}`,
       S.moveSchema,
       async (_toolCallId, args: { steps: MoveStep[] }) =>
-        textResult(motion.runSteps(target, (args as { steps: MoveStep[] }).steps ?? [])),
+        textResult(motion.runSteps(target, (args as { steps: MoveStep[] }).steps ?? [], 'brain-turn')),
     ));
   }
   return out;
@@ -429,7 +429,7 @@ export function buildDockTools(deps: ToolDeps): AgentTool<any>[] {
     }),
 
     tool('move', S.MOVE_DESC, S.moveSchema, async (_toolCallId, args: { steps: MoveStep[] }) => {
-      return textResult(deps.motion.runSteps(deps.dock, args.steps ?? []));
+      return textResult(deps.motion.runSteps(deps.dock, args.steps ?? [], 'brain-turn'));
     }),
 
     tool('compute', S.COMPUTE_DESC, S.computeSchema, async (_toolCallId, args: { expression: string }) => {

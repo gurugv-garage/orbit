@@ -21,6 +21,7 @@ import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.face.Face
 import com.google.mlkit.vision.face.FaceDetection
 import com.google.mlkit.vision.face.FaceDetectorOptions
+import com.google.mlkit.vision.face.FaceLandmark
 import dev.orbit.dock.perception.PerceptionEvent.FaceLost
 import dev.orbit.dock.perception.PerceptionEvent.FaceSeen
 import timber.log.Timber
@@ -62,6 +63,22 @@ class FaceTracker(private val appContext: Context) : CameraFrameProvider, Lifecy
 
     /** [CameraFrameProvider]: most recent frame as base64 JPEG, or null. */
     override fun latestJpegBase64(): String? = latestJpeg
+
+    /**
+     * TELEMETRY (debug): a periodic snapshot of the detection pipeline's health, so we can
+     * diagnose stream STALLS station-side without adb (the device USB is unreliable). The
+     * owner wires this to publish over the station WS. Counters are reset each report.
+     *  - framesIn:   ImageAnalysis frames the analyzer received (0 ⇒ CAMERA stalled)
+     *  - facePasses: times the face detector actually RAN (0 with framesIn>0 ⇒ gate stuck)
+     *  - faceHits:   passes that found ≥1 face
+     *  - lastFaceMsAgo: ms since the last successful detection (climbing ⇒ blind)
+     *  - intervalMs: the current ADAPTIVE analysis interval (how fast it's trying to run)
+     */
+    @Volatile var onTelemetry: ((framesIn: Int, facePasses: Int, faceHits: Int, lastFaceMsAgo: Long, intervalMs: Long) -> Unit)? = null
+    private val telFramesIn = java.util.concurrent.atomic.AtomicInteger(0)
+    private val telFacePasses = java.util.concurrent.atomic.AtomicInteger(0)
+    private val telFaceHits = java.util.concurrent.atomic.AtomicInteger(0)
+    private var telTimer: java.util.Timer? = null
 
     /**
      * Optional sink for the raw upright camera [Bitmap], invoked on the analyzer
@@ -115,8 +132,16 @@ class FaceTracker(private val appContext: Context) : CameraFrameProvider, Lifecy
     private val running = AtomicBoolean(false)
     private val lastEmitNs = AtomicLong(0L)
     private val lastSeenMs = AtomicLong(0L)
-    // Gate the whole analysis pipeline to ~2 Hz (frees CPU for the preview).
+    // ADAPTIVE analysis cadence (no fixed-rate guess). The face path runs as fast as the
+    // phone can sustain WITHOUT starving the live preview: after each run we measure how long
+    // the detect+FER+encode work actually took (EMA), and set the next gate to that cost ×
+    // SLACK. A fast phone converges toward FACE_MIN_INTERVAL_NS (snappy ~5 Hz tracking); a
+    // slow 2018 phone self-limits to whatever it can afford. Self-regulating → no per-device
+    // tuning, and it tracks load (CPU busy ⇒ cost up ⇒ interval up) at runtime. The steadier,
+    // higher cadence is exactly the bottleneck the perceive stream → faceFollow needs.
     @Volatile private var lastProcessNs = 0L
+    @Volatile private var faceIntervalNs = FACE_START_INTERVAL_NS
+    @Volatile private var faceCostEmaNs = FACE_START_INTERVAL_NS.toDouble()
     private var cameraProvider: ProcessCameraProvider? = null
     private var analysis: ImageAnalysis? = null
     private var imageCapture: ImageCapture? = null
@@ -127,6 +152,13 @@ class FaceTracker(private val appContext: Context) : CameraFrameProvider, Lifecy
     // no preview is mounted (headless / preview hidden).
     @Volatile private var surfaceProvider: Preview.SurfaceProvider? = null
     private var preview: Preview? = null
+
+    // Latest CameraX zoom framing (read off the bound Camera's zoomState). Carried in
+    // the rich PerceiveFrame so the station always knows current framing. Defaults are
+    // a no-zoom 1× until a camera is bound. Updated on bind + on zoomState change.
+    @Volatile private var zoomRatio = 1f
+    @Volatile private var zoomMin = 1f
+    @Volatile private var zoomMax = 1f
 
     /** Attach (or detach, with null) the on-screen preview surface. Safe to call
      *  before or after [start]; rebinds the camera to include the preview. */
@@ -157,6 +189,7 @@ class FaceTracker(private val appContext: Context) : CameraFrameProvider, Lifecy
             }
         }
         running.set(true)
+        startTelemetry()
         val existing = cameraProvider
         if (existing != null) {
             // Already have a provider — just rebind (e.g. start() called again
@@ -180,8 +213,34 @@ class FaceTracker(private val appContext: Context) : CameraFrameProvider, Lifecy
         }, ContextCompat.getMainExecutor(appContext))
     }
 
+    /** Periodic (1 Hz) detection-health report over the telemetry sink, so a stream STALL is
+     *  visible station-side: framesIn=0 ⇒ camera stopped; framesIn>0 but facePasses=0 ⇒ gate
+     *  stuck; faceHits=0 with you in view ⇒ detector blind. Counters reset each tick. */
+    private fun startTelemetry() {
+        if (telTimer != null) return
+        telTimer = java.util.Timer("ft-telemetry", true).also { t ->
+            t.scheduleAtFixedRate(object : java.util.TimerTask() {
+                override fun run() {
+                    val sink = onTelemetry ?: return
+                    val fi = telFramesIn.getAndSet(0)
+                    val fp = telFacePasses.getAndSet(0)
+                    val fh = telFaceHits.getAndSet(0)
+                    val last = lastSeenMs.get()
+                    val ago = if (last == 0L) -1L else System.currentTimeMillis() - last
+                    val intervalMs = faceIntervalNs / 1_000_000L
+                    try { sink(fi, fp, fh, ago, intervalMs) } catch (t: Throwable) { Timber.w(t, "telemetry sink failed") }
+                }
+            }, 1000L, 1000L)
+        }
+    }
+
+    private fun stopTelemetry() {
+        telTimer?.cancel(); telTimer = null
+    }
+
     fun stop() {
         if (!running.getAndSet(false)) return
+        stopTelemetry()
         ContextCompat.getMainExecutor(appContext).execute {
             // CREATED (not DESTROYED) so the same FaceTracker can be start()ed
             // again later; CameraX unbinds use-cases when we drop below STARTED.
@@ -280,6 +339,10 @@ class FaceTracker(private val appContext: Context) : CameraFrameProvider, Lifecy
         // OPEN-failed/closed state on its own. Observe CameraState and rebind the
         // moment it lands in a recoverable error so the eye self-heals instead of
         // freezing on its last frame.
+        // Track CameraX zoom framing for the PerceiveFrame (read-only this build).
+        camera.cameraInfo.zoomState.observe(this) { z ->
+            if (z != null) { zoomRatio = z.zoomRatio; zoomMin = z.minZoomRatio; zoomMax = z.maxZoomRatio }
+        }
         camera.cameraInfo.cameraState.observe(this) { state ->
             val err = state.error
             if (err != null && state.type == CameraState.Type.CLOSED) {
@@ -332,6 +395,7 @@ class FaceTracker(private val appContext: Context) : CameraFrameProvider, Lifecy
 
     @androidx.camera.core.ExperimentalGetImage
     private fun process(proxy: ImageProxy) {
+        telFramesIn.incrementAndGet() // a frame arrived from the camera (telemetry)
         val media = proxy.image
         if (media == null) {
             proxy.close()
@@ -339,14 +403,13 @@ class FaceTracker(private val appContext: Context) : CameraFrameProvider, Lifecy
         }
         // TWO cadences share ONE decode. The palm detector runs at a fast rate
         // for snappy rising-edge response (~6 Hz, PALM_INTERVAL_NS); the heavy
-        // face/FER/JPEG work only needs ~1 Hz (ANALYSIS_INTERVAL_NS) and would
-        // starve the live preview on a modest phone (Snapdragon 636) if run on
-        // every frame. So: gate the PALM path at the fast rate, the FACE path at
-        // the slow rate, and skip the (costly) toBitmap decode entirely when
+        // face/FER/JPEG work runs at an ADAPTIVE interval (faceIntervalNs) that
+        // floats with measured cost so it goes as fast as the phone affords without
+        // starving the preview. Skip the (costly) toBitmap decode entirely when
         // NEITHER is due.
         val nowNsGate = System.nanoTime()
         val palmDue = nowNsGate - lastPalmNs >= PALM_INTERVAL_NS
-        val faceDue = nowNsGate - lastProcessNs >= ANALYSIS_INTERVAL_NS
+        val faceDue = nowNsGate - lastProcessNs >= faceIntervalNs
         if (!palmDue && !faceDue) {
             proxy.close()
             return
@@ -379,6 +442,7 @@ class FaceTracker(private val appContext: Context) : CameraFrameProvider, Lifecy
         // Everything below is the heavy ~1 Hz face/emotion/vision path.
         if (!faceDue) return
         lastProcessNs = nowNsGate
+        telFacePasses.incrementAndGet() // the face detector is about to run (telemetry)
 
         val imgW = bitmap.width.toFloat()
         val imgH = bitmap.height.toFloat()
@@ -387,10 +451,23 @@ class FaceTracker(private val appContext: Context) : CameraFrameProvider, Lifecy
         // Feed the live stream (if any) the same upright frame, pre-JPEG.
         onBitmapFrame?.let { sink -> try { sink(uprightForVision(bitmap)) } catch (t: Throwable) { Timber.w(t, "frame sink failed") } }
 
-        // Detect from the bitmap copy (rotation already applied → 0 here).
+        // Detect from the bitmap copy (rotation already applied → 0 here). On completion,
+        // measure the FULL face-path cost (gate→callback: encode + async detect + FER) and
+        // adapt the next interval from it — run as fast as that cost × SLACK allows, clamped.
         detector.process(InputImage.fromBitmap(bitmap, 0))
             .addOnSuccessListener { faces -> onFaces(faces, imgW, imgH, bitmap) }
             .addOnFailureListener { t -> Timber.w(t, "face detect failed") }
+            .addOnCompleteListener { adaptFaceInterval(System.nanoTime() - nowNsGate) }
+    }
+
+    /** Re-derive the adaptive analysis interval from the measured cost of this face-path run.
+     *  EMA-smoothed so a single slow frame doesn't lurch the cadence; next interval = cost ×
+     *  SLACK (headroom for the preview), clamped to [MIN, MAX]. Self-regulating: idle phone
+     *  → fast; busy phone or heavy frame → backs off automatically. No per-device constant. */
+    private fun adaptFaceInterval(costNs: Long) {
+        faceCostEmaNs = faceCostEmaNs * (1.0 - FACE_COST_ALPHA) + costNs.toDouble() * FACE_COST_ALPHA
+        val target = (faceCostEmaNs * FACE_SLACK).toLong()
+        faceIntervalNs = target.coerceIn(FACE_MIN_INTERVAL_NS, FACE_MAX_INTERVAL_NS)
     }
 
     private fun onFaces(faces: List<Face>, imgW: Float, imgH: Float, bitmap: Bitmap?) {
@@ -407,8 +484,15 @@ class FaceTracker(private val appContext: Context) : CameraFrameProvider, Lifecy
             return
         }
         lastSeenMs.set(now)
+        telFaceHits.incrementAndGet() // this pass found a face (telemetry)
         // (Frame rate is already gated to ~2 Hz in process(), so no extra
         // emit throttle is needed here — every analyzed frame emits.)
+
+        // RICH per-frame detail for ALL faces → the station `perceive` stream (the fast
+        // face source for faceFollow + the pipeline). Everything below is already computed
+        // by the single detection pass; we just stop discarding it. NDC + mirror-corrected,
+        // matching FaceSeen's convention. The forwarder dedups/throttles before the wire.
+        PerceptionBus.emit(buildPerceiveFrame(faces, imgW, imgH))
 
         val face = faces.maxByOrNull { it.boundingBox.width().toLong() * it.boundingBox.height() }
             ?: return
@@ -466,6 +550,41 @@ class FaceTracker(private val appContext: Context) : CameraFrameProvider, Lifecy
             }
             PerceptionBus.emit(PerceptionEvent.UserEmotion(kind, conf.coerceIn(0f, 1f)))
         }
+    }
+
+    /**
+     * Build the rich [PerceiveFrame] from MLKit's per-face output. Coordinates are NDC
+     * (−1..+1), mirror-corrected for the front cam (flip x), matching [FaceSeen]. All
+     * values come straight from the [Face] objects MLKit already produced — Euler angles,
+     * trackingId, classification probabilities, and the (up to 11) landmark points.
+     */
+    private fun buildPerceiveFrame(faces: List<Face>, imgW: Float, imgH: Float): PerceptionEvent.PerceiveFrame {
+        // x is mirrored (front cam): pxX → NDC with a horizontal flip. y is straight.
+        fun ndcX(px: Float) = ((imgW - px) / imgW * 2f - 1f).coerceIn(-1f, 1f)
+        fun ndcY(px: Float) = (px / imgH * 2f - 1f).coerceIn(-1f, 1f)
+        val details = faces.map { f ->
+            val b = f.boundingBox
+            val cx = (b.left + b.right) * 0.5f
+            val cy = (b.top + b.bottom) * 0.5f
+            // bbox: after the x-flip, the box's left/right SWAP (mirror), so bl = flipped right.
+            val bl = ndcX(b.right.toFloat()); val br = ndcX(b.left.toFloat())
+            val bt = ndcY(b.top.toFloat());  val bb = ndcY(b.bottom.toFloat())
+            val lms = f.allLandmarks.mapNotNull { lm ->
+                val p = lm.position
+                PerceptionEvent.PerceiveFrame.Landmark(landmarkName(lm.landmarkType), ndcX(p.x), ndcY(p.y))
+            }
+            PerceptionEvent.PerceiveFrame.FaceDetail(
+                x = ndcX(cx), y = ndcY(cy), size = (b.width() / imgW).coerceIn(0f, 1f),
+                bl = bl, bt = bt, br = br, bb = bb,
+                // Front-cam mirror flips the sense of YAW (left/right) and ROLL; pitch is unaffected.
+                yaw = -f.headEulerAngleY, pitch = f.headEulerAngleX, roll = -f.headEulerAngleZ,
+                trackingId = f.trackingId,
+                smile = f.smilingProbability, leftEyeOpen = f.leftEyeOpenProbability,
+                rightEyeOpen = f.rightEyeOpenProbability,
+                landmarks = lms,
+            )
+        }
+        return PerceptionEvent.PerceiveFrame(details, zoomRatio, zoomMin, zoomMax)
     }
 
     /**
@@ -551,9 +670,20 @@ class FaceTracker(private val appContext: Context) : CameraFrameProvider, Lifecy
     }
 }
 
-/** ~1 Hz analysis cadence (1000 ms). Enough for gaze/emotion/vision; leaves
- *  maximum headroom for a smooth live preview on modest hardware. */
-private const val ANALYSIS_INTERVAL_NS = 1_000_000_000L
+// ADAPTIVE face-analysis cadence — bounds + tuning for the self-regulating interval
+// (see faceIntervalNs / adaptFaceInterval). The interval floats between MIN (fast phone,
+// cheap frame) and MAX (slow phone / heavy load) at cost × SLACK, so there is NO single
+// per-device rate constant to get wrong.
+/** Fastest the face path may run (~5 Hz) — snappy enough for smooth head-follow. */
+private const val FACE_MIN_INTERVAL_NS = 200_000_000L
+/** Slowest it falls back to (~2 Hz) when the phone is heavily loaded — still presence-useful. */
+private const val FACE_MAX_INTERVAL_NS = 500_000_000L
+/** Where the adaptation STARTS before any cost is measured (~3 Hz). */
+private const val FACE_START_INTERVAL_NS = 333_000_000L
+/** Headroom multiplier: next interval = measured cost × this, leaving CPU for the preview. */
+private const val FACE_SLACK = 1.6
+/** EMA weight for the measured-cost smoothing (higher = reacts faster to load changes). */
+private const val FACE_COST_ALPHA = 0.3
 
 /** ~6 Hz palm-detection cadence (165 ms) — snappy rising-edge response to a palm
  *  raise. Only the (cheap) frame decode + MediaPipe gesture pass run at this rate;
@@ -577,6 +707,21 @@ private const val PALM_INTERVAL_NS = 165_000_000L
 // mount still needs a nudge.
 private const val VISION_EXTRA_ROTATION = 0
 private const val VISION_MIRROR = false
+
+/** MLKit FaceLandmark type int → a short stable name for the perceive wire. */
+private fun landmarkName(type: Int): String = when (type) {
+    FaceLandmark.LEFT_EYE -> "leftEye"
+    FaceLandmark.RIGHT_EYE -> "rightEye"
+    FaceLandmark.LEFT_EAR -> "leftEar"
+    FaceLandmark.RIGHT_EAR -> "rightEar"
+    FaceLandmark.LEFT_CHEEK -> "leftCheek"
+    FaceLandmark.RIGHT_CHEEK -> "rightCheek"
+    FaceLandmark.NOSE_BASE -> "noseBase"
+    FaceLandmark.MOUTH_LEFT -> "mouthLeft"
+    FaceLandmark.MOUTH_RIGHT -> "mouthRight"
+    FaceLandmark.MOUTH_BOTTOM -> "mouthBottom"
+    else -> "lm$type"
+}
 
 private fun uprightForVision(src: Bitmap): Bitmap {
     val m = android.graphics.Matrix()

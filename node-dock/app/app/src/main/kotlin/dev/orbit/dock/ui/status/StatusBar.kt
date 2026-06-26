@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.sizeIn
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
@@ -228,16 +229,26 @@ private fun ToggleIcon(
         initialValue = 0.35f, targetValue = 1f,
         animationSpec = infiniteRepeatable(tween(700), RepeatMode.Reverse), label = "micPulseAlpha",
     )
-    val mod = Modifier
+    // Hit target: the visible chip is small (icon + label, 3dp vertical padding), which
+    // made the mic/cam toggle need several taps. The CLICKABLE region is enlarged to the
+    // 48dp Android minimum (sizeIn + center) WITHOUT growing the visible chip — the
+    // background/clip stay on the inner content, the touch area is the outer Box.
+    val inner = Modifier
         .clip(RoundedCornerShape(50))
         .background(color.copy(alpha = 0.10f))
-        .let { if (onClick != null) it.clickable { onClick() } else it }
         .let { if (pulsing) it.alpha(pulseAlpha) else it }
         .padding(horizontal = 8.dp, vertical = 3.dp)
-    Row(verticalAlignment = Alignment.CenterVertically, modifier = mod) {
-        Text(icon, fontSize = 12.sp)
-        Spacer(modifier = Modifier.width(4.dp))
-        Text(label, fontSize = 11.sp, color = color)
+    Box(
+        modifier = Modifier
+            .let { if (onClick != null) it.clickable { onClick() } else it }
+            .sizeIn(minWidth = 48.dp, minHeight = 48.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically, modifier = inner) {
+            Text(icon, fontSize = 12.sp)
+            Spacer(modifier = Modifier.width(4.dp))
+            Text(label, fontSize = 11.sp, color = color)
+        }
     }
 }
 

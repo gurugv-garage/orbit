@@ -99,3 +99,44 @@ export function buildGrounding(input: GroundingInput): string | null {
   const from = clock(window[0]!.interval.from);
   return `Perception — recent (${from}–${clock(nowIso)} IST, raw — no summary yet):\n${tail}`;
 }
+
+// --------------------------------------------------------------------------- //
+// Long-term memory in grounding — the PASSIVE awareness slice.
+// --------------------------------------------------------------------------- //
+// Grounding above is "what's happening NOW" (short-term). recall_memory is the
+// agent's PULL of long-term beliefs. The gap this fills: every turn the agent should
+// also PASSIVELY know the durable facts about WHO IS PRESENT, without having to ask.
+// But derived beliefs are noisier/lower-confidence (see long-term-memory-curator.md
+// §8b), so we add only a SMALL, confidence-ranked, present-relevant slice — tagged as
+// beliefs-with-confidence so the agent hedges, never treats them as hard fact.
+
+/** A memory belief, trimmed to what grounding shows. */
+export interface GroundingBelief { subject: string; claim: string; confidence: number }
+
+/** Min confidence for a belief to be worth pushing into every turn (low-confidence
+ *  derived noise stays pull-only via recall_memory). */
+export const GROUNDING_BELIEF_MIN_CONF = Number(process.env.PERCEPTION_GROUNDING_BELIEF_MIN_CONF ?? 0.4);
+/** Cap the slice so the per-turn prompt stays small. */
+export const GROUNDING_BELIEF_MAX = Number(process.env.PERCEPTION_GROUNDING_BELIEF_MAX ?? 6);
+
+/**
+ * Build the "what you already know about who's here" block from a candidate belief
+ * set (the caller recalls beliefs for the present subjects). PURE: filters by
+ * confidence, sorts high→low, caps, formats with explicit confidence so the agent
+ * hedges. Returns '' when nothing clears the bar (then grounding omits the section).
+ */
+export function memoryGroundingSlice(
+  beliefs: GroundingBelief[], minConf = GROUNDING_BELIEF_MIN_CONF, max = GROUNDING_BELIEF_MAX,
+): string {
+  const kept = beliefs
+    .filter((b) => b.claim.trim() && b.confidence >= minConf)
+    .sort((a, b) => b.confidence - a.confidence)
+    .slice(0, max);
+  if (kept.length === 0) return '';
+  const lines = kept.map((b) => {
+    const who = b.subject ? `${b.subject}: ` : '';
+    return `• ${who}${b.claim.trim()} (belief, conf ${b.confidence.toFixed(2)})`;
+  });
+  return 'What you already know (durable beliefs — may be imperfect; weigh by confidence):\n'
+    + lines.join('\n');
+}

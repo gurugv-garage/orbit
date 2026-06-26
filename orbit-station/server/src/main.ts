@@ -31,7 +31,8 @@ import { benchModule } from './modules/bench/index.js';
 import { docksModule } from './modules/docks/index.js';
 import { Directory } from './modules/docks/directory.js';
 import { BindingStore } from './modules/docks/bindings.js';
-import { brainModule, getBrainAccess } from './modules/brain/index.js';
+import { brainModule, getBrainAccess, getWakeApi, getConductorAccess } from './modules/brain/index.js';
+import { conductorModule } from './modules/conductor/index.js';
 import { feedbackModule, getFeedbackCapture } from './modules/feedback/index.js';
 import { healthSummary } from './modules/observability/health.js';
 import { composeEnrichment, type ContextSources } from './modules/observability/context.js';
@@ -182,6 +183,23 @@ async function main() {
       health: (turns) => healthSummary(turns),
       provenance: (dock) => provenanceFor(dock),
     },
+  }));
+  // conductor: one cheap per-dock governor that arms/runs the conducted things —
+  // BEHAVIOURS (faceFollow's body-grant gate is a task; wakeUp is a hardcoded in-brain
+  // reaction) and TASKS (faceFollow) — by tunable rules. Reads the brain's conversation
+  // mode + task ops (ConductorAccess), the body lease holder (motion), and the WakeApi;
+  // tunings from the `conductor` config key. Pushed after brain so its accessors exist.
+  modules.push(conductorModule({
+    // Conduct only docks with at least one ONLINE component — no point arming things on a
+    // phantom/offline dock (and faceFollow needs the body/phone present anyway).
+    docks: () => directory.docks().filter((d) => d.components.some((c) => c.online)).map((d) => d.name),
+    config: () => configStore.get('conductor')?.value as Record<string, Record<string, Record<string, unknown>>> | undefined,
+    convMode: (dock) => getConductorAccess()?.convMode(dock) ?? null,
+    tasks: (dock) => getConductorAccess()?.listTasks(dock) ?? [],
+    startTask: (dock, taskName) => { getConductorAccess()?.startTask(dock, taskName); },
+    stopTask: (dock, instanceId) => { getConductorAccess()?.stopTask(dock, instanceId); },
+    bodyHolder: (dock) => motion.bodyHolder(dock) ?? null,
+    setWake: (dock, cfg) => { getWakeApi()?.setWakeConfig(dock, cfg); },
   }));
   // feedback: a THIN layer over the enriched obs session — read the session's
   // stored context, add the user's words + a fresh static snapshot, write MD.
