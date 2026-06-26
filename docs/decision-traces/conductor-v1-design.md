@@ -33,6 +33,7 @@
 - [2. The four things it adds (unchanged from the vision §4 — restated for v1)](#2-the-four-things-it-adds-unchanged-from-the-vision-4--restated-for-v1)
 - [3. The model — three small pieces](#3-the-model--three-small-pieces)
   - [3a. What `world` contains — the conductor's full picture (built now, used lightly)](#3a-what-world-contains--the-conductors-full-picture-built-now-used-lightly)
+  - [3b. Behaviour vs task — the one real difference](#3b-behaviour-vs-task--the-one-real-difference)
 - [4. The two v1 conducted things (the proving pair)](#4-the-two-v1-conducted-things-the-proving-pair)
   - [faceFollow — a periodic "look around" window (TASK)](#facefollow--a-periodic-look-around-window-task)
   - [wakeUp — always-on "hey orbit" (BEHAVIOUR, hardcoded in the brain, no body)](#wakeup--always-on-hey-orbit-behaviour-hardcoded-in-the-brain-no-body)
@@ -99,9 +100,10 @@ in-place behaviour.
   to exactly where the behaviour lives (e.g. `brain/index.ts: matchesWake() in onAddressedFinal`).
 
 This keeps wakeUp honest (a one-line check shouldn't be a process) while faceFollow stays a
-real task. The distinction is *how the work runs* (spawned vs hardcoded); the **governance is
-identical** — both are "a named intent the conductor turns on/off + tunes by a rule," and both
-get the manual override (§7).
+real task. The **governance is identical** — both are "a named intent the conductor turns
+on/off + tunes by a rule," and both get the manual override (§7). What actually differs between
+the two kinds — and what *doesn't* — is §3b, written deliberately loose so we don't paint
+ourselves into a definition.
 
 **`decide` is the only thing-specific logic.** A **pure function**
 `(tunings, world) → 'off' | 'running'` — arithmetic / rules over the tunings + cheap world
@@ -134,6 +136,16 @@ v1 uses this *lightly* (e.g. faceFollow stays off while a live turn is active), 
 is THERE so a thing's `decide` — and the v2 learning task — can reason over it (e.g. "a
 USER-initiated body task is running → don't arm faceFollow"; later "task X has run 5 min,
 likely stuck"). Building the input shape now means v2 adds policy, not plumbing.
+
+### 3b. Behaviour vs task — the one real difference
+
+The honest, load-bearing difference is one axis: **a task is DECOUPLED, a behaviour is
+INSTRUMENTED.** faceFollow is a task (a standalone "follow a face" capability, indifferent to
+who armed it); wakeUp is a behaviour (woven into the brain's `onAddressedFinal`, on a stream
+that only exists in-process there). Everything else — process/no-process, generic/bespoke — is
+a *consequence*, not the definition, so we don't bake it in. The full reasoning, why we keep it
+thin, and the door to collapsing the two into one concept later, are in
+[task-vs-behaviour.md](../task-vs-behaviour.md).
 
 ## 4. The two v1 conducted things (the proving pair)
 
