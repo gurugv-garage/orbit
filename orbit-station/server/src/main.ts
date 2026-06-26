@@ -31,7 +31,8 @@ import { benchModule } from './modules/bench/index.js';
 import { docksModule } from './modules/docks/index.js';
 import { Directory } from './modules/docks/directory.js';
 import { BindingStore } from './modules/docks/bindings.js';
-import { brainModule, getBrainAccess } from './modules/brain/index.js';
+import { brainModule, getBrainAccess, getWakeApi, getOrchestratorAccess } from './modules/brain/index.js';
+import { orchestratorModule } from './modules/orchestrator/index.js';
 import { feedbackModule, getFeedbackCapture } from './modules/feedback/index.js';
 import { healthSummary } from './modules/observability/health.js';
 import { composeEnrichment, type ContextSources } from './modules/observability/context.js';
@@ -182,6 +183,22 @@ async function main() {
       health: (turns) => healthSummary(turns),
       provenance: (dock) => provenanceFor(dock),
     },
+  }));
+  // orchestrator: one cheap per-dock conductor that arms/runs standing behaviours
+  // (faceFollow, wakeUp) by tunable rules. Reads the brain's conversation mode + task
+  // ops (OrchestratorAccess), the body lease holder (motion), and the WakeApi; tunings
+  // from the `orchestrator` config key. Pushed after brain so its accessors exist.
+  modules.push(orchestratorModule({
+    // Conduct only docks with at least one ONLINE component — no point arming behaviours on a
+    // phantom/offline dock (and faceFollow needs the body/phone present anyway).
+    docks: () => directory.docks().filter((d) => d.components.some((c) => c.online)).map((d) => d.name),
+    config: () => configStore.get('orchestrator')?.value as Record<string, Record<string, Record<string, unknown>>> | undefined,
+    convMode: (dock) => getOrchestratorAccess()?.convMode(dock) ?? null,
+    tasks: (dock) => getOrchestratorAccess()?.listTasks(dock) ?? [],
+    startTask: (dock, taskName) => { getOrchestratorAccess()?.startTask(dock, taskName); },
+    stopTask: (dock, instanceId) => { getOrchestratorAccess()?.stopTask(dock, instanceId); },
+    bodyHolder: (dock) => motion.bodyHolder(dock) ?? null,
+    setWake: (dock, cfg) => { getWakeApi()?.setWakeConfig(dock, cfg); },
   }));
   // feedback: a THIN layer over the enriched obs session — read the session's
   // stored context, add the user's words + a fresh static snapshot, write MD.

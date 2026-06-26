@@ -89,6 +89,23 @@ const wakeApiRef: { current?: WakeApi } = {};
 /** The live WakeApi (set when the brain module inits) — for the orchestrator. */
 export function getWakeApi(): WakeApi | undefined { return wakeApiRef.current; }
 
+/** OrchestratorAccess — the narrow surface the orchestrator needs from the brain: the dock's
+ *  conversation mode + start/stop/list of background tasks (keeps the supervisor encapsulated).
+ *  faceFollow starts under the open session; if it closes, the task dies and the orchestrator's
+ *  idempotent reconcile simply restarts it next tick — that's how a session-scoped task becomes
+ *  a session-INDEPENDENT behaviour (design §4.1) without new task-lifecycle machinery. */
+export interface OrchestratorAccess {
+  convMode(dock: string): string | null;
+  listTasks(dock: string): Array<{ name: string; instanceId: string; parentSessionId?: string; startedAt: number; state: string }>;
+  /** start a packaged task by name under the dock's open session; returns instanceId | null
+   *  (null if no open session / unknown task). */
+  startTask(dock: string, taskName: string): string | null;
+  stopTask(dock: string, instanceId: string): void;
+}
+const orchAccessRef: { current?: OrchestratorAccess } = {};
+/** The live OrchestratorAccess (set when the brain module inits) — for the orchestrator. */
+export function getOrchestratorAccess(): OrchestratorAccess | undefined { return orchAccessRef.current; }
+
 const IDLE_SWEEP_MS = 60_000;
 /** How often to re-push the task-digest to live docks so the app HUD self-corrects
  *  even if a per-change push was missed (failproof running-tasks view). */
@@ -140,6 +157,9 @@ export function brainModule(w: BrainWiring): StationModule {
     { root: userTasks, source: 'generated' as const }, // generated first, then packaged
     { root: tasksRoot, source: 'packaged' as const },
   ];
+  // Task defs the ORCHESTRATOR may start (resolved in init so OrchestratorAccess.startTask is
+  // synchronous). v1: just face-follow.
+  const orchTaskDefs = new Map<string, { name: string; filePath: string; manifest: { model?: string } }>();
   let bus: Bus;
   let rpc: RpcBroker;
 
@@ -279,6 +299,23 @@ export function brainModule(w: BrainWiring): StationModule {
     setWakeConfig: (dock, cfg) => { if (cfg) wakeCfg.set(dock, cfg); else wakeCfg.delete(dock); },
   };
 
+  // OrchestratorAccess — conversation mode + task start/stop/list for the per-dock conductor.
+  orchAccessRef.current = {
+    convMode: (dock) => sessions.get(dock)?.conversation().mode ?? null,
+    listTasks: (dock) => supervisor.list(dock).map((i) => ({
+      name: i.name, instanceId: i.instanceId, parentSessionId: i.parentSessionId,
+      startedAt: i.startedAt, state: i.state,
+    })),
+    startTask: (dock, taskName) => {
+      const parent = store.openSession(dock)?.sessionId;
+      if (!parent) return null; // no session to nest under (rare); reconcile retries next tick
+      const def = orchTaskDefs.get(taskName);
+      if (!def) return null;
+      return supervisor.start({ dock, name: def.name, filePath: def.filePath, params: {}, parentSessionId: parent, model: def.manifest.model });
+    },
+    stopTask: (_dock, instanceId) => { supervisor.stop(instanceId); },
+  };
+
   return {
     name: 'brain',
     topic: 'agent',
@@ -287,6 +324,15 @@ export function brainModule(w: BrainWiring): StationModule {
     init(b) {
       bus = b;
       rpc = new RpcBroker(bus, w.directory);
+
+      // Resolve the task defs the orchestrator may start (so OrchestratorAccess.startTask is
+      // sync). Fire-and-forget — populated well before the first ~1Hz orchestrator tick.
+      void (async () => {
+        for (const name of ['face-follow']) {
+          try { const d = await findTaskDef(taskRoots, name); orchTaskDefs.set(name, { name: d.name, filePath: d.filePath, manifest: d.manifest }); }
+          catch { /* def missing → orchestrator startTask returns null, reconcile retries */ }
+        }
+      })();
 
       // PROACTIVE GATE (docs/perception-to-brain.md Phase 5): a raised attention thought
       // becomes a self-thought turn on the dock's session — the SAME autonomous-turn

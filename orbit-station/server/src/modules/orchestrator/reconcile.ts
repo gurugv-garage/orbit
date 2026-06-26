@@ -41,14 +41,18 @@ export function reconcile(
 
     if (b.kind === 'task') {
       const running = fx.isTaskRunning(dock, b.taskName!);
+      // Log only on a genuine DESIRED edge (off↔running), not every tick — a persistent
+      // can't-start (e.g. no open session yet) keeps RE-ATTEMPTING (idempotent, self-healing)
+      // but must NOT spam the log. The start/stop calls below run each tick regardless.
+      const edge = desired !== prev.desired;
       if (desired === 'running' && !running) {
         fx.startTask(dock, b.taskName!, b.priority ?? 0);
-        fx.onTransition?.(dock, b.name, prev.desired, 'running', 'desired→running (task started)');
+        if (edge) fx.onTransition?.(dock, b.name, prev.desired, 'running', 'start');
       } else if (desired === 'off' && running) {
         fx.stopTask(dock, b.taskName!);
-        fx.onTransition?.(dock, b.name, prev.desired, 'off', 'desired→off (task stopped)');
-      } else if (desired !== prev.desired) {
-        fx.onTransition?.(dock, b.name, prev.desired, desired, 'desired changed');
+        if (edge) fx.onTransition?.(dock, b.name, prev.desired, 'off', 'stop');
+      } else if (edge) {
+        fx.onTransition?.(dock, b.name, prev.desired, desired, desired === 'running' ? 'running (already up)' : 'off');
       }
     } else {
       // inproc: enact every tick (idempotent setter) so a live config edit applies; log only
