@@ -294,6 +294,36 @@ for `class … extends Task` + `runTask(…)` from source; it never *executes* a
 `task.ts` to load it (running one would connect to the station). Validation on
 write = typecheck + that static shape check, with rollback on failure.
 
+### 6.1 Toward reliable task GENERATION (a proposed authoring protocol — not built)
+
+Why keep anything `packaged/` at all — why not generate every task and make that
+reliable? The honest answer from building faceFollow (see its decision trace): even a
+state-of-the-art coding model **cannot one-shot** a task whose logic is genuinely hard.
+faceFollow is a real-machine control loop (flaky servos, narrow FOV, bursty/laggy
+detection); it took many iterations, wrong turns, and live hardware data to get right —
+a `write_task` one-shot would have produced confident, plausible, **wrong** code. Simple
+tasks (reminders, a Slack post) generate fine today; control loops, multi-state machines,
+and anything needing back-and-forth do not. So `packaged/` stays for the hard, vetted ones.
+
+But the *goal* is to make generation reliable enough that the packaged/generated split
+stops mattering. A proposed protocol for `write_task` on a non-trivial task (capture for
+when we build it):
+
+1. **Algorithm first, not code.** State the algorithm in plain terms. If it's too complex
+   (needs a real state machine, external feedback, hardware tuning) → say so and **escalate
+   to the user** rather than bluffing code.
+2. **Reliability gate, not just correctness.** Ask "is this implementable from signals we
+   can actually TRUST?" — not just "does the algorithm sound right?" (faceFollow's overshoot
+   came from logic that depended on a stale/laggy signal it couldn't trust).
+3. **Verify the algorithm with the user** before writing code.
+4. **Tests before/with code.** Generate test cases from the algorithm; write the body; run
+   the tests; only then claim it works. "Typecheck passes" ≠ "it works."
+5. **For physical/embodied tasks, expect iteration.** Unit tests prove the logic, not the
+   behaviour on the machine — budget live runs + instrumentation (telemetry, an on-device
+   indicator) as part of "done."
+
+This is forward-looking; today `write_task` does step 4's typecheck only.
+
 ---
 
 ## 7. Lifetime, config, REST, console

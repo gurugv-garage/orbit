@@ -25,6 +25,7 @@
 - [5. Build order (lease-first)](#5-build-order-lease-first)
 - [6. Open points](#6-open-points)
 - [7. The `perceive` stream — on-device MLKit as the fast face source (answers §3a)](#7-the-perceive-stream--on-device-mlkit-as-the-fast-face-source-answers-3a)
+- [Learnings (the iteration, captured — these were expensive to earn)](#learnings-the-iteration-captured--these-were-expensive-to-earn)
 <!-- /TOC -->
 
 ---
@@ -348,3 +349,53 @@ faceFollow's `recognize`-based `faces()` is replaced by a read of the per-dock l
 `perceive` faces; the box→error math is unchanged (it just gets a better box, and later the
 eye-midpoint). Use of `yaw/pitch/roll` in the controller is **transport-now, use-later** (the
 data flows + is visible; salient-by-facing is a follow-up).
+
+---
+
+## Learnings (the iteration, captured — these were expensive to earn)
+
+faceFollow took many live-hardware rounds to get stable. The lessons generalize to any
+embodied control task on this platform — capture them so we don't re-pay:
+
+1. **Physical servos + bursty perception are flaky by nature.** A single run proves nothing
+   (good OR bad) — a "follow" that worked once could be luck; a failure could be a servo
+   hiccup or a detection blink. Judge **aggregate behaviour over time** ("kept them in view
+   most of the time, recovered"), never a single tick. The design bar is *robustness to its
+   own flakiness*, not precision.
+
+2. **Don't grow the step on a stale error.** The first controller GREW its step when the
+   error didn't shrink ("push harder"). But the error didn't shrink because **detection lags
+   the head** (a stale read) — so it accelerated and flung the head ~56° *past* the person,
+   turning the camera off them → blind → "it moves away." The fix: **STEP-AND-SETTLE** —
+   small FIXED step toward the face's *side* (sign only, never the laggy magnitude), then
+   HOLD a tick so a fresh look lands before deciding again. Small+patient converges;
+   big+eager overshoots.
+
+3. **Trust only signals you can actually get.** An algorithm that *sounds* right but needs a
+   signal you can't reliably read is worthless. We could NOT reliably tell "lost the face
+   because I moved" from "detection just blinked" — they look identical — so any rule keyed
+   on that distinction was unimplementable. Build on **presence + sign** (trusted), not on
+   exact position (laggy) or loss-attribution (unknowable).
+
+4. **Instrument, don't theorize — and trust the right source of truth.** Weeks of "it
+   doesn't see me / it moves on" were resolved only by (a) **WS telemetry** from the phone
+   (framesIn / detector-passes / hits / lastFace → pinpointed camera-vs-gate-vs-detector vs
+   "you weren't actually in front") and (b) an **on-device indicator** the user could watch
+   (LOCK/TRACK/WAIT/SEARCH). The indicator turned out *more* reliable than reading logs — so
+   "can't blame the detector" became provable. Reading the station log tick-by-tick and
+   declaring "it works" repeatedly burned trust; the lived behaviour + ground-truth
+   telemetry are the arbiters, not a hopeful log line.
+
+5. **"Lock and wait" vs "search" is a real tension — tune the hold, don't pick a pole.**
+   Holding a lost lock forever means it stares at an empty spot; searching immediately means
+   it abandons a person through a normal detection blink. The answer is a **bounded hold**
+   (~30s): ride out dropouts, then give up and sweep. (We over-corrected to ~forever first.)
+
+6. **Eye-midpoint, not box center.** The face box's geometric center reads LOW (the box sags
+   to chin/neck), which drove the neck to its down-limit ("looking at the floor"). Centering
+   on the **eye-landmark midpoint** is stable and fixed the neck-dive.
+
+7. **Unit/sim tests prove LOGIC, not BEHAVIOUR.** 40+ green tests never caught the overshoot
+   — it lived in the controller's interaction with real lag. Sim is necessary (fast,
+   deterministic, catches logic regressions) but **not sufficient**; the hardware run is the
+   real verifier. Budget it as part of "done."
