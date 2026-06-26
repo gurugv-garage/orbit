@@ -159,6 +159,11 @@ export interface FaceToolsApi {
    *  brain's vision source when the phone didn't attach a photo (the video
    *  is already flowing; vision turns need no extra upload). */
   frame(streamId: string): string | undefined;
+  /** Is this name enrolled in the gallery (case-insensitive)? — the gallery pre-check for
+   *  find_person: "do I actually know this person before I go looking for them?". */
+  knowsPerson(name: string): boolean;
+  /** Canonical display names of everyone enrolled — so find_person can say who it CAN find. */
+  knownNames(): string[];
 }
 
 const faceToolsRef: { current?: FaceToolsApi } = {};
@@ -749,6 +754,8 @@ export function perceptionModule(getHub: () => ProcessingHub): StationModule {
           if (streamId) { void face.forgetCurrent(streamId, n); return { ok: true }; }
           return { ok: gallery.remove(n) };
         },
+        knowsPerson(name) { return !!name?.trim() && gallery.has(name.trim()); },
+        knownNames() { return gallery.names(); },
       };
 
       // Agent-driven enrollment over the WS: the dock's `remember_face` tool

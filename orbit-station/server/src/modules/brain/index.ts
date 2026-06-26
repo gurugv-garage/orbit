@@ -209,6 +209,8 @@ export function brainModule(w: BrainWiring): StationModule {
         getTaskTools: (d, parentSessionId) => buildTaskTools({
           dock: d, supervisor, tasksRoot, userTasksRoot: userTasks, parentSessionId, config: w.config,
           capabilityAd: capabilities.advertiseFor(d),
+          knowsPerson: (name) => getFaceTools()?.knowsPerson(name) ?? false,
+          knownNames: () => getFaceTools()?.knownNames() ?? [],
         }),
       });
       sessions.set(dock, s);

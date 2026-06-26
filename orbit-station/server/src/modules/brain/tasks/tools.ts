@@ -26,6 +26,9 @@ export interface TaskToolDeps {
   /** this dock's station-capability advertisement for the authoring prompt
    *  (CapabilityRegistry.advertiseFor); '' when the dock has no extra capabilities. */
   capabilityAd?: string;
+  /** gallery pre-check for find_person: is this person enrolled? + who IS enrolled. */
+  knowsPerson?: (name: string) => boolean;
+  knownNames?: () => string[];
 }
 
 function txt(text: string): AgentToolResult<unknown> {
@@ -237,8 +240,53 @@ export function buildTaskTools(d: TaskToolDeps): AgentTool<any>[] {
       return txt(`${verb}ed ${n} task(s).`);
     });
 
+  // find_person — follow a SPECIFIC person by name. Convenience over run_task('face-follow',
+  // {target}): it gallery-checks the name FIRST ("do I actually know them?"), and if a follow
+  // is already running it RE-TARGETS by stop+restart instead of stacking a second one.
+  const FACE_FOLLOW = 'face-follow';
+  const findPerson = tool('find_person',
+    'Look around and follow a specific person with the dock\'s head/body, by name. Use when '
+    + 'the user says e.g. "find Guru" / "follow Aanya" / "watch for me". It checks whether you '
+    + 'actually KNOW that person (have their face enrolled); if not, it tells you so (you can '
+    + 'offer to just watch whoever is around instead). Starts the face-follow behaviour in '
+    + 'named mode, or re-points an already-running follow at the new person.',
+    {
+      type: 'object',
+      properties: { name: { type: 'string', description: 'the person to find + follow' } },
+      required: ['name'],
+    },
+    async (_id, args: { name?: string }) => {
+      const name = args?.name?.trim();
+      if (!name) throw new Error('find_person needs a name');
+      const parent = d.parentSessionId();
+      if (!parent) throw new Error('no open session to run a behaviour under');
+      // GALLERY PRE-CHECK: refuse to "search for someone we can't recognize" — say so + offer salient.
+      if (d.knowsPerson && !d.knowsPerson(name)) {
+        const known = d.knownNames?.() ?? [];
+        const who = known.length ? ` I do know: ${known.join(', ')}.` : '';
+        return txt(`I don't recognize "${name}" — I don't have their face enrolled, so I can't search for them specifically.${who} `
+          + `I can watch whoever's around instead (run_task("${FACE_FOLLOW}") with no target), or you can introduce me to ${name} first (remember_face).`);
+      }
+      const def = await findTaskDef(roots, FACE_FOLLOW); // throws if the task is missing
+      const v = validateParams(def.manifest, { target: name });
+      if (!v.ok) throw new Error(`bad params: ${v.errors.join('; ')}`);
+      // RE-TARGET: if a face-follow is already running, stop it (params are launch-time only),
+      // then start fresh on the new person — no second follower competing for the body.
+      const existing = d.supervisor.list(d.dock).filter((i) => i.name === FACE_FOLLOW && i.state !== 'stopped');
+      for (const i of existing) d.supervisor.stop(i.instanceId);
+      const retargeted = existing.length > 0;
+      if (!retargeted) {
+        const max = num(d.config('brainTaskMax'), 3);
+        if (d.supervisor.countRunning(d.dock) >= max) {
+          throw new Error(`too many tasks already running (max ${max}); stop one first`);
+        }
+      }
+      const instanceId = d.supervisor.start({ dock: d.dock, name: FACE_FOLLOW, filePath: def.filePath, params: v.values, parentSessionId: parent, model: def.manifest.model });
+      return txt(`${retargeted ? 're-pointed' : 'started'} face-follow at ${name} (${instanceId}). I'll look around and keep my eye on them.`);
+    });
+
   return [
-    list, run, write, status, provideInput,
+    list, run, write, status, provideInput, findPerson,
     lifecycle('pause_task', 'pause'),
     lifecycle('resume_task', 'resume'),
     lifecycle('stop_task', 'stop'),

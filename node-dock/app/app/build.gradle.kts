@@ -27,7 +27,7 @@ android {
         targetSdk = 35
         // versionName is DERIVED from versionCode so build N is always v0.1.N —
         // no hand-sync, no drift. Bump versionCode alone (it's the OTA gate).
-        versionCode = 19
+        versionCode = 21
         versionName = "0.1.$versionCode"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"

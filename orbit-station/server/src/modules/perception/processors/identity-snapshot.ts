@@ -160,6 +160,13 @@ export function identitySnapshotProcessor(
         // faces = confirmed (name+box+expr+mouthOpen); inferMs = recognition compute.
         payload: { text: sig, faces: present, confidence, inferMs: to.getTime() - from.getTime() },
       }));
+
+      // PUSH the recognized name to the dock so the phone's `perceive` stream can carry it
+      // (the phone folds UserIdentified into each perceive frame → faceFollow NAMED mode can
+      // match by name). The most-confident RECOGNIZED present face wins; null when nobody is
+      // recognized (so the phone clears its identity). Mirrors presenceProcessor's ctx.emit.
+      const named = present.filter((f) => f.name).sort((a, b) => (b.confidence ?? 0) - (a.confidence ?? 0))[0];
+      s.ctx.emit({ kind: 'identity', payload: { name: named?.name ?? null }, source: 'identity-snapshot', confidence: named?.confidence ?? 0 });
     } finally {
       s.busy = false;
     }
