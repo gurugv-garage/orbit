@@ -61,3 +61,6 @@ node-dock/app/bench/results/*.log
 .pio/
 .webrtc-aar/
 .webrtc-src/
+
+# Scratch/dictation notes — transient thinking, not tracked.
+scrap
