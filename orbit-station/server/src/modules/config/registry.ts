@@ -166,6 +166,18 @@ export const REGISTRY: ConfigEntry[] = [
     description: 'pi-ai model for dock brain sessions as "provider/modelId" (e.g. "google/gemini-2.5-flash", "anthropic/claude-haiku-4-5", "openai-compatible/<model>@<baseUrl>" for a LAN Ollama). Applied on the next turn.',
   }),
   entry({
+    key: 'orchestrator', type: 'json',
+    // Per-dock behaviour TUNINGS for the orchestrator (docs/decision-traces/orchestrator-v1-design.md):
+    // { "<dock>": { "faceFollow": { enabled, activateAfterMs, runForMs },
+    //               "wakeUp": { enabled, phrase, prompt } } }. Missing dock/behaviour/knob →
+    // the behaviour's coded defaults. Live-applied each ~1Hz tick (edit in the Behaviour tab).
+    schema: z.record(z.string(), z.record(z.string(), z.record(z.string(), z.unknown()))),
+    default: {},
+    tags: ['station'],
+    label: 'Orchestrator behaviour tunings (per dock)',
+    description: 'Per-dock enable/disable + knobs for the standing behaviours (faceFollow, wakeUp). Applied live by the per-dock conductor.',
+  }),
+  entry({
     key: 'brainTaskModels', type: 'json',
     // a plain string[] of "provider/modelId" specs the task author may choose from.
     schema: z.array(z.string()).min(1),

@@ -65,6 +65,30 @@ export function getBrainAccess(): BrainAccess | undefined {
   return brainRef.current;
 }
 
+/** WAKE-PHRASE match (orchestrator `wakeUp`): true if the utterance opens with the wake phrase.
+ *  Lenient — case-insensitive, ignores punctuation/leading filler, allows a small lead-in
+ *  ("um, hey orbit") and trailing words ("hey orbit are you there") — STT phrasing varies. */
+export function matchesWake(text: string, phrase: string): boolean {
+  const norm = (s: string) => s.toLowerCase().replace(/[^a-z0-9 ]/g, ' ').replace(/\s+/g, ' ').trim();
+  const t = norm(text); const p = norm(phrase);
+  if (!t || !p) return false;
+  // match the phrase as a whole-word run anywhere in the first few words (allows light filler
+  // before it), so "hey orbit", "um hey orbit?", "ok, hey orbit you there" all wake.
+  const idx = (' ' + t + ' ').indexOf(' ' + p + ' ');
+  if (idx < 0) return false;
+  const before = t.slice(0, Math.max(0, idx - 1)).trim();
+  return before.split(' ').filter(Boolean).length <= 2; // phrase near the start
+}
+
+/** WakeApi — the orchestrator's `wakeUp` behaviour governs the wake check through this:
+ *  enable/disable + the phrase/prompt, per dock. */
+export interface WakeApi {
+  setWakeConfig(dock: string, cfg: { enabled: boolean; phrase: string; prompt: string } | null): void;
+}
+const wakeApiRef: { current?: WakeApi } = {};
+/** The live WakeApi (set when the brain module inits) — for the orchestrator. */
+export function getWakeApi(): WakeApi | undefined { return wakeApiRef.current; }
+
 const IDLE_SWEEP_MS = 60_000;
 /** How often to re-push the task-digest to live docks so the app HUD self-corrects
  *  even if a per-change push was missed (failproof running-tasks view). */
@@ -104,6 +128,10 @@ export function brainModule(w: BrainWiring): StationModule {
   // Captures text + the mode/window at decision time + the decision, so a live repro of
   // "replied after listening went off" shows EXACTLY which gate let it through.
   const addrTrace: Array<Record<string, unknown>> = [];
+  // WAKE (orchestrator `wakeUp` behaviour): per-dock wake config, set by the orchestrator via
+  // the exported WakeApi. Absent/disabled → no wake check (the default). The match runs in
+  // onAddressedFinal (the single point every final transcript lands).
+  const wakeCfg = new Map<string, { enabled: boolean; phrase: string; prompt: string }>();
   // Set in init(): simulate a tapped addressed utterance (debug self-test seam).
   let injectAddressed: (dock: string, text: string) => void = () => {};
   const tasksRoot = defaultTasksRoot();
@@ -246,6 +274,11 @@ export function brainModule(w: BrainWiring): StationModule {
     dockOf,
   };
 
+  // WakeApi for the orchestrator's `wakeUp` behaviour — set/clear the per-dock wake config.
+  wakeApiRef.current = {
+    setWakeConfig: (dock, cfg) => { if (cfg) wakeCfg.set(dock, cfg); else wakeCfg.delete(dock); },
+  };
+
   return {
     name: 'brain',
     topic: 'agent',
@@ -302,6 +335,18 @@ export function brainModule(w: BrainWiring): StationModule {
         // the dock must NOT respond (we want clean ambient perception). The mic/cam
         // keep capturing + transcribing upstream; we just don't turn it into a reply.
         if (isRecording(t.dockId)) { trace('skip:recording'); return; }
+        // WAKE (orchestrator `wakeUp` behaviour): when the dock is NOT in a listening window
+        // and this utterance matches the wake phrase, WAKE — open listening + speak the prompt
+        // — and consume the utterance (it was just "hey orbit", not a turn). Governed by the
+        // orchestrator via setWakeConfig (enabled/phrase/prompt); off by default until armed.
+        if (wakeCfg.get(t.dockId)?.enabled && !session(t.dockId).isListening()) {
+          const w = wakeCfg.get(t.dockId)!;
+          if (matchesWake(t.text, w.phrase)) {
+            trace('wake');
+            session(t.dockId).wake(w.prompt);
+            return;
+          }
+        }
         // GARBAGE STT: a far-field-mush / repetition-loop transcript must not become a
         // confident agent turn (we'd reply to words that were never said). The snapshot
         // is still kept (tagged) upstream; we just don't act on it. Shaky still runs —

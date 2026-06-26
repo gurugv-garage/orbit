@@ -57,23 +57,35 @@ that proves the orchestrator conducts both body and non-body behaviours.
 ```
   Orchestrator (per dock)         ← the cheap loop; ticks ~1 Hz
     reads: OrchestratorConfig      ← the TUNING VARIABLES (per dock)
-    reads: world (cheap)           ← presence, convState.listening, snapshot signals
+    reads: world (cheap)           ← presence, convState, lease, ALL tasks, own state
     for each Behaviour:
-        decide(tunings, world) → DESIRED: off | armed | running
-        enact via the Supervisor (start/stop the task) + the Lease (priority)
+        decide(tunings, world) → DESIRED: off | running
+        enact(desired) — start/stop per the behaviour's KIND (below)
 
-  Behaviour (a registered descriptor — NOT new runtime; it wraps a task)
-    { name, taskName, priority, decide(ctx) → desired, defaults }
+  Behaviour (a registered descriptor — NOT new runtime)
+    { name, kind: 'task' | 'inproc', priority?, decide(tunings, world) → desired,
+      // kind:'task'  → taskName: spawn/stop that supervisor task (e.g. faceFollow)
+      // kind:'inproc'→ start()/stop(): toggle an in-process hook (e.g. wakeUp) }
 
   OrchestratorConfig (tuning variables, per dock, live-editable)
-    { <behaviour>: { enabled, ...knobs } }   e.g. faceFollow.enabled, idleReset.afterMs
+    { <behaviour>: { enabled, ...knobs } }   e.g. faceFollow.activateAfterMs, wakeUp.phrase
 ```
 
-**`decide` is the only behaviour-specific logic.** It's a **pure function**
-`(tunings, world) → 'off' | 'armed' | 'running'` — arithmetic / rules over the tunings + cheap
-world reads. No I/O, no LLM, unit-testable like the gate. This is the **seam your "code logic
-later" sits at**: today `decide` reads number/bool tunings; a complex behaviour can later carry
-a richer `decide` (still a cheap pure fn) without changing the orchestrator.
+**Two behaviour KINDS — not everything needs a process.** A behaviour is either:
+- **`'task'`** — its work is a spawned task process (faceFollow → the `face-follow` task,
+  lease-arbitrated). `enact` = supervisor `start`/`stop`.
+- **`'inproc'`** — its work is a tiny in-process hook the orchestrator toggles (wakeUp →
+  install/remove a wake-phrase check in the brain's transcript handler). `enact` =
+  `start()`/`stop()` callbacks. No process, no re-plumbing of signals the station already has.
+
+This keeps wakeUp honest (a one-line check shouldn't be a process) while faceFollow stays a
+real task. Both are still just "a named intent the conductor turns on/off by a rule."
+
+**`decide` is the only behaviour-specific logic.** A **pure function**
+`(tunings, world) → 'off' | 'running'` — arithmetic / rules over the tunings + cheap world
+reads. No I/O, no LLM, unit-testable like the gate. This is the **seam your "code logic later"
+sits at**: today `decide` reads number/bool tunings; a complex behaviour can later carry a
+richer `decide` (still a cheap pure fn) without changing the orchestrator.
 
 ### 3a. What `world` contains — the orchestrator's full picture (built now, used lightly)
 

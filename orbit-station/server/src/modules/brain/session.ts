@@ -325,6 +325,20 @@ export class DockBrainSession {
     if (interrupts) this.cancel(); // abort the interrupted reply's turn
   }
 
+  /** WAKE (orchestrator `wakeUp` behaviour): the wake phrase was heard while idle. Open the
+   *  listening window AND acknowledge with a short spoken prompt ("did you call me?"), so the
+   *  user knows the dock is now listening. Routed through an autonomous turn (the established
+   *  speak path: TTS + window + epoch-gating all handled) whose instruction is just to say the
+   *  prompt verbatim. Cheap + safe; no body. */
+  wake(prompt: string, now = Date.now()): void {
+    this.tapOpen(now); // open the listening window first so the follow-up utterance is addressed
+    this.enqueueAutonomousTurn({
+      turnId: `wake-${randomUUID()}`,
+      trigger: { kind: 'task', text: `[wake] The user said the wake phrase. Reply with EXACTLY: "${prompt}" — nothing else.` },
+      expiresAt: now + 30_000,
+    });
+  }
+
   /** VAD activity from the phone — extends an open listening/followup window. */
   vadActivity(active = true, now = Date.now()): void { this.#conv.vadActivity(now, active); }
 
