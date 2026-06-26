@@ -190,52 +190,9 @@ test('sweep from last-known position (caller seeds `from`) starts there, not zer
   assert.equal(s.pose.foot, 55); // 40 + 15, not from 0
 });
 
-// ── YIELD + COOLDOWN: faceFollow is a deferring behaviour, not an exclusive owner ────────
-
-const T0 = 1_000_000; // a fixed injected clock so the cooldown is deterministic
-const cfgY = { lostAfter: 8, cooldownMs: 60_000 };
-
-test('COLD START: no foreign mover → follows immediately, never yields', () => {
-  const s0 = initialFollowState();
-  const r = stepFollow(s0, [face(0.9, 0.5)], cfgY, { now: T0, foreignMover: false });
-  assert.notEqual(r.state.mode, 'yielded');
-  assert.ok(r.status.startsWith('tracking'), 'cold start tracks at once, no cooldown');
-});
-
-test('YIELD: a FOREIGN mover takes the body → stop commanding + start the cooldown', () => {
-  const s0 = { ...initialFollowState(), lock: { name: null, at: { x: 0.5, y: 0.5 }, centered: true } };
-  const r = stepFollow(s0, [face(0.9, 0.5)], cfgY, { now: T0, foreignMover: true });
-  assert.equal(r.state.mode, 'yielded');
-  assert.equal(r.command, null, 'issues NO command while yielding (does not fight the other mover)');
-  assert.equal(r.state.cooldownUntil, T0 + 60_000, 'cooldown armed for cfg.cooldownMs');
-  assert.deepEqual(r.state.lock, s0.lock, 'keeps the lock so it resumes on the same person');
-});
-
-test('COOLDOWN: holds (no commands) until it elapses, even with a face dead-ahead', () => {
-  let st = stepFollow(initialFollowState(), [], cfgY, { now: T0, foreignMover: true }).state;
-  // mid-cooldown: a perfectly trackable face is present, but we must still hold.
-  const mid = stepFollow(st, [face(0.9, 0.5)], cfgY, { now: T0 + 30_000, foreignMover: false });
-  assert.equal(mid.state.mode, 'yielded');
-  assert.equal(mid.command, null, 'still yielding mid-cooldown');
-  st = mid.state;
-  // just before the end — still holding.
-  const almost = stepFollow(st, [face(0.9, 0.5)], cfgY, { now: T0 + 59_000, foreignMover: false });
-  assert.equal(almost.command, null);
-});
-
-test('RESUME: once the cooldown elapses, it follows again', () => {
-  const yielded = stepFollow(initialFollowState(), [], cfgY, { now: T0, foreignMover: true }).state;
-  const back = stepFollow(yielded, [face(0.9, 0.5)], cfgY, { now: T0 + 60_001, foreignMover: false });
-  assert.notEqual(back.state.mode, 'yielded');
-  assert.equal(back.state.cooldownUntil, 0, 'cooldown cleared on resume');
-  assert.ok(back.status.startsWith('tracking'), 'back to following after the cooldown');
-});
-
-test('RE-YIELD: a foreign mover DURING cooldown restarts the full cooldown window', () => {
-  const first = stepFollow(initialFollowState(), [], cfgY, { now: T0, foreignMover: true }).state;
-  const again = stepFollow(first, [], cfgY, { now: T0 + 30_000, foreignMover: true });
-  assert.equal(again.state.cooldownUntil, T0 + 30_000 + 60_000, 'cooldown re-armed from the new foreign move');
-});
+// NOTE: yield/cooldown is no longer in stepFollow — it's the ACTUATOR LEASE's job (the task
+// loop pauses the whole controller while a higher-priority mover holds the body). Those
+// transitions are covered by bodylink/lease.test.ts. stepFollow is purely follow/search now.
 
 test('sweep UN-STICKS a saturated neck: a neck left at the down-limit eases back to home', () => {
   // the live bug: after chasing a low/close face the neck pins at NECK_MAX (looking down),

@@ -81,26 +81,34 @@ class FaceFollowTask extends Task {
     //  • [ff-tick]  — one compact metric line per tick (mode, faces, lock, err, pose, cmd) so
     //    the validator can measure hold duration, move-command rate, name flips, sweep span.
     const measure = process.env.FF_MEASURE === '1';
-    // Our own move-source tag (the move capability stamps moves as `task:<instanceId>`); a
-    // mover whose tag isn't ours = a FOREIGN mover (brain turn / console / other task) → yield.
-    const myTag = `task:${process.env.TASK_INSTANCE_ID ?? ''}`;
-    // Seed the watermark to NOW: only moves AFTER we start count as foreign. A STALE
-    // lastMover left on the executor by an earlier brain turn (e.g. the turn that opened the
-    // session) must NOT make us yield at cold start — cold start follows immediately.
-    let lastMoverAt = Date.now();
+    // ACTUATOR LEASE (the keystone): faceFollow holds the body at priority 30. Each tick it
+    // checks whether it STILL holds it — a higher-priority mover (a brain turn @60, the
+    // console) PREEMPTS it. When preempted we PAUSE (issue no commands, don't fight) and keep
+    // trying to reacquire; the moment the other mover releases (its lease TTL-expires or it
+    // releases), we hold again and RESUME following. This replaces the old bodyMover-heuristic
+    // cooldown with the body's real arbiter (facefollow decision trace §4).
+    const FF_PRIORITY = 30;
+    await this.request('acquireBody', { priority: FF_PRIORITY }).catch(() => {});
     let tickNo = 0;
     let prevPhase = '';                 // mode|lockName|hasLock — the transition signature
     let prevLockName: string | null = null;
+    let yielded = false;                // are we currently preempted (paused)?
     while (true) {
+      // Do WE still hold the body? (bodyHeld renews our lease if so.) If not, a higher mover
+      // has it → PAUSE: don't run the controller, don't command, just wait + try to reacquire.
+      const hold = await this.bodyHeld(FF_PRIORITY);
+      if (!hold.held) {
+        if (!yielded) { yielded = true; if (measure) console.log(`[ff-event] ts=${Date.now()} yield to="${hold.holder ?? 'someone'}"`); }
+        this.status(`yielded — body held by ${hold.holder ?? 'a higher mover'}`);
+        await this.sleep(tick);
+        continue;
+      }
+      if (yielded) { yielded = false; if (measure) console.log(`[ff-event] ts=${Date.now()} resume`); }
+
       const faces = await this.faces();
-      // YIELD signal: did someone OTHER than us drive the body since we last checked?
-      const foreignMover = await this.foreignMover(myTag, lastMoverAt);
-      if (foreignMover) lastMoverAt = foreignMover.at; // consume it so we don't re-trigger
-      const r = stepFollow(state, faces, cfg, { foreignMover: !!foreignMover });
+      const r = stepFollow(state, faces, cfg);
       state = r.state;
-      // Track our OWN successful command's timestamp window: after we move, the executor's
-      // lastMover becomes ours — advance the watermark so our own move isn't read as foreign.
-      if (r.command) { await this.moveTo(r.command); lastMoverAt = Date.now(); }
+      if (r.command) await this.moveTo(r.command);
       this.status(r.status);
       if (measure) {
         tickNo++;
@@ -139,16 +147,20 @@ class FaceFollowTask extends Task {
     }
   }
 
-  /** Read who last drove the body; return the mover IFF it's FOREIGN (not our own task tag)
-   *  and NEWER than the last one we accounted for. Null otherwise. This is the yield trigger:
-   *  a brain-turn gesture, the console, or another task taking the body. */
-  private async foreignMover(myTag: string, since: number): Promise<{ tag: string; at: number } | null> {
+  /** Do WE still hold the body? `bodyHeld` RENEWS our lease if so (the keystone's liveness
+   *  signal), and reports the current holder if not — i.e. a higher-priority mover preempted
+   *  us. On a transient capability error, assume we still hold (don't yield on a glitch);
+   *  if we were genuinely preempted the next tick corrects it. Reacquire is implicit: while
+   *  paused we keep calling this, and bodyHeld re-acquires for us when the body frees. */
+  private async bodyHeld(priority: number): Promise<{ held: boolean; holder: string | null }> {
     try {
-      const mv = await this.request<{ tag: string; at: number } | null>('bodyMover');
-      if (mv && mv.tag !== myTag && mv.at > since) return mv;
-      return null;
+      const r = await this.request<{ held: boolean; holder: string | null }>('bodyHeld');
+      if (r?.held) return r;
+      // not held — try to reacquire (granted iff nothing higher holds it now).
+      const got = await this.request<{ ok: boolean }>('acquireBody', { priority });
+      return { held: !!got?.ok, holder: r?.holder ?? null };
     } catch {
-      return null; // can't read → assume no contention this tick (don't yield on a glitch)
+      return { held: true, holder: null };
     }
   }
 
@@ -170,15 +182,13 @@ class FaceFollowTask extends Task {
 
 /** Classify a phase transition into a labelled event KIND for the validator. Phase string is
  *  `mode|lockName|hasLock`. The kinds map 1:1 to the live-test flows: acquire (gained a lock),
- *  relock (lock changed person), lose (had a lock, now none), search (entered sweep), yield/
- *  resume (cooldown), track-resume (back to track from search). */
+ *  relock (lock changed person), lose (had a lock, now none), search (entered sweep), track
+ *  (back to track). (yield/resume are emitted directly by the loop's lease check, not here.) */
 function ffEventKind(prev: string, next: string, prevName: string | null, nextName: string | null): string {
   const [, , prevHas] = (prev || '||-').split('|');
   const [nextMode, , nextHas] = next.split('|');
   const had = prevHas === 'L';
   const has = nextHas === 'L';
-  if (nextMode === 'yielded') return 'yield';
-  if (prev.startsWith('yielded') && nextMode !== 'yielded') return 'resume';
   if (!had && has) return 'acquire';
   if (had && !has) return 'lose';
   if (had && has && prevName !== nextName) return 'relock';     // switched person (salient) / matched named

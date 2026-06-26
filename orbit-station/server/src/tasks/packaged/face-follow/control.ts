@@ -121,12 +121,9 @@ export interface FollowState {
    *  step size live from whether the last move helped/overshot/stalled. See adaptive.ts. */
   pan: AxisState;
   tilt: AxisState;
-  /** epoch ms until which we've YIELDED the body (a foreign mover took it — a brain-turn
-   *  gesture, the console, another task). 0 = not yielded. While yielded we issue NO
-   *  commands (don't fight the other mover), then resume following when it elapses. The
-   *  behaviour defers to foreground actions; this is the cooldown. See [[facefollow-is-a-behaviour]]. */
-  cooldownUntil: number;
-  mode: 'track' | 'search' | 'yielded';
+  // (yielding to a higher-priority mover is the actuator lease's job now — the task loop
+  // pauses the controller while preempted, so there's no 'yielded' mode/cooldown state here.)
+  mode: 'track' | 'search';
 }
 
 export interface FollowCfg {
@@ -153,16 +150,7 @@ export interface FollowCfg {
    *  keeps moving it pans PAST a face before perception reports it. Dwelling lets the
    *  head settle so the recognize answer matches where it's actually pointing. */
   sweepDwell?: number;
-  /** ms to YIELD the body after a FOREIGN mover takes it (a brain turn, the console, another
-   *  task). During this cooldown faceFollow issues no commands so it doesn't fight the other
-   *  mover; then it resumes following. faceFollow is a deferring behaviour, not an exclusive
-   *  owner. Default 60_000 (1 min — "we'll adjust"). Cold start has NO cooldown: it only ever
-   *  triggers on an actual foreign move. See [[facefollow-is-a-behaviour]]. */
-  cooldownMs?: number;
 }
-
-/** Default body-yield cooldown after a foreign mover (ms). */
-const COOLDOWN_MS = Number(process.env.FF_COOLDOWN_MS ?? 60_000);
 
 /** How many ticks to HOLD position on a LOST lock before giving up and re-searching. The
  *  balance the user wants: long enough to ride out a real detection dropout (the on-device
@@ -180,7 +168,7 @@ export interface FollowStep {
 }
 
 export const initialFollowState = (pose: Pose = { foot: 0, neck: 0 }): FollowState =>
-  ({ pose, lock: null, missing: 0, sweepDir: 1, sweepDwell: 0, pan: initAxis(), tilt: initAxis(), cooldownUntil: 0, mode: 'search' });
+  ({ pose, lock: null, missing: 0, sweepDir: 1, sweepDwell: 0, pan: initAxis(), tilt: initAxis(), mode: 'search' });
 
 /** Adaptive move: given the current pose + the face's frame position, run each axis's
  *  trial-and-adjust controller. Returns the next pose (or null to HOLD) + updated axis
@@ -266,37 +254,11 @@ function findLocked(faces: Face[], lock: NonNullable<FollowState['lock']>): Face
  * HOLDS STILL (it moves only when the person leaves the deadband — "stay on me until I
  * move"). The within-tick lock also stops oscillation when two people are visible at once.
  */
-export function stepFollow(
-  state: FollowState, faces: Face[], cfg: FollowCfg,
-  ctx: { foreignMover?: boolean; now?: number } = {},
-): FollowStep {
-  const now = ctx.now ?? Date.now();
-
-  // 0) YIELD/COOLDOWN gate (faceFollow is a deferring behaviour, not an exclusive owner).
-  //    A FOREIGN mover (brain-turn gesture, console, another task) just took the body →
-  //    (re)start the cooldown and back off. While cooling down, issue NO commands so we
-  //    don't fight; keep the lock so we resume on the same person. Cold start never enters
-  //    here (foreignMover only true after a real foreign move). See [[facefollow-is-a-behaviour]].
-  const cooldownMs = cfg.cooldownMs ?? COOLDOWN_MS;
-  if (ctx.foreignMover) {
-    return {
-      state: { ...state, mode: 'yielded', cooldownUntil: now + cooldownMs },
-      command: null,
-      status: `yielded (another mover took the body) — cooling down ${Math.round(cooldownMs / 1000)}s`,
-    };
-  }
-  if (state.cooldownUntil > now) {
-    return {
-      state: { ...state, mode: 'yielded' },
-      command: null,
-      status: `yielded — resuming in ${Math.ceil((state.cooldownUntil - now) / 1000)}s`,
-    };
-  }
-  if (state.cooldownUntil !== 0) {
-    // cooldown just elapsed — clear it + fall through to normal following (resume).
-    state = { ...state, cooldownUntil: 0 };
-  }
-
+// NOTE: yielding the body to a higher-priority mover (a brain turn / the console) is NO
+// LONGER handled here — it's the ACTUATOR LEASE's job now (the task loop pauses the whole
+// controller while preempted; see task.ts + bodylink/lease.ts). stepFollow is purely the
+// follow/search decision; it only runs when faceFollow holds the body.
+export function stepFollow(state: FollowState, faces: Face[], cfg: FollowCfg): FollowStep {
   // 1) Already committed to someone → try to RE-FIND them (don't re-pick this tick).
   if (state.lock) {
     const me = findLocked(faces, state.lock);
