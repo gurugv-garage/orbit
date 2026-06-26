@@ -28,6 +28,7 @@ export function Tasks() {
   const now = useNow();
   const [byDock, setByDock] = useState<Record<string, TaskInstance[]>>({});
   const [liveOnly, setLiveOnly] = useState(false);
+  const [dockFilter, setDockFilter] = useState<string>('all'); // 'all' or a dock name
   const [open, setOpen] = useState<string | null>(null);
 
   const dockNames = docks.map((d) => d.name).join(',');
@@ -49,8 +50,10 @@ export function Tasks() {
     return () => clearInterval(t);
   }, [refresh]);
 
-  // newest-first; live tasks float to the top regardless of age.
-  const all = Object.values(byDock).flat()
+  // newest-first; live tasks float to the top regardless of age. Optional per-dock filter.
+  const all = Object.entries(byDock)
+    .filter(([d]) => dockFilter === 'all' || d === dockFilter)
+    .flatMap(([, list]) => list)
     .filter((i) => !liveOnly || LIVE.has(i.state))
     .sort((a, b) => Number(LIVE.has(b.state)) - Number(LIVE.has(a.state)) || b.startedAt - a.startedAt);
 
@@ -74,6 +77,13 @@ export function Tasks() {
         <div className="row" style={{ alignItems: 'center' }}>
           <h3 style={{ margin: 0 }}>Instances</h3>
           <div className="spacer" />
+          <label className="muted" style={{ fontSize: 12, display: 'flex', gap: 6, alignItems: 'center', marginRight: 12 }}>
+            dock
+            <select value={dockFilter} onChange={(e) => setDockFilter(e.target.value)}>
+              <option value="all">all</option>
+              {docks.map((d) => <option key={d.name} value={d.name}>{d.name}</option>)}
+            </select>
+          </label>
           <label className="muted" style={{ fontSize: 12, display: 'flex', gap: 6, alignItems: 'center' }}>
             <input type="checkbox" checked={liveOnly} onChange={(e) => setLiveOnly(e.target.checked)} />
             running only
