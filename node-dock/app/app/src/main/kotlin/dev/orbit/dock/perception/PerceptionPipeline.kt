@@ -23,9 +23,10 @@ import timber.log.Timber
  *   • [PorcupineWakeWord] is DISABLED (no PORCUPINE_ACCESS_KEY) and its keyword is "jarvis",
  *     not "orbit" — it never wakes the dock.
  *   • [SileroVad] is known BROKEN (LSTM state diverges; prob frozen ~0.0005).
- *   • Waking the dock on a phrase now happens SERVER-SIDE: orbit-station's orchestrator
- *     `wakeUp` behaviour matches the wake phrase on the STT transcript and opens listening
- *     (docs/decision-traces/orchestrator-v1-design.md). Listening is otherwise tap/palm-only.
+ *   • Waking the dock on a phrase now happens SERVER-SIDE: orbit-station's conductor governs a
+ *     `wakeUp` behaviour (hardcoded in the brain) that matches the wake phrase on the STT
+ *     transcript and opens listening (docs/decision-traces/conductor-v1-design.md). Listening
+ *     is otherwise tap/palm-only.
  * This on-phone wake/VAD wiring is kept only because it's woven into MicCapture/the bus/tests;
  * removing it is a separate cleanup. Do NOT build on runWake/runVad — they're inert.
  *

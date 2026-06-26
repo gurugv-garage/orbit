@@ -1,6 +1,6 @@
 > **DECISION TRACE.** The long-term memory curator — what it is, why it's shaped this
 > way, and the reframings that got here. Companion to [memory.md](../memory.md) (the
-> store it tends) and [behaviour-orchestrator.md](behaviour-orchestrator.md) (the
+> store it tends) and [behaviour-conductor.md](behaviour-conductor.md) (the
 > purpose-rule that put memory-tending in the pipeline, not a behaviour). Supersedes
 > the first `curator.ts` cut (maintain-only) — this is the ground-up rewrite.
 >

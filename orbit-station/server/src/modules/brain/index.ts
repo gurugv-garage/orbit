@@ -65,7 +65,7 @@ export function getBrainAccess(): BrainAccess | undefined {
   return brainRef.current;
 }
 
-/** WAKE-PHRASE match (orchestrator `wakeUp`): true if the utterance opens with the wake phrase.
+/** WAKE-PHRASE match (conductor's `wakeUp`): true if the utterance opens with the wake phrase.
  *  Lenient — case-insensitive, ignores punctuation/leading filler, allows a small lead-in
  *  ("um, hey orbit") and trailing words ("hey orbit are you there") — STT phrasing varies. */
 export function matchesWake(text: string, phrase: string): boolean {
@@ -80,21 +80,21 @@ export function matchesWake(text: string, phrase: string): boolean {
   return before.split(' ').filter(Boolean).length <= 2; // phrase near the start
 }
 
-/** WakeApi — the orchestrator's `wakeUp` behaviour governs the wake check through this:
+/** WakeApi — the conductor's `wakeUp` behaviour governs the wake check through this:
  *  enable/disable + the phrase/prompt, per dock. */
 export interface WakeApi {
   setWakeConfig(dock: string, cfg: { enabled: boolean; phrase: string; prompt: string } | null): void;
 }
 const wakeApiRef: { current?: WakeApi } = {};
-/** The live WakeApi (set when the brain module inits) — for the orchestrator. */
+/** The live WakeApi (set when the brain module inits) — for the conductor. */
 export function getWakeApi(): WakeApi | undefined { return wakeApiRef.current; }
 
-/** OrchestratorAccess — the narrow surface the orchestrator needs from the brain: the dock's
+/** ConductorAccess — the narrow surface the conductor needs from the brain: the dock's
  *  conversation mode + start/stop/list of background tasks (keeps the supervisor encapsulated).
- *  faceFollow starts under the open session; if it closes, the task dies and the orchestrator's
+ *  faceFollow starts under the open session; if it closes, the task dies and the conductor's
  *  idempotent reconcile simply restarts it next tick — that's how a session-scoped task becomes
  *  a session-INDEPENDENT behaviour (design §4.1) without new task-lifecycle machinery. */
-export interface OrchestratorAccess {
+export interface ConductorAccess {
   convMode(dock: string): string | null;
   listTasks(dock: string): Array<{ name: string; instanceId: string; parentSessionId?: string; startedAt: number; state: string }>;
   /** start a packaged task by name under the dock's open session; returns instanceId | null
@@ -102,9 +102,9 @@ export interface OrchestratorAccess {
   startTask(dock: string, taskName: string): string | null;
   stopTask(dock: string, instanceId: string): void;
 }
-const orchAccessRef: { current?: OrchestratorAccess } = {};
-/** The live OrchestratorAccess (set when the brain module inits) — for the orchestrator. */
-export function getOrchestratorAccess(): OrchestratorAccess | undefined { return orchAccessRef.current; }
+const condAccessRef: { current?: ConductorAccess } = {};
+/** The live ConductorAccess (set when the brain module inits) — for the conductor. */
+export function getConductorAccess(): ConductorAccess | undefined { return condAccessRef.current; }
 
 const IDLE_SWEEP_MS = 60_000;
 /** How often to re-push the task-digest to live docks so the app HUD self-corrects
@@ -145,7 +145,7 @@ export function brainModule(w: BrainWiring): StationModule {
   // Captures text + the mode/window at decision time + the decision, so a live repro of
   // "replied after listening went off" shows EXACTLY which gate let it through.
   const addrTrace: Array<Record<string, unknown>> = [];
-  // WAKE (orchestrator `wakeUp` behaviour): per-dock wake config, set by the orchestrator via
+  // WAKE (conductor's `wakeUp` behaviour): per-dock wake config, set by the conductor via
   // the exported WakeApi. Absent/disabled → no wake check (the default). The match runs in
   // onAddressedFinal (the single point every final transcript lands).
   const wakeCfg = new Map<string, { enabled: boolean; phrase: string; prompt: string }>();
@@ -157,9 +157,9 @@ export function brainModule(w: BrainWiring): StationModule {
     { root: userTasks, source: 'generated' as const }, // generated first, then packaged
     { root: tasksRoot, source: 'packaged' as const },
   ];
-  // Task defs the ORCHESTRATOR may start (resolved in init so OrchestratorAccess.startTask is
+  // Task defs the CONDUCTOR may start (resolved in init so ConductorAccess.startTask is
   // synchronous). v1: just face-follow.
-  const orchTaskDefs = new Map<string, { name: string; filePath: string; manifest: { model?: string } }>();
+  const condTaskDefs = new Map<string, { name: string; filePath: string; manifest: { model?: string } }>();
   let bus: Bus;
   let rpc: RpcBroker;
 
@@ -294,13 +294,13 @@ export function brainModule(w: BrainWiring): StationModule {
     dockOf,
   };
 
-  // WakeApi for the orchestrator's `wakeUp` behaviour — set/clear the per-dock wake config.
+  // WakeApi for the conductor's `wakeUp` behaviour — set/clear the per-dock wake config.
   wakeApiRef.current = {
     setWakeConfig: (dock, cfg) => { if (cfg) wakeCfg.set(dock, cfg); else wakeCfg.delete(dock); },
   };
 
-  // OrchestratorAccess — conversation mode + task start/stop/list for the per-dock conductor.
-  orchAccessRef.current = {
+  // ConductorAccess — conversation mode + task start/stop/list for the per-dock conductor.
+  condAccessRef.current = {
     convMode: (dock) => sessions.get(dock)?.conversation().mode ?? null,
     listTasks: (dock) => supervisor.list(dock).map((i) => ({
       name: i.name, instanceId: i.instanceId, parentSessionId: i.parentSessionId,
@@ -309,7 +309,7 @@ export function brainModule(w: BrainWiring): StationModule {
     startTask: (dock, taskName) => {
       const parent = store.openSession(dock)?.sessionId;
       if (!parent) return null; // no session to nest under (rare); reconcile retries next tick
-      const def = orchTaskDefs.get(taskName);
+      const def = condTaskDefs.get(taskName);
       if (!def) return null;
       return supervisor.start({ dock, name: def.name, filePath: def.filePath, params: {}, parentSessionId: parent, model: def.manifest.model });
     },
@@ -325,12 +325,12 @@ export function brainModule(w: BrainWiring): StationModule {
       bus = b;
       rpc = new RpcBroker(bus, w.directory);
 
-      // Resolve the task defs the orchestrator may start (so OrchestratorAccess.startTask is
-      // sync). Fire-and-forget — populated well before the first ~1Hz orchestrator tick.
+      // Resolve the task defs the conductor may start (so ConductorAccess.startTask is
+      // sync). Fire-and-forget — populated well before the first ~1Hz conductor tick.
       void (async () => {
         for (const name of ['face-follow']) {
-          try { const d = await findTaskDef(taskRoots, name); orchTaskDefs.set(name, { name: d.name, filePath: d.filePath, manifest: d.manifest }); }
-          catch { /* def missing → orchestrator startTask returns null, reconcile retries */ }
+          try { const d = await findTaskDef(taskRoots, name); condTaskDefs.set(name, { name: d.name, filePath: d.filePath, manifest: d.manifest }); }
+          catch { /* def missing → conductor startTask returns null, reconcile retries */ }
         }
       })();
 
@@ -381,10 +381,10 @@ export function brainModule(w: BrainWiring): StationModule {
         // the dock must NOT respond (we want clean ambient perception). The mic/cam
         // keep capturing + transcribing upstream; we just don't turn it into a reply.
         if (isRecording(t.dockId)) { trace('skip:recording'); return; }
-        // WAKE (orchestrator `wakeUp` behaviour): when the dock is NOT in a listening window
+        // WAKE (conductor's `wakeUp` behaviour): when the dock is NOT in a listening window
         // and this utterance matches the wake phrase, WAKE — open listening + speak the prompt
         // — and consume the utterance (it was just "hey orbit", not a turn). Governed by the
-        // orchestrator via setWakeConfig (enabled/phrase/prompt); off by default until armed.
+        // conductor via setWakeConfig (enabled/phrase/prompt); off by default until armed.
         if (wakeCfg.get(t.dockId)?.enabled && !session(t.dockId).isListening()) {
           const w = wakeCfg.get(t.dockId)!;
           if (matchesWake(t.text, w.phrase)) {

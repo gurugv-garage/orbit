@@ -67,7 +67,7 @@ consolidate is selective + grounded (it promotes only the salient, traceable few
 > volatile); this store is **long-term** (durable). The curator bridges + maintains the
 > long-term tier — *that producing/maintaining memory artifacts is the pipeline's job
 > (not a behaviour's, whose job is to ACT)* is the **purpose-rule**
-> ([behaviour-orchestrator.md](decision-traces/behaviour-orchestrator.md) §4a). The
+> ([behaviour-conductor.md](decision-traces/behaviour-conductor.md) §4a). The
 > as-built curator: [decision-traces/long-term-memory-curator.md](decision-traces/long-term-memory-curator.md).
 
 ### What does NOT flow into memory (the common misconception)
@@ -279,7 +279,7 @@ a per-pass feed (op + reason + created/revised/forgot). Backs `/api/perception/c
 Tests: `longterm/longterm.test.ts` (cadence flood/age/quiet, the flood-drains-exactly-once
 + restart-safety, both guards, event-time source alignment). (Prototyped as a `daydream`
 *task*, rehomed here once the purpose-rule made clear its goal is maintaining memory
-artifacts, not acting — [behaviour-orchestrator.md](decision-traces/behaviour-orchestrator.md) §4a.)
+artifacts, not acting — [behaviour-conductor.md](decision-traces/behaviour-conductor.md) §4a.)
 
 ---
 

@@ -1,10 +1,10 @@
-# Behaviour-orchestrator tasks — test plan (WIP)
+# Conductor tasks — test plan (WIP)
 
-> Test plan for the **memory work** behind the behaviour orchestrator
-> ([decision-traces/behaviour-orchestrator.md](../decision-traces/behaviour-orchestrator.md)):
+> Test plan for the **memory work** behind the conductor
+> ([decision-traces/behaviour-conductor.md](../decision-traces/behaviour-conductor.md)):
 > **direct task memory access** (`this.memory`, so behaviours/tasks can touch memory as a side effect)
 > and the **memory curator** (the pipeline maintaining beliefs — see the purpose-rule
-> below). This is the substrate the orchestrator + behaviours will build on (doc §11).
+> below). This is the substrate the conductor + behaviours/tasks will build on (doc §11).
 >
 > Split, same as the A1 plan:
 > **🤖 AUTOMATED** (CI / `npm test` — no human, no live LLM) and
@@ -27,7 +27,7 @@
 
 ## What's under test (this WIP)
 
-**The purpose-rule** (docs/decision-traces/behaviour-orchestrator.md): producing /
+**The purpose-rule** (docs/decision-traces/behaviour-conductor.md): producing /
 maintaining memory+perception **artifacts** is the perception PIPELINE's job; a
 behaviour/task's main goal is to **act** (it may touch memory as a side effect). That
 rule moved memory *curation* out of a "daydream task" and into the pipeline as the
@@ -47,7 +47,7 @@ code + `.env`, so tasks reach it **directly** (`this.memory`); the wire is reser
 the station's live in-process state (frame/move). See [tasks.md](../tasks.md) "Direct
 vs. the wire".
 
-NOT yet under test (later phases): the orchestrator itself, the actuator lease,
+NOT yet under test (later phases): the conductor itself, the actuator lease,
 faceFollow, barge-in, ResourceMonitor, deterministic raw→summary→layer building.
 
 ---

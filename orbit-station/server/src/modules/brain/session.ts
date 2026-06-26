@@ -325,7 +325,7 @@ export class DockBrainSession {
     if (interrupts) this.cancel(); // abort the interrupted reply's turn
   }
 
-  /** WAKE (orchestrator `wakeUp` behaviour): the wake phrase was heard while idle. Open the
+  /** WAKE (conductor `wakeUp` behaviour): the wake phrase was heard while idle. Open the
    *  listening window AND acknowledge with a short spoken prompt ("did you call me?"), so the
    *  user knows the dock is now listening. Routed through an autonomous turn (the established
    *  speak path: TTS + window + epoch-gating all handled) whose instruction is just to say the

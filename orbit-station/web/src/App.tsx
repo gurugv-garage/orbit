@@ -7,7 +7,7 @@ import { Docks } from './modules/Docks';
 import { Observability } from './modules/Observability';
 import { Brain } from './modules/Brain';
 import { Tasks } from './modules/Tasks';
-import { Behaviours } from './modules/Behaviours';
+import { Conductor } from './modules/Conductor';
 import { Skills } from './modules/Skills';
 import { Config } from './modules/Config';
 import { BodyLink } from './modules/BodyLink';
@@ -27,7 +27,7 @@ const VIEWS: ViewDef[] = [
   { id: 'observability', label: 'Observability', ico: '📡', el: <Observability /> },
   { id: 'cost', label: 'Cost', ico: '💰', el: <Cost /> },
   { id: 'brain', label: 'Brain', ico: '🗣', el: <Brain /> },
-  { id: 'behaviours', label: 'Behaviours', ico: '🎭', el: <Behaviours /> },
+  { id: 'conductor', label: 'Conductor', ico: '🎼', el: <Conductor /> },
   { id: 'tasks', label: 'Tasks', ico: '⏱', el: <Tasks /> },
   { id: 'skills', label: 'Skills', ico: '🧩', el: <Skills /> },
   { id: 'config', label: 'Config', ico: '⚙', el: <Config /> },

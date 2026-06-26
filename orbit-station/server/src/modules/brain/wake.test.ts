@@ -1,5 +1,5 @@
 /**
- * matchesWake — the wake-phrase match for the orchestrator's `wakeUp` behaviour. Lenient
+ * matchesWake — the wake-phrase match for the conductor's `wakeUp` behaviour. Lenient
  * (STT phrasing varies) but not trigger-happy: the phrase must appear near the START of the
  * utterance, case/punctuation-insensitive, with at most a little filler before it.
  */

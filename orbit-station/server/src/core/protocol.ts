@@ -45,7 +45,7 @@ export type Topic =
   | 'tasks'        // background-task processes: attach/status/notify/ask/finish up, init/input/stop down
   | 'perception'   // processor results (identity/presence/…) → dock agent + console
   | 'perceive'     // on-device MLKit face-track frames (dock → station; the fast faceFollow source, §7)
-  | 'orchestrator' // per-dock conductor: behaviour arm/run decisions (REST surface only for now)
+  | 'conductor'    // per-dock conductor: governs behaviours + tasks (REST surface only for now)
   | 'slack'        // inbound Slack (Socket Mode) events: message/mention/dm (ingest only for now)
   | 'feedback';    // session feedback capture: app-button flags → full debugging dump (MD)
 

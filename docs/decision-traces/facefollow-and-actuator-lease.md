@@ -1,6 +1,6 @@
 > **DECISION TRACE.** faceFollow — the first **action** behaviour — and the
-> **actuator lease** it forces into existence (the keystone the behaviour-orchestrator
-> design flagged). Companion to [behaviour-orchestrator.md](behaviour-orchestrator.md)
+> **actuator lease** it forces into existence (the keystone the conductor
+> design flagged). Companion to [behaviour-conductor.md](behaviour-conductor.md)
 > (faceFollow is behaviour #0, the body-acting one) and [bodylink] (`MotionExecutor`,
 > the body's master this wraps). Written before the build, lease-first by plan.
 >
@@ -138,7 +138,7 @@ so arbitration belongs there, mediating every caller (not bolted onto faceFollow
 ## 4b. v1 AS-BUILT — a plain task, no lease (the simplest path)
 
 Decision (deliberate, scope): **v1 faceFollow is a plain TASK** (`tasks/packaged/
-face-follow/`), not the lease/orchestrator. The follow LOOP genuinely is just a task —
+face-follow/`), not the lease/conductor. The follow LOOP genuinely is just a task —
 `recognize` (now returns the box, §3a was a 3-line capability add, NOT a new sensor) +
 `move`, in a `while` loop. The **lease is deferred** — its only job is safe coexistence
 with the live brain, which v1 sidesteps by *not running mid-conversation*. §4's lease
@@ -168,7 +168,7 @@ fix is **select-one + lock + deliberate switch** (`pickTarget`):
 
 ## 5. Build order (lease-first)
 
-The lease is the risk; prove it before the control math (matches behaviour-orchestrator
+The lease is the risk; prove it before the control math (matches the conductor
 §11 spirit):
 
 1. **The lease/arbiter on MotionExecutor** — acquire/release/TTL/preempt + priorities;
@@ -197,10 +197,10 @@ control math rests on it.
   for GPU/CPU contention (the same shared-Metal concern as elsewhere). The box-only tap
   (3a-b) is the fallback if jitter/contention is bad.
 - **Console surface** — faceFollow is a behaviour: enable toggle + a "tracking/searching"
-  status + the current target, in the console (the orchestrator's governance surface).
-- **The orchestrator itself** — faceFollow is the first action behaviour; whether it runs
+  status + the current target, in the console (the conductor's governance surface).
+- **The conductor itself** — faceFollow is the first action behaviour; whether it runs
   under a minimal behaviour-runtime now or standalone-then-extracted is a
-  behaviour-orchestrator decision, not this doc's.
+  conductor decision, not this doc's.
 
 ---
 
