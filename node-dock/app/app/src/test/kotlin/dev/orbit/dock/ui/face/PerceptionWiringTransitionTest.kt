@@ -82,40 +82,4 @@ class PerceptionWiringTransitionTest {
         conv.value = "listening"; advanceUntilIdle()
         assertThat(c.state.value).isEqualTo(FaceState.Listening)
     }
-
-    // BUG-2: mic OFF ⇒ NOT listening. The local guard refuses the station's
-    // listening/followup glow while muted, even if a frame arrives late.
-    private fun mutedFixture(scheduler: kotlinx.coroutines.test.TestCoroutineScheduler):
-        Triple<FaceController, MutableStateFlow<String>, MutableStateFlow<Boolean>> {
-        val controller = FaceController()
-        val conv = MutableStateFlow("idle")
-        val muted = MutableStateFlow(false)
-        val wiring = PerceptionWiring(controller, convMode = conv, micMuted = muted)
-        wiring.attach(CoroutineScope(UnconfinedTestDispatcher(scheduler)))
-        return Triple(controller, conv, muted)
-    }
-
-    @Test
-    fun mutedRefusesListeningGlow() = runTest {
-        val (c, conv, muted) = mutedFixture(testScheduler)
-        muted.value = true
-        // A late/racing listening frame must NOT flip the face to Listening while muted.
-        conv.value = "listening"; advanceUntilIdle()
-        assertThat(c.state.value).isNotEqualTo(FaceState.Listening)
-        conv.value = "followup"; advanceUntilIdle()
-        assertThat(c.state.value).isNotEqualTo(FaceState.Listening)
-    }
-
-    @Test
-    fun unmutedListensAgain() = runTest {
-        val (c, conv, muted) = mutedFixture(testScheduler)
-        muted.value = true
-        conv.value = "listening"; advanceUntilIdle()
-        assertThat(c.state.value).isNotEqualTo(FaceState.Listening)
-        // Unmute, then a fresh listening frame → the glow returns.
-        muted.value = false
-        conv.value = "idle"; advanceUntilIdle()
-        conv.value = "listening"; advanceUntilIdle()
-        assertThat(c.state.value).isEqualTo(FaceState.Listening)
-    }
 }

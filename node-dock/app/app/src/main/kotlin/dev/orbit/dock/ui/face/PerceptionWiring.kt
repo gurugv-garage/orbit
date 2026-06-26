@@ -42,11 +42,6 @@ class PerceptionWiring(
     /** The station's conversation mode flow (idle/listening/thinking/speaking/
      *  followup) — the phone renders this; it does NOT decide listening locally. */
     private val convMode: StateFlow<String>? = null,
-    /** Local mic-mute flow. Mic OFF must mean NOT listening: while muted we refuse to
-     *  render the station's listening/followup glow (the station is ALSO told to stop,
-     *  but this is the local guard so a late frame can't flip the face back to
-     *  Listening). Null in tests that don't exercise mute. */
-    private val micMuted: StateFlow<Boolean>? = null,
     /** Clock for the [PresenceGate]'s settle/leave debounce windows. Defaults to
      *  wall-clock; tests inject a controllable source to drive ARRIVE/LEAVE edges
      *  deterministically (the gate's timers are otherwise wall-clock-bound). */
@@ -97,17 +92,6 @@ class PerceptionWiring(
      *  Net: ON cue when idle→listening (you addressed it, now attending); OFF cue
      *  when listening→idle. The face still updates for every state (glow/listen). */
     private fun renderConvMode(mode: String) {
-        // Mic OFF ⇒ NOT listening, full stop. The station is told to stop too, but a
-        // listening/followup frame already in flight (or a station that hasn't acted
-        // yet) must NOT flip the face back to Listening while muted. Force the local
-        // view to idle and bail before any glow/cue. Leaving-listening cleanup below
-        // (clearTranscript) still runs because we treat the effective mode as idle.
-        if (micMuted?.value == true && (mode == "listening" || mode == "followup")) {
-            if (listeningRendered) { listeningRendered = false }
-            if (controller.state.value == FaceState.Listening) controller.silence()
-            if (_transcript.value.text.isNotEmpty()) _transcript.value = TranscriptState()
-            return
-        }
         // "Attending" for the FACE glow/state includes followup; for CUES we use the
         // narrower "listening" only (followup is post-speech, no cue).
         val attending = mode == "listening" || mode == "followup"
@@ -149,23 +133,10 @@ class PerceptionWiring(
         }
     }
 
-    // Last conversation mode the station sent, so a MUTE edge (which arrives on its
-    // own flow, not as a convMode frame) can re-apply renderConvMode's guard without
-    // waiting for the next station frame — otherwise a mute right after a 'listening'
-    // frame would leave the face glowing until the station's idle frame lands (which
-    // can be late/dropped after a restart). See renderConvMode's mute branch.
-    @Volatile private var lastConvMode: String = "idle"
-
     fun attach(scope: CoroutineScope) {
         // Render the station's conversation mode (the phone is a pure renderer).
         convMode?.let { flow ->
-            flow.onEach { lastConvMode = it; renderConvMode(it) }.launchIn(scope)
-        }
-        // A mute toggle must re-apply the guard against the LAST mode immediately (the
-        // mute branch in renderConvMode drops the glow/caption when muted; unmuting
-        // re-renders the current mode so a still-open window glows again).
-        micMuted?.let { flow ->
-            flow.onEach { renderConvMode(lastConvMode) }.launchIn(scope)
+            flow.onEach { renderConvMode(it) }.launchIn(scope)
         }
         PerceptionBus.events
             .onEach { event ->

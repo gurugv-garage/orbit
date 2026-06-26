@@ -54,6 +54,10 @@ class MediaStreamer(
     private var videoTrack: org.webrtc.VideoTrack? = null
     private var capturer: FaceFrameCapturer? = null
     @Volatile private var started = false
+    // Mic mute = the SINGLE real switch. When true, the WebRTC audio track is
+    // DISABLED so the station receives silence (no STT, no listening). Held here so
+    // it survives a track re-create (stream restart / reconnect) — applied in start().
+    @Volatile private var muted = false
 
     // Recovery: ICE can DISCONNECT/FAIL (network blip, SFU restart). The dead
     // PeerConnection never heals itself, leaving the station with no video
@@ -66,6 +70,14 @@ class MediaStreamer(
 
     /** True once the PeerConnection + tracks are up. */
     fun isStreaming(): Boolean = started
+
+    /** Mic mute — the REAL switch. Disables/enables the WebRTC audio track so the
+     *  station receives silence (no STT, no listening) when muted. Idempotent;
+     *  remembered so a later stream (re)start re-applies it (see start()). */
+    fun setMuted(muted: Boolean) {
+        this.muted = muted
+        audioTrack?.setEnabled(!muted)
+    }
 
     /** Tear down + rebuild the PeerConnection, then re-offer. Used both internally
      *  (ICE failure) and externally (the STATION reconnected, so the SFU restarted
@@ -156,6 +168,10 @@ class MediaStreamer(
         val audioTrack = factory.createAudioTrack("dock-audio", audioSource)
         this.audioTrack = audioTrack
         connection.addTrack(audioTrack)
+        // Re-assert the current mute on a freshly-created track (reconnect/restart):
+        // a track is enabled by default, so without this a muted dock would start
+        // hearing again after a stream restart.
+        audioTrack.setEnabled(!muted)
 
         // Video: FaceTracker frames pushed into a VideoSource (~1 Hz slideshow).
         val vSource = factory.createVideoSource(false)

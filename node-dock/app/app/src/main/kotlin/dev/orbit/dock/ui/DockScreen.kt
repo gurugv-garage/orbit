@@ -365,9 +365,6 @@ fun DockScreen() {
             sendFaceArrival = { agent.sendFaceArrival() },
             sendFaceLeft = { agent.sendFaceLeft() },
             convMode = agent.convMode,
-            // Mic OFF ⇒ not listening: the wiring refuses to render the station's
-            // listening glow while muted (the station is also told to stop, below).
-            micMuted = controller.micMuted,
         ).also { wiringRef.value = it }
     }
 
@@ -385,6 +382,10 @@ fun DockScreen() {
             tts.applyVoice(dev.orbit.dock.ui.face.FaceRegistry.byId(id).voice)
             dev.orbit.dock.ui.face.FaceStylePrefs.set(ctx, id)
         }
+        // Persist mic mute so "mic off" survives an app restart (a restart must not
+        // silently re-open the mic). Restore the last value at startup.
+        controller.onMicMutedChanged = { muted -> dev.orbit.dock.ui.face.MicMutePrefs.set(ctx, muted) }
+        controller.restoreMicMuted(dev.orbit.dock.ui.face.MicMutePrefs.get(ctx))
         // Restore the last local choice (sticky over a config default).
         controller.restoreFaceStyle(dev.orbit.dock.ui.face.FaceStylePrefs.get(ctx))
         // Apply whatever faceStyle the station already had cached (default if no
@@ -583,13 +584,13 @@ fun DockScreen() {
     val micReady = micLive && streamUp
 
     LaunchedEffect(micGranted, micMuted) {
+        // Mic OFF = ONE real switch: disable the WebRTC audio track so the STATION
+        // receives silence (no STT, no listening, no caption) — the station needs to
+        // know nothing, it just hears nothing. Also stop the local VAD/wake pipeline
+        // (power saving; the on-phone meter goes quiet too).
+        mediaStreamerRef.value?.setMuted(micMuted)
         if (micGranted && !micMuted) PerceptionService.start(ctx)
         else PerceptionService.stop(ctx)
-        // Mic OFF ⇒ NOT listening: tell the station to close any open listening
-        // window (and not re-open one while muted). The local PerceptionWiring guard
-        // already refuses the listening glow; this stops the station-side window +
-        // its always-on caption so the two views agree.
-        agent.sendMicMuted(micMuted)
     }
 
     // Face tracker — bound to the activity lifecycle (created above as the
@@ -960,10 +961,12 @@ fun DockScreen() {
             StatusBar(
                 audioLevel = audioLevel,
                 speaker = speaker,
-                // Real OS capture state, not inferred: shows OFF the instant the
-                // framework stops/silences our mic, ON whenever it's truly live
-                // (incl. during TTS, since AEC keeps it capturing for barge-in).
-                micOn = micLive,
+                // The icon reflects the user's INTENT (micMuted), so a mute tap
+                // visibly flips it — the whole point of the toggle. (Previously bound
+                // to micLive/OS-capture, which never changed on mute, so the tap
+                // looked dead.) micReady still drives the "connecting…" amber pulse:
+                // the mic is on but the WebRTC stream isn't delivering yet.
+                micOn = !micMuted,
                 micReady = micReady,
                 camOn = camGranted && !camMuted,
                 // && stationConnected: with the link down the digest is stale —

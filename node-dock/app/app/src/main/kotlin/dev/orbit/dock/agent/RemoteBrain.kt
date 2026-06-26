@@ -304,16 +304,6 @@ class RemoteBrain(
         if (isConfigured) link.publish("agent", "face-left", buildJsonObject {})
     }
 
-    /** Mic mute toggled on the phone. Mic OFF must mean NOT listening: report it so
-     *  the station CLOSES any open listening/followup window (and won't re-open one
-     *  from VAD/face while muted). The phone also guards locally (PerceptionWiring
-     *  refuses the listening glow while muted) — this is the authoritative half that
-     *  stops the station's window + always-on caption. A dropped frame just means the
-     *  next toggle re-asserts; the local guard holds the UI in the meantime. */
-    fun sendMicMuted(muted: Boolean) {
-        if (isConfigured) link.publish("agent", "mic-muted", buildJsonObject { put("muted", muted) })
-    }
-
     fun stop() {
         // Silence is LOCAL FIRST — the user tapped to stop; the sound must die
         // this instant, not after a network round trip.
