@@ -28,7 +28,7 @@ import { readFileSync } from 'node:fs';
 import type { RouteContext, StationModule } from '../../core/module.js';
 import type { Directory } from '../docks/directory.js';
 import type { MotionExecutor } from '../bodylink/motion.js';
-import { getFaceTools, getPerceptionGrounding, getMemoryApi, getGateApi, getTranscriptApi } from '../perception/index.js';
+import { getFaceTools, getPerceptionGrounding, getMemoryApi, getGateApi, getTranscriptApi, getPerceiveStore } from '../perception/index.js';
 import { isRecording } from '../capture/index.js';
 import type { VideoRecorderApi } from '../perception/record/recorder.js';
 import { RpcBroker } from './rpc.js';
@@ -168,6 +168,7 @@ export function brainModule(w: BrainWiring): StationModule {
   // handlers + a broker that serves `request` frames.
   const capabilities = buildCapabilityRegistry({
     directory: w.directory, motion: w.motion, getFaces: getFaceTools,
+    getPerceive: getPerceiveStore,
   });
   const capBroker = new CapabilityBroker(capabilities, sendToTask);
 
@@ -178,7 +179,12 @@ export function brainModule(w: BrainWiring): StationModule {
     const sessionId = store.openSession(dock)?.sessionId ?? null;
     const tasks = supervisor.list(dock)
       .filter((i) => i.state === 'running' || i.state === 'stuck')
-      .map((i) => ({ instanceId: i.instanceId, name: i.name, state: i.state, lastSignal: i.lastSignal ?? null }));
+      .map((i) => ({
+        instanceId: i.instanceId, name: i.name, state: i.state, lastSignal: i.lastSignal ?? null,
+        // surface the followed person's name for the face-follow indicator (named mode);
+        // undefined in salient mode (the phone then falls back to the recognized identity).
+        ...(typeof i.params?.target === 'string' && i.params.target ? { target: i.params.target as string } : {}),
+      }));
     bus.publish({
       topic: 'agent', kind: 'task-digest',
       payload: { sessionId, tasks },

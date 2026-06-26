@@ -120,6 +120,19 @@ interface TakeMeta {
 interface GallerySample { index: number; photo?: string }
 interface GalleryPerson { name: string; samples: GallerySample[] }
 
+/** GET /api/perception/:dockId/perceive — the latest on-device MLKit face-track frame
+ *  (the `perceive` stream, §7). `payload` mirrors the wire envelope; we read a glance. */
+interface PerceiveFrame {
+  ts: number;
+  payload?: {
+    faces?: Array<{ x: number; y: number; size: number; yaw?: number }>;
+    zoom?: { ratio: number; min: number; max: number };
+    emotion?: { kind: string; confidence: number };
+    gesture?: { name: string; score: number };
+    identity?: { name: string; confidence: number };
+  };
+}
+
 /** GET /api/perception/sidecars — health of the two MLX apps. */
 interface SidecarHealth {
   name: string; kind: string; url: string; up: boolean;
@@ -173,6 +186,10 @@ export function PerceptionStudio() {
   // (final on VAD endpoint, + interims during a turn), so the studio shows speech in
   // REAL TIME instead of waiting for the 1.5s snapshot poll. Keyed by dockId.
   const [liveStt, setLiveStt] = useState<{ dockId: string; text: string; isFinal: boolean; ts: number } | null>(null);
+  // LIVE on-device FACE-TRACK (the `perceive` stream, §7) for the selected dock — the
+  // fast MLKit signal faceFollow steers on. Polled (not bus-pushed) since it's a glance,
+  // not a log. Null = nothing arrived (or this source is the browser, not a dock).
+  const [perceive, setPerceive] = useState<PerceiveFrame | null>(null);
   const [autoScroll, setAutoScroll] = useState(true);
   const [limitToWindow, setLimitToWindow] = useState(false);
   const [enrollName, setEnrollName] = useState('');
@@ -212,6 +229,20 @@ export function PerceptionStudio() {
     api.get<{ enabled: boolean; model: string }>('/perception/bg-stt')
       .then(setBgStt).catch(() => {});
   }, []);
+
+  // LIVE on-device face-track for the selected dock (the `perceive` stream): poll ~1 Hz
+  // (it arrives ~1 Hz, deduped on the phone). Only for a real dock source — the browser
+  // console stream has no on-device MLKit pass. Clears when the source changes.
+  useEffect(() => {
+    setPerceive(null);
+    if (!source || source === STREAM_ID) return;
+    let alive = true;
+    const tick = () => api.get<PerceiveFrame>(`/perception/${encodeURIComponent(source)}/perceive`)
+      .then((r) => { if (alive) setPerceive(r.payload ? r : null); }).catch(() => {});
+    tick();
+    const t = setInterval(tick, 1000);
+    return () => { alive = false; clearInterval(t); };
+  }, [source]);
 
   // Memory curator — load on mount, poll while the panel is open (so the recent feed
   // stays live), and expose toggle + run-now.
@@ -991,6 +1022,10 @@ export function PerceptionStudio() {
             video. liveStt is the REAL-TIME STT push (no poll wait) for this source. */}
         <div style={{ flex: 1, minWidth: 280 }}>
           <LiveNow snaps={ordered} liveStt={liveStt && liveStt.dockId === source ? liveStt : null} />
+          {/* On-device face-track (the `perceive` stream, §7) — the fast MLKit signal
+              faceFollow steers on. A glance: count + the primary face's pose + the
+              frame-level emotion/gesture/identity/zoom. */}
+          {perceive?.payload && <PerceiveGlance frame={perceive} />}
         </div>
       </div>
       {/* OUTPUT: the single snapshot timeline (vision + speech, by start, IST) */}
@@ -1113,6 +1148,35 @@ export function PerceptionStudio() {
 /** NOW — compact live read: the latest result per active stream. STT and diarization
  *  shown separately (diarization shows its speaker). Data-driven: any present kind
  *  (incl. future ones) gets a line; nothing present → a waiting hint. */
+/** A glance at the dock's latest on-device face-track (the `perceive` stream, §7) — the
+ *  fast MLKit signal faceFollow steers on: face count + the primary face's NDC pose, and
+ *  the frame-level emotion/gesture/identity/zoom. Live state, not the snapshot log. */
+function PerceiveGlance({ frame }: { frame: PerceiveFrame }) {
+  const p = frame.payload!;
+  const faces = p.faces ?? [];
+  const primary = faces[0];
+  const ageS = ((Date.now() - frame.ts) / 1000).toFixed(1);
+  const line = (label: string, value: string) => (
+    <div style={{ display: 'flex', gap: 8, fontSize: 13 }}>
+      <span style={{ width: 64, opacity: 0.6 }}>{label}</span>
+      <span style={{ flex: 1, color: '#cfe' }}>{value}</span>
+    </div>
+  );
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 3, padding: '8px 10px', marginTop: 8,
+      background: '#0b0e16', border: '1px solid #1c2233', borderRadius: 10 }}>
+      <div className="side-section-label" style={{ marginBottom: 2 }}>👤 Face-track (on-device · {ageS}s ago)</div>
+      {line('faces', String(faces.length))}
+      {primary && line('primary', `x ${primary.x.toFixed(2)} · y ${primary.y.toFixed(2)} · size ${primary.size.toFixed(2)}`
+        + (primary.yaw != null ? ` · yaw ${primary.yaw.toFixed(0)}°` : ''))}
+      {p.identity && line('identity', `${p.identity.name} (${p.identity.confidence.toFixed(2)})`)}
+      {p.emotion && line('emotion', `${p.emotion.kind} (${p.emotion.confidence.toFixed(2)})`)}
+      {p.gesture && line('gesture', `${p.gesture.name} (${p.gesture.score.toFixed(2)})`)}
+      {p.zoom && line('zoom', `${p.zoom.ratio.toFixed(1)}× (${p.zoom.min.toFixed(1)}–${p.zoom.max.toFixed(1)})`)}
+    </div>
+  );
+}
+
 function LiveNow({ snaps, liveStt }: {
   snaps: Snapshot[];
   liveStt?: { text: string; isFinal: boolean } | null;

@@ -545,6 +545,7 @@ class RemoteBrain(
                 name = it.str("name"),
                 state = it.str("state"),
                 lastSignal = it.str("lastSignal"),
+                target = it.str("target"),
             )
         }
         _debugInfo.value = DebugInfo(sessionId = sid, tasks = tasks)
@@ -780,6 +781,8 @@ data class TaskInfo(
     val name: String,
     val state: String,
     val lastSignal: String = "",
+    /** the followed person's name for face-follow named mode (empty in salient mode). */
+    val target: String = "",
 )
 
 /** The device's debug surface: the open session id + currently-running tasks. */

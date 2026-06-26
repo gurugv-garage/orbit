@@ -5,10 +5,12 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.animation.core.animateFloat
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -394,6 +396,28 @@ fun DockScreen() {
 
     LaunchedEffect(Unit) { wiring.attach(scope) }
 
+    // Forward the on-device MLKit perception (face geometry + emotion/gesture/identity) to
+    // the station as the `perceive` stream — the fast face source for faceFollow + the
+    // pipeline. Dedups/throttles internally (see PerceiveForwarder). Reads the live
+    // StationLink each publish so it survives reconnects.
+    LaunchedEffect(Unit) {
+        dev.orbit.dock.perception.PerceiveForwarder({ stationLinkRef.value }, scope)
+    }
+
+    // DEBUG telemetry: publish the FaceTracker's 1 Hz detection-health report over the WS
+    // (perceive/telemetry) so a stream STALL is diagnosable station-side without adb.
+    LaunchedEffect(Unit) {
+        faceTracker.onTelemetry = { framesIn, facePasses, faceHits, lastFaceMsAgo, intervalMs ->
+            stationLinkRef.value?.publish("perceive", "telemetry", kotlinx.serialization.json.buildJsonObject {
+                put("framesIn", kotlinx.serialization.json.JsonPrimitive(framesIn))
+                put("facePasses", kotlinx.serialization.json.JsonPrimitive(facePasses))
+                put("faceHits", kotlinx.serialization.json.JsonPrimitive(faceHits))
+                put("lastFaceMsAgo", kotlinx.serialization.json.JsonPrimitive(lastFaceMsAgo))
+                put("intervalMs", kotlinx.serialization.json.JsonPrimitive(intervalMs))
+            })
+        }
+    }
+
     // Rest the screen when nobody's around: dim the backlight after ~1 min with
     // no face, no voice, and no interaction; snap back to full bright on any of
     // them. The dock still never sleeps (FLAG_KEEP_SCREEN_ON) — it just rests dark.
@@ -667,6 +691,22 @@ fun DockScreen() {
         }
     }
 
+    // DEBUG face-follow indicator: track the live on-device face position so the overlay can
+    // show SEARCHING (no face) vs IN-VIEW + how centered. Mirror-corrected NDC from FaceSeen
+    // (x,y ∈ [-1,1]); we keep the last seen + whether it's currently present (a short grace
+    // so a 1-frame miss doesn't flicker the indicator). Drives FaceFollowIndicator below.
+    var ffFaceX by remember { mutableStateOf(0f) }
+    var ffFaceY by remember { mutableStateOf(0f) }
+    var ffSeenAtMs by remember { mutableStateOf(0L) }
+    var ffNowMs by remember { mutableStateOf(0L) }
+    LaunchedEffect(Unit) {
+        PerceptionBus.events.collect { ev ->
+            if (ev is PerceptionEvent.FaceSeen) { ffFaceX = ev.x; ffFaceY = ev.y; ffSeenAtMs = System.currentTimeMillis() }
+            else if (ev is PerceptionEvent.FaceLost) { ffSeenAtMs = 0L }
+        }
+    }
+    LaunchedEffect(Unit) { while (true) { ffNowMs = System.currentTimeMillis(); kotlinx.coroutines.delay(200) } }
+
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -934,6 +974,91 @@ fun DockScreen() {
                 )
             }
         }
+
+        // DEBUG face-follow indicator (top-most overlay) — ONLY while a face-follow task is
+        // actually running (from the station's task-digest the app already tracks). Four
+        // states: SEARCH (red), WAIT (amber pulse, ~30s lost-lock hold), TRACK (amber dot,
+        // off-center), LOCK (green dot+ring, centered). In named mode it shows the target
+        // name; in salient mode it shows the recognized identity when known.
+        val faceFollow = debugInfo.tasks.firstOrNull { it.name == "face-follow" }
+        if (faceFollow != null) {
+            val who = faceFollow.target.ifEmpty { (senses.identity ?: "").let { if (senses.facePresent) it else "" } }
+            FaceFollowIndicator(
+                faceX = ffFaceX, faceY = ffFaceY,
+                present = ffSeenAtMs != 0L && (ffNowMs - ffSeenAtMs) < 1500L,
+                msSinceSeen = if (ffSeenAtMs == 0L) Long.MAX_VALUE else (ffNowMs - ffSeenAtMs),
+                who = who,
+                modifier = Modifier.align(Alignment.TopEnd),
+            )
+        }
+    }
+}
+
+/** Small debug overlay: the dock's eye-view. A center crosshair = frame center; a dot at the
+ *  live face position (NDC x,y ∈ [-1,1], y+ = down) when present (GREEN, brighter as it nears
+ *  center), or a RED "searching" ring when no face. Lets you watch detection + centering live
+ *  without instrumentation. Top-right, small, non-interactive. */
+@Composable
+private fun FaceFollowIndicator(faceX: Float, faceY: Float, present: Boolean, msSinceSeen: Long, who: String = "", modifier: Modifier = Modifier) {
+    // FOUR states (debug tool for face-follow), derived on-device from the live face:
+    //   • LOCK    — face seen AND near center → green dot + a bright ring (holding on them)
+    //   • TRACK   — face seen but off-center → amber dot at its position (correcting)
+    //   • WAITING — no face, but seen within ~30s → amber PULSING ring (approximates the
+    //               controller's 30s lost-lock hold before it gives up; on-device proxy, not
+    //               the controller's literal state — close enough for a debug cue)
+    //   • SEARCH  — no face for >~30s → red ring (the controller is sweeping)
+    // "near center" ≈ the controller's 0.10 (0..1) deadband, i.e. |x|,|y| < 0.20 in ±1 NDC.
+    val box = 96.dp
+    val lockBand = 0.20f
+    val centered = present && kotlin.math.abs(faceX) < lockBand && kotlin.math.abs(faceY) < lockBand
+    val waiting = !present && msSinceSeen < 30_000L
+    val base = when { present && centered -> "LOCK"; present -> "TRACK"; waiting -> "WAIT"; else -> "SEARCH" }
+    // append the person's name when known (named target, or recognized identity in salient mode).
+    val label = if (who.isNotEmpty()) "$base ${who}" else base
+    val labelColor = when {
+        present && centered -> Color(0xFF49E07A)
+        present -> Color(0xFFE0B84A)
+        waiting -> Color(0xFFE0B84A)
+        else -> Color(0xFFE0504A)
+    }
+    // pulse for WAITING (a slow breathing alpha so it reads as "holding, not lost")
+    val pulse by androidx.compose.animation.core.rememberInfiniteTransition(label = "ffpulse").animateFloat(
+        initialValue = 0.25f, targetValue = 0.9f,
+        animationSpec = androidx.compose.animation.core.infiniteRepeatable(
+            androidx.compose.animation.core.tween(900), androidx.compose.animation.core.RepeatMode.Reverse), label = "ffpulseA")
+    Box(modifier = modifier.padding(8.dp).size(box).background(Color(0x66000000), androidx.compose.foundation.shape.RoundedCornerShape(8.dp))) {
+        androidx.compose.foundation.Canvas(modifier = Modifier.fillMaxSize().padding(6.dp)) {
+            val w = size.width; val h = size.height
+            val cx = w / 2f; val cy = h / 2f
+            drawCircle(Color(0x55FFFFFF), radius = 4f, center = androidx.compose.ui.geometry.Offset(cx, cy))
+            drawLine(Color(0x33FFFFFF), androidx.compose.ui.geometry.Offset(cx, 0f), androidx.compose.ui.geometry.Offset(cx, h), strokeWidth = 1f)
+            drawLine(Color(0x33FFFFFF), androidx.compose.ui.geometry.Offset(0f, cy), androidx.compose.ui.geometry.Offset(w, cy), strokeWidth = 1f)
+            if (present) {
+                val px = cx + (faceX.coerceIn(-1f, 1f)) * (w / 2f)
+                val py = cy + (faceY.coerceIn(-1f, 1f)) * (h / 2f)
+                val dot = androidx.compose.ui.geometry.Offset(px, py)
+                if (centered) {
+                    val green = Color(0xFF49E07A)
+                    drawLine(green, androidx.compose.ui.geometry.Offset(cx, cy), dot, strokeWidth = 2f)
+                    drawCircle(green, radius = 7f, center = dot)
+                    drawCircle(green, radius = 14f, center = dot, style = androidx.compose.ui.graphics.drawscope.Stroke(width = 2.5f))
+                } else {
+                    val amber = Color(0xFFE0B84A)
+                    drawLine(amber, androidx.compose.ui.geometry.Offset(cx, cy), dot, strokeWidth = 2f)
+                    drawCircle(amber, radius = 7f, center = dot)
+                }
+            } else if (waiting) {
+                // WAITING: amber pulsing ring (holding the lost lock, not yet searching).
+                drawCircle(Color(0xFFE0B84A).copy(alpha = pulse), radius = w / 2.6f, center = androidx.compose.ui.geometry.Offset(cx, cy), style = androidx.compose.ui.graphics.drawscope.Stroke(width = 2.5f))
+            } else {
+                // SEARCH: a solid red ring.
+                drawCircle(Color(0xFFE0504A), radius = w / 2.6f, center = androidx.compose.ui.geometry.Offset(cx, cy), style = androidx.compose.ui.graphics.drawscope.Stroke(width = 2f))
+            }
+        }
+        androidx.compose.material3.Text(
+            text = label, color = labelColor, fontSize = 9.sp, fontWeight = FontWeight.Bold,
+            modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 2.dp),
+        )
     }
 }
 

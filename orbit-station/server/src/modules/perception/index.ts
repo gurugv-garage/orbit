@@ -28,6 +28,7 @@ import { sttWatchProcessor } from './processors/stt-watch.js';
 import { backgroundTranscribe } from './processors/background-stt.js';
 import { bodyMotionWatchProcessor, type MotionCommand } from './processors/bodymotion-watch.js';
 import { SnapshotStore, isoIst, sampleEvenly, type SnapshotRecord } from './snapshots.js';
+import { PerceiveStore, type PerceivePayload } from './perceive.js';
 import { TakeStore } from './takes.js';
 import { summarize, geminiText } from './summarizer.js';
 import { buildGrounding, memoryGroundingSlice, type LastSummary } from './grounding.js';
@@ -131,6 +132,9 @@ export interface RecognizedPerson {
   tentative: string | null;
   confidence: number;
   side: 'left' | 'center' | 'right';
+  /** normalized bounding box 0..1 (x,y = top-left; w,h = size) — for control loops
+   *  (faceFollow) that need WHERE precisely, not just the coarse `side`. */
+  box: { x: number; y: number; w: number; h: number };
 }
 export interface RecognizeOut {
   name: string | null;
@@ -315,6 +319,14 @@ export function getSnapshotsApi(): SnapshotsApi | undefined {
   return snapshotsRef.current;
 }
 
+/** The live per-dock `perceive` store (on-device MLKit face-track). Reachable by the
+ *  faceFollow `face-track` capability (the fast face source — §7) and the console.
+ *  Set when the perception module inits. */
+const perceiveRef: { current?: PerceiveStore } = {};
+export function getPerceiveStore(): PerceiveStore | undefined {
+  return perceiveRef.current;
+}
+
 
 export function perceptionModule(getHub: () => ProcessingHub): StationModule {
   let state: PerceptionState;
@@ -324,6 +336,10 @@ export function perceptionModule(getHub: () => ProcessingHub): StationModule {
       snapshots.inWindow(fromIso, toIso).filter((r) => !dockId || r.dockId === dockId),
   };
   const takes = new TakeStore();         // frozen snapshot bundles for A/B replay
+  // LIVE per-dock face-track (the on-device MLKit `perceive` stream, §7) — latest-state,
+  // NOT the heavy snapshot ring. The faceFollow `face-track` capability reads it.
+  const perceive = new PerceiveStore();
+  perceiveRef.current = perceive;
   // Latest produced summary PER DOCK — the head of perception grounding (3.1). Set
   // on each successful /snapshots/summarize; read synchronously by the brain facade.
   const lastSummary = new Map<string, LastSummary>();
@@ -696,6 +712,7 @@ export function perceptionModule(getHub: () => ProcessingHub): StationModule {
               tentative: verdict === 'tentative' ? m!.name : null,
               confidence: m ? Math.max(0, 1 - m.distance) : 0,
               side: sideOf(f.cx),
+              box: f.box,
             };
           });
           const confident = people.filter((x) => x.name).sort((a, b) => b.confidence - a.confidence);
@@ -805,6 +822,41 @@ export function perceptionModule(getHub: () => ProcessingHub): StationModule {
         }
       });
 
+      // The `perceive` stream (docs/decision-traces/facefollow-and-actuator-lease.md §7):
+      // the phone forwards its on-device MLKit face perception (~1 Hz, deduped on the
+      // phone) as topic `perceive`, kind `frame`. We resolve the originating peer to its
+      // dock (same peer→dock mapping snapshots use) and stash it as the dock's LIVE
+      // latest face-track — NOT the heavy snapshot ring (this is high-rate geometry the
+      // faceFollow loop reads, history nobody needs).
+      bus.on('perceive', (msg) => {
+        if (msg.source === 'station') return;
+        // DEBUG telemetry (perceive/telemetry): the phone's 1 Hz detection-health report.
+        // Log it so a stream STALL is diagnosable without adb — see which stage stops:
+        //   framesIn=0        → CAMERA stalled (no frames to the analyzer)
+        //   framesIn>0, passes=0 → the analysis GATE is stuck (interval/throttle bug)
+        //   passes>0, hits=0  → the DETECTOR is blind (you're there but MLKit misses you)
+        //   lastFaceMsAgo climbing → going blind; intervalMs = current adaptive cadence
+        if (msg.kind === 'telemetry') {
+          const t = msg.payload as { framesIn?: number; facePasses?: number; faceHits?: number; lastFaceMsAgo?: number; intervalMs?: number } | null;
+          if (t) {
+            const dockId = getHub().resolveDock(msg.source);
+            console.log(`[perceive-tel] ${dockId} framesIn=${t.framesIn} passes=${t.facePasses} hits=${t.faceHits} lastFace=${t.lastFaceMsAgo}ms interval=${t.intervalMs}ms`);
+          }
+          return;
+        }
+        if (msg.kind !== 'frame') return;
+        const payload = msg.payload as PerceivePayload | null;
+        if (!payload || !Array.isArray(payload.faces)) return;
+        const dockId = getHub().resolveDock(msg.source);
+        perceive.update(dockId, payload);
+        // TODO(perceive→ring): optionally fold payload.emotion / payload.identity into
+        // the SnapshotStore (the ring already models those kinds) so they join the
+        // recall record. Deferred: the on-device emotion/identity here would need the
+        // same CONFIRM/DROP hysteresis the identity stream applies (else ~1 Hz raw
+        // would spam the ring + skew the summarizer), which is more than a few lines —
+        // out of scope for landing the live face-track. Face GEOMETRY never goes in the ring.
+      });
+
       // Generic reconnect snapshot: when a dock (re)joins, push it its current
       // world-state so the agent re-grounds immediately (identity is one field).
       bus.on('station', (msg) => {
@@ -823,6 +875,16 @@ export function perceptionModule(getHub: () => ProcessingHub): StationModule {
 
       if (req.method === 'GET' && subPath === '/') {
         json(res, 200, state.all());
+        return true;
+      }
+      // The dock's LATEST on-device face-track (the `perceive` stream, §7) — live state
+      // for the console + debugging. GET /api/perception/:dockId/perceive → { ts, payload }
+      // or { error } when nothing's arrived. Must precede the bare /:dockId catch-all.
+      const pm = subPath.match(/^\/([^/]+)\/perceive$/);
+      if (pm && req.method === 'GET') {
+        const dockId = decodeURIComponent(pm[1]!);
+        const entry = perceive.latest(dockId);
+        json(res, 200, entry ?? { error: 'no perceive frame', dockId });
         return true;
       }
       // ── SIDECAR HEALTH — the two MLX apps are the only out-of-process pieces

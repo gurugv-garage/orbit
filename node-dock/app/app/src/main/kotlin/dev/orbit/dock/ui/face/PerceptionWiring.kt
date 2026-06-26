@@ -210,6 +210,10 @@ class PerceptionWiring(
                             y = (event.y * 0.5f).coerceIn(-1f, 1f),
                         ))
                     }
+                    is PerceptionEvent.PerceiveFrame -> {
+                        // The rich MLKit detail is forwarded to the station by
+                        // PerceiveForwarder; the UI wiring drives off FaceSeen, so ignore here.
+                    }
                     is PerceptionEvent.FaceLost -> {
                         _facePresent.value = false
                         // Feed the gate a "no face" tick — it debounces into a LEAVE

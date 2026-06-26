@@ -32,12 +32,21 @@ const DEFAULT_STEP_DURATION_MS = 400;
 /** the capability tag the servo-bearing component declares in hello. */
 const SERVO_CAP = 'servo';
 
+/** Who issued the last real motion command — so a standing behaviour (faceFollow) can tell
+ *  when ANOTHER mover (a brain turn's gesture, the console, a different task) took the body,
+ *  and yield + cool down. `tag` is a free-form source id: 'brain-turn', 'console',
+ *  `task:<instanceId>`, or 'station'. The actuator-lease groundwork (facefollow decision
+ *  trace) in its lightest form: observe who's driving, don't hard-lock. */
+export interface Mover { tag: string; at: number }
+
 interface DockMotion {
   /** current per-part target (µs) — what the heartbeat re-sends. */
   targets: Record<string, number>;
   /** last time a real motion command was sent (drives heartbeat cadence). */
   lastMotionAt: number;
   lastHeartbeatAt: number;
+  /** who last commanded a REAL move (not a heartbeat) + when. */
+  lastMover?: Mover;
   /** the running sequence's cancel handle (one sequence per dock). */
   sequence?: { cancelled: boolean };
 }
@@ -66,7 +75,7 @@ export class MotionExecutor {
    * body is offline or the steps are unusable (pi turns throws into error
    * tool results — the model narrates, the turn continues).
    */
-  runSteps(dock: string, steps: MoveStep[]): string {
+  runSteps(dock: string, steps: MoveStep[], source = 'station'): string {
     if (!this.isOnline(dock)) throw new Error(`the body of ${dock} is not responding (offline)`);
     if (!Array.isArray(steps) || steps.length === 0) throw new Error('move needs at least one step');
     const described: string[] = [];
@@ -79,7 +88,7 @@ export class MotionExecutor {
       if (joints.length === 0 && step.wait_ms == null) throw new Error('a step needs joints (part/parts) or a wait_ms');
       if (joints.length > 0) described.push(joints.map((j) => `${j.part}→${Math.round(j.degrees)}°`).join('+'));
     }
-    void this.#runSequence(dock, steps);
+    void this.#runSequence(dock, steps, source);
     return `moving: ${described.join(', ') || 'pausing'}`;
   }
 
@@ -89,10 +98,10 @@ export class MotionExecutor {
    * expression or offline body is a silent no-op (the face still changes on
    * the phone; emotion choreography is best-effort by design).
    */
-  playGesture(dock: string, expression: string, gestures: Record<string, MoveStep[]>): void {
+  playGesture(dock: string, expression: string, gestures: Record<string, MoveStep[]>, source = 'brain-turn'): void {
     const steps = gestures[expression];
     if (!steps || steps.length === 0 || !this.isOnline(dock)) return;
-    void this.#runSequence(dock, steps);
+    void this.#runSequence(dock, steps, source);
   }
 
   /** Cancel the running sequence (new turn / turn-cancel / dock offline). */
@@ -106,17 +115,23 @@ export class MotionExecutor {
     return { ...(this.#docks.get(dock)?.targets ?? {}) };
   }
 
+  /** Who last commanded a REAL move on this dock (+ when), or undefined if none yet. A
+   *  standing behaviour reads this to detect a foreign mover and yield. */
+  lastMover(dock: string): Mover | undefined {
+    return this.#docks.get(dock)?.lastMover;
+  }
+
   /** Direct single set_target (the console's slider path) — same master. */
-  setTargets(dock: string, partsUs: Record<string, number>, durationMs = DEFAULT_STEP_DURATION_MS): void {
+  setTargets(dock: string, partsUs: Record<string, number>, durationMs = DEFAULT_STEP_DURATION_MS, source = 'console'): void {
     this.stop(dock); // a manual command supersedes a running sequence (last write wins)
-    this.#send(dock, partsUs, durationMs);
+    this.#send(dock, partsUs, durationMs, source);
   }
 
   shutdown(): void {
     clearInterval(this.#timer);
   }
 
-  async #runSequence(dock: string, steps: MoveStep[]): Promise<void> {
+  async #runSequence(dock: string, steps: MoveStep[], source = 'station'): Promise<void> {
     const m = this.#dock(dock);
     // one sequence per dock: starting a new one cancels the previous
     // (last-write-wins, logged — corner case 20).
@@ -133,7 +148,7 @@ export class MotionExecutor {
       if (joints.length > 0) {
         const partsUs: Record<string, number> = {};
         for (const j of joints) partsUs[j.part] = degreesToUs(j.part, j.degrees);
-        this.#send(dock, partsUs, duration);
+        this.#send(dock, partsUs, duration, source);
       }
       const pause = duration + (step.wait_ms ?? 0);
       if (pause > 0) await sleep(pause);
@@ -141,13 +156,14 @@ export class MotionExecutor {
     if (m.sequence === seq) m.sequence = undefined;
   }
 
-  /** Publish one set_target (directed to the servo component) + record targets. */
-  #send(dock: string, partsUs: Record<string, number>, durationMs: number): void {
+  /** Publish one set_target (directed to the servo component) + record targets + mover. */
+  #send(dock: string, partsUs: Record<string, number>, durationMs: number, source = 'station'): void {
     const target = this.#directory.resolveCap(dock, SERVO_CAP);
     if (!target?.component) return; // went offline mid-sequence — body holds pose
     const m = this.#dock(dock);
     Object.assign(m.targets, partsUs);
     m.lastMotionAt = Date.now();
+    m.lastMover = { tag: source, at: m.lastMotionAt }; // who's driving (faceFollow yield signal)
     this.#publishSetTarget(dock, target.component, m.targets, durationMs);
   }
 

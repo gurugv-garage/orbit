@@ -19,6 +19,7 @@
 import type { Directory } from '../../docks/directory.js';
 import type { MotionExecutor } from '../../bodylink/motion.js';
 import type { FaceToolsApi } from '../../perception/index.js';
+import type { PerceiveStore } from '../../perception/perceive.js';
 import type { MoveStep } from '../schemas.js';
 import { CapabilityRegistry } from './capabilities.js';
 
@@ -26,6 +27,9 @@ export interface CapabilityDeps {
   directory: Directory;
   motion: MotionExecutor;
   getFaces: () => FaceToolsApi | undefined;
+  /** the live per-dock on-device face-track store (the `perceive` stream) — the FAST
+   *  face source the faceFollow `face-track` capability reads. */
+  getPerceive: () => PerceiveStore | undefined;
 }
 
 /** The dock's live camera streamId (the SFU producer serving 'camera'), or undefined. */
@@ -60,14 +64,42 @@ export function buildCapabilityRegistry(d: CapabilityDeps): CapabilityRegistry {
     handler: (ctx) => d.getFaces()?.recognize({ streamId: streamFor(d, ctx.dock) }),
   });
 
+  // The on-device MLKit face-track (the `perceive` stream, docs/decision-traces/
+  // facefollow-and-actuator-lease.md §7) — the FAST, low-latency face source for the
+  // faceFollow control loop. Requires 'face' (the phone's on-device perception cap)
+  // rather than 'camera': this reads the phone's MLKit output, not the SFU video.
+  reg.register({
+    op: 'face-track', requires: 'face',
+    describe: 'await this.request("face-track") → { faces, noFace } — the latest on-device '
+      + 'face boxes (each with an eye-midpoint anchor). The fast tracking source (~5 Hz), not station face-api',
+    when: 'for a tight control loop that needs WHERE faces are right now (e.g. faceFollow)',
+    handler: (ctx) => {
+      const store = d.getPerceive();
+      const faces = store?.toFollowFaces(store.latest(ctx.dock)) ?? [];
+      return { faces, noFace: faces.length === 0 };
+    },
+  });
+
   reg.register({
     op: 'move', requires: 'servo',
     describe: 'await this.move(steps) → drive the body through timed move steps',
     when: 'to physically turn/gesture the body (e.g. sweep to find someone, nod)',
     handler: (ctx, args) => {
       const steps = (Array.isArray(args.steps) ? args.steps : []) as MoveStep[];
-      d.motion.runSteps(ctx.dock, steps);
+      // TAG the move with this task's id so a standing behaviour (faceFollow) can tell its
+      // OWN moves from a foreign mover (a brain turn / console / another task) and yield.
+      d.motion.runSteps(ctx.dock, steps, `task:${ctx.instanceId}`);
       return { ok: true };
+    },
+  });
+
+  reg.register({
+    op: 'bodyMover', requires: 'servo',
+    describe: 'await this.request("bodyMover") → { tag, at } | null — who last drove the body',
+    when: 'to detect when ANOTHER mover took the body (a standing behaviour yields + cools down)',
+    handler: (ctx) => {
+      const mv = d.motion.lastMover(ctx.dock);
+      return mv ? { tag: mv.tag, at: mv.at } : null;
     },
   });
 
