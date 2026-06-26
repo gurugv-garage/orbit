@@ -365,6 +365,9 @@ fun DockScreen() {
             sendFaceArrival = { agent.sendFaceArrival() },
             sendFaceLeft = { agent.sendFaceLeft() },
             convMode = agent.convMode,
+            // Mic OFF ⇒ not listening: the wiring refuses to render the station's
+            // listening glow while muted (the station is also told to stop, below).
+            micMuted = controller.micMuted,
         ).also { wiringRef.value = it }
     }
 
@@ -526,6 +529,13 @@ fun DockScreen() {
     // leaves listening/followup (RemoteBrain.clearInterim), at which point we fall back
     // to the endpointed perception transcript / bot reply.
     val interimTranscript by agent.interimTranscript.collectAsState()
+    // The station's conversation mode. The user-speech caption (interim or endpointed
+    // transcript) belongs to an OPEN listening window only — outside it (idle/thinking/
+    // speaking) the words are stale and must not paint, which is the "transcribing when
+    // not listening" symptom (esp. after a restart, when a window-close 'idle' frame can
+    // be missed). We gate the caption on this rather than trust the transcript flow alone.
+    val convMode by agent.convMode.collectAsState()
+    val listeningWindow = convMode == "listening" || convMode == "followup"
     // Listening-window countdown: the station sends the absolute close time; we tick a
     // local clock so the on-face badge shows seconds remaining. A screenshot then proves
     // BOTH that it's in listening mode AND how long is left (debugging "UI says listening
@@ -575,6 +585,11 @@ fun DockScreen() {
     LaunchedEffect(micGranted, micMuted) {
         if (micGranted && !micMuted) PerceptionService.start(ctx)
         else PerceptionService.stop(ctx)
+        // Mic OFF ⇒ NOT listening: tell the station to close any open listening
+        // window (and not re-open one while muted). The local PerceptionWiring guard
+        // already refuses the listening glow; this stops the station-side window +
+        // its always-on caption so the two views agree.
+        agent.sendMicMuted(micMuted)
     }
 
     // Face tracker — bound to the activity lifecycle (created above as the
@@ -834,7 +849,12 @@ fun DockScreen() {
                         // partial); otherwise show the endpointed perception transcript.
                         // An interim is never "final" (dim styling); the perception
                         // transcript keeps its own final flag.
-                        transcriptText = interimTranscript.ifEmpty { transcript.text },
+                        // GATE: the user-speech caption shows only inside an open
+                        // listening/followup window. Outside it the words are stale —
+                        // the always-on STT keeps producing transcripts the dock isn't
+                        // "listening" to, and a missed window-close frame (restart) would
+                        // otherwise leave them painted. The bot reply has its own band.
+                        transcriptText = if (listeningWindow) interimTranscript.ifEmpty { transcript.text } else "",
                         transcriptFinal = if (interimTranscript.isNotEmpty()) false else transcript.isFinal,
                         agentState = agentState,
                         modifier = Modifier
@@ -875,7 +895,12 @@ fun DockScreen() {
                                 .padding(horizontal = 14.dp, vertical = 7.dp),
                         )
                     }
-                    if (micGranted && !perceptionReady) {
+                    // "waking up…" = the perception pipeline is still starting. Don't
+                    // show it when the mic is MUTED: perception is stopped on purpose
+                    // then (PerceptionService.stop on mute), so !perceptionReady is the
+                    // intended OFF state, not a wake-up — the pill there read as "still
+                    // coming up" when the user had deliberately turned the mic off.
+                    if (micGranted && !micMuted && !perceptionReady) {
                         dev.orbit.dock.ui.widgets.WakingUpPill(
                             modifier = Modifier
                                 .align(Alignment.Center)
@@ -898,12 +923,23 @@ fun DockScreen() {
                             .align(Alignment.TopStart)
                             .padding(12.dp)
                             .pointerInput(Unit) {
-                                detectTapGestures(onLongPress = {
-                                    agentRef.value?.sendFeedback(null)
-                                    android.widget.Toast.makeText(
-                                        ctx, "Feedback flagged for this session", android.widget.Toast.LENGTH_SHORT,
-                                    ).show()
-                                })
+                                detectTapGestures(
+                                    // TAP the build number = force an OTA update check (ask the
+                                    // station to re-offer if this dock is behind). The app is
+                                    // otherwise passive; this saves waiting for the next re-announce.
+                                    onTap = {
+                                        otaUpdater.requestCheck()
+                                        android.widget.Toast.makeText(
+                                            ctx, "Checking for update…", android.widget.Toast.LENGTH_SHORT,
+                                        ).show()
+                                    },
+                                    onLongPress = {
+                                        agentRef.value?.sendFeedback(null)
+                                        android.widget.Toast.makeText(
+                                            ctx, "Feedback flagged for this session", android.widget.Toast.LENGTH_SHORT,
+                                        ).show()
+                                    },
+                                )
                             },
                     )
                     // The dock's "eye": a live thumbnail of what the camera (and

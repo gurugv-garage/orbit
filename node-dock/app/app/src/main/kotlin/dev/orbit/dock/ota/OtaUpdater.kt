@@ -87,6 +87,20 @@ class OtaUpdater(
         }
     }
 
+    /** User tapped the build number → ask the station to RE-CHECK for an update and
+     *  re-offer if this dock is behind. The app is otherwise passive (it waits for the
+     *  station's push); this is a manual poke so you don't have to wait for the next
+     *  peer-join/heartbeat re-announce. Publishes an `ota/check` frame carrying our
+     *  current build; the station replies with an `ota/available` offer iff it has a
+     *  newer artifact (handled by [onOffer]). No-op visible here if already up to date. */
+    fun requestCheck() {
+        Timber.i("OTA: manual update check (current build $currentVersionCode)")
+        publish("check", buildJsonObject {
+            put("target", "app")
+            put("build", currentVersionCode)
+        })
+    }
+
     /** User tapped "update": apply the pending offer (download → verify → install). Safe to
      *  call repeatedly — ignored if nothing pending or an apply is already running. */
     fun startPendingUpdate() {

@@ -91,6 +91,9 @@ export class ConversationState {
   #windowSrc: WindowSource = 'tap'; // why the current window is open (priority)
   #speakUntil = 0;  // SPEAKING safety expiry (ms), or 0
   #faceCooldownUntil = 0; // a face-arrival is ignored until this time (anti-flap)
+  #muted = false;   // phone mic OFF ⇒ NOT listening: while true, NO window opens
+                    // (tap/face/vad/utterance are inert) and any open one is closed.
+                    // The phone reports mute via the 'mic-muted' agent frame.
   #onTransition?: (t: ConvTransition) => void;
 
   constructor(onTransition?: (t: ConvTransition) => void) {
@@ -100,7 +103,12 @@ export class ConversationState {
   // ── reads (prune first so expiries are reflected) ─────────────────────────
 
   mode(now: number): ConvMode { this.#prune(now); return this.#mode; }
-  isListening(now: number): boolean { const m = this.mode(now); return m === 'listening' || m === 'followup'; }
+  // Mic OFF ⇒ NOT listening, regardless of mode. This is the authoritative gate for
+  // BOTH the interim caption (index.ts setListeningResolver) and turn admission
+  // (utteranceEnded below) — so even if a window re-opened while muted (e.g. a turn
+  // that was in flight when the user muted completes → speakEnd; guarded there too,
+  // this is the belt-and-suspenders), no interim flows and no utterance is addressed.
+  isListening(now: number): boolean { if (this.#muted) return false; const m = this.mode(now); return m === 'listening' || m === 'followup'; }
   /** ms until the current window/speak expiry (for the /conversation probe), or 0. */
   msToExpiry(now: number): number {
     this.#prune(now);
@@ -123,6 +131,9 @@ export class ConversationState {
    *     is deliberate (a real tap), so it can't false-trigger like raw VAD would. */
   tap(now: number): void {
     this.#prune(now);
+    // Mic OFF ⇒ NOT listening: a tap can't open a window while muted. (The phone
+    // shouldn't send taps when muted, but the station is the owner — guard here too.)
+    if (this.#muted) { if (this.#mode === 'listening' || this.#mode === 'followup') { this.#set('idle', now, 'tap-off'); this.#windowUntil = 0; this.#lastWindowUntil = now; } return; }
     if (this.#mode === 'listening' || this.#mode === 'followup') {
       // tap-off deliberately closes the window → clamp the long-utterance grace to now
       // (see #prune) so later overheard speech isn't treated as addressed.
@@ -145,6 +156,7 @@ export class ConversationState {
    *  LISTENING. */
   tapOpen(now: number): void {
     this.#prune(now);
+    if (this.#muted) return; // mic OFF ⇒ no window opens (palm included)
     if (this.#mode === 'thinking' || this.#mode === 'speaking') {
       this.#speakUntil = 0;
       this.#openWindow('tap', now + ConvCfg.LISTEN_MS, now, 'palm-interrupt');
@@ -169,6 +181,7 @@ export class ConversationState {
    *  face to be near + centered + sustained; this is the station's backstop). */
   faceArrival(now: number): void {
     if (!ConvCfg.FACE_ARRIVAL_ENABLED) return; // wake-on-look disabled (tap/wave only)
+    if (this.#muted) return; // mic OFF ⇒ a face must not wake a listening window
     this.#prune(now);
     if (now < this.#faceCooldownUntil) return; // still cooling down from the last presence
     if (this.#mode === 'idle') this.#openWindow('face', now + ConvCfg.FACE_ARRIVAL_MS, now, 'face-arrival');
@@ -212,6 +225,12 @@ export class ConversationState {
     this.#prune(now);
     if (this.#mode !== 'speaking') return; // already left speaking (e.g. tap-interrupt)
     this.#speakUntil = 0;
+    // Mic OFF ⇒ NOT listening: a turn that was already speaking when the user muted
+    // must NOT re-open a followup window on tts-end. Go straight to idle (the phone
+    // gets the idle frame and drops the glow/caption). Without this, the dock would
+    // silently re-listen while muted — and the never-muted WebRTC mic could fire a
+    // live turn (utteranceEnded is also mute-gated, but fix the STATE, not just reads).
+    if (this.#muted) { this.#windowUntil = 0; this.#set('idle', now, 'tts-end-muted'); return; }
     this.#windowSrc = 'followup';
     this.#setWindow(now + ConvCfg.FOLLOWUP_MS);
     this.#set('followup', now, 'tts-end');
@@ -260,6 +279,10 @@ export class ConversationState {
 
   utteranceEnded(endedAt: number, now: number, startedAt?: number): boolean {
     this.#prune(now);
+    // Mic OFF ⇒ no utterance is addressed, full stop. The WebRTC mic isn't actually
+    // muted (only the local pipeline is), so audio still reaches STT; this is the gate
+    // that stops a "muted" dock from hearing + replying to a real spoken utterance.
+    if (this.#muted) return false;
     const windowOpenNow = this.#mode === 'listening' || this.#mode === 'followup';
     // STARTED-WHILE-OPEN (the robust rescue): an utterance you BEGAN while the window
     // was open is addressed, even if the FINAL only lands after the window has since
@@ -292,6 +315,19 @@ export class ConversationState {
     this.#speakUntil = 0; this.#windowUntil = 0;
     this.#set('idle', now, 'reconnect');
   }
+
+  /** Phone mic muted/unmuted. Mic OFF ⇒ NOT listening: while muted, NO window opens
+   *  (tap/face/vad/utterance are inert — guarded above) and any OPEN listening/followup
+   *  window is closed immediately to idle. Unmuting just lifts the gate; it does not
+   *  re-open a window (the user taps to talk again). Idempotent. */
+  setMuted(muted: boolean, now: number): void {
+    this.#muted = muted;
+    if (muted && (this.#mode === 'listening' || this.#mode === 'followup')) {
+      this.#windowUntil = 0; this.#lastWindowUntil = now;
+      this.#set('idle', now, 'mic-muted');
+    }
+  }
+  isMuted(): boolean { return this.#muted; }
 
   /** Advance time: fire any pending expiry transitions (followup/listen window,
    *  speak safety) WITHOUT a read/event. The session calls this on a timer so the

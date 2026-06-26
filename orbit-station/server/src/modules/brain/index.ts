@@ -432,6 +432,12 @@ export function brainModule(w: BrainWiring): StationModule {
             // a face left → release ONLY a face listen window (never a tap/followup).
             session(dock).faceLeft();
             break;
+          case 'mic-muted':
+            // Phone mic OFF ⇒ NOT listening: close any open window + refuse to open
+            // new ones (tap/face/vad inert) until unmuted. The conversation transition
+            // is emitted back so the phone renderer drops the listening glow/caption.
+            session(dock).setMicMuted(p?.muted === true);
+            break;
           case 'turn-cancel':
             session(dock).cancel(typeof p?.turnId === 'string' ? p.turnId : undefined);
             break;
@@ -649,6 +655,8 @@ export function brainModule(w: BrainWiring): StationModule {
           case 'tts-start': s.noteSpeech(true); break;
           case 'tts-end': s.noteSpeech(false); break;
           case 'connected': s.notePhoneConnected(); break;
+          case 'mic-muted': s.setMicMuted(true); break;
+          case 'mic-unmuted': s.setMicMuted(false); break;
           case 'utterance': {
             const endedAt = typeof b.endedAt === 'number' ? b.endedAt : Date.now();
             const addressed = s.utteranceAddressed(endedAt);
@@ -659,7 +667,7 @@ export function brainModule(w: BrainWiring): StationModule {
             json(res, 200, { ok: true, addressed, conversation: s.conversation() });
             return true;
           }
-          default: json(res, 400, { error: 'event must be tap|vad|face-arrival|face-left|tts-start|tts-end|connected|utterance' }); return true;
+          default: json(res, 400, { error: 'event must be tap|vad|face-arrival|face-left|tts-start|tts-end|connected|mic-muted|mic-unmuted|utterance' }); return true;
         }
         json(res, 200, { ok: true, conversation: s.conversation() });
         return true;

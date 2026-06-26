@@ -198,6 +198,14 @@ export function otaModule(getHub: () => Hub): StationModule {
             setTimeout(() => emitState(target), 250);
           }
         }
+        // MANUAL CHECK: a device tapped its build number → re-offer if it's behind.
+        // Same gate as the peer-join re-announce, but directed only at the requester
+        // (msg.source) so an idle dock can poke the station without waiting for the
+        // next heartbeat. No-op if it's already up to date (announce skips it).
+        if (msg.kind === 'check') {
+          const target = (msg.payload as { target?: string })?.target;
+          if (target && isTarget(target)) announce(target, msg.source);
+        }
       });
     },
 

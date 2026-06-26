@@ -524,6 +524,14 @@ export class DockBrainSession {
     this.#conv.reconcileConnected(Date.now());
   }
 
+  /** Phone reported its mic mute toggled. Mic OFF ⇒ NOT listening: the conversation
+   *  state closes any open window and refuses to open new ones (tap/face/vad inert)
+   *  until unmuted. Emits the resulting conversation transition to the phone so its
+   *  renderer agrees. */
+  setMicMuted(muted: boolean): void {
+    this.#conv.setMuted(muted, Date.now());
+  }
+
   /** Emit a conversation transition on the obs stream (for tests + the phone
    *  renderer) + a structured log line. */
   #onConvTransition(t: ConvTransition): void {
