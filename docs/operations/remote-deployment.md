@@ -53,6 +53,8 @@
   - [12.1 Options weighed](#121-options-weighed)
   - [12.2 Chosen path — SSH deploy key](#122-chosen-path--ssh-deploy-key)
   - [12.3 Secrets never travel with the code](#123-secrets-never-travel-with-the-code)
+- [13. As-deployed state (E2E Chennai, 2026-06-29) — REVISIT](#13-as-deployed-state-e2e-chennai-2026-06-29--revisit)
+- [14. Stopping to save cost — snapshot, don't power-off ⚠️](#14-stopping-to-save-cost--snapshot-dont-power-off-)
 <!-- /TOC -->
 
 ## 1. Goal and the core finding
@@ -629,3 +631,54 @@ cd ~/code && git clone git@github.com:gurugv-garage/orbit.git
   rebuilds as faces are re-enrolled.
 - If you ever `rsync` code (the escape hatch), **exclude** `node_modules`, `.data/`,
   `data/`, `.env` — `rsync -a --exclude node_modules --exclude .data --exclude .env …`.
+
+## 13. As-deployed state (E2E Chennai, 2026-06-29) — REVISIT
+
+The first bring-up is live on `151.185.45.155`. **Two files were `scp`'d to the VM
+that are committed locally but not yet pushed to GitHub** — so the VM is running
+ahead of its `git` HEAD (`73567ff`). A future `git pull` on the VM would clobber the
+scp'd `main.ts` unless these are pushed first. Revisit:
+
+| Item | State on VM | Source of truth | To reconcile |
+|---|---|---|---|
+| `server/src/main.ts` (parent-exit fix) | scp'd | commit `2cc2549` (local, **unpushed**) | `git push`, then `git pull` on VM |
+| `models/perception-sidecar/sidecar_fw.py` (Linux STT) | scp'd | commit `b04e6cf` (local, **unpushed**) | same |
+| systemd units `orbit-station.service`, `orbit-stt.service` | on VM `/etc/systemd/system/` | **not in repo** | capture into repo (see below) |
+| `.venv-fw/` (faster-whisper venv) | on VM only | n/a (built on box) | rebuild via §10.3 on restore |
+| faster-whisper `small.en` model | `~/.cache/huggingface` (464MB) | HF download | re-downloads if cache lost |
+
+**To revisit:** (a) `git push` the two commits so the VM can track `git` again; (b)
+commit the two systemd unit files into the repo (e.g. `deploy/systemd/`) so they're
+version-controlled, not just live on the box. Until then, this section IS their record.
+
+Running services (both `enabled` on boot, `Restart=always`):
+- `orbit-station.service` → `npm run start` (port 8099)
+- `orbit-stt.service` → `.venv-fw/bin/python sidecar_fw.py --port 8078 --model small.en --device cpu --compute-type int8`
+
+## 14. Stopping to save cost — snapshot, don't power-off ⚠️
+
+**On E2E, powering off a node does NOT stop billing** — you are charged at the full
+rate until the node is **Terminated** ([E2E docs](https://docs.e2enetworks.com/docs/myaccount/node/virt_comp_node/managenode/):
+*"Powering off a node will not stop billing… until it is Terminated"*). This differs
+from AWS/GCP (where *stopped* = cheaper). So the three goals don't all come from
+power-off:
+
+| Goal | Power off | Terminate | **Snapshot → Terminate → Restore** |
+|---|---|---|---|
+| Billing stops | ❌ still billed | ✅ | ✅ (pay only snapshot storage) |
+| Power back on later | ✅ | ❌ gone | ✅ (new node from image) |
+| State preserved | ✅ disk intact | ❌ disk destroyed | ✅ whole disk in the image |
+
+**Recommendation by break length:**
+- **Hours / overnight** → just leave it running (~₹3.1/hr ≈ ₹75/day; cheaper than the
+  snapshot dance + IP re-point).
+- **Days / weeks** → **save a snapshot, then Terminate** to actually stop the bill.
+  Restore = create a new node from the snapshot. Caveat: a restored node gets a **new
+  public IP** (unless you hold a **reserved IP**), so you'd re-point the dock's
+  `STATION_URL`. Restore takes a few minutes.
+- **Never** rely on bare power-off to save money — it's charged *and* offline.
+
+State that survives any restart / snapshot-restore (verified on-box): `.data/orbit.db`
+(+WAL), `.env`, the HF model cache, and both `enable`d systemd units → the station +
+STT auto-start on boot with full state. `.venv-fw/` and the model cache rebuild/
+re-download if the disk is lost; everything else rides in the snapshot.
