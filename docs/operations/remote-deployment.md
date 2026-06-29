@@ -240,11 +240,11 @@ tiered, cheapest-first pre-filter so the VLM only fires on frames worth analyzin
 
 These — not RTT — are what actually decide whether the move works.
 
-1. **Port the speech sidecar off MLX.** `parakeet-mlx`/`mlx-whisper` →
-   **faster-whisper** (CUDA *or* CPU; preserves the `avg_logprob`/`no_speech_prob`/
-   `compression_ratio` hallucination knobs). Keep the same HTTP contract
-   (`/transcribe`, `/health`) so the station needs **zero** changes. *Vision sidecar
-   need not be ported — it becomes a cloud API call.*
+1. **Port the speech sidecar off MLX.** `parakeet-mlx`/`mlx-whisper` → a Linux engine
+   behind the same `/transcribe` contract; **recommended faster-whisper** (CUDA *or*
+   CPU; preserves the `avg_logprob`/`no_speech_prob`/`compression_ratio` hallucination
+   knobs). Same HTTP contract (`/transcribe`, `/health`) → station needs **zero**
+   changes. *Vision sidecar need not be ported — it becomes a cloud API call.*
 2. **STUN/TURN for WebRTC.** The SFU defaults to LAN host candidates (`sfu.ts`).
    Set `STUN_URL`; for symmetric/CGNAT home NATs add a **TURN server** (coturn) —
    not yet wired, a small add.
@@ -385,13 +385,22 @@ Environment=NODE_ENV=production
 WantedBy=multi-user.target
 ```
 
+The STT sidecar is the **Linux replacement for today's MLX engine**. Today
+`sidecar.py` runs `mlx-whisper` (default) or `parakeet-mlx` — both Apple-only. On
+Linux the engine is swappable behind the same `/transcribe` HTTP contract;
+**recommended: faster-whisper** (CTranslate2, CPU-friendly, and it preserves
+Whisper's `avg_logprob`/`no_speech_prob`/`compression_ratio` hallucination tells the
+TS pipeline already reads). Alternatives — NeMo Parakeet (keeps the current model but
+wants a GPU), whisper.cpp — drop in the same way. `ExecStart` below assumes
+faster-whisper; substitute your chosen engine's launch command.
+
 ```ini
-# /etc/systemd/system/orbit-stt.service  (faster-whisper on :8078)
+# /etc/systemd/system/orbit-stt.service  (Linux STT sidecar on :8078)
 [Unit]
-Description=orbit STT sidecar (faster-whisper)
+Description=orbit STT sidecar
 After=network-online.target
 [Service]
-ExecStart=/usr/local/bin/faster-whisper-server --port 8078   # or the ported sidecar.py
+ExecStart=/usr/local/bin/faster-whisper-server --port 8078   # recommended engine; or the ported sidecar.py
 Restart=always
 RestartSec=3
 [Install]
