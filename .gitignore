@@ -64,3 +64,8 @@ node-dock/app/bench/results/*.log
 
 # Scratch/dictation notes — transient thinking, not tracked.
 scrap
+
+# E2E (and any) cloud provider API credentials — NEVER commit.
+ops/e2e.keys
+ops/*.keys
+ops/*.secret
