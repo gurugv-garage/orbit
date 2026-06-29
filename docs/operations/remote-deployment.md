@@ -24,7 +24,7 @@
   - [Human-facing path](#human-facing-path)
   - [The two RTT caveats](#the-two-rtt-caveats)
 - [4. Cost model — India options (latency-weighted)](#4-cost-model--india-options-latency-weighted)
-  - [4a. The hosting box](#4a-the-hosting-box)
+  - [4a. The hosting box — concrete picks](#4a-the-hosting-box--concrete-picks)
   - [4b. STT cost (cheap either way)](#4b-stt-cost-cheap-either-way)
   - [4c. Vision cost — the real driver, and why the gate matters](#4c-vision-cost--the-real-driver-and-why-the-gate-matters)
   - [4d. Which vision API](#4d-which-vision-api)
@@ -34,6 +34,14 @@
 - [7. Migration steps (suggested order)](#7-migration-steps-suggested-order)
 - [8. Decisions to be made](#8-decisions-to-be-made)
 - [9. Open items to re-verify before committing](#9-open-items-to-re-verify-before-committing)
+- [10. E2E setup runbook](#10-e2e-setup-runbook)
+  - [10.1 Create the node (E2E console)](#101-create-the-node-e2e-console)
+  - [10.2 Firewall / security group](#102-firewall--security-group)
+  - [10.3 Provision the box](#103-provision-the-box)
+  - [10.4 Run as systemd (covers tasks + sidecars)](#104-run-as-systemd-covers-tasks--sidecars)
+  - [10.5 Persistent state (back this up)](#105-persistent-state-back-this-up)
+  - [10.6 Security gap before 24/7-public (do NOT skip)](#106-security-gap-before-247-public-do-not-skip)
+  - [10.7 Recovery](#107-recovery)
 <!-- /TOC -->
 
 ## 1. Goal and the core finding
@@ -41,19 +49,25 @@
 **Goal:** orbit-station (the brain + control plane) and everything it needs runs on
 a remote, always-on machine. The laptop can be closed; the dock keeps working 24/7.
 
-**Core finding — it's deployable, and the latency is fine *if you pick the right
-region*.** The hard blockers are not latency; they are:
+**Core finding — it's deployable, and the latency is fine *if you host in
+India*.** The hard blockers are not latency; they are:
 
-1. **The perception sidecars are Apple-MLX-only** — they cannot run on a generic
-   Linux VM as written (the models are portable; the MLX *engine* is not).
+1. **The two perception *models* are Apple-MLX-only** — the **vision** model (Qwen2.5-VL,
+   self-hosted on the Mac today) and the **speech** model (Parakeet/Whisper) run via MLX
+   and won't run on a Linux VM as-is. The models are portable; the MLX *engine* is not.
 2. **WebRTC + security assume a LAN** — no STUN/TURN, no auth, plain `ws://`.
-3. **Vision runs ungated 24/7** — the dominant cost driver, and the thing that
-   decides GPU-vs-cloud economics.
+3. **Vision runs ungated 24/7** — the dominant cost driver.
 
-Latency only "breaks" the conversation if you put the station on a **different
-continent** from the dock. **An in-India VM for an India dock is essentially as
-good as the laptop.** Region choice is the whole latency lever — and it points at
-the same in-country VM the cost analysis favors anyway.
+**What "vision" means today (to clear up a common confusion):** the model that
+*reads frames* is **self-hosted Qwen2.5-VL on MLX** — not Gemini. **Gemini is only the
+text summarizer** that fuses the already-extracted text (vision + speech + identity)
+into a narrative; it never sees raw images. So the move's real vision question is:
+**keep self-hosting Qwen on a GPU, or send frames to a cloud vision API instead?** The
+Gemini summarizer is unchanged either way (already cloud, text-only, cheap).
+
+Latency only "breaks" if the station is on a **different continent** from the dock.
+An **in-India VM** is essentially as good as the laptop — region is the whole lever,
+and it points at the same in-country VM the cost analysis favors.
 
 ## 2. What runs today, and where it assumes "local"
 
@@ -61,13 +75,14 @@ the same in-country VM the cost analysis favors anyway.
 |---|---|---|---|
 | **Station hub** (WS `/ws` :8099) | laptop, in-proc | any | binds `0.0.0.0`, plain `ws://`, **no auth** |
 | **Brain** (LLM loop) | laptop, in-proc | any (calls cloud LLM) | none — already cloud-backed |
-| **Vision sidecar** (Qwen2.5-VL-3B) | laptop Python proc | **Apple Silicon / MLX** | `127.0.0.1:8080`, override `TEMPORAL_SIDECAR_URL` |
-| **Speech sidecar** (Parakeet-TDT / Whisper) | laptop Python proc | **Apple Silicon / MLX** | `127.0.0.1:8078`, override `PERCEPTION_SIDECAR_URL` |
+| **Vision model** (Qwen2.5-VL-3B) — reads frames | laptop Python proc | **Apple Silicon / MLX** | `127.0.0.1:8080`, override `TEMPORAL_SIDECAR_URL` |
+| **Speech model** (Parakeet/Whisper) | laptop Python proc | **Apple Silicon / MLX** | `127.0.0.1:8078`, override `PERCEPTION_SIDECAR_URL` |
+| **Gemini summarizer** — fuses text only | external (cloud) | — | already over the internet ✅ |
 | **Face / identity / emotion** | laptop, in-proc (tfjs-node) | CPU — **already Linux-ok** | none |
 | **Media SFU / WebRTC** | laptop, in-proc (werift) | any | **no STUN/TURN** — LAN host candidates only |
 | **Tasks** | spawned OS procs | any | reconnect WS `ws://127.0.0.1:8099`, override `STATION_WS` |
 | **Config push / OTA** | over the WS / HTTP from LAN IP | any | OTA artifact served from station's LAN IP |
-| **Cloud APIs** (Gemini/OpenRouter/Slack/WhatsApp) | external | — | already over the internet ✅ |
+| **Brain LLM / OpenRouter / Slack / WhatsApp** | external (cloud) | — | already over the internet ✅ |
 
 Cite map: sidecar engine + ports `models/perception-sidecar/sidecar.py`,
 `orbit-station/server/src/modules/perception/{index.ts,sidecars.ts}`; ICE
@@ -101,7 +116,7 @@ geographic round-trip**, not several:
 
 | Station location (dock in India) | Added one-way | Felt delay | Verdict |
 |---|---|---|---|
-| **In-India VM** (Mumbai/Delhi/Noida) | +10–30ms | +20–60ms | **Unnoticeable** ✅ |
+| **In-India VM** (e.g. E2E Chennai) | +10–30ms | +20–60ms | **Unnoticeable** ✅ |
 | Same continent (e.g. Singapore) | +40–80ms | +80–160ms | Slightly perceptible |
 | Cross-continent (US/EU VM) | +120–200ms | +250–400ms | **Noticeably laggy** ❌ |
 
@@ -122,32 +137,24 @@ is the only one that hurts — and it's the one to avoid.
 One dock, **24/7**. Two strategies: **self-hosted GPU (flat)** vs **hybrid cloud
 (cheap CPU VM + APIs)**. Latency-weighted = prefer **in-India** so RTT stays low.
 
-### 4a. The hosting box
+### 4a. The hosting box — concrete picks
 
-**The recommended path needs NO GPU.** A GPU is only required if you choose to
-**self-host the vision model** instead of calling a cloud vision API. The
-recommendation (hybrid, §4e) sends vision to a cloud API (§4c–4d), so it runs on a
-**plain CPU VM**. The GPU row exists purely so you can compare the self-host
-alternative — it is not the default.
+The recommended (hybrid) path sends vision to a cloud API, so the box is a **plain
+CPU VM — no GPU** (4 vCPU / 8GB). Named picks, verified 2026-06 (₹83/USD):
 
-**Recommended box (Indian providers, INR billing, India DCs, ~10–40ms):**
+| Pick | Provider + plan | Spec | ~Monthly | Why |
+|---|---|---|---|---|
+| **1 (chosen)** ✅ | **E2E Networks** C3 compute, **Chennai DC** | ~4 vCPU / 8GB | **~₹2,260** (₹3.1/hr × 730) | Native UPI/INR + GST, in-India. Use the plain **Compute** node, *not* VPC (₹4.8/hr — unneeded for one box). **Lock before 2026-07-01 hike** |
+| 2 (alt) | **DigitalOcean** Basic, Bangalore (BLR1) | 4 vCPU / 8GB | **$48 / ~₹4,000** | If you want a BLR DC / DO tooling; shared CPU won't throttle. USD card |
+| 3 (cheapest) | **Hetzner CPX31** (Singapore) | 4 vCPU / 8GB | **~$39 / ₹3,250** | Best price/perf, but **SG ~60–100ms**, no UPI |
 
-| Box | Provider | ~Monthly | Notes |
-|---|---|---|---|
-| **Plain CPU VM** (4–8 vCPU) ✅ | Any Indian VPS / **E2E** / hyperscaler | **~₹1,500–4,000** | The hybrid path. **No GPU.** Runs station + faster-whisper STT + face |
+Skip **AWS t3** (burst-credit throttling under sustained STT + 18% GST → unreliable
+*and* priciest). **Hostinger India KVM** is cheaper (~₹1,099 promo / ₹2,399 renew,
+UPI) but oversold shared CPU — fine for a hobby box, less predictable for STT.
 
-**Only if you self-host vision (the GPU alternative — not recommended):**
-
-| Box | Provider | ~Monthly | Notes |
-|---|---|---|---|
-| L4 24GB GPU | **Jarvislabs.ai** (Noida) | ~₹30,000 | Cheapest verified 24GB; per-minute; no-KYC. Charges USD via Stripe (no UPI) |
-| A30 24GB GPU | Jarvislabs.ai | ~₹28,400 | Slightly cheaper |
-| L4 24GB GPU | **E2E Networks** (Delhi/Mumbai/Chennai) | ~₹36,500 | True native UPI/INR + GST-clean. ⚠️ price hike 2026-07-01 — lock a committed plan before |
-
-Why you'd *not* take the GPU: a cloud vision API at gated volume is ~₹0.4–1.5k/mo
-(§4c), so the flat ~₹30k GPU only wins if your "interesting hours" are so high that
-gated-cloud approaches it — unlikely for a home dock. The GPU also keeps the
-**MLX→Linux vision port** on your plate (§6); the cloud-API path deletes that work.
+**GPU only if you self-host Qwen vision instead of the API** (not recommended — §4e):
+**Jarvislabs L4 24GB ~₹30k/mo** or **E2E L4 ~₹36.5k/mo**. ~8× the hybrid cost, and
+it keeps the MLX→Linux vision port (§6) on your plate.
 
 ### 4b. STT cost (cheap either way)
 
@@ -161,10 +168,11 @@ not 60. So:
 
 ### 4c. Vision cost — the real driver, and why the gate matters
 
-Today vision is **ungated**: a back-to-back loop, ~16,000 VLM calls/day even in an
-empty room (`modules/perception/processors/vision-snapshot.ts`). A cheap **activity
-gate** (§5) cuts that 90–95%. Cost by regime, **Gemini 2.5 Flash-Lite** (the
-recommended vision API — see §4d):
+Today the self-hosted Qwen vision loop is **ungated**: back-to-back, ~16,000
+calls/day even in an empty room (`modules/perception/processors/vision-snapshot.ts`).
+Moving to a cloud API only makes sense *with* a cheap **activity gate** (§5) that
+cuts that 90–95% — otherwise per-call billing is brutal. Cost by regime,
+**Gemini 2.5 Flash-Lite** (the recommended vision API — §4d):
 
 | Regime | Calls/day | Calls/mo | Vision API/mo/dock |
 |---|---|---|---|
@@ -288,3 +296,141 @@ These — not RTT — are what actually decide whether the move works.
 - Home **uplink** headroom for continuous video.
 - Whether **Qwen-on-OpenRouter** serverless supply is stable enough to be a fallback
   to Gemini.
+
+## 10. E2E setup runbook
+
+Concrete steps to stand the station up on an **E2E Chennai CPU node**. Decisions
+locked: **E2E, IP-only (no TLS/domain yet), systemd**. ⚠️ IP-only is for an initial
+**private** test — see §10.6 before leaving it 24/7-exposed.
+
+### 10.1 Create the node (E2E console)
+
+| Setting | Pick |
+|---|---|
+| Product | **Compute** node (NOT VPC — ₹4.8/hr buys isolation you don't need for one box) |
+| Series / plan | **C3 CPU-Intensive**, ~4 vCPU / 8GB |
+| Region | **Chennai** (only in-India DC) |
+| OS | **Ubuntu 22.04 LTS** |
+| Public IP | **Yes** (the dock connects from the public internet) |
+| Disk | **40–60 GB SSD** — OS + node_modules + faster-whisper model + `.data/` (see §10.5) |
+| SSH key | Upload your public key; you'll disable password login |
+| Backups | **Enable scheduled snapshots** (the recovery path, §10.7) |
+
+### 10.2 Firewall / security group
+
+Principle: expose the minimum. **Lock SSH + the app port to your own IP** while IP-only.
+
+| Rule | Port | Source | Why |
+|---|---|---|---|
+| SSH | 22/tcp | **your IP /32** | admin only |
+| Station | 8099/tcp | **your dock + your IP** (not 0.0.0.0/0 while unauthed) | dock + browser + WS hub `/ws` |
+| WebRTC media | **ephemeral UDP** (werift uses OS-assigned ports, no fixed range) | your dock IP | A/V stream. Easy to miss → perception silently fails |
+| Egress | all | — | outbound to Gemini/Slack/etc. |
+
+Notes: the SFU opens **ephemeral UDP** per connection (no fixed range to pin). With
+the dock behind home NAT, set **`STUN_URL=stun:stun.l.google.com:19302`**; add coturn
+only if the home NAT is symmetric/CGNAT (§6, D7). The sidecar ports **8078** (STT)
+and **8080** (vision-if-self-hosted) stay **localhost-only — never open them**.
+
+### 10.3 Provision the box
+
+```bash
+# Node 22+ (server requires >=22; no .nvmrc)
+curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -
+sudo apt-get install -y nodejs git ffmpeg python3-pip
+# faster-whisper sidecar deps (the only sidecar that runs locally)
+pip3 install faster-whisper
+git clone <repo> /opt/orbit && cd /opt/orbit/orbit-station
+npm install && npm run build
+```
+
+`.env` in `orbit-station/` (gitignored — never commit). Minimum:
+
+```
+PORT=8099
+HOST=0.0.0.0
+GEMINI_API_KEY=<key>                 # brain + summarizer + vision API
+PERCEPTION_SIDECAR_URL=http://127.0.0.1:8078   # local faster-whisper
+STUN_URL=stun:stun.l.google.com:19302          # WebRTC NAT traversal
+# TEMPORAL_SIDECAR_URL → set to the cloud-vision bridge once built, else leave unset (vision off)
+# OPENROUTER_API_KEY / SLACK_* / WHATSAPP_* as needed
+```
+
+### 10.4 Run as systemd (covers tasks + sidecars)
+
+Tasks already spawn as **child/tmux OS processes** that reconnect over the WS
+(`STATION_WS`), so the parent just needs to stay up and own its process group.
+Two units: the **station** and the **STT sidecar**.
+
+```ini
+# /etc/systemd/system/orbit-station.service
+[Unit]
+Description=orbit-station
+After=network-online.target orbit-stt.service
+Wants=network-online.target
+[Service]
+WorkingDirectory=/opt/orbit/orbit-station
+ExecStart=/usr/bin/npm run start
+Restart=always
+RestartSec=3
+KillMode=control-group          # reap child task processes on stop/restart
+Environment=NODE_ENV=production
+[Install]
+WantedBy=multi-user.target
+```
+
+```ini
+# /etc/systemd/system/orbit-stt.service  (faster-whisper on :8078)
+[Unit]
+Description=orbit STT sidecar (faster-whisper)
+After=network-online.target
+[Service]
+ExecStart=/usr/local/bin/faster-whisper-server --port 8078   # or the ported sidecar.py
+Restart=always
+RestartSec=3
+[Install]
+WantedBy=multi-user.target
+```
+
+```bash
+sudo systemctl enable --now orbit-stt orbit-station
+journalctl -u orbit-station -f          # logs
+```
+
+`Restart=always` = crash recovery; `enable` = start on boot; `KillMode=control-group`
+ensures spawned task processes die with the station rather than orphaning. If you set
+`STATION_WS` for tasks, point it at `ws://127.0.0.1:8099/ws` (same box).
+
+### 10.5 Persistent state (back this up)
+
+The server writes under the repo root — **survives restart, must survive node loss**:
+
+- `.data/orbit.db` (+ `-wal`/`-shm`) — sessions, config, observability (SQLite, WAL)
+- `.data/brain/<dock>/` — per-dock sessions, skills, task state/logs
+- `.data/feedback/`, `data/face-gallery.json` — feedback dumps, trained faces
+- `data/recordings/`, `data/captures/` — clips/snapshots (large; transient-ish)
+
+Sizing: DB starts <100MB; snapshots ~10–50KB each, recordings 1–5MB/min. 40–60GB is
+ample for one dock; watch `data/recordings/` if you record a lot.
+
+### 10.6 Security gap before 24/7-public (do NOT skip)
+
+Today the hub is **plain ws:// and accepts any connection** (no token — confirmed in
+`core/hub.ts`). IP-allowlisting in §10.2 is the *only* thing protecting it now, which
+is fine for a private test but brittle (dock IP changes, you travel). Before genuinely
+always-on/public, add **both**:
+1. **TLS** — `npm run certs` (self-signed; dock must trust it) **or** front it with
+   Caddy/Nginx + Let's Encrypt once you have a domain → `wss://`.
+2. **A WS auth token** on the `hello` handshake (does not exist yet — small add in
+   `core/hub.ts`; the dock sends it, the hub rejects without it).
+Until both exist, keep 8099 locked to known IPs.
+
+### 10.7 Recovery
+
+- **Crash** → systemd `Restart=always` brings it back in ~3s; tasks reconnect over WS.
+- **Reboot** → `enable`d units auto-start.
+- **Node loss / rebuild** → restore from E2E snapshot, OR re-provision (§10.3) and
+  restore `.data/` + `data/face-gallery.json` from backup, then `systemctl start`.
+- **Backups** → E2E scheduled snapshot (whole disk) is simplest. For finer-grained,
+  `rsync` or a nightly `cp` of `.data/` off-box. The SQLite DB is WAL/durable, so a
+  hot copy of `.data/orbit.db*` is consistent enough; snapshot for belt-and-braces.
