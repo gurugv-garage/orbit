@@ -29,12 +29,18 @@ import type { RouteContext, StationModule } from '../../core/module.js';
 import { OtaStore, ARTIFACT_FILE, type OtaMeta, type OtaTarget } from './store.js';
 import { launchBuild, isRunning, attachCmd, sessionName } from './build.js';
 
-const TARGETS: OtaTarget[] = ['body', 'app'];
+const TARGETS: OtaTarget[] = ['body', 'body-c3', 'app'];
 const isTarget = (s: string): s is OtaTarget => (TARGETS as string[]).includes(s);
 
 /** The software `kind` (hello v2) that owns each target — OTA targets the
- *  software in a slot, not a role. */
-const TARGET_KIND: Record<OtaTarget, string> = { body: 'dock-body-fw', app: 'dock-android-app' };
+ *  software in a slot, not a role. `body` and `body-c3` are the same firmware
+ *  for two non-interchangeable chips, so they carry distinct kinds and a board
+ *  only ever matches (and is offered) its own architecture's artifact. */
+const TARGET_KIND: Record<OtaTarget, string> = {
+  body: 'dock-body-fw',
+  'body-c3': 'dock-body-fw-c3',
+  app: 'dock-android-app',
+};
 
 /** Per-target live build-session status for the console (§7.4). */
 interface BuildStatus {
@@ -50,6 +56,7 @@ export function otaModule(getHub: () => Hub): StationModule {
   let bus: Bus;
   const build: Record<OtaTarget, BuildStatus> = {
     body: { state: 'idle', session: sessionName('body'), attach: attachCmd('body') },
+    'body-c3': { state: 'idle', session: sessionName('body-c3'), attach: attachCmd('body-c3') },
     app: { state: 'idle', session: sessionName('app'), attach: attachCmd('app') },
   };
 

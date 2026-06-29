@@ -116,6 +116,23 @@ esp_err_t wifi_sta_start(wifi_sta_on_got_ip_t on_got_ip) {
     ESP_ERROR_CHECK(esp_wifi_set_storage(WIFI_STORAGE_RAM));
     ESP_ERROR_CHECK(esp_wifi_start());
 
+#if CONFIG_IDF_TARGET_ESP32C3
+    // ESP32-C3 only: cap TX power well below the 20 dBm default. On the C3 — and
+    // especially a trace-antenna "mini" with light power decoupling — a full-power
+    // TX burst spikes current enough to sag the 3V3 rail mid-frame, corrupting the
+    // WPA 4-way handshake. The symptom is exactly what we saw: strong RSSI but the
+    // association never completes (AUTH_EXPIRE / ASSOC_EXPIRE / 4WAY_HANDSHAKE_
+    // TIMEOUT / AUTH_FAIL at -52 dBm on a freshly-rebooted AP). Dropping to ~8.5 dBm
+    // is the widely-reported fix (ESPHome output_power: 8.5; arduino-esp32 #6767,
+    // esphome/issues #4893). Unit is 0.25 dBm steps → 34 = 8.5 dBm. The S3 (separate
+    // USB + better decoupling) doesn't need this and keeps full power.
+    {
+        esp_err_t pr = esp_wifi_set_max_tx_power(34);   // 34 * 0.25 = 8.5 dBm
+        ESP_LOGI(TAG, "C3 TX power capped to 8.5 dBm (set_max_tx_power=34): %s",
+                 esp_err_to_name(pr));
+    }
+#endif
+
     ESP_LOGI(TAG, "wifi_init done — waiting for events ...");
     return ESP_OK;
 }

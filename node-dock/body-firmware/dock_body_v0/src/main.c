@@ -67,6 +67,13 @@ void app_main(void) {
     // parks each *advertised* part at its home pose (currently same as
     // center, but the indirection matters once homes diverge).
     ESP_ERROR_CHECK(servo_init_all());
+#ifdef BL_SERVO_SWEEP
+    // Opt-in wiring smoke test (-DBL_SERVO_SWEEP): move neck then foot through a
+    // gentle range, holding each pose, so you can confirm a new board's servo
+    // wiring before trusting the station path. Off in normal builds — flip the
+    // flag on in platformio.ini (the C3 env) only during bring-up.
+    servo_sweep_test();
+#endif
     ESP_ERROR_CHECK(bl_motion_init());
     xTaskCreate(&motion_task, "bl_motion", 4096, NULL, 5, NULL);
 

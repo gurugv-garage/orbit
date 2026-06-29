@@ -15,10 +15,12 @@ import { useCallback, useEffect, useState } from 'react';
 import { api } from '../lib/station';
 import { useStationEvents } from '../lib/useStation';
 
-type Target = 'body' | 'app';
-const TARGETS: Target[] = ['body', 'app'];
-const TARGET_LABEL: Record<Target, string> = { body: 'Body', app: 'App' };
-const TARGET_SUB: Record<Target, string> = { body: 'ESP32 firmware', app: 'Android' };
+type Target = 'body' | 'body-c3' | 'app';
+const TARGETS: Target[] = ['body', 'body-c3', 'app'];
+const TARGET_LABEL: Record<Target, string> = { body: 'Body', 'body-c3': 'Body (C3)', app: 'App' };
+const TARGET_SUB: Record<Target, string> = {
+  body: 'ESP32-S3 firmware', 'body-c3': 'ESP32-C3 firmware', app: 'Android',
+};
 
 interface ArtifactMeta { build: number; version: string; notes?: string; sha256: string; size: number; builtAt: string; }
 interface DevicePeer { id: string; dock?: string; label?: string; build?: number; status?: string; }
@@ -37,9 +39,10 @@ export function Ota() {
   const idle = (t: Target): BuildStatus => ({ state: 'idle', session: `ota-build-${t}`, attach: `tmux attach -t ota-build-${t}` });
   const [state, setState] = useState<Record<Target, TargetState>>({
     body: { artifact: null, peers: [], build: idle('body') },
+    'body-c3': { artifact: null, peers: [], build: idle('body-c3') },
     app: { artifact: null, peers: [], build: idle('app') },
   });
-  const [live, setLive] = useState<Record<Target, Live>>({ body: {}, app: {} });
+  const [live, setLive] = useState<Record<Target, Live>>({ body: {}, 'body-c3': {}, app: {} });
 
   const load = useCallback(() => {
     api.get<{ targets: { target: Target; artifact: ArtifactMeta | null; build: BuildStatus; peers: DevicePeer[] }[] }>('/ota')
@@ -54,7 +57,7 @@ export function Ota() {
   useStationEvents('ota', useCallback((e) => {
     const p = e.payload as { target?: Target } & Record<string, unknown>;
     const target = p?.target;
-    if (target !== 'body' && target !== 'app') return;
+    if (target === undefined || !TARGETS.includes(target)) return;
 
     if (e.kind === 'state') {
       setState((prev) => ({ ...prev, [target]: {
@@ -151,7 +154,7 @@ function OtaCard({ target, st, live, onChange }: { target: Target; st: TargetSta
       <div className="ota-section">
         <div className="ota-key ota-section-label">Devices</div>
         {st.peers.length === 0
-          ? <div className="ota-val dim">No {target === 'body' ? 'firmware' : 'app'} connected.</div>
+          ? <div className="ota-val dim">No {target === 'app' ? 'app' : 'firmware'} connected.</div>
           : st.peers.map((d) => (
             <div className="ota-row ota-device" key={d.id}>
               <span className="ota-val">{d.dock ?? d.label ?? d.id} · build {d.build ?? '?'}</span>

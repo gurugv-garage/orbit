@@ -52,15 +52,15 @@ CONFIG_ESP_MAIN_TASK_STACK_SIZE=6144
 CONFIG_HTTPD_WS_SUPPORT=y
 
 # ── OTA: dual-slot partitions + rollback (docs/OTA.md §4) ──────────────
-# The XIAO ESP32-S3 has 8 MB flash; IDF defaults to 2 MB, which can't hold the
-# dual 3 MB OTA slots. Pin it to 8 MB so the partition table + esptool agree.
-CONFIG_ESPTOOLPY_FLASHSIZE_8MB=y
-CONFIG_ESPTOOLPY_FLASHSIZE="8MB"
+# Flash size + the partition-table filename are CHIP-SPECIFIC and live in the
+# per-chip overlays (IDF merges sdkconfig.defaults.<IDF_TARGET> automatically),
+# since the S3 (8 MB) and C3 (4 MB) differ:
+#   sdkconfig.defaults.esp32s3 → 8 MB + partitions.csv
+#   sdkconfig.defaults.esp32c3 → 4 MB + partitions_4mb.csv + FULL RF cal
+# Everything below here is the same on both boards.
 
-# Custom partition table (partitions.csv) carrying ota_0/ota_1 + otadata,
-# so esp_https_ota can write the inactive slot and the bootloader can flip.
+# We use a custom partition table on both boards (the filename is set per-env).
 CONFIG_PARTITION_TABLE_CUSTOM=y
-CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
 
 # Rollback: a freshly-OTA'd image boots in pending-verify and the bootloader
 # auto-reverts to the last-good slot unless the firmware calls

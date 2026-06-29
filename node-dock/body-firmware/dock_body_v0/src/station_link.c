@@ -168,10 +168,22 @@ bool station_link_ready(void) {
     return s_client && esp_websocket_client_is_connected(s_client) && s_profile_sent;
 }
 
+// Software `kind` (hello v2) = the OTA target this binary belongs to. It is
+// ARCHITECTURE-SPECIFIC: an S3 (Xtensa) image and a C3 (RISC-V) image are never
+// interchangeable, so each chip advertises a distinct kind and the station keeps
+// a separate artifact per kind (orbit-station ota module TARGET_KIND).
+//   ESP32-S3 → "dock-body-fw"      (target body)
+//   ESP32-C3 → "dock-body-fw-c3"   (target body-c3)
+#if CONFIG_IDF_TARGET_ESP32C3
+#define BL_BODY_FW_KIND "dock-body-fw-c3"
+#else
+#define BL_BODY_FW_KIND "dock-body-fw"
+#endif
+
 static void send_hello(void) {
     // hello v2 (protocol.ts): this peer = the `body` slot of its dock, running
-    // software kind `dock-body-fw` (the OTA target), serving capability
-    // `servo` (the motion executor routes by cap, never by component name).
+    // software kind BL_BODY_FW_KIND (the OTA target — per-arch), serving
+    // capability `servo` (the motion executor routes by cap, never by name).
     cJSON *f = cJSON_CreateObject();
     cJSON_AddStringToObject(f, "t", "hello");
     cJSON_AddStringToObject(f, "role", "device");
@@ -183,7 +195,7 @@ static void send_hello(void) {
         cJSON_AddStringToObject(f, "dock", s_dock);
         cJSON_AddStringToObject(f, "component", "body");
     }
-    cJSON_AddStringToObject(f, "kind", "dock-body-fw");
+    cJSON_AddStringToObject(f, "kind", BL_BODY_FW_KIND);
     cJSON *caps = cJSON_CreateArray();
     cJSON_AddItemToArray(caps, cJSON_CreateString("servo"));
     cJSON_AddItemToObject(f, "caps", caps);

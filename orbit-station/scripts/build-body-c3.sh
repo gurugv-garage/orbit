@@ -1,31 +1,30 @@
 #!/usr/bin/env bash
-# OTA build hook — node-dock body (ESP32). docs/OTA.md §2.3.
+# OTA build hook — node-dock body, ESP32-C3 variant. docs/OTA.md §2.3.
 #
-# Runs in a tmux session launched by the ota module (so you can `tmux attach -t
-# ota-build-body` and watch/debug live). Builds the firmware, copies the .bin
-# into the station's artifact store, and writes built.json {build, version}
-# parsed from include/version.h — the SINGLE source of truth (§3.2), so the
-# artifact's recorded version can never disagree with the running binary.
-#
-# This hook is the ONLY thing that touches PlatformIO. A toolchain-less station
-# host skips it and hand-drops the .bin + built.json instead (§0.2).
+# Same firmware source as build-body.sh, built for the C3 (RISC-V) env instead
+# of the S3 (Xtensa) env. The two binaries are NOT interchangeable, so they are
+# separate OTA targets (body vs body-c3); a C3 only ever pulls this artifact.
+# Mirrors build-body.sh exactly except for the PlatformIO env + the out dir.
 set -euo pipefail
 
 # orbit-station/scripts/ -> repo root
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 FW_DIR="$ROOT/node-dock/body-firmware/dock_body_v0"
-OUT_DIR="$ROOT/orbit-station/var/ota/body"
+OUT_DIR="$ROOT/orbit-station/var/ota/body-c3"
 VERSION_H="$FW_DIR/include/version.h"
-PIO_ENV="seeed_xiao_esp32s3"   # the S3 (Xtensa) target; C3 is build-body-c3.sh
+PIO_ENV="esp32c3_mini"
 BIN_SRC="$FW_DIR/.pio/build/$PIO_ENV/firmware.bin"
 
 PIO="${PIO:-$HOME/.platformio/penv/bin/pio}"
 
-echo "== ota build: body =="
+echo "== ota build: body-c3 =="
 echo "firmware:   $FW_DIR"
+echo "pio env:    $PIO_ENV"
 echo "pio:        $PIO"
 
-# Parse the two version notions from version.h (docs/OTA.md §3.2).
+# Parse the two version notions from version.h (docs/OTA.md §3.2). build/version
+# are shared with the S3 image — it's the same source — but the artifact (and its
+# sha256) differs per arch, which is exactly why they're separate targets.
 BUILD="$(grep -E '#define[[:space:]]+BL_FW_BUILD' "$VERSION_H" | grep -oE '[0-9]+' | head -1)"
 VERSION="$(grep -E '#define[[:space:]]+BL_FW_VERSION' "$VERSION_H" | sed -E 's/.*"([^"]+)".*/\1/')"
 if [[ -z "$BUILD" || -z "$VERSION" ]]; then
@@ -45,8 +44,8 @@ fi
 
 mkdir -p "$OUT_DIR"
 cp "$BIN_SRC" "$OUT_DIR/firmware.bin"
-# The station's recordFromArtifact() recomputes sha256 + size from the copied
-# .bin; we just hand it the build/version it can't infer from bytes.
+# recordFromArtifact() recomputes sha256 + size from the copied .bin; we just
+# hand it the build/version it can't infer from bytes.
 cat > "$OUT_DIR/built.json" <<EOF
 { "build": $BUILD, "version": "$VERSION" }
 EOF

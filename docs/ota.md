@@ -150,9 +150,14 @@ Message kinds on `ota`:
 | browser → station | (REST) | `POST /api/ota/:target/build` `{notes?}` · `/announce` | console trigger (§7); `notes` = release details recorded in meta |
 | station → browser | `state` | `{ target, artifact, peers[] }` | console snapshot: artifact meta + per-device `build`/status |
 
-`target` is `"body"` or `"app"`. `url` is absolute so a device needs no base-URL
-config. `available` is sent **directed** (`to: peerId`) so each device only hears
-about its own artifact — same `to:` mechanism the config module already uses.
+`target` is `"body"`, `"body-c3"`, or `"app"`. The two body targets are the SAME
+firmware source built for two non-interchangeable chips — `body` = ESP32-S3
+(Xtensa, advertises hello kind `dock-body-fw`), `body-c3` = ESP32-C3 (RISC-V,
+kind `dock-body-fw-c3`). Each board matches only its own kind (ota module
+`TARGET_KIND`), so an S3 image is never offered to a C3 or vice versa. `url` is
+absolute so a device needs no base-URL config. `available` is sent **directed**
+(`to: peerId`) so each device only hears about its own artifact — same `to:`
+mechanism the config module already uses.
 `progress`/`result` are **broadcast on `ota`** (not directed) so the **browser
 console** subscribing to `ota` sees every device's live status — that's what
 drives the UI in §7.
@@ -193,7 +198,8 @@ A small on-disk store (a dir, e.g. `orbit-station/var/ota/`, gitignored):
 
 ```
 var/ota/
-  body/  firmware.bin  meta.json   # see §3.3 — { target, build, version, sha256, size, builtAt }
+  body/     firmware.bin  meta.json   # see §3.3 — { target, build, version, sha256, size, builtAt }  (ESP32-S3)
+  body-c3/  firmware.bin  meta.json   # same firmware built for ESP32-C3 (RISC-V) — separate artifact
   app/   app.apk        meta.json
 ```
 

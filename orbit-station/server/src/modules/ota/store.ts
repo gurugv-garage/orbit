@@ -3,8 +3,13 @@
  * per target. See docs/ota.md §2.1 + §3.3.
  *
  *   var/ota/
- *     body/  firmware.bin  meta.json
- *     app/   app.apk        meta.json
+ *     body/    firmware.bin  meta.json   (ESP32-S3 body, Xtensa)
+ *     body-c3/ firmware.bin  meta.json   (ESP32-C3 body, RISC-V)
+ *     app/     app.apk        meta.json
+ *
+ * `body` and `body-c3` are the SAME firmware source built for two chips whose
+ * binaries are not interchangeable; each board pulls only its own arch's
+ * artifact (matched by hello `kind` — see the ota module's TARGET_KIND).
  *
  * meta.json (written by the build hooks, never hand-typed):
  *   { target, build, version, sha256, size, builtAt }
@@ -18,7 +23,7 @@ import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-export type OtaTarget = 'body' | 'app';
+export type OtaTarget = 'body' | 'body-c3' | 'app';
 
 export interface OtaMeta {
   target: OtaTarget;
@@ -40,6 +45,7 @@ export interface OtaMeta {
 /** The artifact filename per target (matches the REST download path). */
 export const ARTIFACT_FILE: Record<OtaTarget, string> = {
   body: 'firmware.bin',
+  'body-c3': 'firmware.bin',
   app: 'app.apk',
 };
 
@@ -50,6 +56,7 @@ const OTA_DIR = join(STATION_ROOT, 'var', 'ota');
 export class OtaStore {
   constructor(private readonly root = OTA_DIR) {
     mkdirSync(join(root, 'body'), { recursive: true });
+    mkdirSync(join(root, 'body-c3'), { recursive: true });
     mkdirSync(join(root, 'app'), { recursive: true });
   }
 

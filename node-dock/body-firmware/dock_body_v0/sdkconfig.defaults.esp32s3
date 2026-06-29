@@ -1,0 +1,13 @@
+# Per-CHIP sdkconfig overlay — ESP32-S3 (8 MB flash).
+# IDF auto-merges sdkconfig.defaults.<IDF_TARGET> on top of sdkconfig.defaults
+# (kconfig.cmake), so the filename suffix MUST be the chip name `esp32s3` — NOT
+# the PlatformIO env name. Chip-specific bits only; shared lives in
+# sdkconfig.defaults.
+
+# The XIAO ESP32-S3 has 8 MB flash; IDF defaults to 2 MB, which can't hold the
+# dual 3 MB OTA slots. Pin it to 8 MB so the partition table + esptool agree.
+CONFIG_ESPTOOLPY_FLASHSIZE_8MB=y
+CONFIG_ESPTOOLPY_FLASHSIZE="8MB"
+
+# 8 MB dual-3 MB-OTA table.
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"

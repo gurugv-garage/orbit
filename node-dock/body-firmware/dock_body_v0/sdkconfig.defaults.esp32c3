@@ -1,0 +1,28 @@
+# Per-CHIP sdkconfig overlay — ESP32-C3 (4 MB flash).
+# IDF auto-merges sdkconfig.defaults.<IDF_TARGET> on top of sdkconfig.defaults
+# (kconfig.cmake), so the filename suffix MUST be the chip name `esp32c3` — NOT
+# the PlatformIO env name. Chip-specific bits only; shared lives in
+# sdkconfig.defaults.
+#
+# The C3 has no mcpwm peripheral — the servo driver compiles its LEDC
+# backend on this target (see src/servo.c). The native USB-Serial/JTAG
+# console config in sdkconfig.defaults applies unchanged (the C3 mini
+# enumerates the same way the XIAO S3 does).
+
+# C3 mini ships 4 MB flash. IDF defaults to 2 MB; pin to 4 MB so the
+# partition table + esptool agree.
+CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
+CONFIG_ESPTOOLPY_FLASHSIZE="4MB"
+
+# 4 MB dual-OTA table (1.875 MB slots) — see partitions_4mb.csv.
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions_4mb.csv"
+
+# ── RF calibration: FULL on every boot ────────────────────────────────
+# After an erase_flash the stored RF calibration is gone, and the default
+# PARTIAL calibration can settle on a bad blob — the symptom is a radio
+# that hears beacons fine (strong RSSI) but corrupts the timing-sensitive
+# WPA 4-way handshake → AUTH_EXPIRE / 4WAY_HANDSHAKE_TIMEOUT / AUTH_FAIL at
+# good signal. FULL calibration regenerates from scratch each boot (adds a
+# few ms to startup), which is the robust choice on the C3's trace antenna.
+CONFIG_ESP_PHY_RF_CAL_FULL=y
+# CONFIG_ESP_PHY_RF_CAL_PARTIAL is not set

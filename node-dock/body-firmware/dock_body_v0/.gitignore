@@ -13,7 +13,9 @@ dependencies.lock
 .vscode/ipch
 
 # ESP-IDF env-specific sdkconfig — regenerated from sdkconfig.defaults
+# (+ the per-env sdkconfig.defaults.<env> overlay). One per board env.
 sdkconfig.seeed_xiao_esp32s3
+sdkconfig.esp32c3_mini
 sdkconfig.old
 
 # Secrets — Wi-Fi credentials live here, never commit
