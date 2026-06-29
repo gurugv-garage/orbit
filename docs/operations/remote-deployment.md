@@ -49,6 +49,10 @@
   - [11.3 Management surface (E2E, current binding)](#113-management-surface-e2e-current-binding)
   - [11.4 Lifecycle ops (intent → how)](#114-lifecycle-ops-intent--how)
   - [11.5 What stays constant across providers](#115-what-stays-constant-across-providers)
+- [12. Getting the code onto the VM](#12-getting-the-code-onto-the-vm)
+  - [12.1 Options weighed](#121-options-weighed)
+  - [12.2 Chosen path — SSH deploy key](#122-chosen-path--ssh-deploy-key)
+  - [12.3 Secrets never travel with the code](#123-secrets-never-travel-with-the-code)
 <!-- /TOC -->
 
 ## 1. Goal and the core finding
@@ -580,3 +584,48 @@ The app contract is provider-independent: **ports** (8099 + ephemeral UDP; sidec
 localhost), **env** (§10.3 `.env`), **processes** (§10.4 systemd), **state** (§10.5
 `.data/` + `data/face-gallery.json`), **security to-do** (§10.6 wss + WS token). Only
 §11.1–11.3 (box, firewall, management API) re-bind when the provider changes.
+
+## 12. Getting the code onto the VM
+
+Two questions: **initial delivery** and **ongoing updates**. The repo is a TS/Vite
+monorepo with secrets (`.env`) that must never travel with the code.
+
+### 12.1 Options weighed
+
+| Option | Initial | Updates | Verdict |
+|---|---|---|---|
+| **git clone + pull (SSH deploy key)** ✅ | `git clone` | `git pull` + rebuild | **Chosen.** Standard, on-box history, one-command updates; deploy key is a tightly-scoped read-only secret |
+| rsync/scp from laptop | push working tree | re-push | **Escape hatch** — good for first bring-up / quick uncommitted patch; version on box gets fuzzy, easy to push `node_modules`/`.data` by accident |
+| CI/CD (Actions → build → deploy) | pipeline | pipeline | **Future** — overkill for one personal box now |
+| Build artifact / container | ship built output | ship artifact | Deferred — no Dockerfile yet; in-place build is simplest at one-box scale |
+
+### 12.2 Chosen path — SSH deploy key
+
+Remote is SSH: `git@github.com:gurugv-garage/orbit.git`. On the VM:
+
+```bash
+# Deploy key: generate on the VM, add the PUBLIC key to GitHub
+#   → repo Settings → Deploy keys (read-only; scoped to this repo)  [recommended]
+#   → or account SSH keys (account-wide) — also works
+ssh-keygen -t ed25519 -C "orbit-vm" -f ~/.ssh/id_ed25519 -N ""   # if no key yet
+cat ~/.ssh/id_ed25519.pub                                         # paste into GitHub
+
+ssh -T git@github.com    # VERIFY first: expect "Hi gurugv-garage/orbit! ...authenticated"
+cd ~/code && git clone git@github.com:gurugv-garage/orbit.git
+```
+
+- **Read-only** deploy key (default) — the box pulls, never pushes. Don't enable write.
+- **Scoped to orbit** only (least privilege).
+- **Update flow:** `cd ~/code/orbit && git pull && (cd orbit-station && npm install && npm run build) && sudo systemctl restart orbit-station`.
+
+### 12.3 Secrets never travel with the code
+
+`.env` (provider keys) and `data/face-gallery.json` (trained faces) are **gitignored**
+— they are **created on the VM**, never cloned/pulled/rsynced into git:
+
+- `.env` → author by hand on the box from the §10.3 template (or `scp` it **once**,
+  separately from any code sync).
+- `face-gallery.json` → `scp` from the laptop if migrating trained faces; else it
+  rebuilds as faces are re-enrolled.
+- If you ever `rsync` code (the escape hatch), **exclude** `node_modules`, `.data/`,
+  `data/`, `.env` — `rsync -a --exclude node_modules --exclude .data --exclude .env …`.
