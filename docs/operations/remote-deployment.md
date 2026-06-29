@@ -42,6 +42,7 @@
   - [10.5 Persistent state (back this up)](#105-persistent-state-back-this-up)
   - [10.6 Security gap before 24/7-public (do NOT skip)](#106-security-gap-before-247-public-do-not-skip)
   - [10.7 Recovery](#107-recovery)
+  - [10.8 TURN fallback (only if STUN fails)](#108-turn-fallback-only-if-stun-fails)
 - [11. Provider-neutral infra spec](#11-provider-neutral-infra-spec)
   - [11.1 Desired box](#111-desired-box)
   - [11.2 Firewall (desired rules — same on any provider)](#112-firewall-desired-rules--same-on-any-provider)
@@ -467,6 +468,56 @@ Until both exist, keep 8099 locked to known IPs.
 - **Backups** → E2E scheduled snapshot (whole disk) is simplest. For finer-grained,
   `rsync` or a nightly `cp` of `.data/` off-box. The SQLite DB is WAL/durable, so a
   hot copy of `.data/orbit.db*` is consistent enough; snapshot for belt-and-braces.
+
+### 10.8 TURN fallback (only if STUN fails)
+
+Do this **only if** the media path doesn't connect with `ICE_PORT_RANGE` + `STUN_URL`
+(§10.2) — i.e. your home ISP is symmetric/CGNAT and direct UDP can't be punched. Test
+first; most setups don't need TURN. When you do, a TURN relay sits on the VM and media
+flows *through* it (extra CPU/bandwidth, but it always works).
+
+**Heads-up — TURN needs a small code change too.** The SFU today builds `ICE_SERVERS`
+from **`STUN_URL` only** (`modules/media/sfu.ts`) — it does **not** read TURN
+url/username/password yet. So enabling TURN is two parts: (a) run coturn, (b) a small
+edit to pass TURN creds into `ICE_SERVERS`. Part (b) is the only code change; it's not
+wired today.
+
+**(a) Run coturn on the VM:**
+
+```bash
+sudo apt-get install -y coturn
+# /etc/turnserver.conf (minimal, long-term-credential):
+#   listening-port=3478
+#   min-port=49160
+#   max-port=49200          # relay range — open these UDP too
+#   realm=orbit
+#   user=orbit:<strong-secret>
+#   external-ip=<VM_PUBLIC_IP>
+#   fingerprint
+#   lt-cred-mech
+sudo systemctl enable --now coturn
+```
+
+Firewall additions (on top of §10.2): **3478/UDP+TCP** (TURN control) and the relay
+range **49160–49200/UDP**, from your dock IP.
+
+**(b) Feed TURN creds to the SFU** — extend `ICE_SERVERS` in `sfu.ts` to also include a
+TURN entry when env is set, e.g.:
+
+```
+TURN_URL=turn:<VM_PUBLIC_IP>:3478
+TURN_USERNAME=orbit
+TURN_PASSWORD=<strong-secret>
+```
+
+so `ICE_SERVERS` becomes `[{urls: STUN_URL}, {urls: TURN_URL, username, credential}]`.
+(For tighter security, switch coturn to **`use-auth-secret`** time-limited credentials
+and have the station mint short-lived TURN creds — overkill for a single private dock,
+note it as a hardening step.)
+
+**Verify** in `chrome://webrtc-internals` (or the dock logs): a working TURN path shows
+ICE candidates of type **`relay`** being selected. If you only ever see `host`/`srflx`
+failing, TURN isn't being used — recheck creds and the relay-port firewall rule.
 
 ## 11. Provider-neutral infra spec
 
