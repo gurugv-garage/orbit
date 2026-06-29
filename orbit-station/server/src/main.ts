@@ -261,9 +261,11 @@ async function main() {
   process.once('SIGHUP', () => shutdown('SIGHUP'));
   // BACKSTOP for the dev tree (tsx watch → us): if a kill signal never propagates
   // down, the parent's stdin pipe still closes when the parent dies — exit on that
-  // so we never orphan and hold the port. (Skipped under a real TTY / production
-  // `start`.) The web watcher is our own child now, so it dies with us via stopWebWatch.
-  if (!process.stdin.isTTY) {
+  // so we never orphan and hold the port. Gate on STATION_WEB_WATCH (set only by the
+  // dev runner, never by production `start`): under systemd, production `start` is
+  // also non-TTY with an immediately-closing /dev/null stdin, so the old
+  // `!isTTY` guard misfired and self-terminated the server right after boot.
+  if (process.env.STATION_WEB_WATCH === '1' && !process.stdin.isTTY) {
     const onParentGone = () => shutdown('parent-exit');
     process.stdin.on('end', onParentGone);
     process.stdin.on('close', onParentGone);
