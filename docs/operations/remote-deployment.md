@@ -42,6 +42,12 @@
   - [10.5 Persistent state (back this up)](#105-persistent-state-back-this-up)
   - [10.6 Security gap before 24/7-public (do NOT skip)](#106-security-gap-before-247-public-do-not-skip)
   - [10.7 Recovery](#107-recovery)
+- [11. Provider-neutral infra spec](#11-provider-neutral-infra-spec)
+  - [11.1 Desired box](#111-desired-box)
+  - [11.2 Firewall (desired rules — same on any provider)](#112-firewall-desired-rules--same-on-any-provider)
+  - [11.3 Management surface (E2E, current binding)](#113-management-surface-e2e-current-binding)
+  - [11.4 Lifecycle ops (intent → how)](#114-lifecycle-ops-intent--how)
+  - [11.5 What stays constant across providers](#115-what-stays-constant-across-providers)
 <!-- /TOC -->
 
 ## 1. Goal and the core finding
@@ -434,3 +440,65 @@ Until both exist, keep 8099 locked to known IPs.
 - **Backups** → E2E scheduled snapshot (whole disk) is simplest. For finer-grained,
   `rsync` or a nightly `cp` of `.data/` off-box. The SQLite DB is WAL/durable, so a
   hot copy of `.data/orbit.db*` is consistent enough; snapshot for belt-and-braces.
+
+## 11. Provider-neutral infra spec
+
+The box is defined here as **intent, not a provider script** — *what* it must be, so
+any agent/human can provision it on E2E today (REST API / CLI) or another cloud later.
+E2E is the **current binding** (§10); this section is the contract that survives a
+provider switch. Deliberately **not** Terraform: no lock-in, no state file — the repo
+states the desired end-state and the lifecycle ops, and the provisioner maps them to
+whatever API the platform exposes.
+
+### 11.1 Desired box
+
+| Property | Requirement | E2E binding (current) |
+|---|---|---|
+| Compute | ≥4 vCPU / 8GB, non-burstable (sustained STT) | C3 CPU-Intensive, ~4 vCPU/8GB |
+| OS | Ubuntu 22.04 LTS x86_64 | same |
+| Region | In-India (low RTT to dock) | **Chennai** (E2E's only India DC) |
+| Disk | 40–60GB SSD | same |
+| Public IP | one, static/reserved | reserved IP |
+| Network isolation | none needed (single box) | plain **Compute**, not VPC |
+| Snapshots | scheduled, retained | E2E scheduled snapshot |
+
+### 11.2 Firewall (desired rules — same on any provider)
+
+| Port/proto | Source | Purpose |
+|---|---|---|
+| 22/tcp | admin IP /32 | SSH |
+| 8099/tcp | dock IP + admin IP (⚠ not `0.0.0.0/0` while hub is unauthed) | station WS/HTTP |
+| ephemeral UDP | dock IP | WebRTC media (OS-assigned ports; no fixed range) |
+| 8078, 8080/tcp | **localhost only — never expose** | sidecars |
+| egress | all | cloud APIs |
+
+### 11.3 Management surface (E2E, current binding)
+
+- **REST API** — full lifecycle, **166 compute endpoints**: create, list, power
+  on/off/reboot, **snapshot/image**, reserved IP, **security groups**, backups.
+  Auth: `Authorization: Bearer <API_TOKEN>` (MyAccount → API → create token).
+  Base: `https://api.e2enetworks.com/myaccount/api/v1/` (verify in
+  [docs.e2enetworks.com/api/myaccount](https://docs.e2enetworks.com/api/myaccount/)).
+- **CLI** — `pip install e2e-cli`; `e2e_cli alias add` (API key + auth token). Thin:
+  node create/list/get/delete only — **no power/firewall/snapshot** (use the API for those).
+- **Token handling** — put it in a gitignored file as `E2E_API_TOKEN=…` (e.g.
+  `orbit-station/.env`); never commit it, never paste it in chat/logs.
+
+### 11.4 Lifecycle ops (intent → how)
+
+| Op | Intent | E2E how |
+|---|---|---|
+| Provision | create §11.1 box + §11.2 firewall + attach reserved IP | `POST /nodes/` then security-group + IP endpoints |
+| Configure | §10.3 (Node 22, faster-whisper, `.env`, build) | SSH / cloud-init user-data |
+| Run | §10.4 systemd units (station + STT) | on the box |
+| Snapshot | before risky change / nightly | snapshot endpoint or scheduled backups |
+| Reboot/stop | maintenance | power-action endpoint |
+| Recover | §10.7 | restore snapshot, or re-provision + restore `.data/` |
+| Re-host elsewhere | same spec, new provider | map §11.1–11.2 to that cloud's API |
+
+### 11.5 What stays constant across providers
+
+The app contract is provider-independent: **ports** (8099 + ephemeral UDP; sidecars
+localhost), **env** (§10.3 `.env`), **processes** (§10.4 systemd), **state** (§10.5
+`.data/` + `data/face-gallery.json`), **security to-do** (§10.6 wss + WS token). Only
+§11.1–11.3 (box, firewall, management API) re-bind when the provider changes.
