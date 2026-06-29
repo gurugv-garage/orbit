@@ -57,6 +57,18 @@ const ICE_SERVERS = process.env.STUN_URL
   ? [{ urls: process.env.STUN_URL }]
   : []; // LAN: host candidates suffice. STUN_URL is the escape hatch.
 
+// Pin WebRTC media to a fixed UDP port range so a remote-VM firewall can allow
+// exactly it (otherwise werift picks random ephemeral ports — unfirewallable).
+// One UDP port is taken per PeerConnection (1 per dock producer + 1 per browser
+// viewer), so size the range to peak concurrency. Unset → ephemeral (LAN default).
+// e.g. ICE_PORT_RANGE=40000-40100
+const ICE_PORT_RANGE: [number, number] | undefined = process.env.ICE_PORT_RANGE
+  ? (process.env.ICE_PORT_RANGE.split('-').map(Number) as [number, number])
+  : undefined;
+
+/** Shared peer-connection config (ICE servers + optional pinned UDP range). */
+const PC_CONFIG = { iceServers: ICE_SERVERS, icePortRange: ICE_PORT_RANGE };
+
 /** Compose the viewer map key — one PeerConnection per (browser, stream). */
 const vkey = (browserId: string, streamId: string) => `${browserId}|${streamId}`;
 
@@ -90,7 +102,7 @@ export class Sfu {
     // Same peer re-offering (reconnect / restart) → replace just its producer.
     if (this.#producers.has(streamId)) this.#closeProducer(streamId);
 
-    const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
+    const pc = new RTCPeerConnection(PC_CONFIG);
     const producer: Producer = { streamId, label, pc };
     this.#producers.set(streamId, producer);
 
@@ -216,7 +228,7 @@ export class Sfu {
   }
 
   async #createViewer(browserId: string, streamId: string): Promise<void> {
-    const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
+    const pc = new RTCPeerConnection(PC_CONFIG);
     const viewer: Viewer = { browserId, streamId, pc };
     this.#viewers.set(vkey(browserId, streamId), viewer);
     pc.onIceCandidate.subscribe((c) => {

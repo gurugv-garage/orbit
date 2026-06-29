@@ -245,9 +245,12 @@ These — not RTT — are what actually decide whether the move works.
    CPU; preserves the `avg_logprob`/`no_speech_prob`/`compression_ratio` hallucination
    knobs). Same HTTP contract (`/transcribe`, `/health`) → station needs **zero**
    changes. *Vision sidecar need not be ported — it becomes a cloud API call.*
-2. **STUN/TURN for WebRTC.** The SFU defaults to LAN host candidates (`sfu.ts`).
-   Set `STUN_URL`; for symmetric/CGNAT home NATs add a **TURN server** (coturn) —
-   not yet wired, a small add.
+2. **WebRTC media: pin ports + NAT traversal.** (a) **Pin the UDP range** so the
+   firewall can allow it — set `ICE_PORT_RANGE` (built: `sfu.ts` passes `icePortRange`
+   to werift; one UDP port per peer connection). (b) **STUN** via `STUN_URL` for the
+   common case; for **symmetric/CGNAT home NAT** (common on Indian IPv4) add a **TURN
+   relay (coturn)** — not yet wired, a small add. Media fails *silently* if this is
+   wrong (see §10.2).
 3. **Security — the hub becomes internet-facing.** Add `wss://` (TLS; `npm run
    certs` exists, want a real cert) and **an auth token on the WS handshake**
    (does not exist today). **Non-optional before exposing the brain/body plane.**
@@ -330,13 +333,27 @@ Principle: expose the minimum. **Lock SSH + the app port to your own IP** while 
 |---|---|---|---|
 | SSH | 22/tcp | **your IP /32** | admin only |
 | Station | 8099/tcp | **your dock + your IP** (not 0.0.0.0/0 while unauthed) | dock + browser + WS hub `/ws` |
-| WebRTC media | **ephemeral UDP** (werift uses OS-assigned ports, no fixed range) | your dock IP | A/V stream. Easy to miss → perception silently fails |
+| WebRTC media | **40000–40100/UDP** (pinned, see below) | your dock IP | A/V stream. Easy to miss → perception **fails silently** |
 | Egress | all | — | outbound to Gemini/Slack/etc. |
 
-Notes: the SFU opens **ephemeral UDP** per connection (no fixed range to pin). With
-the dock behind home NAT, set **`STUN_URL=stun:stun.l.google.com:19302`**; add coturn
-only if the home NAT is symmetric/CGNAT (§6, D7). The sidecar ports **8078** (STT)
-and **8080** (vision-if-self-hosted) stay **localhost-only — never open them**.
+**Pinning the WebRTC UDP ports (important).** By default werift grabs a *random*
+ephemeral UDP port per peer connection — unfirewallable, and when media can't connect
+it **fails silently** (WS still up, dock looks online, but perception gets no A/V).
+The fix is built in: set **`ICE_PORT_RANGE=40000-40100`** and the SFU pins all media to
+that range (`modules/media/sfu.ts`, env-gated — unset = ephemeral, LAN default). Open
+exactly that range in the firewall. **Size it to peak concurrency: one UDP port per
+peer connection = 1 per dock + 1 per browser viewer.** 100 ports is generous for one
+dock; widen if you run many viewers.
+
+**NAT traversal.** Dock-at-home + station-on-VM means both sides are behind NAT. Set
+**`STUN_URL=stun:stun.l.google.com:19302`** (lets each side discover its public
+address). If your **home ISP is CGNAT/symmetric NAT** (common on Indian IPv4 — Jio/
+Airtel), STUN alone won't punch through and **direct UDP won't work at all** → you must
+run a **TURN relay (coturn)** and point the dock/station at it. You can only tell by
+testing: pin ports + STUN first, verify media; add TURN only if it fails (§6, D7).
+
+The sidecar ports **8078** (STT) and **8080** (vision-if-self-hosted) stay
+**localhost-only — never open them**.
 
 ### 10.3 Provision the box
 
@@ -356,8 +373,9 @@ npm install && npm run build
 PORT=8099
 HOST=0.0.0.0
 GEMINI_API_KEY=<key>                 # brain + summarizer + vision API
-PERCEPTION_SIDECAR_URL=http://127.0.0.1:8078   # local faster-whisper
+PERCEPTION_SIDECAR_URL=http://127.0.0.1:8078   # local STT sidecar
 STUN_URL=stun:stun.l.google.com:19302          # WebRTC NAT traversal
+ICE_PORT_RANGE=40000-40100                      # pin WebRTC media UDP (open this in firewall)
 # TEMPORAL_SIDECAR_URL → set to the cloud-vision bridge once built, else leave unset (vision off)
 # OPENROUTER_API_KEY / SLACK_* / WHATSAPP_* as needed
 ```
@@ -477,7 +495,7 @@ whatever API the platform exposes.
 |---|---|---|
 | 22/tcp | admin IP /32 | SSH |
 | 8099/tcp | dock IP + admin IP (⚠ not `0.0.0.0/0` while hub is unauthed) | station WS/HTTP |
-| ephemeral UDP | dock IP | WebRTC media (OS-assigned ports; no fixed range) |
+| 40000–40100/UDP | dock IP | WebRTC media — **pinned** via `ICE_PORT_RANGE` (size to peak peer connections; +coturn ports if TURN) |
 | 8078, 8080/tcp | **localhost only — never expose** | sidecars |
 | egress | all | cloud APIs |
 
