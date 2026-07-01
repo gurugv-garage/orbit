@@ -68,7 +68,7 @@ function resolveTo(to?: string): string {
 /**
  * Normalize a recipient to the bare digits the Graph API wants. The API accepts
  * E.164 with or without the leading `+`; we strip the `+` (and any spaces /
- * dashes the model may include) so `+91 98442 11401` and `919844211401` are
+ * dashes the model may include) so `+91 98123 45678` and `919812345678` are
  * equivalent. A leading `00` international prefix is dropped too.
  */
 function normalizeTo(to: string): string {

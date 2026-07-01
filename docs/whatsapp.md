@@ -3,9 +3,9 @@
 > **Status: outbound BUILT & live; inbound webhook not yet built.** The
 > `send_to_whatsapp` brain tool + `integrations/whatsapp.ts` exist and are gated
 > on `WHATSAPP_TOKEN`; a live check (`npm run whatsapp:check -w server`) sends a
-> real message. The Meta app "orbit" (App ID `1760660891596109`, business
-> portfolio "Guru GV", WABA `2488487064924852`) is set up with the free **test
-> number +1 555 667 4854** and a permanent System User token. **Still a spec:**
+> real message. The Meta app (App ID, business portfolio, WABA — your own
+> values from the Meta setup below) is set up with the free **test
+> number** and a permanent System User token. **Still a spec:**
 > the inbound webhook (§5) and sending photos.
 
 The dock brain talks to WhatsApp with one tool, in-process on orbit-station (no
@@ -89,8 +89,8 @@ is independent; one bad / non-allow-listed number doesn't abort the batch.
 `sendMessageToMany()` returns `{ sent[], failed[] }` and the tool reports e.g.
 *"Sent to 2 people, but couldn't reach: +1555…"* so the brain narrates the truth.
 
-**Decision — normalize + dedupe recipients.** The model may pass `+91 98442
-11401`, `919844211401`, or `0049 151…`; `normalizeTo()` strips `+`, spaces,
+**Decision — normalize + dedupe recipients.** The model may pass `+1 555 123
+4567`, `15551234567`, or `0049 151…`; `normalizeTo()` strips `+`, spaces,
 dashes and a leading `00`, validates 6–15 digits, and the fan-out dedupes — so
 the same person isn't messaged twice and a malformed entry becomes a clean
 `failed` row, not a thrown batch.
@@ -125,7 +125,7 @@ send; and a real LLM brain turn was confirmed to fire the tool end-to-end.
 
 | Item | Notes |
 |---|---|
-| **Contacts: name → number** | *"Message guru"* can't resolve a name to a number — WhatsApp has no directory (unlike Slack's `resolveUser`), so the map must be ours. **Proposed:** a small contacts table — simplest is env (`WHATSAPP_CONTACTS="guru=+919844211401,amma=+91…"`) parsed into a `resolveContact(name)`; or a JSON file / config-console list when it grows. The tool gains a `name`/`contact` arg (or `to` accepts a known name) that resolves via this map, falling back to "ask for the number" on a miss — never guessing. Could later be unified with perception identities (the dock already names faces) so "tell the person I'm looking at". |
+| **Contacts: name → number** | *"Message guru"* can't resolve a name to a number — WhatsApp has no directory (unlike Slack's `resolveUser`), so the map must be ours. **Proposed:** a small contacts table — simplest is env (`WHATSAPP_CONTACTS="alice=+15551234567,bob=+1…"`) parsed into a `resolveContact(name)`; or a JSON file / config-console list when it grows. The tool gains a `name`/`contact` arg (or `to` accepts a known name) that resolves via this map, falling back to "ask for the number" on a miss — never guessing. Could later be unified with perception identities (the dock already names faces) so "tell the person I'm looking at". |
 | **Inbound webhook** (`/api/whatsapp`) | The dock *hearing* WhatsApp replies. Design is §5 + "How it works → Inbound"; needs a public HTTPS URL (tunnel) and a `/api/whatsapp` module mounting the verify-handshake + message parse into the same brain entry point Slack inbound uses. |
 | **Sending photos** | Parallel to Slack's `take_photo` — upload media + send an `image` message. Not yet wired. |
 | **Branding (name + logo)** | The test number shows a raw number; a custom display name + the eyes profile photo need a **registered** business number (see "Branding" under §6). Deferred. |

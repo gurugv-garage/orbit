@@ -8,7 +8,7 @@
 set -euo pipefail
 
 # --- target VM ---------------------------------------------------------------
-VM_IP="${VM_IP:-151.185.45.155}"
+VM_IP="${VM_IP:?set VM_IP to your VM's public IP (e.g. export VM_IP=1.2.3.4)}"
 VM_USER="${VM_USER:-root}"
 SSH_KEY="${SSH_KEY:-$HOME/.ssh/id_ed25519}"
 

@@ -67,18 +67,18 @@ test('sendMessage posts to the messages endpoint with bearer auth + text body', 
 
 test('recipient is normalized (strips +, spaces, dashes, leading 00)', async () => {
   stubFetch();
-  await sendMessage({ to: '+91 98442-11401', text: 'x' });
-  assert.equal(bodyOf(calls[0]!).to, '919844211401');
+  await sendMessage({ to: '+91 98123-45678', text: 'x' });
+  assert.equal(bodyOf(calls[0]!).to, '919812345678');
   await sendMessage({ to: '0049 151 12345678', text: 'x' });
   assert.equal(bodyOf(calls[1]!).to, '4915112345678');
 });
 
 test('falls back to WHATSAPP_DEFAULT_TO when no recipient given', async () => {
-  process.env.WHATSAPP_DEFAULT_TO = '+919844211401';
-  assert.equal(whatsappDefaultTo(), '+919844211401');
+  process.env.WHATSAPP_DEFAULT_TO = '+919812345678';
+  assert.equal(whatsappDefaultTo(), '+919812345678');
   stubFetch();
   await sendMessage({ text: 'default route' });
-  assert.equal(bodyOf(calls[0]!).to, '919844211401');
+  assert.equal(bodyOf(calls[0]!).to, '919812345678');
 });
 
 test('throws a clear error when no recipient and no default', async () => {
@@ -99,12 +99,12 @@ test('surfaces the Graph API error message on a non-ok response', async () => {
 
 test('sendMessageToMany fans out to each recipient (normalized + deduped)', async () => {
   stubFetch();
-  const r = await sendMessageToMany(['+15551234567', '+91 98442-11401', '15551234567'], 'hi all');
+  const r = await sendMessageToMany(['+15551234567', '+91 98123-45678', '15551234567'], 'hi all');
   // 3 inputs but #1 and #3 normalize to the same number → 2 unique sends
   assert.equal(r.sent.length, 2);
   assert.equal(r.failed.length, 0);
   assert.equal(calls.length, 2);
-  assert.deepEqual(calls.map((c) => bodyOf(c).to), ['15551234567', '919844211401']);
+  assert.deepEqual(calls.map((c) => bodyOf(c).to), ['15551234567', '919812345678']);
 });
 
 test('sendMessageToMany collects per-recipient failures without aborting the batch', async () => {

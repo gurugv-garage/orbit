@@ -634,7 +634,7 @@ cd ~/code && git clone git@github.com:gurugv-garage/orbit.git
 
 ## 13. As-deployed state (E2E Chennai, 2026-06-29) — REVISIT
 
-The first bring-up is live on `151.185.45.155`. **Two files were `scp`'d to the VM
+The first bring-up is live on the VM (`$VM_IP`). **Two files were `scp`'d to the VM
 that are committed locally but not yet pushed to GitHub** — so the VM is running
 ahead of its `git` HEAD (`73567ff`). A future `git pull` on the VM would clobber the
 scp'd `main.ts` unless these are pushed first. Revisit:

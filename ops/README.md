@@ -14,8 +14,8 @@ this folder is **the executable version of §10**.
 ## Use
 
 ```bash
-# point at your VM (defaults to the current node)
-export VM_IP=151.185.45.155        # and SSH_KEY=... if not ~/.ssh/id_ed25519
+# point at your VM
+export VM_IP=1.2.3.4               # your VM's public IP; and SSH_KEY=... if not ~/.ssh/id_ed25519
 
 ops/verify.sh        # is the remote deploy healthy?  ← run this anytime
 ops/provision.sh     # (re)provision a fresh/rebuilt VM, then verify.sh

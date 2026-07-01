@@ -114,6 +114,12 @@ the media tap; the SFU + Live Wall are the first piece of it.
 
 ## Conventions
 
+- **This is a PUBLIC repo.** Never commit anything sensitive — no secrets, API
+  keys, or tokens (those live in `.env` / `local.properties`, gitignored), and
+  no personal identifiers either: real phone numbers, personal emails, live
+  server IPs/hostnames, or account IDs (Meta WABA/App-ID, etc.). Use
+  placeholders (`+15551234567`, `1.2.3.4`, `you@example.com`) in docs, tests,
+  and comments. When in doubt, redact and ask.
 - **Don't `git commit` or `git push` without explicit permission.** Before a
   commit, show what's staged and confirm. Push is separate from commit.
 - **Never commit `local.properties`** (SDK path, station URL, signing
