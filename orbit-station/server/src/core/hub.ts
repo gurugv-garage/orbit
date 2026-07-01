@@ -270,7 +270,7 @@ export class Hub {
       if (peer.announced) {
         this.#announce('peer-left', {
           role: peer.role, id: peer.id, dock: peer.dock,
-          component: peer.component, kind: peer.kind,
+          component: peer.component, kind: peer.kind, caps: peer.caps,
         });
       }
     });
