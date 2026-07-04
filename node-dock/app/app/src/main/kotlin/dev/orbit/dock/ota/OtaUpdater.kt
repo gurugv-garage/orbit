@@ -58,19 +58,22 @@ class OtaUpdater(
         private const val INSTALL_ACTION = "dev.orbit.dock.ota.INSTALL_RESULT"
     }
 
-    /** A newer build the station has offered, awaiting the user's tap. Null = nothing pending.
-     *  OPT-IN model (this dev dock): we do NOT silently auto-install — the UI shows a "build N
-     *  available" affordance and the user taps to apply (startPendingUpdate). Avoids a surprise
-     *  restart mid-test. `progress` reflects an in-flight apply ("downloading"/"verifying"/…). */
+    /** A newer build the station has offered. AUTO-APPLY model: onOffer() starts the
+     *  download+install immediately when online (no tap needed). This flow still populates the
+     *  UI banner so the apply is *visible* (build number + progress), but the tap is no longer
+     *  required to begin — the banner is informational + a re-check poke. `progress` reflects an
+     *  in-flight apply ("downloading"/"verifying"/…). (Note: if the app is not device-owner, the
+     *  final PackageInstaller commit still surfaces the system install-confirm dialog.) */
     data class Available(val build: Int, val version: String, val url: String, val sha256: String, val progress: String? = null)
     private val _available = MutableStateFlow<Available?>(null)
     val available: StateFlow<Available?> = _available.asStateFlow()
 
     /**
      * Handle an `ota/available` offer payload { target:"app", build, version, url, sha256,
-     * size }. No-op unless `target=="app"`, strictly newer, and not already installing. Does
-     * NOT install — it records the offer as PENDING for the UI; the user applies it via
-     * [startPendingUpdate]. (Was silent auto-install; made opt-in per the dev-dock workflow.)
+     * size }. No-op unless `target=="app"`, strictly newer, and not already installing. Records
+     * the offer for the UI banner AND auto-applies it (download → verify → install) — no user
+     * tap required while online. [startPendingUpdate] is idempotent, so an in-flight apply is
+     * never double-started.
      */
     fun onOffer(target: String?, build: Int?, url: String?, sha256: String?, version: String? = null) {
         if (target != "app") return
@@ -83,7 +86,10 @@ class OtaUpdater(
         // Record (or refresh) the pending offer for the UI; don't clobber an in-flight apply.
         if (_available.value?.progress == null) {
             _available.value = Available(build, version ?: "0.1.$build", url, sha256)
-            Timber.i("OTA: build $build available (awaiting user tap)")
+            Timber.i("OTA: build $build available — auto-applying")
+            // Auto-apply the moment we're offered a newer build (idempotent; skips if an apply
+            // is already running). The banner still shows so the restart isn't a surprise.
+            startPendingUpdate()
         }
     }
 

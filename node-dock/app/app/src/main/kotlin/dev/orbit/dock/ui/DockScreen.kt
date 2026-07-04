@@ -1037,8 +1037,9 @@ fun DockScreen() {
         }
 
         // OTA opt-in: when the station offers a newer build, show a TAPPABLE banner instead of
-        // silently auto-installing (the dev-dock workflow — no surprise restart mid-test). Tap
-        // applies it; the banner then shows live apply progress. Top-start, out of the way.
+        // AUTO-applying: onOffer() starts the download+install itself. The banner is
+        // informational (shows build + live apply progress); a tap just re-triggers the same
+        // idempotent apply. Top-start, out of the way.
         val otaAvail by otaUpdater.available.collectAsState()
         otaAvail?.let { upd ->
             androidx.compose.material3.Surface(
@@ -1047,7 +1048,7 @@ fun DockScreen() {
                     .pointerInput(upd.build) { detectTapGestures(onTap = { otaUpdater.startPendingUpdate() }) },
             ) {
                 androidx.compose.material3.Text(
-                    text = upd.progress?.let { "update v${upd.version}: $it" } ?: "⬆ build ${upd.build} available — tap to update",
+                    text = upd.progress?.let { "update v${upd.version}: $it" } ?: "⬆ build ${upd.build} — updating…",
                     color = Color(0xFF8FE0A0), fontSize = 11.sp, fontWeight = FontWeight.Medium,
                     modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
                 )
