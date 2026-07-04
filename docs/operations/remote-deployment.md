@@ -31,6 +31,7 @@
   - [4e. Totals (1 dock, 24/7)](#4e-totals-1-dock-247)
 - [5. The vision gate (the enabling build)](#5-the-vision-gate-the-enabling-build)
 - [6. The infrastructure work the move requires](#6-the-infrastructure-work-the-move-requires)
+  - [6.1 Video bitrate policy — LAN vs cloud (⚠️ change at cutover)](#61-video-bitrate-policy--lan-vs-cloud--change-at-cutover)
 - [7. Migration steps (suggested order)](#7-migration-steps-suggested-order)
 - [8. Decisions to be made](#8-decisions-to-be-made)
 - [9. Open items to re-verify before committing](#9-open-items-to-re-verify-before-committing)
@@ -265,7 +266,52 @@ These — not RTT — are what actually decide whether the move works.
    over WebRTC. Audio (~40kbps Opus) is fine anywhere; **continuous video upload**
    is real on a home uplink and jitter-prone — degrades *perception* before RTT
    bothers *conversation*. Size/measure home upload; the gate (§5) does **not**
-   reduce upload (frames still stream up), only VLM calls.
+   reduce upload (frames still stream up), only VLM calls. **See §6.1 for the
+   bitrate policy that must change at the cloud cutover.**
+
+### 6.1 Video bitrate policy — LAN vs cloud (⚠️ change at cutover)
+
+On **2026-07-04** we set an explicit VP8 encoder ceiling on the phone to fix soft/
+blocky keyframes: `MediaStreamer.kt` now sets `encodings[0]` `maxBitrateBps =
+2_500_000`, `minBitrateBps = 800_000`, `maxFramerate = 5` right after `addTrack`.
+Reason: libwebrtc's rate controller budgets bits **per second** assuming ~30 fps,
+so at the dock's real ~2–5 Hz push rate it starved each keyframe's quantizer. The
+fix tells the encoder the true framerate and gives it a rich per-frame budget. The
+station also re-encodes the decoded VP8→MJPEG at `-q:v 2` (`frame-grabber.ts`) so it
+doesn't add a second softening pass. Both are **tuned for LAN**, where uplink is free.
+
+**This is a cost + feasibility problem on the cloud VM and MUST be revisited before/
+at the cutover.** A continuous 2.5 Mbps video uplink to a cloud VM is:
+- **~27 GB/day, ~800 GB/month** if it streams most of the day — real metered
+  ingress on the VM and a real load on home broadband **upload** (often 5–20 Mbps,
+  shared). This is separate from — and larger than — the vision **API** cost the
+  gate (§5) addresses; the gate cuts VLM *calls*, not the *upload*.
+- Gated by the phone's actual internet upload, which is jitter-prone over WAN.
+
+**What to do at the cutover** (pick per measured home uplink, D9 below):
+- **Burst-on-demand (recommended).** Keep a **low** continuous bitrate for face
+  presence/detection + the console Live Wall (e.g. `maxBitrateBps` ~300–500 kbps),
+  and **raise it briefly only around a vision grab** — `RtpSender.parameters` is
+  mutable at runtime, so the brain/perception can bump `encodings[0].maxBitrateBps`
+  to ~2.5 Mbps for the moment a sharp frame is needed, then drop it back. The sharp
+  frame is only needed when the brain is *looking*.
+- **On-demand JPEG instead of continuous HQ video.** The app already has a high-
+  quality single-frame path (`encodeJpegBase64`, used today as the fallback when the
+  WebRTC stream is down). In cloud mode, making that the **primary** vision source —
+  a sharp JPEG sent only when the brain requests a frame — avoids continuous HQ video
+  entirely. Pairs naturally with **gate-on-change**: only send a fresh frame when the
+  scene has changed / a face is present (reuse the §5 Tier 0/1 motion+presence
+  signals), so an empty room burns no uplink on identical frames.
+- **Keep the flat 2.5 Mbps** only if the home uplink measures comfortable and the
+  metered VM ingress is acceptable — simplest, but the least optimized.
+
+The clean end-state is almost certainly **low-res cheap stream for detection + a
+high-quality on-demand frame for the brain's vision**, gated on change. The current
+flat-2.5 Mbps setting is a deliberate LAN-only choice to be reverted here.
+
+Cite: `node-dock/app/.../perception/MediaStreamer.kt` (VP8 encoding params),
+`orbit-station/server/src/modules/perception/face/frame-grabber.ts` (`-q:v`),
+`.../perception/FaceTracker.kt` `encodeJpegBase64` (the on-demand JPEG path).
 5. **Env-var rewiring** (all already supported):
    `STATION_WS`, `PERCEPTION_SIDECAR_URL`/`TEMPORAL_SIDECAR_URL` (if any sidecar
    off-box), `STUN_URL`, OTA artifact host reachable by the dock.
@@ -284,9 +330,13 @@ These — not RTT — are what actually decide whether the move works.
 4. **Stand up the in-India CPU VM**; deploy station + faster-whisper + face there.
 5. **Add wss + WS auth token**, then **STUN (+TURN if needed)**; point the dock's
    `STATION_URL` at the VM, verify WebRTC connects through NAT.
-6. **Verify the full chain** end-to-end (per [perception-runbook.md](perception-runbook.md)):
+6. **Revert the LAN video-bitrate setting to a cloud policy** (§6.1, D9): drop the
+   flat 2.5 Mbps continuous ceiling to burst-on-demand (or on-demand JPEG +
+   gate-on-change) so the dock doesn't stream continuous HQ video over the WAN
+   uplink. Measure home upload headroom first. Ships as an app OTA.
+7. **Verify the full chain** end-to-end (per [perception-runbook.md](perception-runbook.md)):
    conversation turn, STT, vision gate firing, body motion, OTA reach.
-7. **Measure** real "interesting hours" and uplink; revisit gated-low vs -moderate
+8. **Measure** real "interesting hours" and uplink; revisit gated-low vs -moderate
    cost and decide whether GPU self-host is ever warranted.
 
 ## 8. Decisions to be made
@@ -301,6 +351,7 @@ These — not RTT — are what actually decide whether the move works.
 | D6 | **`set_face`** | Keep awaited / make fire-and-forget | Keep (in-India RTT is fine); revisit if cross-geo |
 | D7 | **TURN** | STUN-only / add coturn | Start STUN; add TURN if home NAT is symmetric/CGNAT |
 | D8 | **OTA host** | VM address reachable by dock / separate artifact host | Reuse VM address |
+| D9 | **Video bitrate policy** (§6.1) | Flat 2.5 Mbps (LAN default) / burst-on-demand / on-demand JPEG + gate-on-change | **Burst-on-demand or on-demand JPEG** — revert the flat LAN setting; measure home uplink first |
 
 ## 9. Open items to re-verify before committing
 
