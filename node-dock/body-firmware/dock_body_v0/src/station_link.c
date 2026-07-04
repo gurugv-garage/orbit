@@ -44,6 +44,14 @@ static const char *TAG = "station";
 #define HEARTBEAT_MS   10000   // 10 s, per the console's last-seen display
 #define STATE_MS        2000   // report body state every 2 s
 
+// Bounded WS send timeout. NEVER send with portMAX_DELAY: a half-open socket
+// (e.g. a C3 TX rail-sag wedging TX mid-frame) would block the caller forever
+// holding the client lock, starving the reconnect/PONG-timeout watchdog so the
+// link never re-dials (observed: body pingable but WS dead for minutes). A
+// bounded wait lets the send fail (-1) and the watchdog tear the socket down.
+// Paired with CONFIG_ESP_WS_CLIENT_SEPARATE_TX_LOCK=y (sdkconfig.defaults).
+#define SEND_TIMEOUT_MS 8000
+
 // Staleness tripwire (DESIGN.md §5.1, applied to the station socket): the
 // motion executor heartbeats targets at >= 1 Hz once it's driving us, so 30 s
 // of command silence WHILE CONNECTED means the executor is broken — not a
@@ -154,7 +162,7 @@ static void publish(const char *topic, const char *kind, cJSON *payload) {
     char *s = cJSON_PrintUnformatted(f);
     cJSON_Delete(f);
     if (s) {
-        esp_websocket_client_send_text(s_client, s, strlen(s), portMAX_DELAY);
+        esp_websocket_client_send_text(s_client, s, strlen(s), pdMS_TO_TICKS(SEND_TIMEOUT_MS));
         free(s);
     }
 }
@@ -205,11 +213,11 @@ static void send_hello(void) {
     cJSON_AddNumberToObject(f, "build", BL_FW_BUILD);
     char *s = cJSON_PrintUnformatted(f);
     cJSON_Delete(f);
-    if (s) { esp_websocket_client_send_text(s_client, s, strlen(s), portMAX_DELAY); free(s); }
+    if (s) { esp_websocket_client_send_text(s_client, s, strlen(s), pdMS_TO_TICKS(SEND_TIMEOUT_MS)); free(s); }
 
     // commands + config pushes + OTA offers + sibling presence
     const char *sub = "{\"t\":\"subscribe\",\"topics\":[\"bodylink\",\"config\",\"ota\",\"station\"]}";
-    esp_websocket_client_send_text(s_client, sub, strlen(sub), portMAX_DELAY);
+    esp_websocket_client_send_text(s_client, sub, strlen(sub), pdMS_TO_TICKS(SEND_TIMEOUT_MS));
 }
 
 // payload = profile body { body:{ device_id, name, fw_version, parts } }

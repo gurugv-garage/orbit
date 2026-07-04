@@ -51,6 +51,17 @@ CONFIG_ESP_MAIN_TASK_STACK_SIZE=6144
 # httpd_ws_send_frame and the .is_websocket URI flag.
 CONFIG_HTTPD_WS_SUPPORT=y
 
+# ── WebSocket client: separate the app-send lock from the client lock ──
+# Without this, esp_websocket_client guards BOTH our send_text() and its own
+# PING/PONG-timeout + reconnect watchdog with a single client->lock. If a send
+# stalls on a half-open socket (a C3 TX-power rail-sag can leave TX wedged
+# mid-frame while RX still polls), the app thread holds that lock indefinitely,
+# the watchdog can't run, the PONG-timeout abort never fires, and the client
+# sits "connected" forever — never reconnecting until a reboot. With a separate
+# tx_lock, app sends and the watchdog no longer contend, so a stuck send can't
+# starve reconnection. See station_link.c (sends also use a bounded timeout).
+CONFIG_ESP_WS_CLIENT_SEPARATE_TX_LOCK=y
+
 # ── OTA: dual-slot partitions + rollback (docs/OTA.md §4) ──────────────
 # Flash size + the partition-table filename are CHIP-SPECIFIC and live in the
 # per-chip overlays (IDF merges sdkconfig.defaults.<IDF_TARGET> automatically),
