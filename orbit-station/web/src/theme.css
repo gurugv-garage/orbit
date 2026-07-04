@@ -167,6 +167,30 @@ label.field { display: flex; flex-direction: column; gap: 4px; font-size: 12px; 
 .obs-session-head:hover { background: var(--panel-2); box-shadow: none; }
 .obs-session-id { color: var(--accent-2); }
 
+/* copy-on-click affordances. Header rows are <button>s (no text selection),
+   so IDs get a click-to-copy chip; message/detail text stays selectable and
+   gets a trailing copy icon for grabbing the whole string. */
+.obs-copy {
+  display: inline-flex; align-items: center; gap: 4px; cursor: pointer;
+  border-radius: 4px; padding: 0 3px; margin: 0 -3px; transition: background .12s;
+}
+.obs-copy:hover { background: var(--panel-2); }
+.obs-copy:focus-visible { outline: 1px solid var(--accent); outline-offset: 1px; }
+.obs-copy-ico { font-size: 9px; opacity: 0; transition: opacity .12s; color: var(--dim); }
+.obs-copy:hover .obs-copy-ico { opacity: .7; }
+.obs-copy.copied { background: color-mix(in srgb, var(--good) 22%, transparent); }
+.obs-copy.copied .obs-copy-ico { opacity: 1; color: var(--good); }
+
+/* selectable message / reply text with a hover-reveal copy-all icon */
+.obs-copytext { user-select: text; -webkit-user-select: text; cursor: text; }
+.obs-copy-ico.standalone { cursor: pointer; user-select: none; opacity: 0; }
+.obs-copytext:hover .obs-copy-ico.standalone { opacity: .55; }
+.obs-copy-ico.standalone:hover { opacity: 1 !important; }
+.obs-copy-ico.standalone.copied { opacity: 1 !important; color: var(--good); }
+
+/* make trace values selectable even where they live inside header rows */
+.obs-msg-text, .obs-ev-text, .obs-turn-prompt, .obs-ev-peek, .obs-kv pre { user-select: text; -webkit-user-select: text; }
+
 /* one turn */
 .obs-turn { border-bottom: 1px solid #1e274055; }
 .obs-turn:last-child { border-bottom: 0; }

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { ReactNode } from 'react';
+import type { MouseEvent as ReactMouseEvent, ReactNode } from 'react';
 import { useStationEvents } from '../lib/useStation';
 import { api } from '../lib/station';
 import type { AgentEventDto } from '../lib/protocol';
@@ -21,6 +21,64 @@ interface StoredSession { sessionId: string; source?: string; turns: StoredTurn[
 interface SessionSummary { sessionId: string; source?: string }
 
 const IST = 'Asia/Kolkata';
+
+/** Copy-on-click chip for an id/value living inside a clickable header button.
+ *  Stops propagation so copying doesn't also toggle the row, and flashes ✓ on
+ *  success. Renders a <span> (not a nested <button>) so it's valid inside a
+ *  <button>. */
+function CopyChip({ value, className, label }: { value: string; className?: string; label?: string }) {
+  const [copied, setCopied] = useState(false);
+  const timer = useRef<ReturnType<typeof setTimeout>>();
+  useEffect(() => () => clearTimeout(timer.current), []);
+  const copy = (e: ReactMouseEvent) => {
+    e.stopPropagation();
+    e.preventDefault();
+    navigator.clipboard?.writeText(value).then(() => {
+      setCopied(true);
+      clearTimeout(timer.current);
+      timer.current = setTimeout(() => setCopied(false), 1000);
+    }).catch(() => {});
+  };
+  return (
+    <span
+      role="button"
+      tabIndex={0}
+      className={`obs-copy${copied ? ' copied' : ''}${className ? ` ${className}` : ''}`}
+      title={`click to copy ${label ?? value}`}
+      onClick={copy}
+      onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') copy(e as unknown as ReactMouseEvent); }}
+    >
+      {label ?? value}
+      <span className="obs-copy-ico" aria-hidden>{copied ? '✓' : '⧉'}</span>
+    </span>
+  );
+}
+
+/** A bare copy icon that sits after selectable text (the text stays selectable;
+ *  this is the "copy the whole thing" shortcut). Flashes ✓ on success. */
+function CopyIco({ value }: { value: string }) {
+  const [copied, setCopied] = useState(false);
+  const timer = useRef<ReturnType<typeof setTimeout>>();
+  useEffect(() => () => clearTimeout(timer.current), []);
+  return (
+    <span
+      role="button"
+      tabIndex={0}
+      className={`obs-copy-ico standalone${copied ? ' copied' : ''}`}
+      title="copy"
+      onClick={(e) => {
+        e.stopPropagation();
+        navigator.clipboard?.writeText(value).then(() => {
+          setCopied(true);
+          clearTimeout(timer.current);
+          timer.current = setTimeout(() => setCopied(false), 1000);
+        }).catch(() => {});
+      }}
+    >
+      {copied ? ' ✓' : ' ⧉'}
+    </span>
+  );
+}
 
 export function Observability() {
   const [turns, setTurns] = useState<TurnVM[]>([]);
@@ -191,7 +249,7 @@ export function Observability() {
               <div key={g.sid} className="obs-session">
                 <button className="obs-session-head" onClick={() => toggleSession(g.sid)}>
                   <span className="obs-caret">{collapsed ? '▸' : '▾'}</span>
-                  <span className="mono obs-session-id">{g.sid}</span>
+                  <CopyChip value={g.sid} className="mono obs-session-id" label={g.sid} />
                   <span className="pill acc sm">{g.source ?? '—'}</span>
                   <span className="muted sm">{g.turns.length} turns</span>
                   {(fbBySession.get(g.sid)?.length ?? 0) > 0 && (
@@ -229,7 +287,7 @@ export function Observability() {
                 <div key={g.sid} className="obs-session">
                   <button className="obs-session-head" onClick={() => toggleSession(g.sid)}>
                     <span className="obs-caret">{collapsed ? '▸' : '▾'}</span>
-                    <span className="mono obs-session-id">{g.sid}</span>
+                    <CopyChip value={g.sid} className="mono obs-session-id" label={g.sid} />
                     <span className="pill sm">{g.source ?? '—'}</span>
                     <span className="muted sm">{g.turns.length} calls</span>
                     <span className="muted sm">· {clock(g.started)}–{clock(g.last)}</span>
@@ -255,7 +313,7 @@ function TurnRow({ turn, open, onToggle, feedback }: { turn: TurnVM; open: boole
       <button className="obs-turn-head" onClick={onToggle}>
         <span className="obs-caret">{open ? '▾' : '▸'}</span>
         <span className="obs-turn-time mono">{clockMs(turn.startedAt)}</span>
-        <span className="obs-turn-id mono">{turn.id.replace('turn-', '')}</span>
+        <CopyChip value={turn.id} className="obs-turn-id mono" label={turn.id.replace('turn-', '')} />
         {turn.trigger?.text && <span className="obs-turn-prompt" title={turn.trigger.text}>“{turn.trigger.text}”</span>}
         <span className={`obs-turn-dur${dur(turn) > 4000 ? ' slow' : ''}`}>{fmtMs(dur(turn))}</span>
         <span className="muted sm">{turn.steps.length} step{turn.steps.length !== 1 ? 's' : ''}</span>
@@ -297,7 +355,7 @@ function TurnTimeline({ turn }: { turn: TurnVM }) {
     if (stream < e) {
       evs.push({
         lane: 'llm', cls: 'stream', label: `step ${s.idx} · stream reply`, start: stream, end: e,
-        detail: s.text ? <span className="obs-ev-text">“{s.text}”</span> : undefined,
+        detail: s.text ? <span className="obs-ev-text obs-copytext" title="select text, or click ⧉ to copy all">“{s.text}”<CopyIco value={s.text} /></span> : undefined,
       });
     }
     for (const tc of s.tools) {
@@ -330,7 +388,7 @@ function TurnTimeline({ turn }: { turn: TurnVM }) {
       {turn.trigger && (
         <div className={`obs-msg trigger-${turn.trigger.kind}`}>
           <span className="obs-msg-who">{turn.trigger.kind}</span>
-          {turn.trigger.text && <span className="obs-msg-text">{turn.trigger.text}</span>}
+          {turn.trigger.text && <span className="obs-msg-text obs-copytext" title="double-click a word to select · click ⧉ to copy all">{turn.trigger.text}<CopyIco value={turn.trigger.text} /></span>}
         </div>
       )}
       <div className="obs-vaxis">{clockMs(turn.startedAt)} → +{fmtMs(total)} · {evs.length} events</div>
