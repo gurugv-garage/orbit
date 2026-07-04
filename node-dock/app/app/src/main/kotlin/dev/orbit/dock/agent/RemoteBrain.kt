@@ -20,6 +20,7 @@ import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.floatOrNull
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 import timber.log.Timber
@@ -600,6 +601,13 @@ class RemoteBrain(
                 val style = args["style"]?.jsonPrimitive?.content.orEmpty()
                 val r = tools.setFaceStyle(style)
                 r to r.startsWith("unknown")
+            }
+            "set_zoom" -> {
+                val ratio = args["ratio"]?.jsonPrimitive?.floatOrNull ?: 1f
+                val r = tools.zoom(ratio)
+                // success replies start with "zoom set to"; anything else is an error
+                // (no camera bound / zoom unavailable) the brain should hear as such.
+                r to !r.startsWith("zoom set to")
             }
             else -> "unknown tool on phone: $name" to true
         }

@@ -385,7 +385,7 @@ export function brainModule(w: BrainWiring): StationModule {
     models: (dock) => {
       void dock;
       const brain = typeof w.config('brainModel') === 'string' ? (w.config('brainModel') as string) : undefined;
-      const thinking = typeof w.config('brainThinking') === 'string' ? (w.config('brainThinking') as string) : undefined;
+      const thinking = typeof w.config('brainThinkingLevel') === 'string' ? (w.config('brainThinkingLevel') as string) : undefined;
       return { brain, thinking };
     },
     addressed: (dock) => addrTrace.filter((e) => e.dock === dock),

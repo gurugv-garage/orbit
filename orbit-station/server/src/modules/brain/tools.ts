@@ -428,6 +428,19 @@ export function buildDockTools(deps: ToolDeps): AgentTool<any>[] {
       return textResult(ack.content || `face style set to ${args.style}`);
     }),
 
+    tool('set_zoom', S.SET_ZOOM_DESC, S.setZoomSchema, async (toolCallId, args: { ratio: number }) => {
+      if (!Number.isFinite(args.ratio) || args.ratio <= 0) {
+        throw new Error(`invalid zoom ratio "${args.ratio}" — must be a positive number (1.0 = no zoom)`);
+      }
+      // Camera lives on the phone; RPC down and let it clamp to the device's supported range.
+      const ack = await deps.rpc.call({
+        dock: deps.dock, cap: 'camera', turnId: deps.getTurnContext().turnId,
+        toolCallId, name: 'set_zoom', args,
+      });
+      if (ack.isError) throw new Error(ack.content);
+      return textResult(ack.content || `zoom set to ${args.ratio}×`);
+    }),
+
     tool('move', S.MOVE_DESC, S.moveSchema, async (_toolCallId, args: { steps: MoveStep[] }) => {
       return textResult(deps.motion.runSteps(deps.dock, args.steps ?? [], 'brain-turn'));
     }),

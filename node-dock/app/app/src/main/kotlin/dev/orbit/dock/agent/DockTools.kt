@@ -50,6 +50,10 @@ class DockTools(
      * grounded rather than guessed. Null → no visual context (mic-only dock).
      */
     private val perception: PerceptionSnapshot? = null,
+    /** Actuate the camera zoom (the brain's `set_zoom` tool). Returns a human string
+     *  echoing the clamped ratio, or an "unavailable" message if no camera is bound.
+     *  Default = no camera wired (mic-only dock). */
+    private val setZoom: (Float) -> String = { "camera zoom is not available on this dock" },
 ) {
 
     private val spokeThisTurn = AtomicBoolean(false)
@@ -220,6 +224,18 @@ class DockTools(
         val ok = face.setFaceStyle(style.trim().lowercase())
         onToolCall(null)
         return if (ok) "ok" else "unknown style: $style"
+    }
+
+    /** Zoom the camera to an absolute [ratio] (1.0 = no zoom). Delegates to the
+     *  camera-owning lambda, which clamps to the device's supported range and
+     *  returns the applied value. */
+    fun zoom(ratio: Float): String {
+        Timber.i("tool.zoom: $ratio")
+        onToolCall("zoom")
+        TurnLog.toolCalled("zoom", ratio.toString())
+        val r = setZoom(ratio)
+        onToolCall(null)
+        return r
     }
 
     fun silence(): String {

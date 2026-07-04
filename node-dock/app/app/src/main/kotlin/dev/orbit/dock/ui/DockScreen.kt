@@ -122,6 +122,7 @@ fun DockScreen() {
             onToolCall = { name -> agentRef.value?.setToolCalling(name) },
             perception = perception,
             onTurnSettled = { wiringRef.value?.clearTranscript() },
+            setZoom = { r -> faceTracker.setZoom(r) },
         ).also { dev.orbit.dock.agent.ToolsTestController.tools = it }
     }
     // OTA self-update (docs/ota.md §5). Holds a forward ref so onOtaOffer below

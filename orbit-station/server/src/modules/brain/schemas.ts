@@ -81,6 +81,17 @@ export const setFaceStyleSchema = {
   required: ['style'],
 } as const;
 
+export const setZoomSchema = {
+  type: 'object',
+  properties: {
+    ratio: {
+      type: 'number',
+      description: 'absolute zoom factor; 1.0 = no zoom (full frame). Clamped to what the camera supports.',
+    },
+  },
+  required: ['ratio'],
+} as const;
+
 /**
  * The ONE movement tool: an ordered sequence of steps the body performs.
  * A step moves one or more joints AT THE SAME TIME over `duration_ms`, then
@@ -358,6 +369,11 @@ export const SET_FACE_STYLE_DESC =
   '"turn into Darth Vader", "go back to normal"). aurora = the default friendly face; puppy = a cute dog; ' +
   'vader = Darth Vader (low, slow voice); robot, ghost, owl, dragon. This persists until changed. ' +
   'For ordinary moods within the current face, use `set_face`, not this.';
+export const SET_ZOOM_DESC =
+  "Zoom the dock's camera to look closer — use it to read something small the user holds up, " +
+  'or to inspect the user / an object in more detail. `ratio` is an absolute factor: 1.0 = normal ' +
+  '(no zoom, full frame), 2.0 = twice as close, etc. Set 1.0 to zoom back out to normal. The value ' +
+  'is clamped to the range this camera supports; the result tells you the actual ratio applied.';
 export const MOVE_DESC =
   'Move the body. Give an ordered list of steps; each step moves its joint(s) to an ' +
   'absolute angle in DEGREES over a duration, with an optional pause after. ' +

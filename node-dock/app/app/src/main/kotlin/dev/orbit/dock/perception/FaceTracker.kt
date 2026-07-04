@@ -5,6 +5,7 @@ import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.Matrix
 import android.util.Size
+import androidx.camera.core.Camera
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.ImageCapture
@@ -167,6 +168,9 @@ class FaceTracker(private val appContext: Context) : CameraFrameProvider, Lifecy
     @Volatile private var zoomRatio = 1f
     @Volatile private var zoomMin = 1f
     @Volatile private var zoomMax = 1f
+    // The currently bound Camera — retained so the brain's set_zoom tool can drive
+    // cameraControl.setZoomRatio(). Rebound (and re-set) on every bind(); null before start.
+    @Volatile private var boundCamera: Camera? = null
 
     /** Attach (or detach, with null) the on-screen preview surface. Safe to call
      *  before or after [start]; rebinds the camera to include the preview. */
@@ -176,6 +180,25 @@ class FaceTracker(private val appContext: Context) : CameraFrameProvider, Lifecy
         if (cp != null) {
             ContextCompat.getMainExecutor(appContext).execute { bind(cp) }
         }
+    }
+
+    /**
+     * Actuate the camera zoom (the brain's `set_zoom` tool). [ratio] is an absolute
+     * factor, clamped to the bound camera's supported [zoomMin]..[zoomMax]. The actual
+     * setZoomRatio call is dispatched to the main executor (CameraControl requires it)
+     * and completes asynchronously; we return a human-readable result immediately with
+     * the CLAMPED value we applied — the zoomState observer then confirms it upstream.
+     * Returns an "unavailable" sentinel (starts with "no ") if no camera is bound.
+     */
+    fun setZoom(ratio: Float): String {
+        val cam = boundCamera ?: return "no camera bound right now — can't zoom"
+        val clamped = ratio.coerceIn(zoomMin, zoomMax)
+        ContextCompat.getMainExecutor(appContext).execute {
+            runCatching { cam.cameraControl.setZoomRatio(clamped) }
+                .onFailure { Timber.w(it, "FaceTracker: setZoomRatio($clamped) failed") }
+        }
+        val maxStr = String.format("%.1f", zoomMax)
+        return "zoom set to ${String.format("%.1f", clamped)}× (max ${maxStr}×)"
     }
 
     /**
@@ -381,6 +404,7 @@ class FaceTracker(private val appContext: Context) : CameraFrameProvider, Lifecy
             arrayOf(a, cap)
         }
         val camera = provider.bindToLifecycle(this, selector, *useCases)
+        boundCamera = camera  // for set_zoom actuation
 
         // DEFENCE IN DEPTH: even bound to our own (always-STARTED) lifecycle, the
         // camera can still be evicted by the OS — another app opens the front
