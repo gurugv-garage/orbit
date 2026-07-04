@@ -51,7 +51,12 @@ export class FrameGrabber {
     this.#ff = spawn('ffmpeg', [
       '-loglevel', 'error',
       '-f', 'ivf', '-i', 'pipe:0',
-      '-fps_mode', 'passthrough', '-f', 'image2pipe', '-vcodec', 'mjpeg', 'pipe:1',
+      // -q:v 2 = near-lossless MJPEG (scale is 2..31, lower=better; default ~3-4
+      // softens the VP8→JPEG re-encode). The frame served to the brain's vision
+      // grab, the /frame route, and the console Live Wall is only as sharp as this
+      // pass; 2 stops the station from adding a second softening on top of VP8.
+      // Cost is a few KB larger JPEGs, served on-demand over LAN — negligible.
+      '-fps_mode', 'passthrough', '-f', 'image2pipe', '-vcodec', 'mjpeg', '-q:v', '2', 'pipe:1',
     ]);
     this.#ff.stdout?.on('data', (c: Buffer) => this.#collect(c));
     this.#ff.stderr?.on('data', () => {/* swallow */});

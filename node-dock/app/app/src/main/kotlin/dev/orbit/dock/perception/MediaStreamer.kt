@@ -181,7 +181,31 @@ class MediaStreamer(
         faceTracker.onBitmapFrame = { bmp -> cap.onFrame(bmp) }
         val videoTrack = factory.createVideoTrack("dock-video", vSource)
         this.videoTrack = videoTrack
-        connection.addTrack(videoTrack)
+        val videoSender = connection.addTrack(videoTrack)
+
+        // Per-frame bitrate fix for a SLOW (~2-5 Hz) video track. libwebrtc's VP8
+        // rate controller budgets bits PER SECOND assuming ~30 fps, so at a few
+        // fps it starves each keyframe's quantizer → blocky, soft frames. The
+        // brain's vision grab, the /frame route, and the console Live Wall all
+        // read those frames, so this is the real sharpness lever (ffmpeg -q:v on
+        // the station is only the second, smaller pass). Fix = tell the encoder
+        // the true framerate (so it stops amortizing across phantom 30 fps) AND
+        // give it a high per-second ceiling so each of the few frames can be big.
+        //
+        // ⚠️ CLOUD MOVE: this is tuned for LAN (bitrate is ~free on local Wi-Fi).
+        // A continuous ~2.5 Mbps uplink to a cloud VM is metered + gated by home
+        // broadband upload. Before/at the cloud cutover, switch to a burst/on-
+        // demand or gate-on-change policy — see docs/remote-deployment.md
+        // ("Media bandwidth to cloud").
+        runCatching {
+            val params = videoSender?.parameters
+            params?.encodings?.firstOrNull()?.let { enc ->
+                enc.maxFramerate = 5          // match the real push rate (FaceTracker ~2-5 Hz)
+                enc.maxBitrateBps = 2_500_000 // per-second ceiling; at ~5 fps this is a rich per-frame budget
+                enc.minBitrateBps = 800_000   // keep the controller from collapsing quality on a quiet scene
+            }
+            if (params != null) videoSender.parameters = params
+        }.onFailure { Timber.w(it, "MediaStreamer: could not set video encoding params") }
 
         // Resume the ADM capture now that the new audio source/PC sink exists (it
         // was paused in stop() to avoid the teardown race). Idempotent on a fresh
