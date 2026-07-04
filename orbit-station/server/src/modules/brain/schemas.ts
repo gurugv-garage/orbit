@@ -362,7 +362,7 @@ export const MOVE_DESC =
 export const COMPUTE_DESC =
   'Evaluate a SAFE arithmetic or random-number expression and get the result back ' +
   '(e.g. math, or "random(1,10)", or "random(1,10) > 5"). Use this whenever you\'d otherwise want to ' +
-  '"run code" for a number or a calculation — you have NO general code execution, only this.';
+  '"run code" for a quick number or a random pick — it\'s the fast path for arithmetic.';
 export const GET_DATE_TIME_DESC =
   'Get the current date and time (local timezone of where you run). Call this whenever you ' +
   'need to know "now" — what time it is, today\'s date/day of week, or to reason about an ' +

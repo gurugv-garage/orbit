@@ -1192,6 +1192,9 @@ export class DockBrainSession {
    *  "Approve all" (the user tapped it once) latches #approveAllMutations for
    *  the rest of the session: subsequent mutations skip the RPC entirely. */
   async #confirmOnDock(summary: string, detail: string): Promise<boolean> {
+    // deployment-wide auto-approve: skip the dock popup entirely and run every
+    // mutation. Opt-in config (brainFileAutoApprove); pairs with brainFileAccess.
+    if (this.#d.config('brainFileAutoApprove') === true) return true;
     if (this.#approveAllMutations) return true; // session-wide approval already given
     const ack = await this.#d.rpc.call({
       dock: this.dock, cap: 'face', turnId: this.#activeTurnId ?? '',

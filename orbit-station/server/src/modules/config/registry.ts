@@ -224,6 +224,11 @@ export const REGISTRY: ConfigEntry[] = [
     description: 'Give the brain FULL pi coding tools — read/write/edit any file + run shell commands on the station host, INCLUDING its own source. read_file is direct (ask it about its code); every write/edit/run requires user confirmation on the dock UI. Off by default; turning this on lets an LLM modify the running robot.',
   }),
   entry({
+    key: 'brainFileAutoApprove', type: 'boolean', schema: z.boolean(), default: false, tags: ['station'],
+    label: 'Auto-approve code mutations (EXTREME DANGER)',
+    description: 'Skip the dock confirmation popup for write/edit/run_command — the brain runs every mutating command immediately, no human tap. Only meaningful when Code access is on. Off by default; turning this on lets an LLM change and run code on the host with NO approval gate.',
+  }),
+  entry({
     key: 'brainResearchScript', type: 'text', schema: z.string(), default: '', tags: ['station'],
     label: 'Recent-research script',
     description: 'Absolute path to last30days.py (mvanhorn/last30days-skill). When set (and a Python 3.12+ is on PATH), the brain gets a `research_recent` tool that pulls the last ~30 days of community discussion (Reddit/HN/YouTube/GitHub/Polymarket — no API keys) for a topic. Empty = tool off.',

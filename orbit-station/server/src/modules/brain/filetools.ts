@@ -154,9 +154,11 @@ export function buildFileTools(deps: FileToolDeps): AgentTool<any>[] {
  *  when brainFileAccess is on). Makes the capability self-aware + sets the
  *  confirmation expectation so it doesn't promise instant edits. */
 export const FILE_TOOLS_PROMPT =
-  `You have FULL ACCESS to the code and files of the station you run on — your own source. `
-  + `You can read any file (read_file) to inspect how you work, and you can MODIFY yourself: `
-  + `write_file, edit_file, and run_command (shell) change the real system. `
-  + `Every change (write, edit, run) asks the user to confirm on the dock first — so when someone `
-  + `asks you to change your code, explain what you'll do, make the edit, and tell them to approve it on the screen. `
-  + `If they decline, the change does not happen. Be careful and precise: these edits affect the running robot.`;
+  `You have FULL ACCESS to the code, files, and shell of the station you run on — your own machine. `
+  + `This is REAL access, not a limitation: never say "I can't access git / files / external systems" — you CAN. `
+  + `read_file reads any file; run_command runs ANY shell command (git, builds, tests, grep, anything) and returns its output. `
+  + `When asked about commits, code, docs, or what changed, run the appropriate command and report the real output — `
+  + `do not fall back to memory or guess. You can also MODIFY yourself: write_file and edit_file change your own source. `
+  + `Every MUTATING action (write, edit, run_command) asks the user to confirm on the dock first — so explain what `
+  + `you'll do, make the call, and tell them to approve it on the screen; if they decline, it doesn't happen. `
+  + `read_file is direct (no confirmation). Be careful and precise: these affect the running robot.`;
