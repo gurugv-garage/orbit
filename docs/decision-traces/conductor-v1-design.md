@@ -344,17 +344,21 @@ thing `decide`, and start/stop to match. It is **re-evaluated by two triggers** 
 
 ## 9. Open / deferred (kept OUT of v1 deliberately)
 
-- **Cold-start session gating** *(known issue, found on hardware 2026-06-26)* — a `kind:'task'`
-  conducted thing is started **under the dock's open brain session**; with no open session,
-  `startTask` returns null and the conductor flaps (`start`→no-op→`start`). In normal use this is
-  fine: a session idle-closes only after **`SESSION_IDLE_MIN` = 30 min**, while faceFollow's
-  window opens at **`activateAfterMs` = 5 min** — so faceFollow reliably auto-starts ~5 min after
-  any conversation, session still open, **no manual step**. The gap is only the **cold start**:
-  if the dock has had *no* conversation for >30 min there's no session at all, and nothing opens
-  one but a conversation/brain-turn — so faceFollow won't run on its own until someone next talks
-  to it. Clean future fix: let a standing task open/hold a lightweight session — `maybeIdleClose`
-  already exempts sessions with running tasks, so the guard exists; no new lifecycle machinery.
-  Deferred; doesn't block v1 (faceFollow is proven, and the everyday path works).
+- **Cold-start session gating** *(known issue, found on hardware 2026-06-26; **FIXED
+  2026-07-04**)* — a `kind:'task'` conducted thing is started **under the dock's open brain
+  session**; with no open session, `startTask` returns null and the conductor flaps
+  (`start`→no-op→`start`, badge stuck at **ARMING**). The gap was the **cold start**: a dock with
+  *no* conversation for >30 min has no session, and nothing opened one but a conversation/brain-turn
+  — so faceFollow wouldn't run on its own until someone next talked to it.
+  **Fix (as built):** the session is now opened on **PRESENCE** — the phone (voice component)
+  connecting — not only on the first spoken turn. `ensurePresenceSession` (in `brain/session.ts`,
+  driven from the `voice` peer-joined handler) opens a session, or **resumes** a recent one still
+  inside the idle window, the moment the app is up. So a connected app always has a session for
+  `startTask` to nest under → **ARMING → RUNNING** with no manual step, cold start or not. This is
+  cleaner than the originally-sketched "task holds a lightweight session": it needs no task→session
+  machinery and no change to close/cascade. Full write-up: `server-brain-impl.md` §3.0 (Open).
+  *Not yet done, tracked there:* decoupling task **lifetime** from the session (so a self-task can
+  outlive the app) — the presence fix deliberately leaves close/cascade untouched.
 - **Learned write-back** (the reasoning task that tunes the variables) — v2. v1 ships fixed
   defaults + console editing; the tunings are structured so v2 is a pure add.
 - **`decide` as injected code-logic** — the signature allows it; no behaviour needs it yet.

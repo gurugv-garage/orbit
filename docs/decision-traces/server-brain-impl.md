@@ -449,9 +449,23 @@ boundary is an accident of process lifetime (`obsSessionId` is minted when
 `DockAgent` is constructed and dies with the app). Server-side, sessions get
 explicit semantics:
 
-- **Open:** lazily, on the first `turn-request` when no session is open for
-  that dock. (Phase 2 may add presence-triggered opens — person appears /
-  wake word — without protocol changes.)
+- **Open:** two triggers, whichever fires first.
+  - *Lazily, on the first `turn-request`* when no session is open (the original
+    path; still how a spoken turn opens one).
+  - *On PRESENCE — the phone (voice component) connecting* (`ensurePresenceSession`,
+    driven from the `voice` peer-joined handler in `brain/index.ts`). **An open app
+    with no session is a meaningless state:** self-initiated things (the conductor's
+    faceFollow task, a future Slack/proactive turn) need a session to attach to
+    *without* waiting for the user to speak. Presence-open is idempotent and
+    non-destructive — if a recent session is still inside the idle window it is
+    **resumed** (`store.reopen`, transcript + context intact) rather than a fresh
+    one opened, so a brief drop / app restart doesn't fragment the engagement; only
+    a long absence starts anew (boundary = `resumableOnPresence`, unit-tested in
+    `store.test.ts`). Gated on the `voice` cap, so the ESP32 **body** or a **browser**
+    connecting does NOT open a session. *(This is the "presence-triggered opens"
+    hook this section anticipated — built for the faceFollow-stuck-at-ARMING fix:
+    the conductor's `startTask` requires an open session, which a quiet-but-connected
+    app never had.)*
 - **Close:** whichever comes first — **idle timeout** (`brainSessionIdleMin`,
   config registry, default 30 min without a turn), **explicit end**
   (`POST /api/brain/:dock/session/end`, console button), or — phase 2 — a
@@ -463,7 +477,22 @@ explicit semantics:
 - **Sessions are decoupled from connections** — deliberately the opposite of
   today. App restarts, reconnects, even station restarts inside the idle
   window continue the *same* session (lazy JSONL reload). A conversation no
-  longer dies because a process did.
+  longer dies because a process did. Note the asymmetry with the presence-open
+  above: **connect** opens/resumes a session, but **disconnect does NOT close it**
+  (`onDockOffline` explicitly keeps the session alive — the phone leaving aborts
+  only an in-flight turn). The idle sweep is still the closer. This is why a
+  quiet dock's session lingers until the 30-min sweep, and why presence-open must
+  *resume* rather than always open fresh.
+- **TODO — decouple TASK/BEHAVIOUR lifetime from the session (separate change).**
+  Today a conductor-started task (faceFollow) is parented to the open session
+  (`startTask` → `parentSessionId`), so `endSession`'s §5 cascade
+  (`stopTasksForParent`) would STOP it on close. That's correct for a
+  *brain-set* task (a reminder dies with its conversation) but wrong for a
+  *self/conductor* task, which should be able to outlive the app / run with no
+  live conversation (see `docs/decision-traces/conductor-v1-design.md`). The
+  presence-open fix deliberately does **not** touch close/cascade to avoid that
+  regression; making self-initiated tasks run parentless (adopt-a-session-if-open,
+  never require one) is planned separately.
 - Hierarchy, for vocabulary consistency with `AGENT-MODEL.md` and the obs
   module: **Dock (tenant) ⊃ Session (bounded engagement) ⊃ Turn ⊃ Step**.
 

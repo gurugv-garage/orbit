@@ -133,6 +133,16 @@ export interface SessionDeps {
 
 type FailCode = 'timeout' | 'llm_error' | 'busy';
 
+/** Presence-session resume gate (§3.0): should `ensurePresenceSession` RESUME
+ *  the dock's most-recent session (vs. open a fresh one) when the phone (re)appears?
+ *  Yes iff it's closed AND its last turn ended within the idle window — a brief
+ *  drop / app restart continues the same engagement; a long absence starts anew.
+ *  Pure so the boundary is unit-tested without a full DockBrainSession. */
+export function resumableOnPresence(recent: SessionMeta | undefined, now: number): recent is SessionMeta {
+  return !!recent && recent.closedAt != null
+    && now - recent.lastTurnEndedAt <= SESSION_IDLE_MIN * 60_000;
+}
+
 export class DockBrainSession {
   readonly dock: string;
   #d: SessionDeps;
@@ -536,6 +546,36 @@ export class DockBrainSession {
    *  across a disconnect would otherwise have wedged (the stuck-speaking bug). */
   notePhoneConnected(): void {
     this.#conv.reconcileConnected(Date.now());
+  }
+
+  /** PRESENCE session (§3.0): the app being open IS the session boundary — an
+   *  open app with no session is a meaningless state, and self-initiated things
+   *  (the conductor's faceFollow task, a future Slack/proactive turn) need a
+   *  session to attach to WITHOUT waiting for the user to speak first. So on
+   *  phone connect we make a session exist:
+   *    • already open → keep it;
+   *    • a recent session still within the idle window → RESUME it (transcript +
+   *      context intact — a brief drop / app restart doesn't fragment it);
+   *    • else → open fresh.
+   *  Idempotent + non-destructive: it never closes anything, so it can't kill a
+   *  turn or a task. Close stays as-is (idle sweep / explicit end) — decoupling
+   *  task lifetime from the session is tracked separately (TODO, §3.0). */
+  ensurePresenceSession(now = Date.now()): void {
+    // idle boundary may have lapsed while we slept → let the normal close run first.
+    this.maybeIdleClose(now);
+    if (this.#d.store.openSession(this.dock)) return; // already present
+    // most-recent closed session still inside the idle window → resume it.
+    const recent = this.#d.store.sessions(this.dock)[0];
+    if (resumableOnPresence(recent, now) && this.#d.store.reopen(this.dock, recent!.sessionId)) {
+      this.#meta = this.#d.store.openSession(this.dock);
+      this.#agent = undefined; // next turn lazy-loads this transcript
+      this.#d.log?.(`[brain] ${this.dock}: presence resumed session ${recent.sessionId}`);
+      return;
+    }
+    const meta = this.#d.store.open(this.dock);
+    this.#meta = meta;
+    this.#agent = undefined;
+    this.#d.log?.(`[brain] ${this.dock}: presence opened session ${meta.sessionId}`);
   }
 
   /** Emit a conversation transition on the obs stream (for tests + the phone

@@ -10,6 +10,8 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { SessionStore } from './store.js';
+import { resumableOnPresence } from './session.js';
+import { SESSION_IDLE_MIN } from './constants.js';
 
 const DOCK = 'task-bot';
 const freshStore = () => new SessionStore(mkdtempSync(join(tmpdir(), 'store-')));
@@ -55,4 +57,48 @@ test('reopen refuses while another session is open (one open per dock)', () => {
 test('reopen returns false for an unknown session id', () => {
   const store = freshStore();
   assert.equal(store.reopen(DOCK, 'sess-nope'), false);
+});
+
+// ── PRESENCE session (§3.0): the phone connecting opens/resumes a session so
+// self-initiated things (faceFollow) can attach without the user speaking. The
+// resume-vs-fresh boundary is `resumableOnPresence` (pure); the whole-flow
+// integration lives in ensurePresenceSession (drives these same store methods).
+
+const IDLE_MS = SESSION_IDLE_MIN * 60_000;
+const meta = (over = {}) => ({ sessionId: 's-x', openedAt: 0, lastTurnEndedAt: 0, turns: 0, ...over });
+
+test('resumableOnPresence: undefined (no prior session) → open fresh, do not resume', () => {
+  assert.equal(resumableOnPresence(undefined, 1_000_000), false);
+});
+
+test('resumableOnPresence: an OPEN session is never a resume target (caller keeps it)', () => {
+  assert.equal(resumableOnPresence(meta({ closedAt: undefined }), 1_000), false);
+});
+
+test('resumableOnPresence: closed WITHIN the idle window → resume the same session', () => {
+  const now = 5_000_000;
+  assert.equal(resumableOnPresence(meta({ closedAt: now - 1, lastTurnEndedAt: now - IDLE_MS + 1 }), now), true);
+});
+
+test('resumableOnPresence: closed and PAST the idle window → open fresh, do not resume', () => {
+  const now = 5_000_000;
+  assert.equal(resumableOnPresence(meta({ closedAt: now - 1, lastTurnEndedAt: now - IDLE_MS - 1 }), now), false);
+});
+
+test('presence flow: no session yet → phone connect opens a fresh one (via store.open)', () => {
+  const store = freshStore();
+  assert.equal(store.openSession(DOCK), undefined);            // app open, no session = the bug
+  const opened = store.open(DOCK);                             // ensurePresenceSession's else-branch
+  assert.equal(store.openSession(DOCK)?.sessionId, opened.sessionId);
+});
+
+test('presence flow: a recent closed session is resumed, not duplicated', () => {
+  const store = freshStore();
+  const first = store.open(DOCK);
+  store.close(DOCK, first.sessionId, 'app-gone');
+  const recent = store.sessions(DOCK)[0]!;
+  assert.ok(resumableOnPresence(recent, Date.now()));         // within window
+  assert.equal(store.reopen(DOCK, recent.sessionId), true);
+  assert.equal(store.openSession(DOCK)?.sessionId, first.sessionId);  // SAME session, context intact
+  assert.equal(store.sessions(DOCK).length, 1);              // not fragmented into two
 });

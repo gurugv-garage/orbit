@@ -685,6 +685,12 @@ export function brainModule(w: BrainWiring): StationModule {
         const p = msg.payload as { id?: string; dock?: string; caps?: string[]; component?: string } | null;
         if (!p?.dock) return;
         if (msg.kind === 'peer-joined' && (p.caps ?? []).includes('voice')) {
+          // PRESENCE session (§3.0): the phone (voice component) appearing IS the
+          // session boundary — open/resume one now so self-initiated things (the
+          // conductor's faceFollow task, future proactive turns) have a session to
+          // attach to without waiting for the user to speak. Gated on the `voice`
+          // cap so the ESP32 body / browser joining does NOT open a session.
+          session(p.dock).ensurePresenceSession();
           // best-effort (may race the peer's subscribe — the agent/hello
           // handler above is the guaranteed path)
           bus.publish({
