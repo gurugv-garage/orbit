@@ -331,15 +331,18 @@ class FaceTracker(private val appContext: Context) : CameraFrameProvider, Lifecy
         }.getOrDefault(android.view.Surface.ROTATION_0)
         val a = ImageAnalysis.Builder()
             .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
-            // 320×240 analysis frames (this is ALSO what feeds recognition
-            // photos + the vision LLM, downscaled to ≤320px in
-            // encodeJpegBase64). Recognition currently works at this size with
-            // the on-device-JPEG pull path, and the gallery match thresholds
-            // were tuned against it — if recognition reliability needs more
-            // pixels, bump BOTH this and encodeJpegBase64's maxEdge together
-            // and re-validate the thresholds (perception/index.ts MATCH/
-            // TENTATIVE), at extra ISP cost on a 2018-class phone.
-            .setTargetResolution(Size(320, 240))
+            // 512×384 analysis frames (this is ALSO what feeds recognition
+            // photos + the vision LLM, downscaled to ≤512px in
+            // encodeJpegBase64). Bumped up from 320×240: the vision model
+            // hallucinates objects below ~512px (see docs/perception-pipeline.md
+            // and vision-instruction.ts) — this is the resolution the docs
+            // always intended. NOTE: keep this and encodeJpegBase64's maxEdge in
+            // lockstep, or the frame gets re-downscaled to 320 before the model
+            // sees it and the change is invisible. Gallery match thresholds
+            // (perception/index.ts MATCH/TENTATIVE) were tuned against 320px
+            // crops — re-validate recognition reliability at this size. Extra
+            // ISP + WebRTC bandwidth cost on a 2018-class phone.
+            .setTargetResolution(Size(512, 384))
             .setTargetRotation(displayRotation)
             .build()
         a.setAnalyzer(executor) { proxy -> process(proxy) }
@@ -778,11 +781,14 @@ private fun uprightForVision(src: Bitmap): Bitmap {
 }
 
 /**
- * Downscale to a vision-friendly size and JPEG-encode to base64. ~320px on the
- * long edge + quality 70 keeps a face/scene legible to gemma4:e2b while keeping
- * the prompt small (typically a few KB). Returns null on failure.
+ * Downscale to a vision-friendly size and JPEG-encode to base64. ~512px on the
+ * long edge + quality 70 keeps a face/scene legible to the vision model (the
+ * model hallucinates objects below ~512px) while keeping the prompt reasonable
+ * (typically a few KB). Kept in lockstep with the analysis capture resolution
+ * (FaceTracker bind()) so frames aren't needlessly re-downscaled. Returns null
+ * on failure.
  */
-private fun encodeJpegBase64(src: Bitmap, maxEdge: Int = 320, quality: Int = 70): String? = try {
+private fun encodeJpegBase64(src: Bitmap, maxEdge: Int = 512, quality: Int = 70): String? = try {
     val scale = maxEdge.toFloat() / maxOf(src.width, src.height)
     val bmp = if (scale < 1f) {
         Bitmap.createScaledBitmap(src, (src.width * scale).toInt(), (src.height * scale).toInt(), true)
