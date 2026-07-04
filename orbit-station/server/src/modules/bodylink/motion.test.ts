@@ -122,6 +122,18 @@ test('runSteps throws offline / on bad input (the model narrates)', () => {
   motion.shutdown();
 });
 
+test('runSteps throws when a HIGHER-priority holder owns the body (honest status, not a fake "moving")', () => {
+  const { motion } = setup();
+  // an emergency holder (100) outranks a brain turn (60): the brain's move must ERROR, so the
+  // model says it couldn't move — not report a phantom success.
+  motion.acquire(DOCK, 'emergency', 100);
+  assert.throws(
+    () => motion.runSteps(DOCK, [{ part: 'foot', degrees: 90 }], 'brain-turn'),
+    /can't move .* has the body/,
+  );
+  motion.shutdown();
+});
+
 test('stop() cancels a running sequence; new sequence supersedes the old', async () => {
   const { motion, sent } = setup();
   motion.runSteps(DOCK, [

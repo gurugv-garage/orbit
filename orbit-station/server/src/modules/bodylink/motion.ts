@@ -48,6 +48,16 @@ const MIN_SCALED_DURATION_MS = 150; // floor: even a tiny move gets a perceptibl
 const MAX_SCALED_DURATION_MS = 1_800; // ceiling: the biggest sweep still completes in ≤1.8s
 
 /**
+ * SETTLE GRACE for an explicit user move (source 'brain-turn'). A one-shot move mints a lease
+ * hold this long — enough to outlast the biggest sweep (MAX_SCALED_DURATION_MS) PLUS a beat for
+ * the pose to be SEEN — so a continuous follower (faceFollow @30) stays yielded until the
+ * commanded pose has landed, then reclaims and resumes. Without this the follower's next tick
+ * (~700ms) snaps the body back to the tracked face and the user's move looks like it did nothing.
+ * Mirrors faceFollow's yield-on-preempt: it's the brain-move analogue of the follow cooldown.
+ */
+const BRAIN_MOVE_SETTLE_MS = MAX_SCALED_DURATION_MS + 1_500; // ≤1.8s travel + ~1.5s settle grace
+
+/**
  * Velocity SAFETY CAP — must mirror the firmware's `velocity_us_per_sec_cap` spec
  * default (bodylink_motion.c). The firmware silently STRETCHES any transition whose
  * requested duration is too short for its travel; the station must apply the SAME
@@ -141,11 +151,18 @@ export class MotionExecutor {
   runSteps(dock: string, steps: MoveStep[], source = 'station'): string {
     if (!this.isOnline(dock)) throw new Error(`the body of ${dock} is not responding (offline)`);
     if (!Array.isArray(steps) || steps.length === 0) throw new Error('move needs at least one step');
-    // LEASE: a higher-priority holder owns the body → this move is declined (not an error —
-    // the caller simply doesn't get the body right now). Equal/higher admits (last-write-wins).
-    if (!this.#lease.admit(dock, source, priorityForSource(source))) {
+    // LEASE: a higher-priority holder owns the body → this move can't run. THROW (like the
+    // offline case) so the tool surfaces an ERROR result — the model then narrates that it
+    // couldn't move, instead of the old success-shaped "body busy" string that made the brain
+    // claim it moved when it didn't. Equal/higher admits (last-write-wins).
+    //
+    // A user's explicit move ('brain-turn') takes a SETTLE-length hold so a continuous
+    // follower stays yielded until the commanded pose lands (see BRAIN_MOVE_SETTLE_MS);
+    // other sources keep the default momentary TTL.
+    const holdMs = source === 'brain-turn' ? BRAIN_MOVE_SETTLE_MS : undefined;
+    if (!this.#lease.admit(dock, source, priorityForSource(source), holdMs)) {
       const h = this.#lease.current(dock);
-      return `body busy: ${h?.holder ?? 'another holder'} has it`;
+      throw new Error(`can't move ${dock} right now — ${h?.holder ?? 'another holder'} has the body`);
     }
     const described: string[] = [];
     for (const step of steps) {

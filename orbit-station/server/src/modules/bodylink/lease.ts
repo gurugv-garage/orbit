@@ -123,8 +123,14 @@ export class ActuatorLease {
    * momentary hold at the source's priority so a single call goes through when nothing
    * higher contends — preserving today's last-write-wins for ordinary callers. Returns true
    * if the call is ADMITTED (caller proceeds), false if a higher-priority holder blocks it.
+   *
+   * `holdMs` overrides the default TTL for THIS hold. A one-shot mover (a user's explicit
+   * `move`) can ask for a hold that OUTLIVES the move's travel so a continuous follower
+   * (faceFollow) stays yielded until the commanded pose has visibly SETTLED before it
+   * reclaims and re-centers — otherwise the follower snaps the body back within a tick and
+   * the user's move looks like it never happened (the "look to your right" bug).
    */
-  admit(dock: string, source: string, priority: number): boolean {
+  admit(dock: string, source: string, priority: number, holdMs?: number): boolean {
     const live = this.#liveHold(dock);
     if (live && live.holder !== source && priority < live.priority) {
       this.#log(`[lease] ${dock}: ${source}(${priority}) move blocked — ${live.holder}(${live.priority}) holds`);
@@ -134,7 +140,8 @@ export class ActuatorLease {
     if (live && live.holder !== source && priority > live.priority) {
       try { live.onPreempt?.(); } catch { /* */ }
     }
-    this.#holds.set(dock, { holder: source, priority, token: {}, expiresAt: this.#now() + this.#ttl });
+    const ttl = holdMs != null && holdMs > 0 ? holdMs : this.#ttl;
+    this.#holds.set(dock, { holder: source, priority, token: {}, expiresAt: this.#now() + ttl });
     return true;
   }
 

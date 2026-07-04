@@ -94,6 +94,20 @@ test('admit: the HOLDER\'s own moves always admit (same source)', () => {
   assert.equal(lease.admit(DOCK, 'task:t-1', PRIORITY.faceFollow), true, 'holder admits its own moves');
 });
 
+test('admit: a SETTLE-grace holdMs keeps a follower yielded past the default TTL (look-right fix)', () => {
+  const { lease, c } = mk(1000); // default TTL 1s
+  lease.acquire(DOCK, 'task:t-1', PRIORITY.faceFollow); // faceFollow holds
+  // user move preempts AND takes a 2.5s settle hold (outlives the default 1s TTL)
+  assert.equal(lease.admit(DOCK, 'brain-turn', PRIORITY.brainTurn, 2500), true);
+  c.advance(1200); // past the DEFAULT ttl, but inside the settle grace
+  // faceFollow tries to reclaim — still denied, so it stays yielded and won't re-center yet
+  assert.equal(lease.acquire(DOCK, 'task:t-1', PRIORITY.faceFollow), null, 'follower still yielded during settle');
+  assert.equal(lease.current(DOCK)?.holder, 'brain-turn', 'brain move still owns the body');
+  c.advance(1400); // 2600 total → past the 2500 settle grace
+  assert.equal(lease.current(DOCK), undefined, 'settle grace expired → body free');
+  assert.ok(lease.acquire(DOCK, 'task:t-1', PRIORITY.faceFollow), 'follower reclaims + resumes');
+});
+
 // ── TTL: the safety property — a crashed holder frees the body ──────────────────
 test('TTL EXPIRY: a hold not renewed auto-releases (crashed-holder safety)', () => {
   const { lease, c } = mk(1000);
