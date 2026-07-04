@@ -366,6 +366,20 @@ or **shared**.
 - [ ] **(G) Smaller APK / signed release build** — S. ABI splits, drop
   unused WebRTC dep, R8 minification, signing config. 245 MB → ~80 MB.
   Required to share the app with anyone outside this laptop.
+- [ ] **(H) Vocal affect / emotion-from-sound** — M, **plat**. Perception has
+  **no** acoustic-affect sensor: the speech stream is pure ASR (transcript text +
+  Whisper reliability metrics / nulls under Parakeet), and the only `emotion` kind
+  is face-api expression from **vision** — nothing derives emotion, prosody, arousal
+  or tone from the **audio** signal ([perception-pipeline.md](perception-pipeline.md)
+  §3, §5). Yet the brain confidently tells the user "you sound sad, I picked up on
+  a slight sadness in your voice" (session `s-lr0l`) — that is pure hallucination
+  (LLM inferring affect from transcript wording and/or the face-emotion line, then
+  misattributing it to hearing). Two tracks: **(near-term guardrail)** a brain
+  system-prompt line so it stops claiming it *hears* vocal emotion — attribute affect
+  only to the face-emotion stream or word choice, never to "your voice"; **(real
+  feature)** a net-new vocal-affect processor (prosody/arousal-valence from the WAV,
+  or prompt the already-audio-fed background-STT Gemini pass for a tone tag) emitting
+  a proper `speech`-adjacent affect field the summarizer + brain can honestly use.
 
 ### node-rover
 

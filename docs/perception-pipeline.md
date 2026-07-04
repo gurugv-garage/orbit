@@ -311,6 +311,17 @@ expressions; we accept "miss some, get some." The name is **never** from this ne
 (it's from §4 recognition) — a point worth stating because the two are emitted
 together.
 
+**Emotion is from the FACE, never from SOUND (a hazard worth naming).** This is
+the *only* emotion sensor. The §3 speech stream is pure ASR — transcript text plus
+Whisper reliability metrics (null under Parakeet); it carries **no** prosody,
+arousal, valence or vocal-affect field, and no such processor exists anywhere
+([Component summary](#component-summary) confirms). So when the brain says *"you
+sound sad, I picked up on a slight sadness in your voice"* (observed, session
+`s-lr0l`), it is **hallucinating** — inferring affect from the transcript's word
+choice and/or this face line, then misattributing it to *hearing*. Guardrail +
+a real vocal-affect stream are backlogged as node-dock item **(H)** in
+[TODO.md](TODO.md) §5.
+
 ---
 
 ## 5b. 🤖 Body-motion — egocentric awareness (the camera moves)
