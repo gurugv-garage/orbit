@@ -106,10 +106,19 @@ export const moveSchema = {
           degrees: {
             type: 'number',
             description:
-              'Absolute target angle in degrees. 0 = neutral. ' +
+              'Angle in degrees. ABSOLUTE by default (0 = neutral); a DELTA if `relative` is true. ' +
               'neck: -60 = fully up … 0 = level … +35 = fully down (range -60°…+35°, tilts up more than down). ' +
-              'foot: -90 = fully left … 0 = forward … +90 = fully right (range ±90°). ' +
+              'foot: -90 = fully right … 0 = forward … +90 = fully left (range ±90°). ' +
               "'a little' ≈ a third of range, 'all the way' ≈ the limit. Out-of-range clamps.",
+          },
+          relative: {
+            type: 'boolean',
+            description:
+              'When true, `degrees` is a DELTA from where the joint is NOW, not an absolute angle. ' +
+              'USE THIS for "turn more/further", "a bit more right", "turn right AGAIN", "keep going" — ' +
+              'e.g. one more nudge right = {part:foot, degrees:-30, relative:true}. It clamps at the limit, ' +
+              'so repeated relative turns keep moving until the joint can\'t go further. Prefer relative for ' +
+              'any instruction that continues or extends the current pose; use absolute to go to a specific place.',
           },
           parts: {
             type: 'array',
@@ -118,7 +127,8 @@ export const moveSchema = {
               type: 'object',
               properties: {
                 part: { type: 'string', enum: ['neck', 'foot'] },
-                degrees: { type: 'number', description: 'absolute angle for this joint' },
+                degrees: { type: 'number', description: 'angle for this joint (absolute, or a delta if relative:true)' },
+                relative: { type: 'boolean', description: 'degrees is a delta from the current angle (see the step-level `relative`)' },
               },
               required: ['part', 'degrees'],
             },
@@ -352,12 +362,17 @@ export const MOVE_DESC =
   'Move the body. Give an ordered list of steps; each step moves its joint(s) to an ' +
   'absolute angle in DEGREES over a duration, with an optional pause after. ' +
   'The steps list can be ANY LENGTH — chain as many as the motion needs. ' +
-  'neck nods up/down (-60°…+35°, 0=level, negative=up — tilts up more than down). foot swivels left/right (±90°, 0=forward, negative=left). ' +
+  'neck nods up/down (-60°…+35°, 0=level, negative=up — tilts up more than down). foot swivels left/right (±90°, 0=forward, negative=right, positive=left). ' +
   "SAME TIME (neck AND foot together): put both in ONE step's `parts`, e.g. " +
   '{parts:[{part:neck,degrees:-20},{part:foot,degrees:30}]}. ONE AFTER ANOTHER: use separate steps ' +
   '(e.g. nod = neck +25 then 0; look around = foot -60 wait, foot +60 wait, foot 0). ' +
   "REPEATING is just repeating the steps: 'nod 5 times' = the nod's steps listed 5 times in a row. " +
   'There is NO limit on how many times you repeat — just build the full sequence. ' +
+  'RELATIVE moves: for "turn more/further", "a bit more right", "turn right AGAIN", "keep going" set ' +
+  'relative:true and give a DELTA (e.g. one more nudge right = {part:foot, degrees:-30, relative:true}); it ' +
+  'moves from wherever the joint is now and clamps at the limit — so you never need to know or track the ' +
+  'current angle, and repeated turns keep going until they can\'t. Use absolute degrees to go to a SPECIFIC pose. ' +
+  'The "Current state" line reports the pose you are in now (facing + angles) — read it before an absolute move. ' +
   'You choose the angle, speed (duration_ms) and beats (wait_ms).';
 export const COMPUTE_DESC =
   'Evaluate a SAFE arithmetic or random-number expression and get the result back ' +
@@ -477,10 +492,22 @@ export const FORGET_MEMORY_DESC =
  * One move step, as the model emits it (single-joint or multi-joint form).
  * Shared vocabulary with the motion executor and the faceGestures config.
  */
+export interface MoveJoint {
+  part: string;
+  degrees: number;
+  /** RELATIVE step: `degrees` is a DELTA from this joint's current angle, not an absolute
+   *  target. The executor resolves it against the live pose (see motion.ts) and clamps at the
+   *  limit. This is how "turn more right" / "turn right again" work — the model doesn't need to
+   *  know the current angle or pick a sign that must stay consistent across turns. */
+  relative?: boolean;
+}
+
 export interface MoveStep {
   part?: string;
   degrees?: number;
-  parts?: Array<{ part: string; degrees: number }>;
+  /** single-joint relative (see MoveJoint.relative). */
+  relative?: boolean;
+  parts?: MoveJoint[];
   duration_ms?: number;
   wait_ms?: number;
   /** Opt this step OUT of the comfortable-speed floor: an intentional snap/startle/dance
@@ -490,8 +517,8 @@ export interface MoveStep {
 }
 
 /** Normalize a step to its joint list ([] for a pure wait). */
-export function stepJoints(step: MoveStep): Array<{ part: string; degrees: number }> {
+export function stepJoints(step: MoveStep): MoveJoint[] {
   if (step.parts && step.parts.length > 0) return step.parts;
-  if (step.part != null && step.degrees != null) return [{ part: step.part, degrees: step.degrees }];
+  if (step.part != null && step.degrees != null) return [{ part: step.part, degrees: step.degrees, relative: step.relative }];
   return [];
 }

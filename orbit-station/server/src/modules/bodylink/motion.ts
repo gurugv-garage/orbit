@@ -23,7 +23,14 @@
 
 import type { Bus } from '../../core/bus.js';
 import type { Directory } from '../docks/directory.js';
-import { DEGREE_LIMITS, degreesToUs, stepJoints, type MoveStep } from '../brain/schemas.js';
+import { DEGREE_LIMITS, degreesToUs, stepJoints, type MoveStep, type MoveJoint } from '../brain/schemas.js';
+
+/** Inverse of degreesToUs' universal scale (500µs=-90°, 1500µs=0°, 2500µs=+90°). Used to read
+ *  the body's CURRENT angle so a relative delta can be added to it. Not clamped per-part — it's
+ *  a raw scale read of where the joint actually is; the caller clamps the resulting target. */
+function usToDegrees(us: number): number {
+  return ((us - 1500) / 1000) * 90;
+}
 import { ActuatorLease, priorityForSource, type Lease, type LeaseOpts } from './lease.js';
 
 const IDLE_HEARTBEAT_MS = 1_000;
@@ -164,18 +171,65 @@ export class MotionExecutor {
       const h = this.#lease.current(dock);
       throw new Error(`can't move ${dock} right now — ${h?.holder ?? 'another holder'} has the body`);
     }
+    // Resolve RELATIVE deltas → absolute degrees against the live pose, so everything downstream
+    // (the saturation guard + #runSequence) works purely in absolutes. A relative step means
+    // "from wherever the joint is NOW" — this is how "turn more/again" keeps moving without the
+    // model tracking angles or guessing a sign (the flip-flop bug).
+    const resolved = this.#resolveSteps(dock, steps);
     const described: string[] = [];
-    for (const step of steps) {
+    let commandsAnyJoint = false;    // did the move ask for ANY joint motion (vs pure waits)?
+    let anyTravel = false;          // will ANY commanded joint actually move from where it is?
+    // Where each part will be by the end of the sequence, so a later step that re-commands the
+    // same part is judged against the earlier step's target (not the body's start pose).
+    const projected: Record<string, number> = { ...(this.#docks.get(dock)?.targets ?? {}) };
+    for (const step of resolved) {
       const joints = stepJoints(step);
       for (const j of joints) {
-        if (!(j.part in DEGREE_LIMITS)) throw new Error(`unknown part "${j.part}"`);
-        if (typeof j.degrees !== 'number' || Number.isNaN(j.degrees)) throw new Error(`bad degrees for ${j.part}`);
+        // degreesToUs CLAMPS to the joint's limit, so a request past the limit lands ON the
+        // limit — if the joint is already there, this step is zero-travel (the "turn right
+        // again" saturation case). Compare the clamped target to where the part will be.
+        const targetUs = degreesToUs(j.part, j.degrees);
+        if (projected[j.part] == null || projected[j.part] !== targetUs) anyTravel = true;
+        projected[j.part] = targetUs;
       }
       if (joints.length === 0 && step.wait_ms == null) throw new Error('a step needs joints (part/parts) or a wait_ms');
-      if (joints.length > 0) described.push(joints.map((j) => `${j.part}→${Math.round(j.degrees)}°`).join('+'));
+      if (joints.length > 0) { commandsAnyJoint = true; described.push(joints.map((j) => `${j.part}→${Math.round(j.degrees)}°`).join('+')); }
     }
-    void this.#runSequence(dock, steps, source);
+    // The move commands joints but NONE of them travel — the body is already there (typically at
+    // a limit after "turn right", then "turn right" again). THROW so the model tells the user it
+    // can't move further in that direction, instead of a phantom "moving" it never performs. A
+    // pure wait (no joints) is exempt — a deliberate pause is a legitimate no-travel move.
+    if (commandsAnyJoint && !anyTravel) {
+      throw new Error(`already there — ${described.join(', ')} is where the body already is (can't move further that way)`);
+    }
+    void this.#runSequence(dock, resolved, source);
     return `moving: ${described.join(', ') || 'pausing'}`;
+  }
+
+  /**
+   * Turn any RELATIVE joints into ABSOLUTE-degree steps by adding the delta to where the joint
+   * is NOW (or will be after earlier steps in this same sequence). Validates part/degrees while
+   * it's here (throws just like the old inline checks). Pure waits pass through untouched.
+   * Returns a NEW step array — the input is not mutated (faceGestures config steps are shared).
+   */
+  #resolveSteps(dock: string, steps: MoveStep[]): MoveStep[] {
+    // running pose in DEGREES so chained relative steps stack (right, then right again).
+    const poseUs = { ...(this.#docks.get(dock)?.targets ?? {}) };
+    const curDeg = (part: string): number => usToDegrees(poseUs[part] ?? 1500); // 1500µs = 0° = never-moved center
+    const resolveJoint = (j: MoveJoint): MoveJoint => {
+      if (!(j.part in DEGREE_LIMITS)) throw new Error(`unknown part "${j.part}"`);
+      if (typeof j.degrees !== 'number' || Number.isNaN(j.degrees)) throw new Error(`bad degrees for ${j.part}`);
+      const abs = j.relative ? curDeg(j.part) + j.degrees : j.degrees;
+      poseUs[j.part] = degreesToUs(j.part, abs); // advance the running pose (clamped, as the body will land)
+      return { part: j.part, degrees: abs };     // drop `relative` — now absolute
+    };
+    return steps.map((step) => {
+      const joints = stepJoints(step);
+      if (joints.length === 0) return step; // pure wait — untouched
+      const resolvedJoints = joints.map(resolveJoint);
+      // preserve step-level fields; emit as `parts` so a resolved single-joint step is uniform.
+      return { parts: resolvedJoints, duration_ms: step.duration_ms, wait_ms: step.wait_ms, snap: step.snap };
+    });
   }
 
   /**
@@ -206,6 +260,22 @@ export class MotionExecutor {
    *  standing behaviour reads this to detect a foreign mover and yield. */
   lastMover(dock: string): Mover | undefined {
     return this.#docks.get(dock)?.lastMover;
+  }
+
+  /** A short human-readable CURRENT pose for the brain's grounding (facing + angles), so it can
+   *  reason about "turn more" absolutely if it wants and knows where "again" starts from. Reads
+   *  the last commanded targets; a never-moved joint reports its neutral (0°). Returns undefined
+   *  if the body has no targets yet AND is offline (nothing meaningful to say). */
+  pose(dock: string): string | undefined {
+    const t = this.#docks.get(dock)?.targets ?? {};
+    const footDeg = Math.round(usToDegrees(t.foot ?? 1500));
+    const neckDeg = Math.round(usToDegrees(t.neck ?? 1500));
+    // foot: negative = right, positive = left (matches the schema labels).
+    const facing = footDeg === 0 ? 'facing forward'
+      : `facing ${Math.abs(footDeg)}° to the ${footDeg < 0 ? 'right' : 'left'}`;
+    const tilt = neckDeg === 0 ? 'head level'
+      : `head tilted ${Math.abs(neckDeg)}° ${neckDeg < 0 ? 'up' : 'down'}`;
+    return `${facing}, ${tilt} (foot ${footDeg}°, neck ${neckDeg}°)`;
   }
 
   /** Direct single set_target (the console's slider path) — same master. */

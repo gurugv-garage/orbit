@@ -730,7 +730,9 @@ export class DockBrainSession {
     // The body half of the grounding is the STATION's to report (it owns the
     // body link since the cutover); the phone's context covers face + senses.
     const bodyLine = this.#d.directory.resolveCap(this.dock, 'servo') != null
-      ? 'Body: CONNECTED. Parts you can move — neck (head tilt), foot (base swivel); use the move tool.'
+      ? `Body: CONNECTED — currently ${this.#d.motion.pose(this.dock) ?? 'at rest'}. `
+        + 'Parts you can move — neck (head tilt), foot (base swivel); use the move tool '
+        + '(relative:true for "turn more/again").'
       : 'Body: NOT connected (movement requests will be ignored).';
     // session seeding: the most recent CLOSED session's memory note rides the
     // system prompt, so a fresh engagement still knows this morning's context.

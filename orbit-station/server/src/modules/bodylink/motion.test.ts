@@ -134,6 +134,68 @@ test('runSteps throws when a HIGHER-priority holder owns the body (honest status
   motion.shutdown();
 });
 
+test('runSteps throws when the move is zero-travel (already at the limit — "turn right again")', async () => {
+  const { motion } = setup();
+  // first "turn right" (foot +90°) from center → real travel, admits and moves.
+  assert.match(motion.runSteps(DOCK, [{ part: 'foot', degrees: 90 }], 'brain-turn'), /moving/);
+  await sleep(10); // let the send land so the target is recorded at 2500µs
+  // "turn right again" → foot +90° is where it already is → THROW so the model says it can't.
+  assert.throws(
+    () => motion.runSteps(DOCK, [{ part: 'foot', degrees: 90 }], 'brain-turn'),
+    /already there|can't move further/,
+  );
+  // past-the-limit request clamps to the SAME 90° → still zero-travel → throws.
+  assert.throws(() => motion.runSteps(DOCK, [{ part: 'foot', degrees: 200 }], 'brain-turn'), /already there/);
+  // but a move to a DIFFERENT angle travels and is fine.
+  assert.match(motion.runSteps(DOCK, [{ part: 'foot', degrees: 0 }], 'brain-turn'), /moving/);
+  motion.shutdown();
+});
+
+test('runSteps: a pure wait step (no joints) is exempt from the zero-travel guard', () => {
+  const { motion } = setup();
+  assert.match(motion.runSteps(DOCK, [{ wait_ms: 200 }], 'brain-turn'), /pausing|moving/);
+  motion.shutdown();
+});
+
+test('runSteps: RELATIVE moves add a delta to the live pose — "turn right again" keeps moving', async () => {
+  const { motion, sent } = setup();
+  const partsOf = (m: BusMessage) => (m.payload as { parts: Record<string, { pulse_width_us: number }> }).parts;
+  const footUs = () => partsOf(sent.find((m) => partsOf(m).foot)!).foot!.pulse_width_us;
+  const near = (got: number, want: number, msg: string) => assert.ok(Math.abs(got - want) <= 2, `${msg} (got ${got}, want ~${want})`);
+  // from center (0°): turn right by 30° (relative, negative=right) → -30° ≈ 1166µs.
+  motion.runSteps(DOCK, [{ part: 'foot', degrees: -30, relative: true }], 'brain-turn');
+  await sleep(20);
+  near(footUs(), 1167, 'first relative right → ~-30°');
+  // "turn right AGAIN" — another -30° relative → now ≈ -60° ≈ 833µs (NOT stuck; keeps going).
+  sent.length = 0;
+  motion.runSteps(DOCK, [{ part: 'foot', degrees: -30, relative: true }], 'brain-turn');
+  await sleep(20);
+  near(footUs(), 833, 'second relative right → ~-60°');
+  motion.shutdown();
+});
+
+test('runSteps: a relative move CLAMPS at the limit, and once there is a zero-travel no-op (honest)', async () => {
+  const { motion } = setup();
+  // slam to the right limit via a big relative delta (clamps at -90°).
+  assert.match(motion.runSteps(DOCK, [{ part: 'foot', degrees: -200, relative: true }], 'brain-turn'), /moving/);
+  await sleep(20);
+  // "turn right again" at the limit → still -90° → zero travel → throws (can't go further).
+  assert.throws(
+    () => motion.runSteps(DOCK, [{ part: 'foot', degrees: -30, relative: true }], 'brain-turn'),
+    /already there|can't move further/,
+  );
+  motion.shutdown();
+});
+
+test('pose(): reports facing + angles for the grounding line', async () => {
+  const { motion } = setup();
+  assert.match(motion.pose(DOCK)!, /facing forward, head level/); // never moved → neutral
+  motion.runSteps(DOCK, [{ part: 'foot', degrees: -45 }], 'brain-turn'); // -45° = right
+  await sleep(20);
+  assert.match(motion.pose(DOCK)!, /facing 45° to the right/);
+  motion.shutdown();
+});
+
 test('stop() cancels a running sequence; new sequence supersedes the old', async () => {
   const { motion, sent } = setup();
   motion.runSteps(DOCK, [
