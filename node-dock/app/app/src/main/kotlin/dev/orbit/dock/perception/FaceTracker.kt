@@ -146,6 +146,14 @@ class FaceTracker(private val appContext: Context) : CameraFrameProvider, Lifecy
     private var analysis: ImageAnalysis? = null
     private var imageCapture: ImageCapture? = null
 
+    // The activity is sensorLandscape: it flips in-place between the two
+    // landscape orientations (configChanges handles it, no recreate). CameraX's
+    // setTargetRotation is captured once at bind() and would go stale after a
+    // 180° flip — the analysis/capture frames sent to the station would arrive
+    // upside-down. This listener re-pushes the live display rotation into every
+    // bound use-case whenever the display rotates, keeping frames upright.
+    private var displayListener: android.hardware.display.DisplayManager.DisplayListener? = null
+
     // Optional on-screen preview. The UI's PreviewView hands us its
     // SurfaceProvider; we bind a CameraX Preview use-case alongside the
     // analyzer so the dock can show a live thumbnail of what it sees. Null when
@@ -190,6 +198,7 @@ class FaceTracker(private val appContext: Context) : CameraFrameProvider, Lifecy
         }
         running.set(true)
         startTelemetry()
+        startDisplayListener()
         val existing = cameraProvider
         if (existing != null) {
             // Already have a provider — just rebind (e.g. start() called again
@@ -238,9 +247,46 @@ class FaceTracker(private val appContext: Context) : CameraFrameProvider, Lifecy
         telTimer?.cancel(); telTimer = null
     }
 
+    /** Watch for display-rotation changes and re-target the bound use-cases, so a
+     *  180° landscape flip keeps camera frames upright. Registered on the main
+     *  thread; idempotent. */
+    private fun startDisplayListener() {
+        if (displayListener != null) return
+        val dm = appContext.getSystemService(android.content.Context.DISPLAY_SERVICE)
+            as? android.hardware.display.DisplayManager ?: return
+        val main = ContextCompat.getMainExecutor(appContext)
+        val listener = object : android.hardware.display.DisplayManager.DisplayListener {
+            override fun onDisplayAdded(displayId: Int) {}
+            override fun onDisplayRemoved(displayId: Int) {}
+            override fun onDisplayChanged(displayId: Int) {
+                val rot = runCatching {
+                    val wm = appContext.getSystemService(android.content.Context.WINDOW_SERVICE) as android.view.WindowManager
+                    wm.defaultDisplay.rotation
+                }.getOrDefault(android.view.Surface.ROTATION_0)
+                // setTargetRotation must run on the main thread.
+                main.execute {
+                    analysis?.targetRotation = rot
+                    imageCapture?.targetRotation = rot
+                    preview?.targetRotation = rot
+                }
+            }
+        }
+        main.execute { runCatching { dm.registerDisplayListener(listener, null) } }
+        displayListener = listener
+    }
+
+    private fun stopDisplayListener() {
+        val l = displayListener ?: return
+        val dm = appContext.getSystemService(android.content.Context.DISPLAY_SERVICE)
+            as? android.hardware.display.DisplayManager
+        runCatching { dm?.unregisterDisplayListener(l) }
+        displayListener = null
+    }
+
     fun stop() {
         if (!running.getAndSet(false)) return
         stopTelemetry()
+        stopDisplayListener()
         ContextCompat.getMainExecutor(appContext).execute {
             // CREATED (not DESTROYED) so the same FaceTracker can be start()ed
             // again later; CameraX unbinds use-cases when we drop below STARTED.
