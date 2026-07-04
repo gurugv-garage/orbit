@@ -13,7 +13,7 @@
  */
 import { json } from '../../core/http.js';
 import type { RouteContext, StationModule } from '../../core/module.js';
-import { CONDUCTED, type ConductedState, type World, type Tunings } from './conducted.js';
+import { CONDUCTED, wakeTunings, type ConductedState, type World, type Tunings } from './conducted.js';
 import { reconcile, type Effects } from './reconcile.js';
 
 const TICK_MS = 1000;
@@ -33,7 +33,7 @@ export interface ConductorWiring {
   /** lease holder of a dock's body (the bodylink motion executor). */
   bodyHolder: (dock: string) => { holder: string; priority: number } | null;
   /** set/clear a dock's wakeUp config (the brain's WakeApi) — enacting the wakeUp BEHAVIOUR. */
-  setWake: (dock: string, cfg: { enabled: boolean; phrase: string; prompt: string } | null) => void;
+  setWake: (dock: string, cfg: { enabled: boolean; phrase: string; prompt: string; aliases?: string[] } | null) => void;
   /** best-effort presence (someone in view) — optional; v1 conducted things don't require it. */
   present?: (dock: string) => boolean;
 }
@@ -90,7 +90,8 @@ export function conductorModule(w: ConductorWiring): StationModule {
     },
     setBehaviour: (_d, name, on, tunings) => {
       if (name === 'wakeUp') {
-        w.setWake(dock, on ? { enabled: true, phrase: String(tunings.phrase ?? 'hey orbit'), prompt: String(tunings.prompt ?? 'did you call me?') } : null);
+        const wt = wakeTunings(tunings);
+        w.setWake(dock, on ? { enabled: true, phrase: wt.phrase, prompt: wt.prompt, aliases: wt.aliases } : null);
       }
     },
     onTransition: (_d, name, from, to, why) => {

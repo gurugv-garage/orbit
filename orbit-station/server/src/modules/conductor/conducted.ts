@@ -105,16 +105,19 @@ export const faceFollow: Conducted = {
 export const wakeUp: Conducted = {
   name: 'wakeUp', kind: 'behaviour',
   instrumentedAt: 'brain/index.ts: matchesWake() in onAddressedFinal → session.wake()',
-  defaults: { enabled: true, phrase: 'hey orbit', prompt: 'did you call me?' },
+  defaults: { enabled: true, phrase: 'hey orbit', prompt: 'did you call me?', aliases: '' },
   decide(t, _world, self) {
     const desired: Desired = bool(t.enabled, true) ? 'running' : 'off';
     return { desired, self: { ...self, desired } };
   },
 };
 
-/** Read wakeUp's tunings as a typed config (for the behaviour-enable effect). */
-export function wakeTunings(t: Tunings): { enabled: boolean; phrase: string; prompt: string } {
-  return { enabled: bool(t.enabled, true), phrase: str(t.phrase, 'hey orbit'), prompt: str(t.prompt, 'did you call me?') };
+/** Read wakeUp's tunings as a typed config (for the behaviour-enable effect). `aliases` is a
+ *  human-friendly comma/space-separated string in the console ("albert, robert or bit") that we
+ *  split into the extra accepted name renderings; blank → none. */
+export function wakeTunings(t: Tunings): { enabled: boolean; phrase: string; prompt: string; aliases: string[] } {
+  const aliases = str(t.aliases, '').split(',').map((s) => s.trim().toLowerCase()).filter(Boolean);
+  return { enabled: bool(t.enabled, true), phrase: str(t.phrase, 'hey orbit'), prompt: str(t.prompt, 'did you call me?'), aliases };
 }
 
 /** The v1 conducted set (fixed; pluggable loading is a later generalization). */

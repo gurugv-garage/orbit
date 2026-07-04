@@ -70,16 +70,44 @@ export function getBrainAccess(): BrainAccess | undefined {
  *  the lead-in is throwaway. We accept the name preceded by at most one of these (or nothing). */
 const WAKE_FILLER = new Set(['hey', 'hay', 'hi', 'ok', 'okay', 'k', 'kay', 'yo', 'a', 'ay', 'eh', 'um', 'uh', 'hello', 'hej', 'he']);
 
+/** SOUNDALIKES of the wake NAME that STT/diarization routinely mis-render. "orbit" is two stressed
+ *  syllables ("OR-bit") that ASR maps onto lots of real words — we accept these as the name so a
+ *  mangled final still wakes. Whole-word only (so "orbital"/"exorbitant" still don't wake — those
+ *  are handled by the caller's whole-word tokenisation). Keyed by the CANONICAL name; a wake
+ *  config can extend the set per-dock via `aliases` (exposed in the conductor console).
+ *  Hardware/STT-observed misses drive this list — add, don't theorise. */
+const WAKE_SOUNDALIKES: Record<string, string[]> = {
+  orbit: [
+    'orbit', 'orbits', 'orbid', 'orbet', 'orbut', 'orbot', 'orbite', 'orbita',
+    'oribit', 'oribut', 'arbit', 'arbut', 'aubert', 'obert', 'albert', 'aubrey',
+    'robert', 'robit', 'orbeez', 'awbit', 'or bit', 'all bit', 'or bet',
+  ],
+};
+
+/** The accepted renderings of a phrase's NAME (last word): the canonical name + its built-in
+ *  soundalikes + any per-dock `extra` aliases from the wake config. All lower-cased, deduped.
+ *  Multi-word aliases ("or bit") are matched as a phrase by the caller. */
+export function nameAliases(phrase: string, extra: string[] = []): string[] {
+  const name = phrase.toLowerCase().replace(/[^a-z0-9 ]/g, ' ').replace(/\s+/g, ' ').trim().split(' ').filter(Boolean).pop() ?? '';
+  const built = WAKE_SOUNDALIKES[name] ?? [name];
+  const norm = (s: string) => s.toLowerCase().replace(/[^a-z0-9 ]/g, ' ').replace(/\s+/g, ' ').trim();
+  return [...new Set([name, ...built, ...extra.map(norm)].filter(Boolean))];
+}
+
 /** WAKE-PHRASE match (conductor's `wakeUp`): true if the utterance is a wake-from-idle call.
- *  Lenient because STT phrasing varies a lot on the throwaway lead-in. Two ways to match, both
- *  case/punctuation-insensitive and required NEAR THE START (not buried mid-sentence):
+ *  Lenient because STT phrasing varies a lot — both the throwaway lead-in AND the name itself
+ *  (ASR mis-renders "orbit" as "albert"/"robert"/… — see WAKE_SOUNDALIKES). Two ways to match,
+ *  both case/punctuation-insensitive and required NEAR THE START (not buried mid-sentence):
  *   1) the FULL phrase ("hey orbit") as a whole-word run, with ≤2 filler words before it; or
- *   2) the NAME alone (the phrase's last word, "orbit") as the first real word, optionally
- *      preceded by exactly one short filler token — catches STT's "okay orbit" / "k orbit" /
- *      bare "orbit" when it drops/mangles "hey". The name must be a whole word, so "orbital"
- *      does NOT wake.
+ *   2) the NAME (or a soundalike) as the first real word, optionally preceded by exactly one
+ *      short filler token — catches STT's "okay orbit" / "k orbit" / bare "orbit" / "hey albert";
+ *   3) the NAME (or a soundalike) as the LAST real word — a trailing term of address ("good job,
+ *      orbit" / "thanks orbit"), which is a strong addressed signal even though the name isn't up
+ *      front. A name buried in the MIDDLE still does NOT wake (that's a mention, not an address).
+ *      Whole-word only, so "orbital" does NOT wake.
+ *  `aliases` extends the accepted name renderings per-dock (from the wake config / console).
  *  Hardware-observed misses that motivated (2): "Okay orbit." / "K orbit." (2026-06-26). */
-export function matchesWake(text: string, phrase: string): boolean {
+export function matchesWake(text: string, phrase: string, aliases: string[] = []): boolean {
   const norm = (s: string) => s.toLowerCase().replace(/[^a-z0-9 ]/g, ' ').replace(/\s+/g, ' ').trim();
   const t = norm(text); const p = norm(phrase);
   if (!t || !p) return false;
@@ -89,19 +117,72 @@ export function matchesWake(text: string, phrase: string): boolean {
     const before = t.slice(0, Math.max(0, idx - 1)).trim();
     if (before.split(' ').filter(Boolean).length <= 2) return true;
   }
-  // (2) NAME (phrase's last word) as the first real word, with ≤1 short-filler lead-in.
-  const name = p.split(' ').filter(Boolean).pop()!;
+  // (2)/(3) NAME (or a soundalike) at the START or END. Names may be multi-word ("or bit") —
+  // match the alias as a whole-word run. Longest aliases first so "or bit" beats a stray "or".
+  const names = nameAliases(p, aliases).sort((a, b) => b.length - a.length);
   const words = t.split(' ').filter(Boolean);
-  if (words[0] === name) return true;                                   // "orbit …"
-  if (words.length >= 2 && words[1] === name && WAKE_FILLER.has(words[0]!)) return true; // "okay orbit …"
+  const runAt = (nmWords: string[], at: number) => at >= 0 && nmWords.every((w, i) => words[at + i] === w);
+  for (const nm of names) {
+    const nmWords = nm.split(' ').filter(Boolean);
+    // (2) starts with the name…
+    if (runAt(nmWords, 0)) return true;                                     // "orbit …" / "or bit …"
+    // …or one short filler then the name.
+    if (words.length > nmWords.length && WAKE_FILLER.has(words[0]!) && runAt(nmWords, 1)) return true; // "okay orbit …"
+    // (3) ENDS with the name — a trailing term of address ("good job, orbit").
+    if (runAt(nmWords, words.length - nmWords.length)) return true;         // "… orbit"
+  }
   return false;
+}
+
+/** Strip the wake NAME from a matched utterance and return the remaining CONTENT, or '' if the
+ *  utterance was a bare wake call ("hey orbit" with nothing else). Handles the name at either end:
+ *   • LEADING ("hey orbit, look right")  → returns the tail after the name ("look right");
+ *   • TRAILING ("good job, orbit")       → returns the head before the name ("good job") — a term
+ *     of address, so the praise/callout itself is the content and gets a real reply, not "did you
+ *     call me?". Original casing/punctuation is preserved; only the boundary comma/space next to
+ *     the name is trimmed. Only call when matchesWake(text, phrase) is already true. */
+export function stripWake(text: string, phrase: string, aliases: string[] = []): string {
+  // Name (alias) runs, longest first so we consume the whole "or bit" not a stray "or".
+  const names = nameAliases(phrase, aliases).map((n) => n.split(' ').filter(Boolean)).sort((a, b) => b.length - a.length);
+  // Walk the raw tokens (keeping start+end offsets) so we can excise the name run without re-casing.
+  const toks: { w: string; start: number; end: number }[] = [];
+  const re = /[a-z0-9]+/gi;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text)) !== null) toks.push({ w: m[0].toLowerCase(), start: m.index, end: m.index + m[0].length });
+  const runAt = (nm: string[], at: number) => at >= 0 && at + nm.length <= toks.length && nm.every((w, j) => toks[at + j]!.w === w);
+  // LEADING: a name run within the first few tokens → content is everything AFTER it.
+  for (let i = 0; i <= 3; i++) {
+    for (const nm of names) {
+      if (runAt(nm, i)) {
+        const tail = text.slice(toks[i + nm.length - 1]!.end).replace(/^[\s,.:;!?—–-]+/, '').trim();
+        if (tail) return tail;               // leading name + command
+        // No tail here — fall through to check a TRAILING match (or bare wake) below.
+      }
+    }
+  }
+  // TRAILING: a name run at the END → content is everything BEFORE it (the term-of-address case).
+  for (const nm of names) {
+    if (runAt(nm, toks.length - nm.length)) {
+      const head = text.slice(0, toks[toks.length - nm.length]!.start).replace(/[\s,.:;!?—–-]+$/, '').trim();
+      // If the head is ONLY wake filler ("hey"/"okay"/…), this is bare wake ("hey orbit"), not
+      // a praise/callout — no content. Otherwise the head IS the addressed content ("good job").
+      const headWords = head.toLowerCase().replace(/[^a-z0-9 ]/g, ' ').split(/\s+/).filter(Boolean);
+      if (headWords.length && headWords.every((w) => WAKE_FILLER.has(w))) return '';
+      return head;
+    }
+  }
+  return ''; // bare wake ("hey orbit") — no content either side.
 }
 
 /** WakeApi — the conductor's `wakeUp` behaviour governs the wake check through this:
  *  enable/disable + the phrase/prompt, per dock. */
 export interface WakeApi {
-  setWakeConfig(dock: string, cfg: { enabled: boolean; phrase: string; prompt: string } | null): void;
+  setWakeConfig(dock: string, cfg: WakeConfig | null): void;
 }
+/** Wake config, governed by the conductor's `wakeUp` behaviour (enable/phrase/prompt) plus
+ *  `aliases` — extra accepted renderings of the wake NAME (STT soundalikes), tunable in the
+ *  conductor console on top of the built-in WAKE_SOUNDALIKES set. */
+export interface WakeConfig { enabled: boolean; phrase: string; prompt: string; aliases?: string[] }
 const wakeApiRef: { current?: WakeApi } = {};
 /** The live WakeApi (set when the brain module inits) — for the conductor. */
 export function getWakeApi(): WakeApi | undefined { return wakeApiRef.current; }
@@ -165,7 +246,7 @@ export function brainModule(w: BrainWiring): StationModule {
   // WAKE (conductor's `wakeUp` behaviour): per-dock wake config, set by the conductor via
   // the exported WakeApi. Absent/disabled → no wake check (the default). The match runs in
   // onAddressedFinal (the single point every final transcript lands).
-  const wakeCfg = new Map<string, { enabled: boolean; phrase: string; prompt: string }>();
+  const wakeCfg = new Map<string, WakeConfig>();
   // Set in init(): simulate a tapped addressed utterance (debug self-test seam).
   let injectAddressed: (dock: string, text: string) => void = () => {};
   const tasksRoot = defaultTasksRoot();
@@ -404,17 +485,38 @@ export function brainModule(w: BrainWiring): StationModule {
         // conductor via setWakeConfig (enabled/phrase/prompt); off by default until armed.
         if (wakeCfg.get(t.dockId)?.enabled && !session(t.dockId).isListening()) {
           const w = wakeCfg.get(t.dockId)!;
-          if (matchesWake(t.text, w.phrase)) {
+          if (matchesWake(t.text, w.phrase, w.aliases)) {
+            // WAKE + COMMAND in one breath ("hey orbit, look to your right"): strip the wake
+            // phrase and run the REMAINDER as a real addressed turn — no "did you call me?"
+            // deflection (which would drop the command). Bare wake ("hey orbit") → command is
+            // empty → fall through to wake()'s ack + open-window. Reuse the <2-alphanumerics
+            // content check so a trailing "!" / "orbit?" doesn't count as a command.
+            const command = stripWake(t.text, w.phrase, w.aliases);
+            if (command.replace(/[^a-z0-9]/gi, '').length >= 2) {
+              console.log(`[wake] ${t.dockId} FIRED-WITH-COMMAND on "${t.text}" → turn "${command}" (phrase="${w.phrase}", tier=${t.confTier ?? '?'})`);
+              trace('wake+command');
+              session(t.dockId).tapOpen(); // open the listening window (adopt), same as wake()
+              void session(t.dockId).handleTurnRequest({
+                turnId: `addr-${randomUUID()}`,
+                trigger: { kind: 'user', text: command },
+                stationOriginated: true,
+                stt: { confTier: t.confTier, avgLogprob: t.avgLogprob, noSpeechProb: t.noSpeechProb,
+                  compressionRatio: t.compressionRatio },
+              }).catch((err) => console.error(`[brain] ${t.dockId}: wake+command turn crashed`, err));
+              return;
+            }
             console.log(`[wake] ${t.dockId} FIRED on "${t.text}" (phrase="${w.phrase}", tier=${t.confTier ?? '?'})`);
             trace('wake');
             session(t.dockId).wake(w.prompt);
             return;
           }
-          // INSTRUMENT near-misses: idle utterance that mentions the name but didn't match —
-          // so STT renderings we don't yet accept are visible (don't theorize, observe).
-          const name = w.phrase.toLowerCase().split(' ').filter(Boolean).pop();
-          if (name && t.text.toLowerCase().includes(name)) {
-            console.log(`[wake] ${t.dockId} near-miss (no wake) on "${t.text}" (phrase="${w.phrase}", tier=${t.confTier ?? '?'})`);
+          // INSTRUMENT near-misses: an idle utterance whose first few words CONTAIN an accepted
+          // name/soundalike (or the bare name anywhere) but didn't wake — so renderings we don't
+          // yet accept, or that landed buried mid-sentence, are visible (observe, don't theorize).
+          const lc = t.text.toLowerCase();
+          const near = nameAliases(w.phrase, w.aliases).find((n) => lc.includes(n));
+          if (near) {
+            console.log(`[wake] ${t.dockId} near-miss (no wake, saw "${near}") on "${t.text}" (phrase="${w.phrase}", tier=${t.confTier ?? '?'})`);
           }
         }
         // GARBAGE STT: a far-field-mush / repetition-loop transcript must not become a
