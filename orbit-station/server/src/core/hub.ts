@@ -18,6 +18,7 @@ import {
   type EventFrame,
   type InboundFrame,
   type OutboundFrame,
+  type PeerHealth,
   type PeerRole,
   type Topic,
 } from './protocol.js';
@@ -59,6 +60,8 @@ export interface RosterEntry {
   connectedAt: number;
   /** mesh links this peer reports in its heartbeat. */
   links?: Record<string, boolean>;
+  /** link-health metrics a device reports in its heartbeat (rssi/heap/reconnects). */
+  health?: PeerHealth;
   topics: Topic[];
 }
 
@@ -76,6 +79,7 @@ interface Peer {
   lastSeen: number;
   connectedAt: number;
   links?: Record<string, boolean>;
+  health?: PeerHealth;
   topics: Set<Topic>;
   /** true once the peer has sent a valid `hello`. Pre-hello peers are hidden. */
   announced: boolean;
@@ -176,6 +180,7 @@ export class Hub {
       lastSeen: p.lastSeen,
       connectedAt: p.connectedAt,
       links: p.links,
+      health: p.health,
       topics: [...p.topics],
     }));
   }
@@ -354,8 +359,25 @@ export class Hub {
         // Capture the mesh links a peer reports in its heartbeat so the
         // roster shows who's connected to what.
         if (f.kind === 'heartbeat') {
-          const hb = f.payload as { links?: Record<string, boolean>; build?: number } | null;
+          const hb = f.payload as {
+            links?: Record<string, boolean>; build?: number;
+            rssi?: number; heap_free?: number; reconnects?: number;
+          } | null;
           if (hb?.links && typeof hb.links === 'object') peer.links = hb.links;
+          // Link-health snapshot (docs: progress.md §C3 Wi-Fi): fold rssi/heap/
+          // reconnects onto the peer so the roster + dock card show link quality
+          // at a glance (the lesson from the C3 range debug — no more inferring
+          // it from ping by hand). Only overwrite fields the device actually sent.
+          if (typeof hb?.rssi === 'number' || typeof hb?.heap_free === 'number' ||
+              typeof hb?.reconnects === 'number') {
+            peer.health = {
+              ...peer.health,
+              ...(typeof hb.rssi === 'number' ? { rssi: hb.rssi } : {}),
+              ...(typeof hb.heap_free === 'number' ? { heap_free: hb.heap_free } : {}),
+              ...(typeof hb.reconnects === 'number' ? { reconnects: hb.reconnects } : {}),
+              ts: Date.now(),
+            };
+          }
           // OTA build in the heartbeat (docs/ota.md §3): refresh the roster
           // version so it stays current without a reconnect (e.g. after an OTA
           // where the device rebooted but the socket/peer entry persisted).

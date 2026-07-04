@@ -8,9 +8,16 @@
  * BodyLink vocabulary on this topic:
  *
  *   station → body:  kind 'command'  payload = set_target body (directed toAddr)
+ *                    kind 'ping'  { seq } → body echoes it back (conn-health burst)
  *   body → station:  kind 'profile'  capability profile (on connect)
  *                    kind 'state' / 'applied'  reported per-part state
  *                    kind 'event' / 'error'    async notices
+ *                    kind 'pong'  { seq } → echo of a ping (station times RTT + loss)
+ *
+ * Passive link-health (rssi/heap/reconnects) rides the heartbeat → hub → dock
+ * card + digest (a live glance, no button). The ping/pong burst is the on-demand
+ * deep-dive — real packet-loss% + RTT on the station↔body WS, measured from the
+ * station (the side that can count) — see progress.md §"ESP32-C3 SuperMini Wi-Fi".
  *
  * Phone/console awareness is a ~1 Hz `digest` — body status is DISPLAY-ONLY
  * and staleness-tolerant by design (impl plan corner case 23): directed to
@@ -20,6 +27,7 @@
  *   GET  /api/bodylink/state?dock=      latest reported state
  *   POST /api/bodylink/command          { dock?, parts } → executor (clamped)
  *   POST /api/bodylink/play             { dock?, steps } → runSteps (choreography)
+ *   POST /api/bodylink/health-check     { dock? } → active conn-health probe report
  */
 
 import type { Bus } from '../../core/bus.js';
@@ -60,6 +68,52 @@ export function bodylinkModule(deps: {
 }): StationModule {
   let bus: Bus;
   const docks = new Map<string, DockBody>();
+  // in-flight ping seqs → monotonic-clock send time. A returning `pong` looks
+  // its seq up here to compute RTT (then deletes it); seqs still present after
+  // the drain window = dropped packets.
+  const pendingPings = new Map<number, number>();
+  const rttBySeq = new Map<number, number>();   // seq → round-trip ms (drained per burst)
+  let pingSeq = 0;
+
+  interface HealthReport {
+    sent: number; received: number; lossPct: number;
+    rttMin?: number; rttAvg?: number; rttMax?: number;
+  }
+
+  /** Active packet-loss/latency probe on the station↔body WS link. Fires N
+   *  `ping` frames, the body echoes each as `pong`; we count echoes (loss %)
+   *  and time each round-trip (RTT). Measured from the station because it's
+   *  the side that can count, and it tests the link that actually flaps —
+   *  NOT body↔AP. (The passive rssi/heap/reconnects ride the heartbeat.) */
+  async function probePackets(dock: string, count = 20, gapMs = 50, drainMs = 1_500): Promise<HealthReport> {
+    const target = deps.directory.resolveCap(dock, 'servo');
+    if (!target?.component) throw new Error('no online body for this dock');
+    const addr = { dock, component: target.component };
+    const firstSeq = pingSeq;
+    for (let i = 0; i < count; i++) {
+      const seq = pingSeq++;
+      pendingPings.set(seq, performance.now());
+      bus.publish({ topic: 'bodylink', kind: 'ping', payload: { seq }, source: 'station', toAddr: addr });
+      await new Promise((r) => setTimeout(r, gapMs));
+    }
+    // drain window: let the last pongs return before we tally.
+    await new Promise((r) => setTimeout(r, drainMs));
+    const rtts: number[] = [];
+    for (let seq = firstSeq; seq < pingSeq; seq++) {
+      pendingPings.delete(seq);                 // clear whatever's left (drops)
+      const rtt = rttBySeq.get(seq);
+      if (rtt !== undefined) { rtts.push(rtt); rttBySeq.delete(seq); }
+    }
+    const received = rtts.length;
+    const lossPct = count === 0 ? 0 : Math.round(((count - received) / count) * 1000) / 10;
+    const rep: HealthReport = { sent: count, received, lossPct };
+    if (received) {
+      rep.rttMin = Math.round(Math.min(...rtts));
+      rep.rttMax = Math.round(Math.max(...rtts));
+      rep.rttAvg = Math.round(rtts.reduce((a, b) => a + b, 0) / received);
+    }
+    return rep;
+  }
 
   function body(dock: string): DockBody {
     let d = docks.get(dock);
@@ -104,7 +158,11 @@ export function bodylinkModule(deps: {
     if (!force && now - d.lastDigestAt < DIGEST_MIN_INTERVAL_MS) return;
     d.lastDigestAt = now;
     const online = deps.motion.isOnline(dock);
-    const payload = { dock, online, state: d.state, targets: deps.motion.targets(dock), ts: now };
+    // Fold the body peer's latest heartbeat health (rssi/heap/reconnects) into
+    // the digest so consoles show link quality LIVE — no button needed. The
+    // health-check button is only for the extra active loss/RTT measurement.
+    const health = deps.directory.resolveCap(dock, 'servo')?.health;
+    const payload = { dock, online, state: d.state, targets: deps.motion.targets(dock), health, ts: now };
     bus.publish({ topic: 'bodylink', kind: 'digest', payload, source: 'station' });
     const face = deps.directory.resolveCap(dock, 'face');
     if (face?.component) {
@@ -134,6 +192,17 @@ export function bodylinkModule(deps: {
           if (msg.kind === 'state') d.state = msg.payload as Record<string, Record<string, number>>;
           else Object.assign(d.state, (msg.payload as { parts?: Record<string, Record<string, number>> })?.parts ?? {});
           maybeDigest(dock);
+        } else if (msg.kind === 'pong') {
+          // echo of a conn-health ping → RTT = now − send time. Record it; the
+          // probe tallies loss (missing seqs) + RTT after its drain window.
+          const seq = (msg.payload as { seq?: number } | null)?.seq;
+          if (typeof seq === 'number') {
+            const sentAt = pendingPings.get(seq);
+            if (sentAt !== undefined) {
+              rttBySeq.set(seq, performance.now() - sentAt);
+              pendingPings.delete(seq);
+            }
+          }
         }
       });
 
@@ -213,6 +282,21 @@ export function bodylinkModule(deps: {
         deps.motion.setTargets(dock, partsUs, durationMs);
         maybeDigest(dock, true);
         json(res, 200, { sent: { dock, parts } });
+        return true;
+      }
+      // on-demand conn-health probe (the console's "Check conn health" button):
+      // fire a ping-burst on the station↔body WS and return real loss% + RTT.
+      // The passive rssi/heap/reconnects (heartbeat → dock card) is the glance;
+      // this is the deep-dive that actually measures packet loss on the link.
+      if (subPath === '/health-check' && req.method === 'POST') {
+        const dock = pickDock();
+        if (!dock) { json(res, 400, { error: 'which dock? pass ?dock=' }); return true; }
+        try {
+          const report = await probePackets(dock);
+          json(res, 200, { dock, at: Date.now(), report });
+        } catch (e) {
+          json(res, 503, { dock, error: e instanceof Error ? e.message : String(e) });
+        }
         return true;
       }
       return false;

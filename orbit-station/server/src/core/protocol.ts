@@ -173,6 +173,18 @@ export function componentForKind(kind?: string): string | undefined {
 // ── dock directory ───────────────────────────────────────────────────────────
 
 /** One component of a dock, as the station currently sees it. */
+/** Cheap link-health snapshot a device folds into each heartbeat. */
+export interface PeerHealth {
+  /** live signal to the AP (dBm; -50 strong … -90 dying). */
+  rssi?: number;
+  /** free heap (bytes); a steady decline hints at a leak. */
+  heap_free?: number;
+  /** WS (re)connects since boot; a rising value = a flapping link. */
+  reconnects?: number;
+  /** ms epoch this health snapshot was captured (station clock). */
+  ts?: number;
+}
+
 export interface DockComponent {
   /** the slot name within the dock ("phone", "body", …). */
   component: string;
@@ -192,6 +204,8 @@ export interface DockComponent {
   build?: number;
   /** mesh links this component reports in its heartbeat. */
   links?: Record<string, boolean>;
+  /** link-health snapshot from the device's heartbeat (rssi/heap/reconnects). */
+  health?: PeerHealth;
 }
 
 /**

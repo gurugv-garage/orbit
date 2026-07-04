@@ -17,9 +17,10 @@
 
 #include <string.h>
 #include "esp_log.h"
-#include "esp_system.h"   // esp_restart (reboot on dock move)
+#include "esp_system.h"   // esp_restart (reboot on dock move) + esp_get_free_heap_size
 #include "esp_timer.h"
 #include "esp_websocket_client.h"
+#include "esp_wifi.h"     // esp_wifi_sta_get_ap_info (live RSSI for heartbeat)
 #include "esp_mac.h"
 #include "nvs.h"
 #include "freertos/FreeRTOS.h"
@@ -61,6 +62,11 @@ static const char *TAG = "station";
 
 static esp_websocket_client_handle_t s_client = NULL;
 static bool    s_profile_sent = false;
+// Link-health telemetry (heartbeat): count WS (re)connects since boot. A rising
+// value between heartbeats = a flapping link — the single best offline-cause
+// signal, learned the hard way debugging the C3's Wi-Fi range. First CONNECTED
+// after boot counts as 1.
+static uint32_t s_ws_connects = 0;
 // hello-v2 `id` = the hardware instance: MAC-derived, never name-derived
 // (two boards must never share an id). Filled at start; BL_DEVICE_ID is the
 // fallback if the MAC read fails. The FULL 6-byte MAC ("body-aabbccddeeff") is
@@ -295,6 +301,23 @@ static void handle_event(cJSON *f) {
     }
 
     if (strcmp(topic->valuestring, "bodylink") != 0) return;
+
+    // ── conn-health ping (on-demand, from the console) ────────────────────
+    // Active packet-loss/latency probe: the station fires a burst of `ping`
+    // frames { seq } down the WS; we echo each one straight back as `pong`
+    // { seq } as fast as we can. The STATION counts sent-vs-echoed (= real
+    // loss % on the WS link that actually flaps) and times each round-trip
+    // (= RTT). Measuring from the station is the point — it's the side that
+    // can count, and it tests the exact station↔body link, not body↔AP.
+    // Deliberately trivial + non-blocking: just reflect the seq, nothing else.
+    if (strcmp(kind->valuestring, "ping") == 0) {
+        const cJSON *seq = payload ? cJSON_GetObjectItemCaseSensitive(payload, "seq") : NULL;
+        cJSON *r = cJSON_CreateObject();
+        if (cJSON_IsNumber(seq)) cJSON_AddNumberToObject(r, "seq", seq->valuedouble);
+        publish("bodylink", "pong", r);
+        return;
+    }
+
     if (strcmp(kind->valuestring, "command") != 0) return;
 
     if (!payload) return;
@@ -330,7 +353,8 @@ static void on_ws_event(void *arg, esp_event_base_t base, int32_t id, void *data
     esp_websocket_event_data_t *ev = (esp_websocket_event_data_t *)data;
     switch (id) {
         case WEBSOCKET_EVENT_CONNECTED:
-            ESP_LOGI(TAG, "connected to station %s", STATION_URL);
+            s_ws_connects++;
+            ESP_LOGI(TAG, "connected to station %s (connect #%u)", STATION_URL, s_ws_connects);
             s_profile_sent = false;
             send_hello();
             break;
@@ -395,6 +419,18 @@ static void station_task(void *arg) {
                 // station's version view fresh + self-healing without waiting
                 // for a full reconnect. Just the gate int; small payload.
                 cJSON_AddNumberToObject(hb, "build", BL_FW_BUILD);
+                // Link-health telemetry — all cheap, already-known state (no probe):
+                //   rssi       — live signal to the AP (dBm; -50 strong … -90 dying)
+                //   heap_free  — free heap (bytes); a steady decline = a leak
+                //   reconnects — WS connects since boot; rising = a flapping link
+                // Surfaced on the station's dock card so "why is it offline?" is a
+                // glance, not a debugging session. Active/expensive checks (packet
+                // loss) live behind the on-demand conn-health probe instead.
+                wifi_ap_record_t ap;
+                if (esp_wifi_sta_get_ap_info(&ap) == ESP_OK)
+                    cJSON_AddNumberToObject(hb, "rssi", ap.rssi);
+                cJSON_AddNumberToObject(hb, "heap_free", (double)esp_get_free_heap_size());
+                cJSON_AddNumberToObject(hb, "reconnects", (double)s_ws_connects);
                 publish("bodylink", "heartbeat", hb);
             }
             // Staleness tripwire: armed once the executor has driven us at

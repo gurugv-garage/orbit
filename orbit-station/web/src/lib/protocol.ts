@@ -51,10 +51,13 @@ export interface PeerInfo {
 
 // dock directory (mirror of server/.../core/protocol.ts) ──────────────────────
 // A dock is a composition of COMPONENTS (hello v2): address = (dock, component).
+export interface PeerHealth {
+  rssi?: number; heap_free?: number; reconnects?: number; ts?: number;
+}
 export interface DockComponent {
   component: string; kind?: string; caps?: string[]; id: string; label?: string;
   online: boolean; ip?: string; lastSeen?: number;
-  build?: number; links?: Record<string, boolean>;
+  build?: number; links?: Record<string, boolean>; health?: PeerHealth;
 }
 export interface DockInfo {
   name: string;

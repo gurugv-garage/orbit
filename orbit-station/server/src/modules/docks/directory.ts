@@ -281,5 +281,6 @@ function snapshot(p: RosterEntry): Omit<DockComponent, 'online'> {
     lastSeen: p.lastSeen,
     build: p.build,
     links: p.links,
+    health: p.health,
   };
 }

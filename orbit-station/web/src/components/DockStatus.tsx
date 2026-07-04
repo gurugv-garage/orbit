@@ -45,6 +45,10 @@ function memberTitle(kind: string, m?: DockComponent): string {
   if (!m) return `${kind}: not connected`;
   const parts = [m.id];
   if (m.build != null) parts.push(`build ${m.build}`);
+  // link health (from the device heartbeat): rssi is the at-a-glance signal —
+  // the lesson from the C3 range debug, so "why offline?" is visible here.
+  if (m.health?.rssi != null) parts.push(`rssi ${m.health.rssi}dBm`);
+  if (m.health?.reconnects != null) parts.push(`reconnects ${m.health.reconnects}`);
   if (m.ip) parts.push(m.ip);
   if (m.lastSeen) parts.push(`seen ${new Date(m.lastSeen).toLocaleTimeString()}`);
   return `${kind}: ${m.online ? 'online' : 'offline'} · ${parts.join(' · ')}`;

@@ -145,6 +145,97 @@ If we ever care: the cure is "de-energize when idle" — write 0 µs
 (stops the pulse) when no motion is needed. Adds protocol complexity;
 deferred.
 
+### ESP32-C3 SuperMini Wi-Fi — the TX-power / rail-sag / range trap
+
+The C3 SuperMini (added as a second body board — RISC-V, cheap, trace
+antenna) has a nasty two-sided Wi-Fi problem the S3 doesn't. It cost a
+long debugging session, so here's the whole arc and the fix.
+
+**Symptom 1 — close-range handshake failure (rail sag).** At full TX
+power (20 dBm default), the C3 *fails to associate* even with a strong
+signal: `AUTH_EXPIRE` / `ASSOC_EXPIRE` / `4WAY_HANDSHAKE_TIMEOUT` /
+`AUTH_FAIL` at RSSI -52 dBm on a freshly-rebooted AP. Cause: the C3
+mini has **light 3V3 power decoupling**, and a full-power TX burst spikes
+current enough to **sag the 3V3 rail mid-frame** — browning out the
+radio while it transmits, corrupting the timing-critical WPA 4-way
+handshake. Counter-intuitive: *closer* is *worse* (strong signal → radio
+drives harder → bigger spike). Fix at the time: cap TX power to **8.5 dBm**
+(`esp_wifi_set_max_tx_power(34)` in `wifi_sta.c`, C3-only). Smaller bursts,
+no sag, handshake completes. This is the widely-reported ESP32-C3 fix.
+
+**Symptom 2 — the cap kills range.** 8.5 dBm is rail-safe but *weak*:
+at ~5 m the link degrades badly — **50-100% packet loss**, latency
+swinging to 400-540 ms, WS dropping every few minutes (board still
+pingable ⇒ RF/link problem, not a socket wedge). The 8.5 dBm cap that
+fixed close-range sag can't reach across a room. One knob, two opposing
+failure modes:
+
+| TX power | close range | ~5 m range |
+|---|---|---|
+| 20 dBm (default) | ❌ rail sag, handshake fails | ✅ reaches |
+| 8.5 dBm (cap) | ✅ works | ❌ too weak, drops |
+
+**The fix — 3V3 bulk cap + raised TX, found empirically.** The cap
+enables the fix; raising TX *is* the fix. Add bulk capacitance right on
+the **3V3 rail** (NOT the 5V input — the sag is downstream of the board's
+5V→3V3 regulator, on the rail the radio actually runs off) so it absorbs
+the TX burst, then raise TX back up. Measured at 5 m against the same AP:
+
+| Firmware | TX power | 3V3 cap | Loss @ 5 m |
+|---|---|---|---|
+| build 8  | 8.5 dBm (q=34) | none | 50-100% (unusable) |
+| build 9  | 11 dBm (q=44)  | none | ~15-20% (better, still marginal) |
+| build 10 | **14 dBm (q=56)** | **1× 100 µF** | **0.0%** (120-packet sample) ✅ |
+
+So: **one 100 µF electrolytic across 3V3↔GND, close to the module, +
+TX at 14 dBm → 0% loss at 5 m.** The `BL_C3_TX_POWER_Q` #define in
+`wifi_sta.c` is the sweep knob (·0.25 dBm; 34→44→56→78). Raising TX
+past what the rail can hold re-triggers Symptom 1 — the cap buys the
+headroom.
+
+**Follow-up test — how much is the cap actually doing? (2026-07-04).**
+To separate the two levers (TX raise vs. cap), we pulled the cap and
+re-tested at the same distance, at 14 dBm. Method: force **cold Wi-Fi
+handshakes** by unclaim→reclaim (each dock claim reboots the board), 6
+cycles, watching whether each reassociates first-try + its RSSI/reconnect
+count from the heartbeat.
+
+| Test (14 dBm, same distance) | Result |
+|---|---|
+| Cap IN, steady-state ping burst | 20/20, 0% loss, RTT ~35 ms avg |
+| **Cap OUT, 6× forced cold reconnect** | **6/6 clean, ~11 s each, RSSI −58…−60, `reconnects`=1 (no retries)** |
+| Cap OUT, steady-state ping burst | 20/20, 0% loss (RTT max 305 ms — a touch worse jitter) |
+
+**Reading:** the dominant lever was **raising TX 8.5→14 dBm, not the cap.**
+At this range/RSSI (−59 dBm) the handshake burst isn't stressed enough to
+sag, so the board is fine capless. The cap's specific job (survive the burst)
+only bites at weaker signal / higher TX. **Caveats:** n=6; the reboots were
+software-triggered (unclaim→reclaim), not power-cycles — a truer cold boot
+would make it airtight; and the probe hinted at slightly worse RTT jitter
+without the cap (within noise for one sample). Verdict: **cap = margin at
+this range, not strictly required** — but kept in as free insurance and
+*required* if the dock moves further from the AP or TX goes above 14 dBm.
+
+**Production rules (C3 only; the S3 has a u.FL antenna + better
+decoupling and needs none of this):**
+- Keep `BL_C3_TX_POWER_Q` at 56 (14 dBm). The bulk cap is **margin** here
+  (6/6 clean reconnects without it at −59 dBm) but becomes **required**
+  above 14 dBm or at weaker signal — don't raise TX without the cap.
+- On the soldered/permanent build, use **2-3× 100 µF soldered close to
+  the C3's 3V3 pins** (breadboard contacts blunt the cap; solder + a bit
+  more capacitance is the durable margin over temperature/aging). A
+  small 0.1 µF ceramic in parallel handles the high-frequency edge.
+- The SuperMini's trace antenna is fundamentally weaker than the S3's
+  u.FL. If a dock must live far from the AP, prefer the **S3** for that
+  spot, or move the AP / add a repeater — TX+cap has a ceiling.
+
+**Aftermath — link-health telemetry.** This session was slow because we
+had no visibility into link quality; we inferred it from `ping` loss by
+hand. So the heartbeat now carries **rssi / heap_free / reconnects**
+(cheap, already-known state) surfaced on the station's dock card, and an
+on-demand **conn-health probe** runs an active packet-loss/latency burst.
+"Why is it offline?" is now a glance at RSSI, not a debugging session.
+
 ### M3.5 — WS servo-command surface ✅
 
 **Goal:** drive each servo individually from `wscat` with a small text

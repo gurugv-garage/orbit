@@ -8,7 +8,12 @@ interface PartSpec { description?: string; home?: Record<string, number>; params
 interface Profile { body: { device_id: string; name: string; parts: Record<string, PartSpec> }; }
 type BodyState = Record<string, Record<string, number>>;
 interface DockInfo { name: string; components: Array<{ component: string; caps?: string[]; online: boolean }>; }
-interface Digest { dock: string; online: boolean; state: BodyState; ts: number; }
+interface Health { rssi?: number; heap_free?: number; reconnects?: number; ts?: number; }
+interface Digest { dock: string; online: boolean; state: BodyState; health?: Health; ts: number; }
+
+/** colour the RSSI glance: green strong, amber usable, red marginal. */
+const rssiColor = (rssi?: number): string =>
+  rssi == null ? 'var(--dim)' : rssi >= -67 ? 'var(--good)' : rssi >= -75 ? 'var(--accent)' : 'var(--bad)';
 
 /** docks that have a body slot at all (declared or observed). */
 const hasBody = (d: DockInfo) =>
@@ -24,6 +29,29 @@ export function BodyLink() {
   const [profile, setProfile] = useState<Profile | null>(null);
   const [state, setState] = useState<BodyState>({});
   const [online, setOnline] = useState(false);
+  // passive link-health, live from the digest (no button) — always shown.
+  const [health, setHealth] = useState<Health | null>(null);
+  // active packet-loss/RTT probe result (only when the button is pressed).
+  const [probe, setProbe] = useState<string | null>(null);
+  const [probing, setProbing] = useState(false);
+
+  const checkHealth = useCallback(() => {
+    if (!dock) return;
+    setProbing(true);
+    setProbe('pinging…');
+    api.post<{ report?: { sent: number; received: number; lossPct: number; rttMin?: number; rttAvg?: number; rttMax?: number }; error?: string }>(
+      `/bodylink/health-check?dock=${encodeURIComponent(dock)}`, {})
+      .then((r) => {
+        if (r.error || !r.report) { setProbe(`✗ ${r.error ?? 'no report'}`); return; }
+        const h = r.report;
+        const loss = `${h.lossPct}% loss (${h.received}/${h.sent})`;
+        const rtt = h.rttAvg != null ? ` · RTT ${h.rttAvg}ms (${h.rttMin}…${h.rttMax})` : '';
+        const ok = h.lossPct === 0;
+        setProbe(`${ok ? '✓' : '⚠'} ${loss}${rtt}`);
+      })
+      .catch((e) => setProbe(`✗ ${e instanceof Error ? e.message : String(e)}`))
+      .finally(() => setProbing(false));
+  }, [dock]);
 
   // dock list: anything with a body slot; default to the first ONLINE body.
   useEffect(() => {
@@ -52,6 +80,7 @@ export function BodyLink() {
       if (d.dock !== dock) return;
       setState(d.state ?? {});
       setOnline(d.online);
+      if (d.health) setHealth(d.health);   // live passive metrics — no button
     } else if (e.kind === 'profile') {
       load(); // a body (re)connected somewhere — re-resolve our view
     }
@@ -88,6 +117,30 @@ export function BodyLink() {
       <p className="subtitle">
         {dock} · {profile.body.name} · <span className="mono">{profile.body.device_id}</span>
         {' '}· <span style={{ color: online ? 'var(--good)' : 'var(--bad)' }}>{online ? 'online' : 'offline'}</span>
+      </p>
+      {/* link health — passive metrics live from the heartbeat (always on),
+          plus the on-demand packet-loss/RTT probe behind the button. */}
+      <p className="subtitle" style={{ marginTop: -6 }}>
+        <span className="mono" style={{ fontSize: '0.85em', color: rssiColor(health?.rssi) }}>
+          {health?.rssi != null ? `📶 ${health.rssi} dBm` : '📶 —'}
+        </span>
+        {health?.reconnects != null && (
+          <span className="mono" style={{ fontSize: '0.85em', color: 'var(--dim)', marginLeft: 8 }}>
+            {health.reconnects} reconnect{health.reconnects === 1 ? '' : 's'}
+          </span>
+        )}
+        {health?.heap_free != null && (
+          <span className="mono" style={{ fontSize: '0.85em', color: 'var(--dim)', marginLeft: 8 }}>
+            {Math.round(health.heap_free / 1024)}KB heap
+          </span>
+        )}
+        {' '}<button onClick={checkHealth} disabled={!online || probing}
+          style={{ padding: '0 8px', fontSize: '0.85em', marginLeft: 8 }}>
+          {probing ? 'pinging…' : '🩺 Check conn health'}
+        </button>
+        {probe && <span className="mono" style={{ marginLeft: 8, fontSize: '0.85em',
+          color: probe.startsWith('✓') ? 'var(--good)' : probe.startsWith('⚠') ? 'var(--bad)'
+            : probe.startsWith('✗') ? 'var(--bad)' : 'var(--dim)' }}>{probe}</span>}
       </p>
       {picker}
       <Moves dock={dock} online={online} />

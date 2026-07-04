@@ -126,10 +126,19 @@ esp_err_t wifi_sta_start(wifi_sta_on_got_ip_t on_got_ip) {
     // is the widely-reported fix (ESPHome output_power: 8.5; arduino-esp32 #6767,
     // esphome/issues #4893). Unit is 0.25 dBm steps → 34 = 8.5 dBm. The S3 (separate
     // USB + better decoupling) doesn't need this and keeps full power.
+    //
+    // RANGE-vs-SAG SWEEP (in progress): 8.5 dBm survives the rail sag but can't
+    // reach ~5 m (50-100% packet loss observed). Walking the cap UP to buy range,
+    // testing the WPA handshake at CLOSE range (worst-case sag) after each step. If
+    // the handshake starts failing again, we've hit the bare rail's ceiling — that's
+    // where a 3V3 bulk cap comes in to push it higher. Step ladder (·0.25 dBm):
+    //   34 = 8.5 dBm (rail-safe baseline)   44 = 11 dBm (this step)
+    //   56 = 14 dBm                         78 = ~19.5 dBm (near default; needs the cap)
+    #define BL_C3_TX_POWER_Q 56   // 56 * 0.25 = 14 dBm  (paired with 3V3 bulk cap)
     {
-        esp_err_t pr = esp_wifi_set_max_tx_power(34);   // 34 * 0.25 = 8.5 dBm
-        ESP_LOGI(TAG, "C3 TX power capped to 8.5 dBm (set_max_tx_power=34): %s",
-                 esp_err_to_name(pr));
+        esp_err_t pr = esp_wifi_set_max_tx_power(BL_C3_TX_POWER_Q);
+        ESP_LOGI(TAG, "C3 TX power set to %.2f dBm (set_max_tx_power=%d): %s",
+                 BL_C3_TX_POWER_Q * 0.25, BL_C3_TX_POWER_Q, esp_err_to_name(pr));
     }
 #endif
 

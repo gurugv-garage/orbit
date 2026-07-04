@@ -14,5 +14,5 @@
 
 #pragma once
 
-#define BL_FW_VERSION "0.3.1"
-#define BL_FW_BUILD   8
+#define BL_FW_VERSION "0.4.1"
+#define BL_FW_BUILD   12
