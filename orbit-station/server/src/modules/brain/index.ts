@@ -453,13 +453,25 @@ export function brainModule(w: BrainWiring): StationModule {
       // user turn-request. The latch clears at sentence-end (one tap → one turn).
       // Overheard (un-tapped) speech is ignored here — only the attention gate may
       // act on it (A1.5). See addressed.ts for the pure correlation + tests.
+      // BUSY QUEUE: addressed utterances that arrive while the dock is mid-turn
+      // (THINKING/SPEAKING) are NOT auto-superseded (that let ambient speech abort the
+      // dock's own reply — see the guard below). Instead we ACCUMULATE every utterance
+      // heard during the reply and run them TOGETHER as one turn when the reply finishes
+      // — nothing said is lost (the "only-latest + stale-drop" earlier version silently
+      // dropped a real follow-up if the reply ran long; append-all fixes that). The
+      // utterances are joined in order into one user turn ("you said A, then B"). A
+      // staleness cap on the OLDEST still guards against a fragment from long ago
+      // surfacing after an unusually long reply.
+      type AddressedFinal = { dockId: string; text: string; startedAt: number; endedAt: number; confTier?: string;
+        avgLogprob?: number | null; noSpeechProb?: number | null; compressionRatio?: number | null };
+      const pendingBusy = new Map<string, { items: AddressedFinal[]; firstAt: number }>();
+      const BUSY_QUEUE_MAX_AGE_MS = 20_000; // drop the whole batch if its OLDEST is older than this when the turn ends
       // A finalized utterance → ask the dock's conversation state if it's ADDRESSED
       // (an open listening/followup window); if so, run it as a turn. The addressed
       // decision now lives in the session's ConversationState (single owner) — no
       // separate latch Map. Overheard utterances are ignored here (still transcribed
       // upstream; the attention gate may act on them later).
-      const onAddressedFinal = (t: { dockId: string; text: string; startedAt: number; endedAt: number; confTier?: string;
-          avgLogprob?: number | null; noSpeechProb?: number | null; compressionRatio?: number | null }) => {
+      const onAddressedFinal = (t: AddressedFinal) => {
         // DIAG (kept, disabled): confirms a transcript reached the brain. Re-enable
         // if "STT shown but no turn" recurs.
         // DIAG (kept, disabled): confirms a transcript reached the brain. Re-enable
@@ -528,6 +540,23 @@ export function brainModule(w: BrainWiring): StationModule {
         // never run a turn even if it slips the upstream filter (observed: a lone "!"
         // → the dock replied). <2 alphanumerics = no words.
         if (t.text.replace(/[^a-z0-9]/gi, '').length < 2) { trace('skip:no-words'); return; }
+        // BUSY QUEUE: don't let a heard utterance auto-start a turn while the dock is
+        // already mid-turn (THINKING/SPEAKING). handleTurnRequest has supersede
+        // semantics — a new addressed turn ABORTS the active reply and runs the new one.
+        // That's the right behaviour for a deliberate barge-in (a TAP, which routes
+        // through tap()/tapWouldInterrupt and explicitly cancels), but NOT for ambient
+        // speech: observed live (docs trace) the dock interrupted its OWN reply with
+        // stray room audio — "look around" then "I don't know" each superseded the last,
+        // and a bare "And" ran a turn. So we ACCUMULATE everything heard during the reply
+        // and run it as one combined turn when the reply finishes (below). A tap can still
+        // interrupt. Use the PRE snapshot (mode before utteranceAddressed() consumes it).
+        if (pre.mode === 'thinking' || pre.mode === 'speaking') {
+          const q = pendingBusy.get(t.dockId);
+          if (q) q.items.push(t);
+          else pendingBusy.set(t.dockId, { items: [t], firstAt: Date.now() });
+          trace('queue:busy');
+          return;
+        }
         if (!session(t.dockId).utteranceAddressed(t.endedAt, Date.now(), t.startedAt)) { trace('skip:not-addressed'); return; }
         trace('RAN-TURN');
         void session(t.dockId).handleTurnRequest({
@@ -537,6 +566,25 @@ export function brainModule(w: BrainWiring): StationModule {
           // STT confidence → observability turn trace (why this heard utterance ran).
           stt: { confTier: t.confTier, avgLogprob: t.avgLogprob, noSpeechProb: t.noSpeechProb,
             compressionRatio: t.compressionRatio },
+        }).then(() => {
+          // DRAIN the busy queue: everything said DURING this reply runs now that the dock
+          // is free, JOINED into one turn (nothing dropped — that was the "silently lost my
+          // follow-up" complaint). Re-enter onAddressedFinal with the combined text so it
+          // re-checks the window/filters against the NOW state (followup window open post-
+          // reply). The staleness cap on the OLDEST guards a long-ago batch after an unusually
+          // long reply; if it trips, drop the batch (a minutes-old fragment shouldn't surface).
+          const q = pendingBusy.get(t.dockId);
+          if (q) {
+            pendingBusy.delete(t.dockId);
+            const last = q.items[q.items.length - 1];
+            if (last && Date.now() - q.firstAt <= BUSY_QUEUE_MAX_AGE_MS) {
+              const combined: AddressedFinal = {
+                ...last, // carry the newest utterance's timing/conf so the window check uses the freshest
+                text: q.items.map((i) => i.text).join(' '), // "you said A, then B" — in order, nothing lost
+              };
+              onAddressedFinal(combined);
+            }
+          }
         }).catch((err) => console.error(`[brain] ${t.dockId}: addressed turn crashed`, err));
       };
       // Debug self-test: tap (open the window) then feed a final utterance → a turn
