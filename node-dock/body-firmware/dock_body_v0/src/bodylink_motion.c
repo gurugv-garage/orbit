@@ -22,7 +22,7 @@ static const bl_param_spec_t neck_params[] = {
       "Servo PWM pulse width. 1500 µs is mechanical center." },
     { "duration_ms",             "ms",   "int",  0.0,    30000.0, 400.0,
       "Linear interpolation time to reach target pulse_width_us. 0 = snap." },
-    { "velocity_us_per_sec_cap", "us/s", "int",  0.0,    4000.0,  4000.0,
+    { "velocity_us_per_sec_cap", "us/s", "int",  0.0,    4000.0,  3000.0,
       "Max rate of change. 0 = use device default." },
 };
 static const bl_param_spec_t foot_params[] = {
@@ -30,7 +30,7 @@ static const bl_param_spec_t foot_params[] = {
       "Servo PWM pulse width. 1500 µs is mechanical center." },
     { "duration_ms",             "ms",   "int",  0.0,    30000.0, 400.0,
       "Linear interpolation time to reach target pulse_width_us. 0 = snap." },
-    { "velocity_us_per_sec_cap", "us/s", "int",  0.0,    4000.0,  4000.0,
+    { "velocity_us_per_sec_cap", "us/s", "int",  0.0,    4000.0,  3000.0,
       "Max rate of change. 0 = use device default." },
 };
 
@@ -48,10 +48,23 @@ typedef struct {
     int   start_us;        // pulse_width_us at the start of the active transition
     int   target_us;       // pulse_width_us we're moving toward
     int   current_us;      // last value pushed to the servo
-    int   duration_ms;     // total time for this transition (linear interp)
+    int   duration_ms;     // total time for this transition (ease-in/out interp)
+    int   velocity_cap;    // us/sec ceiling for this transition (0 = uncapped). Safety floor:
+                           // a duration too short for the travel is stretched to honor it.
     int   started_ms;      // body-clock at transition start
     bool  settled;         // current_us == target_us, no motion in progress
 } bl_part_rt_t;
+
+// Ease-in/ease-out (smoothstep): maps linear progress f∈[0,1] to an S-curve so the
+// servo accelerates off the start and decelerates into the target instead of slamming
+// from 0→full-speed→0. Removes the endpoint jerk on big/fast sweeps (and the current
+// spike that jerk causes on the C3's TX-power rail). Peak speed is 1.5× the linear
+// average, so the velocity cap below is computed against that peak.
+static inline double smoothstep(double f) {
+    if (f <= 0.0) return 0.0;
+    if (f >= 1.0) return 1.0;
+    return f * f * (3.0 - 2.0 * f);
+}
 
 static bl_part_rt_t s_rt[8];           // sized > g_bl_n_parts
 static int          s_boot_ms = 0;
@@ -121,12 +134,13 @@ esp_err_t bl_motion_init(void) {
     xSemaphoreTake(s_mtx, portMAX_DELAY);
     for (int i = 0; i < g_bl_n_parts; ++i) {
         bl_part_rt_t *rt = &s_rt[i];
-        rt->start_us    = g_bl_parts[i].home_pulse_us;
-        rt->target_us   = g_bl_parts[i].home_pulse_us;
-        rt->current_us  = g_bl_parts[i].home_pulse_us;
-        rt->duration_ms = 0;
-        rt->started_ms  = 0;
-        rt->settled     = true;
+        rt->start_us     = g_bl_parts[i].home_pulse_us;
+        rt->target_us    = g_bl_parts[i].home_pulse_us;
+        rt->current_us   = g_bl_parts[i].home_pulse_us;
+        rt->duration_ms  = 0;
+        rt->velocity_cap = 0;
+        rt->started_ms   = 0;
+        rt->settled      = true;
         servo_write_us(g_bl_parts[i].servo_id, rt->current_us);
         ESP_LOGI(TAG, "[%s] parked at home %d µs", g_bl_parts[i].name, rt->current_us);
     }
@@ -149,6 +163,7 @@ static int apply_to_part(const bl_part_decl_t *part, int part_idx, const cJSON *
                          bl_emit_t *out, int max_out, int *changed_out) {
     int n_emit = 0;
     int duration_ms = -1;            // "not specified"
+    int velocity_cap = -1;           // "not specified" (us/sec; 0 = uncapped)
     int new_pulse_us = -1;
     bool have_new_pulse = false;
 
@@ -188,9 +203,9 @@ static int apply_to_part(const bl_part_decl_t *part, int part_idx, const cJSON *
             have_new_pulse = true;
         } else if (strcmp(key, "duration_ms") == 0) {
             duration_ms = (int)applied;
+        } else if (strcmp(key, "velocity_us_per_sec_cap") == 0) {
+            velocity_cap = (int)applied;
         }
-        // velocity_us_per_sec_cap: accepted but currently ignored
-        // (we always lerp linearly). Brain may still send it.
     }
 
     if (!have_new_pulse) {
@@ -204,6 +219,11 @@ static int apply_to_part(const bl_part_decl_t *part, int part_idx, const cJSON *
         const bl_param_spec_t *dspec = find_param(part, "duration_ms");
         duration_ms = (dspec && !isnan(dspec->def)) ? (int)dspec->def : 400;
     }
+    if (velocity_cap < 0) {
+        // Use the part's default velocity_us_per_sec_cap (from spec.def).
+        const bl_param_spec_t *vspec = find_param(part, "velocity_us_per_sec_cap");
+        velocity_cap = (vspec && !isnan(vspec->def)) ? (int)vspec->def : 0;
+    }
 
     // Idempotency: if target_us already matches AND we're settled (or moving
     // there), skip restart. This is what makes set_target spam cheap.
@@ -213,20 +233,38 @@ static int apply_to_part(const bl_part_decl_t *part, int part_idx, const cJSON *
         return n_emit;
     }
 
+    // Velocity cap = the un-bypassable safety floor. If the requested duration is
+    // too short for the travel — a full sweep in duration_ms:0, say — STRETCH it so
+    // peak speed stays under the cap, protecting the gear train + the C3 power rail
+    // regardless of what the station sends. Smoothstep's peak speed is 1.5× the
+    // linear average (travel/dur), so the shortest legal duration is
+    //   1.5 · travel_us / cap_us_per_sec  (·1000 for ms).
+    int travel = new_pulse_us - rt->current_us;
+    if (travel < 0) travel = -travel;
+    if (velocity_cap > 0 && travel > 0) {
+        int min_dur = (int)((1500.0 * (double)travel) / (double)velocity_cap + 0.5);
+        if (duration_ms < min_dur) {
+            ESP_LOGD(TAG, "[%s] duration %d ms too fast for %d µs travel @ cap %d — stretch to %d ms",
+                     part->name, duration_ms, travel, velocity_cap, min_dur);
+            duration_ms = min_dur;
+        }
+    }
+
     // Preempt: capture current as start, set new target + clock.
-    rt->start_us    = rt->current_us;
-    rt->target_us   = new_pulse_us;
-    rt->duration_ms = duration_ms;
-    rt->started_ms  = bl_motion_body_clock_ms();
-    rt->settled     = (duration_ms == 0);
+    rt->start_us     = rt->current_us;
+    rt->target_us    = new_pulse_us;
+    rt->duration_ms  = duration_ms;
+    rt->velocity_cap = velocity_cap;
+    rt->started_ms   = bl_motion_body_clock_ms();
+    rt->settled      = (duration_ms == 0);
     if (duration_ms == 0) {
         rt->current_us = new_pulse_us;
         servo_write_us(part->servo_id, new_pulse_us);
     }
     if (changed_out) *changed_out = 1;
 
-    ESP_LOGI(TAG, "[%s] %d→%d µs over %d ms", part->name,
-             rt->start_us, rt->target_us, rt->duration_ms);
+    ESP_LOGI(TAG, "[%s] %d→%d µs over %d ms (cap %d µs/s)", part->name,
+             rt->start_us, rt->target_us, rt->duration_ms, rt->velocity_cap);
     return n_emit;
 }
 
@@ -275,8 +313,9 @@ void bl_motion_tick(void) {
             next_us = rt->target_us;
             rt->settled = true;
         } else {
-            // Linear interp from start to target.
-            double f = (double)elapsed / (double)dur;
+            // Ease-in/ease-out (smoothstep) from start to target: accelerate off the
+            // start, decelerate into the target — no endpoint jerk. Duration is unchanged.
+            double f = smoothstep((double)elapsed / (double)dur);
             next_us = (int)((double)rt->start_us +
                             (double)(rt->target_us - rt->start_us) * f + 0.5);
         }

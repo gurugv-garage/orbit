@@ -30,6 +30,47 @@ const IDLE_HEARTBEAT_MS = 1_000;
 const ACTIVE_HEARTBEAT_MS = 100;
 const ACTIVE_WINDOW_MS = 500;
 const DEFAULT_STEP_DURATION_MS = 400;
+
+/**
+ * Speed-based pacing (docs/decision-traces/server-brain-impl.md §3.2, turn-timing
+ * revision). A move is time-driven at the wire (`duration_ms` = lerp time), but a
+ * FIXED duration makes big sweeps whip: −90→+90 (2000µs) in 400ms is 6× the angular
+ * speed of a 30° nudge (333µs) in the same 400ms. So when a step has NO explicit
+ * `duration_ms`, we derive it from the TRAVEL DISTANCE so angular speed stays ~constant:
+ * a small glance finishes sooner, a full sweep takes longer — both move at the same rate.
+ * An explicit `duration_ms` from the brain/gesture author still wins (a snappy nod is
+ * *meant* to be fast). The firmware velocity cap is the un-bypassable safety floor beneath
+ * this; this layer is about natural feel.
+ */
+const DEFAULT_SPEED_US_PER_SEC = 1_500; // 1500µs/s → a full ±90° swing (2000µs) in ~1.3s. Tempered
+                                        // down from 2000 — the faster envelope felt tippy on hardware.
+const MIN_SCALED_DURATION_MS = 150; // floor: even a tiny move gets a perceptible, un-jittery ramp
+const MAX_SCALED_DURATION_MS = 1_800; // ceiling: the biggest sweep still completes in ≤1.8s
+
+/**
+ * Velocity SAFETY CAP — must mirror the firmware's `velocity_us_per_sec_cap` spec
+ * default (bodylink_motion.c). The firmware silently STRETCHES any transition whose
+ * requested duration is too short for its travel; the station must apply the SAME
+ * stretch so its sequence pacing (the pause before the next step) matches how long the
+ * body actually takes to travel. Otherwise an explicit fast `duration_ms` fires the next
+ * target before the body has moved — the leg gets preempted mid-ramp and you see a tiny
+ * wiggle instead of the move. Smoothstep peak speed is 1.5× the linear average, so the
+ * shortest legal duration for a given travel is 1.5·travel/cap.
+ */
+const VELOCITY_CAP_US_PER_SEC = 3_000; // hard peak-speed ceiling — must match the firmware spec
+                                       // default. Tempered 4000→3000 so even snap beats stay planted.
+const SMOOTHSTEP_PEAK_FACTOR = 1.5;
+
+/**
+ * COMFORTABLE-speed floor for EXPLICIT durations. The velocity cap above is the hard
+ * safety limit (~4000µs/s); this is the softer "feels calm" rate (same as the auto-pace
+ * speed) that an explicit `duration_ms` shouldn't casually beat. Console/brain gestures
+ * were authored with ad-hoc fast durations before pacing existed; stretching anything
+ * faster than comfortable brings them in line. A step MEANT to be snappy (a startle, a
+ * dance beat) opts out with `snap: true` and is bounded only by the hard cap. Auto-paced
+ * moves already run at exactly this speed, so this is a no-op for them.
+ */
+const COMFORTABLE_SPEED_US_PER_SEC = DEFAULT_SPEED_US_PER_SEC; // 2000µs/s ≈ 180°/s
 /** the capability tag the servo-bearing component declares in hello. */
 const SERVO_CAP = 'servo';
 
@@ -174,16 +215,70 @@ export class MotionExecutor {
     for (const step of steps) {
       if (seq.cancelled) return;
       const joints = stepJoints(step);
-      const duration = step.duration_ms ?? (joints.length > 0 ? DEFAULT_STEP_DURATION_MS : 0);
       if (joints.length > 0) {
         const partsUs: Record<string, number> = {};
         for (const j of joints) partsUs[j.part] = degreesToUs(j.part, j.degrees);
+        // Explicit duration wins (authored gesture beats); otherwise derive it from the
+        // FARTHEST-travelling joint in this step so every joint moves at ~the same speed
+        // and arrives together — none whips (#scaledDuration handles the min/max clamp).
+        const requested = step.duration_ms ?? this.#scaledDuration(dock, partsUs);
+        // Apply the comfortable-speed floor (unless the step opts out with `snap`), then
+        // the firmware velocity cap. Mirroring the firmware's stretch here keeps our pause
+        // matched to the body's ACTUAL travel time so the next step doesn't preempt this
+        // one mid-ramp (else a fast full sweep collapses to a wiggle).
+        const duration = this.#effectiveDuration(dock, partsUs, requested, step.snap === true);
         this.#send(dock, partsUs, duration, source);
+        const pause = duration + (step.wait_ms ?? 0);
+        if (pause > 0) await sleep(pause);
+      } else {
+        // wait-only step: no motion, just the pause.
+        const pause = step.wait_ms ?? 0;
+        if (pause > 0) await sleep(pause);
       }
-      const pause = duration + (step.wait_ms ?? 0);
-      if (pause > 0) await sleep(pause);
     }
     if (m.sequence === seq) m.sequence = undefined;
+  }
+
+  /**
+   * Duration (ms) for a move at the default angular speed, based on the FARTHEST
+   * joint's travel from where it is now to its new target. Constant speed → a big
+   * sweep takes longer, a small nudge finishes sooner; both feel the same rate.
+   * Travel is measured from the last commanded target (what the body is at or
+   * heading to); if a part has never moved, we measure from mechanical center
+   * (1500µs) so the very first move is still paced. Clamped to [MIN, MAX].
+   */
+  #scaledDuration(dock: string, targetsUs: Record<string, number>): number {
+    const current = this.#docks.get(dock)?.targets ?? {};
+    let maxTravel = 0;
+    for (const [part, us] of Object.entries(targetsUs)) {
+      const from = current[part] ?? 1500;
+      maxTravel = Math.max(maxTravel, Math.abs(us - from));
+    }
+    if (maxTravel === 0) return MIN_SCALED_DURATION_MS; // no travel (idempotent re-target)
+    const ms = (maxTravel / DEFAULT_SPEED_US_PER_SEC) * 1000;
+    return Math.round(Math.min(Math.max(ms, MIN_SCALED_DURATION_MS), MAX_SCALED_DURATION_MS));
+  }
+
+  /**
+   * The duration the BODY will actually take, given the velocity cap the firmware
+   * enforces. If `requested` is too short for the farthest joint's travel, stretch it to
+   * the cap-minimum (1.5·travel/cap for smoothstep). Mirrors the firmware exactly so the
+   * station's pause between steps equals the body's real travel time. Auto-paced moves
+   * (#scaledDuration) are already under the cap, so this is a no-op for them; it only
+   * bites an explicit fast `duration_ms`.
+   */
+  #effectiveDuration(dock: string, targetsUs: Record<string, number>, requested: number, snap = false): number {
+    const current = this.#docks.get(dock)?.targets ?? {};
+    let maxTravel = 0;
+    for (const [part, us] of Object.entries(targetsUs)) {
+      maxTravel = Math.max(maxTravel, Math.abs(us - (current[part] ?? 1500)));
+    }
+    if (maxTravel === 0) return requested;
+    // Soft comfortable floor (skipped for a `snap` beat): don't let an explicit duration
+    // run faster than the comfortable rate. Then the HARD firmware cap, always enforced.
+    const comfortMin = snap ? 0 : Math.ceil((maxTravel / COMFORTABLE_SPEED_US_PER_SEC) * 1000);
+    const capMin = Math.ceil((SMOOTHSTEP_PEAK_FACTOR * maxTravel) / VELOCITY_CAP_US_PER_SEC * 1000);
+    return Math.max(requested, comfortMin, capMin);
   }
 
   /** Publish one set_target (directed to the servo component) + record targets + mover. */

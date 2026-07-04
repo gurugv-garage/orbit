@@ -109,7 +109,7 @@ export function BodyLink() {
  * Limits the server enforces: neck −60°(up)…+35°(down), foot ±90° swivel.
  * (+neck = nod down, −neck = look up.) We stay inside them so nothing clamps.
  */
-type Step = { part?: string; degrees?: number; parts?: Array<{ part: string; degrees: number }>; duration_ms?: number; wait_ms?: number };
+type Step = { part?: string; degrees?: number; parts?: Array<{ part: string; degrees: number }>; duration_ms?: number; wait_ms?: number; snap?: boolean };
 
 const HOME: Step = { parts: [{ part: 'neck', degrees: 0 }, { part: 'foot', degrees: 0 }], duration_ms: 400 };
 
@@ -137,7 +137,7 @@ const MOVES: Array<{ id: string; label: string; emoji: string; len: 'short' | 'l
     id: 'shocked', label: 'Shocked', emoji: '😱', len: 'short',
     steps: [
       // snap up + recoil to the side, FREEZE, then a slow shaken settle
-      { parts: [{ part: 'neck', degrees: -55 }, { part: 'foot', degrees: 45 }], duration_ms: 120, wait_ms: 600 },
+      { parts: [{ part: 'neck', degrees: -55 }, { part: 'foot', degrees: 45 }], duration_ms: 120, wait_ms: 600, snap: true },
       { part: 'foot', degrees: 25, duration_ms: 150 },
       { part: 'foot', degrees: 45, duration_ms: 150, wait_ms: 300 },
       { parts: [{ part: 'neck', degrees: 0 }, { part: 'foot', degrees: 0 }], duration_ms: 600 },
@@ -158,15 +158,16 @@ const MOVES: Array<{ id: string; label: string; emoji: string; len: 'short' | 'l
   {
     id: 'happy', label: 'Happy Dance', emoji: '🥳', len: 'long',
     steps: [
-      // bouncy nods while swiveling side to side, building, then a flourish
-      { parts: [{ part: 'neck', degrees: 25 }, { part: 'foot', degrees: -30 }], duration_ms: 220 },
-      { parts: [{ part: 'neck', degrees: -10 }, { part: 'foot', degrees: 30 }], duration_ms: 220 },
-      { parts: [{ part: 'neck', degrees: 25 }, { part: 'foot', degrees: -30 }], duration_ms: 220 },
-      { parts: [{ part: 'neck', degrees: -10 }, { part: 'foot', degrees: 30 }], duration_ms: 220 },
-      { parts: [{ part: 'neck', degrees: 25 }, { part: 'foot', degrees: -45 }], duration_ms: 180 },
-      { parts: [{ part: 'neck', degrees: -10 }, { part: 'foot', degrees: 45 }], duration_ms: 180 },
-      { parts: [{ part: 'neck', degrees: 25 }, { part: 'foot', degrees: -45 }], duration_ms: 180 },
-      { parts: [{ part: 'neck', degrees: -10 }, { part: 'foot', degrees: 45 }], duration_ms: 180 },
+      // bouncy nods while swiveling side to side, building, then a flourish — the beats
+      // are MEANT to be punchy, so they snap past the comfortable floor (still cap-bounded)
+      { parts: [{ part: 'neck', degrees: 25 }, { part: 'foot', degrees: -30 }], duration_ms: 220, snap: true },
+      { parts: [{ part: 'neck', degrees: -10 }, { part: 'foot', degrees: 30 }], duration_ms: 220, snap: true },
+      { parts: [{ part: 'neck', degrees: 25 }, { part: 'foot', degrees: -30 }], duration_ms: 220, snap: true },
+      { parts: [{ part: 'neck', degrees: -10 }, { part: 'foot', degrees: 30 }], duration_ms: 220, snap: true },
+      { parts: [{ part: 'neck', degrees: 25 }, { part: 'foot', degrees: -45 }], duration_ms: 180, snap: true },
+      { parts: [{ part: 'neck', degrees: -10 }, { part: 'foot', degrees: 45 }], duration_ms: 180, snap: true },
+      { parts: [{ part: 'neck', degrees: 25 }, { part: 'foot', degrees: -45 }], duration_ms: 180, snap: true },
+      { parts: [{ part: 'neck', degrees: -10 }, { part: 'foot', degrees: 45 }], duration_ms: 180, snap: true },
       // spin-out flourish: full swivel, look up, settle home
       { part: 'foot', degrees: 80, duration_ms: 350 },
       { part: 'foot', degrees: -80, duration_ms: 500 },

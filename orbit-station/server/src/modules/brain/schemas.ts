@@ -483,6 +483,10 @@ export interface MoveStep {
   parts?: Array<{ part: string; degrees: number }>;
   duration_ms?: number;
   wait_ms?: number;
+  /** Opt this step OUT of the comfortable-speed floor: an intentional snap/startle/dance
+   *  beat that is MEANT to be fast. Still bounded by the firmware velocity cap. Without it,
+   *  an explicit duration faster than the comfortable rate is stretched (see motion.ts). */
+  snap?: boolean;
 }
 
 /** Normalize a step to its joint list ([] for a pure wait). */

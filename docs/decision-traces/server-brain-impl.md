@@ -532,6 +532,31 @@ fire-and-forget contract as today: status string on dispatch, never waits for
 servo travel). If `isOnline(dock)` is false, the tool returns an error result
 immediately — the model narrates it; the turn never blocks.
 
+#### Turn timing: speed-based pacing (2026-07 revision)
+
+Originally a step's motion was time-driven with a **flat** default duration
+(`DEFAULT_STEP_DURATION_MS = 400`). That makes big sweeps whip: −90→+90 (2000µs
+travel) in 400 ms is 6× the angular speed of a 30° nudge (333µs) in the same
+400 ms — the whole distance is crammed into the same time. Three layers now fix
+this, from feel down to safety:
+
+1. **Speed-based default (station, `motion.ts`).** When a step has **no explicit
+   `duration_ms`**, `#scaledDuration()` derives it from the *farthest-travelling
+   joint* in the step at a constant `DEFAULT_SPEED_US_PER_SEC` (2000µs/s ≈ a full
+   sweep in ~1s), clamped to `[150, 1500]` ms. A glance and a full sweep now move
+   at the **same angular rate**; the small one just finishes sooner. Multi-joint
+   steps use the max travel so every joint arrives together and none whips.
+2. **Explicit duration wins.** An authored `duration_ms` (brain or `faceGestures`)
+   overrides pacing — a snappy nod is *meant* to be fast.
+3. **Firmware velocity cap = the un-bypassable floor (`bodylink_motion.c`).** The
+   long-declared `velocity_us_per_sec_cap` is now enforced: if the requested
+   duration is too short for the travel (e.g. `duration_ms:0` on a full sweep),
+   the transition is **stretched** so peak speed stays under the cap, protecting
+   the gear train + the C3's TX-power rail regardless of what the station sends.
+   The tick also eases with **smoothstep** (accel-in/decel-out) instead of a raw
+   linear ramp — no endpoint jerk. Peak speed is 1.5× the linear average, so the
+   stretch uses `min_dur = 1.5·travel/cap`. (Firmware build 7 / v0.3.0.)
+
 ### 3.3 Dock directory (`modules/docks/` grows; bodyAddr brokering retires)
 
 `bodyAddr` brokering dies (nobody needs to find anybody; both ends dial the
