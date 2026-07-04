@@ -23,6 +23,7 @@ framework: [decision-traces/tasks-design-history.md](decision-traces/tasks-desig
   - [Runner: `child` (default) vs. `tmux`](#runner-child-default-vs-tmux)
 - [5. Parent injection — task signals become autonomous turns](#5-parent-injection--task-signals-become-autonomous-turns)
 - [6. Authoring + the model-facing tools](#6-authoring--the-model-facing-tools)
+  - [6.1 Toward reliable task GENERATION (a proposed authoring protocol — not built)](#61-toward-reliable-task-generation-a-proposed-authoring-protocol--not-built)
 - [7. Lifetime, config, REST, console](#7-lifetime-config-rest-console)
 - [8. Testing](#8-testing)
 - [9. Open points / not built](#9-open-points--not-built)
