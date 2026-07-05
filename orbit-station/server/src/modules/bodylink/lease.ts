@@ -34,6 +34,8 @@ export const PRIORITY = {
   console: 70,      // a human at the Body Console FORCE-TAKES the body — overrides the
                     // brain and the follow reflex; only a future emergency-stop outranks it
   brainTurn: 60,    // a conversation gesture / explicit user `move`
+  moodBit: 35,      // an idle-moods BIT (seconds-long) — briefly outranks the follow reflex,
+                    // yields to the brain/operator (the idle-moods task acquires at this)
   faceFollow: 30,   // the reflex — yields to the brain/operator, outranks idle
   idle: 0,          // heartbeat / nothing
 } as const;
@@ -137,11 +139,20 @@ export class ActuatorLease {
       this.#log(`[lease] ${dock}: ${source}(${priority}) move blocked — ${live.holder}(${live.priority}) holds`);
       return false;
     }
+    const ttl = holdMs != null && holdMs > 0 ? holdMs : this.#ttl;
+    // The holder's OWN motion call: refresh the existing hold in place — never DOWNGRADE an
+    // explicit higher-priority hold to the source's default (a task holding at 35 would
+    // otherwise be demoted to 30 by its own first move and lose the body to an equal-30
+    // waiter), and keep the hold's token/onPreempt so an explicit Lease handle stays valid.
+    if (live && live.holder === source) {
+      live.priority = Math.max(live.priority, priority);
+      live.expiresAt = Math.max(live.expiresAt, this.#now() + ttl);
+      return true;
+    }
     // equal-or-higher: this call becomes/refreshes the momentary holder (last-write-wins).
-    if (live && live.holder !== source && priority > live.priority) {
+    if (live && priority > live.priority) {
       try { live.onPreempt?.(); } catch { /* */ }
     }
-    const ttl = holdMs != null && holdMs > 0 ? holdMs : this.#ttl;
     this.#holds.set(dock, { holder: source, priority, token: {}, expiresAt: this.#now() + ttl });
     return true;
   }

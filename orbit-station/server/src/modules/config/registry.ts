@@ -169,14 +169,18 @@ export const REGISTRY: ConfigEntry[] = [
     key: 'conductor', type: 'json',
     // Per-dock TUNINGS for the conductor (docs/decision-traces/conductor-v1-design.md):
     // { "<dock>": { "faceFollow": { enabled, activateAfterMs, runForMs },   // a TASK
-    //               "wakeUp": { enabled, phrase, prompt } } }.             // a BEHAVIOUR
+    //               "wakeUp": { enabled, phrase, prompt },                  // a BEHAVIOUR
+    //               "moods": { enabled, activateAfterMs, bitMinMs, bitMaxMs, // a TASK (idle-moods)
+    //                          speakMinGapMs, speakIdleMinMs, quietStartHour, quietEndHour,
+    //                          attentionAfterMs, wBored, wCurious, wAttention, wSleepy, wFlavor } } }.
     // Missing dock/name/knob → the conducted thing's coded defaults. Live-applied each ~1Hz
-    // tick (edit in the Conductor tab).
+    // tick (edit in the Conductor tab). A TASK's tunings ride to the task as its params —
+    // snapshot at task start (Stop→Run in the tab to apply an edit to a running task).
     schema: z.record(z.string(), z.record(z.string(), z.record(z.string(), z.unknown()))),
     default: {},
     tags: ['station'],
     label: 'Conductor tunings (per dock)',
-    description: 'Per-dock enable/disable + knobs for the conducted behaviours (wakeUp) + tasks (faceFollow). Applied live by the per-dock conductor.',
+    description: 'Per-dock enable/disable + knobs for the conducted behaviours (wakeUp) + tasks (faceFollow, moods). Applied live by the per-dock conductor.',
   }),
   entry({
     key: 'brainTaskModels', type: 'json',
@@ -199,9 +203,9 @@ export const REGISTRY: ConfigEntry[] = [
   entry({ key: 'brainTurnTimeoutMs', type: 'number', schema: z.number().int().min(5_000).max(300_000), default: 60_000, tags: ['station'] }),
   // ── tasks (docs/tasks.md) ──────────────────────────────────────────────
   entry({
-    key: 'brainTaskMax', type: 'number', schema: z.number().int().min(0).max(10), default: 3, tags: ['station'],
+    key: 'brainTaskMax', type: 'number', schema: z.number().int().min(0).max(10), default: 4, tags: ['station'],
     label: 'Max tasks per dock',
-    description: 'Max concurrent task INSTANCES a dock may run. 0 disables tasks (the task tools refuse).',
+    description: 'Max concurrent task INSTANCES a dock may run. 0 disables ALL tasks — the task tools refuse AND the conductor stops starting its standing tasks (face-follow, idle-moods), fully quieting the dock. Note: the standing tasks occupy two instances; the default leaves two for brain-run tasks.',
   }),
   entry({
     key: 'brainTaskSettleMs', type: 'number', schema: z.number().int().min(0).max(10_000), default: 1500, tags: ['station'],

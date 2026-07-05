@@ -94,6 +94,28 @@ test('admit: the HOLDER\'s own moves always admit (same source)', () => {
   assert.equal(lease.admit(DOCK, 'task:t-1', PRIORITY.faceFollow), true, 'holder admits its own moves');
 });
 
+test('admit: the holder\'s own LOWER-priority move does NOT downgrade its hold (moods@35 fix)', () => {
+  const { lease } = mk();
+  // an idle-moods task holds at 35; its own move admits at the task-source default (30)
+  lease.acquire(DOCK, 'task:t-9', PRIORITY.moodBit);
+  assert.equal(lease.admit(DOCK, 'task:t-9', priorityForSource('task:t-9')), true, 'own move admits');
+  assert.equal(lease.current(DOCK)!.priority, PRIORITY.moodBit, 'hold priority NOT demoted to 30');
+  // an equal-30 waiter (faceFollow) must still be denied mid-bit…
+  assert.equal(lease.acquire(DOCK, 'task:t-ff', PRIORITY.faceFollow), null, 'ff(30) denied while bit(35) lives');
+  // …and gets the body back after release
+  lease.releaseByHolder(DOCK, 'task:t-9');
+  assert.ok(lease.acquire(DOCK, 'task:t-ff', PRIORITY.faceFollow), 'ff reclaims after the bit releases');
+});
+
+test('admit: a same-holder refresh keeps the LONGER expiry (settle hold not shortened)', () => {
+  const { lease, c } = mk(1000);
+  assert.equal(lease.admit(DOCK, 'brain-turn', PRIORITY.brainTurn, 3000), true, 'settle hold taken');
+  c.advance(500);
+  assert.equal(lease.admit(DOCK, 'brain-turn', PRIORITY.brainTurn), true, 'own follow-up move admits');
+  c.advance(2000); // 2500 total — inside the original 3000 settle, past the refreshed 500+1000
+  assert.equal(lease.current(DOCK)?.holder, 'brain-turn', 'settle hold survived the shorter refresh');
+});
+
 test('admit: a SETTLE-grace holdMs keeps a follower yielded past the default TTL (look-right fix)', () => {
   const { lease, c } = mk(1000); // default TTL 1s
   lease.acquire(DOCK, 'task:t-1', PRIORITY.faceFollow); // faceFollow holds

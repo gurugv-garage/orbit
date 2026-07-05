@@ -43,3 +43,12 @@ export function relTime(ts: number, now: number): string {
   if (s < 3600) return `${Math.floor(s / 60)}m ago`;
   return `${Math.floor(s / 3600)}h ago`;
 }
+
+/** Humanize a millisecond duration knob/value: 300000 → "5m", 3600000 → "1h". The one
+ *  shared duration formatter — modules were each rolling their own s/m/h ladder. */
+export function fmtDuration(ms: number): string {
+  if (!Number.isFinite(ms) || ms <= 0) return '0s';
+  if (ms < 60_000) return `${Math.round(ms / 1000)}s`;
+  if (ms < 3_600_000) return `${+(ms / 60_000).toFixed(1)}m`.replace('.0m', 'm');
+  return `${+(ms / 3_600_000).toFixed(1)}h`.replace('.0h', 'h');
+}

@@ -334,12 +334,11 @@ export class MotionExecutor {
    * heading to); if a part has never moved, we measure from mechanical center
    * (1500µs) so the very first move is still paced. Clamped to [MIN, MAX].
    */
-  #scaledDuration(dock: string, targetsUs: Record<string, number>): number {
-    const current = this.#docks.get(dock)?.targets ?? {};
+  #scaledDuration(dock: string, targetsUs: Record<string, number>, from?: Record<string, number>): number {
+    const current = from ?? this.#docks.get(dock)?.targets ?? {};
     let maxTravel = 0;
     for (const [part, us] of Object.entries(targetsUs)) {
-      const from = current[part] ?? 1500;
-      maxTravel = Math.max(maxTravel, Math.abs(us - from));
+      maxTravel = Math.max(maxTravel, Math.abs(us - (current[part] ?? 1500)));
     }
     if (maxTravel === 0) return MIN_SCALED_DURATION_MS; // no travel (idempotent re-target)
     const ms = (maxTravel / DEFAULT_SPEED_US_PER_SEC) * 1000;
@@ -354,8 +353,8 @@ export class MotionExecutor {
    * (#scaledDuration) are already under the cap, so this is a no-op for them; it only
    * bites an explicit fast `duration_ms`.
    */
-  #effectiveDuration(dock: string, targetsUs: Record<string, number>, requested: number, snap = false): number {
-    const current = this.#docks.get(dock)?.targets ?? {};
+  #effectiveDuration(dock: string, targetsUs: Record<string, number>, requested: number, snap = false, from?: Record<string, number>): number {
+    const current = from ?? this.#docks.get(dock)?.targets ?? {};
     let maxTravel = 0;
     for (const [part, us] of Object.entries(targetsUs)) {
       maxTravel = Math.max(maxTravel, Math.abs(us - (current[part] ?? 1500)));
@@ -366,6 +365,32 @@ export class MotionExecutor {
     const comfortMin = snap ? 0 : Math.ceil((maxTravel / COMFORTABLE_SPEED_US_PER_SEC) * 1000);
     const capMin = Math.ceil((SMOOTHSTEP_PEAK_FACTOR * maxTravel) / VELOCITY_CAP_US_PER_SEC * 1000);
     return Math.max(requested, comfortMin, capMin);
+  }
+
+  /**
+   * The wall-clock ms #runSequence will actually take to play `steps` starting from the
+   * CURRENT pose — the same per-step pacing (#scaledDuration for unauthored durations,
+   * then the #effectiveDuration comfort/velocity stretch) plus waits, measured against a
+   * ROLLING pose so chained steps are judged from the previous step's target. For callers
+   * that must HOLD the body lease through a fire-and-forget sequence (the task `gesture`
+   * capability): authored durations on fast gestures under-count real travel time by 2×+,
+   * which released the body mid-choreography (found in review 2026-07-05).
+   */
+  estimateSequenceMs(dock: string, steps: MoveStep[]): number {
+    const pose = { ...(this.#docks.get(dock)?.targets ?? {}) };
+    let total = 0;
+    for (const step of steps) {
+      const joints = stepJoints(step);
+      if (joints.length > 0) {
+        const partsUs: Record<string, number> = {};
+        for (const j of joints) partsUs[j.part] = degreesToUs(j.part, j.degrees);
+        const requested = step.duration_ms ?? this.#scaledDuration(dock, partsUs, pose);
+        total += this.#effectiveDuration(dock, partsUs, requested, step.snap === true, pose);
+        Object.assign(pose, partsUs);
+      }
+      total += step.wait_ms ?? 0;
+    }
+    return total;
   }
 
   /** Publish one set_target (directed to the servo component) + record targets + mover. */

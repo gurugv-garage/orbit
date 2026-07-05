@@ -13,7 +13,7 @@
  */
 import { json } from '../../core/http.js';
 import type { RouteContext, StationModule } from '../../core/module.js';
-import { CONDUCTED, wakeTunings, type ConductedState, type World, type Tunings } from './conducted.js';
+import { CONDUCTED, type ConductedState, type World, type Tunings } from './conducted.js';
 import { reconcile, type Effects } from './reconcile.js';
 
 const TICK_MS = 1000;
@@ -25,13 +25,17 @@ export interface ConductorWiring {
   config: () => Record<string, Record<string, Tunings>> | undefined;
   /** conversation mode for a dock ('idle'|'listening'|'thinking'|'speaking'|'followup') or null. */
   convMode: (dock: string) => string | null;
-  /** running task instances on a dock (for world.tasks + the task-kind effects). */
-  tasks: (dock: string) => Array<{ name: string; instanceId: string; parentSessionId?: string; startedAt: number; state: string }>;
-  /** start/stop a task by NAME (the conductor owns one instance per conducted task). */
-  startTask: (dock: string, taskName: string) => void;
+  /** running task instances on a dock (for world.tasks + the task-kind effects).
+   *  `status` = the instance's live status line (surfaced per conducted thing in REST/console). */
+  tasks: (dock: string) => Array<{ name: string; instanceId: string; parentSessionId?: string; startedAt: number; state: string; status?: string }>;
+  /** start/stop a task by NAME (the conductor owns one instance per conducted task).
+   *  `params` = the conducted thing's tunings, handed to the task (snapshot at start). */
+  startTask: (dock: string, taskName: string, params: Record<string, unknown>) => void;
   stopTask: (dock: string, instanceId: string) => void;
   /** lease holder of a dock's body (the bodylink motion executor). */
   bodyHolder: (dock: string) => { holder: string; priority: number } | null;
+  /** is the dock's servo component online right now? (gates body-driving tasks). */
+  bodyOnline?: (dock: string) => boolean;
   /** set/clear a dock's wakeUp config (the brain's WakeApi) — enacting the wakeUp BEHAVIOUR. */
   setWake: (dock: string, cfg: { enabled: boolean; phrase: string; prompt: string; aliases?: string[] } | null) => void;
   /** best-effort presence (someone in view) — optional; v1 conducted things don't require it. */
@@ -42,9 +46,31 @@ interface DockState {
   conducted: Map<string, ConductedState>;
   /** epoch of the last NON-idle conversation mode (drives faceFollow's idle clock). */
   lastConversationMs: number;
+  /** epoch someone was last VISIBLE (drives faceFollow's presence gate). 0 = never seen. */
+  lastPresenceMs: number;
   /** manual overrides (the "Run now"/"Stop" buttons): name → forced state, overriding its rule
    *  until cleared. A 'run' pin holds it on; an 'off' pin holds it off. */
   override: Map<string, 'run' | 'off'>;
+  /** per-thing ACTIVITY LOG (newest last): lifecycle transitions + the running task's status
+   *  changes ("last bit: bored.sigh", "tracking guru", "yielded …") — the console's time-log.
+   *  In-memory only; bounded. `norm` is the precomputed coalesce key (digits stripped). */
+  history: Map<string, Array<{ ts: number; text: string; norm: string }>>;
+}
+
+const HISTORY_MAX = 30;
+/** Coalesce key: digits stripped, so "searching (pan 72°)" → "searching (pan #°)" and a
+ *  per-tick angle change UPDATES the latest entry instead of flooding the log. */
+const normEvent = (s: string) => s.replace(/-?\d+(\.\d+)?/g, '#');
+
+function pushEvent(st: DockState, name: string, ts: number, text: string): void {
+  if (!text) return;
+  let log = st.history.get(name);
+  if (!log) { log = []; st.history.set(name, log); }
+  const norm = normEvent(text);
+  const last = log[log.length - 1];
+  if (last && last.norm === norm) { last.text = text; return; } // same event, fresher numbers
+  log.push({ ts, text, norm });
+  if (log.length > HISTORY_MAX) log.splice(0, log.length - HISTORY_MAX);
 }
 
 export function conductorModule(w: ConductorWiring): StationModule {
@@ -53,7 +79,7 @@ export function conductorModule(w: ConductorWiring): StationModule {
 
   const dockState = (dock: string): DockState => {
     let s = docks.get(dock);
-    if (!s) { s = { conducted: new Map(), lastConversationMs: 0, override: new Map() }; docks.set(dock, s); }
+    if (!s) { s = { conducted: new Map(), lastConversationMs: 0, lastPresenceMs: 0, override: new Map(), history: new Map() }; docks.set(dock, s); }
     return s;
   };
 
@@ -62,18 +88,20 @@ export function conductorModule(w: ConductorWiring): StationModule {
   const initiatorOf = (taskName: string): 'user' | 'brain' | 'self' =>
     CONDUCTED.some((c) => c.kind === 'task' && c.taskName === taskName) ? 'self' : 'brain';
 
-  const assembleWorld = (dock: string, st: DockState, now: number): World => {
+  const assembleWorld = (dock: string, st: DockState, now: number, taskList: ReturnType<ConductorWiring['tasks']>): World => {
     const mode = w.convMode(dock) ?? 'idle';
     const listening = mode === 'listening' || mode === 'followup';
     const turnActive = mode === 'thinking' || mode === 'speaking' || listening;
     if (turnActive) st.lastConversationMs = now; // stamp activity → resets faceFollow's idle clock
-    const tasks = w.tasks(dock).filter((t) => t.state === 'running').map((t) => ({
+    const tasks = taskList.filter((t) => t.state === 'running').map((t) => ({
       name: t.name, instanceId: t.instanceId, initiator: initiatorOf(t.name), ageMs: now - t.startedAt,
     }));
+    const present = w.present?.(dock) ?? false;
+    if (present) st.lastPresenceMs = now; // stamp sightings → drives faceFollow's presence gate
     return {
-      now, present: w.present?.(dock) ?? false, lastPresenceMs: 0, identity: null,
+      now, present, lastPresenceMs: st.lastPresenceMs, identity: null,
       listening, turnActive, lastConversationMs: st.lastConversationMs,
-      bodyHolder: w.bodyHolder(dock), tasks,
+      bodyHolder: w.bodyHolder(dock), bodyOnline: w.bodyOnline?.(dock) ?? true, tasks,
     };
   };
 
@@ -82,20 +110,29 @@ export function conductorModule(w: ConductorWiring): StationModule {
     return cfg[dock]?.[name] ?? {};
   };
 
-  const fx = (dock: string): Effects => ({
-    isTaskRunning: (_d, taskName) => w.tasks(dock).some((t) => t.name === taskName && t.state === 'running'),
-    startTask: (_d, taskName) => w.startTask(dock, taskName),
+  // `taskList` is the tick's ONE read of w.tasks(dock) — threaded through so world
+  // assembly, the effects, and the history fold don't each rebuild the same array
+  // (it was read 4× per tick; review 2026-07-05).
+  const fx = (dock: string, taskList: ReturnType<ConductorWiring['tasks']>): Effects => ({
+    isTaskRunning: (_d, taskName) => taskList.some((t) => t.name === taskName && t.state === 'running'),
+    startTask: (_d, taskName, _priority, tunings) => w.startTask(dock, taskName, tunings),
     stopTask: (_d, taskName) => {
-      for (const t of w.tasks(dock)) if (t.name === taskName && t.state === 'running') w.stopTask(dock, t.instanceId);
+      for (const t of taskList) if (t.name === taskName && t.state === 'running') w.stopTask(dock, t.instanceId);
     },
     setBehaviour: (_d, name, on, tunings) => {
       if (name === 'wakeUp') {
-        const wt = wakeTunings(tunings);
-        w.setWake(dock, on ? { enabled: true, phrase: wt.phrase, prompt: wt.prompt, aliases: wt.aliases } : null);
+        // tunings arrive PREPARED by the descriptor's prepareTunings (wakeTunings shape).
+        const t = tunings as { phrase?: string; prompt?: string; aliases?: string[] };
+        w.setWake(dock, on ? {
+          enabled: true, phrase: String(t.phrase ?? 'hey orbit'),
+          prompt: String(t.prompt ?? 'did you call me?'),
+          aliases: Array.isArray(t.aliases) ? t.aliases : [],
+        } : null);
       }
     },
     onTransition: (_d, name, from, to, why) => {
       console.log(`[cond] ${dock} ${name}: ${from}→${to} (${why})`);
+      pushEvent(dockState(dock), name, Date.now(), `${from} → ${to} (${why})`);
     },
   });
 
@@ -104,8 +141,16 @@ export function conductorModule(w: ConductorWiring): StationModule {
     for (const dock of w.docks()) {
       const st = dockState(dock);
       try {
-        reconcile(dock, CONDUCTED, assembleWorld(dock, st, now), st.conducted, tunFor(dock), fx(dock),
-          (name) => st.override.get(name));
+        const taskList = w.tasks(dock);
+        reconcile(dock, CONDUCTED, assembleWorld(dock, st, now, taskList), st.conducted, tunFor(dock),
+          fx(dock, taskList), (name) => st.override.get(name));
+        // ACTIVITY LOG: fold each running conducted task's status line into its history
+        // (digit-coalesced, so a per-tick angle refresh updates in place, not floods).
+        for (const c of CONDUCTED) {
+          if (c.kind !== 'task') continue;
+          const inst = taskList.find((t) => t.name === c.taskName && t.state === 'running');
+          if (inst?.status) pushEvent(st, c.name, now, inst.status);
+        }
       } catch (err) {
         console.error(`[cond] ${dock}: reconcile failed`, err);
       }
@@ -119,12 +164,22 @@ export function conductorModule(w: ConductorWiring): StationModule {
     return CONDUCTED.map((c) => {
       const tunings = { ...c.defaults, ...(cfg[c.name] ?? {}) };
       const self = st?.conducted.get(c.name);
-      const running = c.kind === 'task'
-        ? w.tasks(dock).some((t) => t.name === c.taskName && t.state === 'running')
-        : self?.desired === 'running';
+      const inst = c.kind === 'task'
+        ? w.tasks(dock).find((t) => t.name === c.taskName && t.state === 'running')
+        : undefined;
+      const running = c.kind === 'task' ? inst != null : self?.desired === 'running';
       return { name: c.name, kind: c.kind, desired: self?.desired ?? 'off', running, tunings,
         override: st?.override.get(c.name) ?? null,
-        instrumentedAt: c.instrumentedAt ?? null, taskName: c.taskName ?? null };
+        instrumentedAt: c.instrumentedAt ?? null, taskName: c.taskName ?? null,
+        // the lease priority this thing's body motion runs at (kind:'task' only) — so the
+        // console can show who outranks whom (brain turn 60 / console 70 always win).
+        priority: c.priority ?? null,
+        // the running instance's live status line ("tracking guru", "last bit: bored.sigh") —
+        // the per-thing console widget's one-line window into what the thing is DOING.
+        status: inst?.status ?? null,
+        // the per-thing ACTIVITY LOG, newest first (transitions + status changes) — the
+        // console's "what's been happening" time-log (norm is internal, stripped here).
+        history: [...(st?.history.get(c.name) ?? [])].reverse().map(({ ts, text }) => ({ ts, text })) };
     });
   };
 

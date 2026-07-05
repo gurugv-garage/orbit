@@ -30,6 +30,13 @@ export interface CapabilityDeps {
   /** the live per-dock on-device face-track store (the `perceive` stream) — the FAST
    *  face source the faceFollow `face-track` capability reads. */
   getPerceive: () => PerceiveStore | undefined;
+  /** the live faceGestures choreography table (config-backed) — the `gesture` capability. */
+  getGestures: () => Record<string, MoveStep[]>;
+  /** enqueue a self-thought autonomous turn on the dock's brain session (the `think`
+   *  capability) — the brain authors + speaks the actual line, with all its usual
+   *  deferral rules (user turns win, defers while listening/speaking, stale drops).
+   *  `via` = the raising source (e.g. "mood:curious.wonder") for the obs trace. */
+  enqueueThought: (dock: string, text: string, coalesceKey?: string, via?: string) => void;
 }
 
 /** The dock's live camera streamId (the SFU producer serving 'camera'), or undefined. */
@@ -89,6 +96,55 @@ export function buildCapabilityRegistry(d: CapabilityDeps): CapabilityRegistry {
       // TAG the move with this task's id so a standing behaviour (faceFollow) can tell its
       // OWN moves from a foreign mover (a brain turn / console / another task) and yield.
       d.motion.runSteps(ctx.dock, steps, `task:${ctx.instanceId}`);
+      return { ok: true };
+    },
+  });
+
+  reg.register({
+    op: 'gesture', requires: 'servo',
+    describe: 'await this.request("gesture", {expression}) → play a named faceGestures body '
+      + 'choreography (e.g. "curious", "sleepy", "happy", "surprised") — authored expressive '
+      + 'moves without hand-writing steps',
+    when: 'a quick expressive body bit (a curious tilt, a sleepy droop) — cheaper than authoring steps',
+    handler: (ctx, args) => {
+      const expression = String(args.expression ?? '');
+      const gestures = d.getGestures();
+      const steps = gestures[expression];
+      if (!steps) return { ok: false, reason: `unknown gesture '${expression}'` };
+      // Estimate BEFORE dispatch (the estimate rolls from the current pose; dispatching
+      // first would race the pose updates). playGesture is fire-and-forget — the caller
+      // HOLDS (and renews) its body lease for durationMs so the moves actually finish.
+      // Must be the executor's own paced estimate, not the authored sum: fast gestures
+      // stretch 2×+ under the velocity/comfort floor (review finding 2026-07-05).
+      const durationMs = d.motion.estimateSequenceMs(ctx.dock, steps);
+      // same source tag as `move`, so the lease arbitrates it like any task motion.
+      d.motion.playGesture(ctx.dock, expression, gestures, `task:${ctx.instanceId}`);
+      return { ok: true, durationMs };
+    },
+  });
+
+  // A task-initiated SPOKEN thought. The task never synthesizes speech — it hands the brain
+  // a self-thought prompt; the brain's autonomous turn authors the line with live perception
+  // grounding + session context and speaks it (ThoughtRouter defers while a user is talking,
+  // drops stale). A station-side per-dock FLOOR guards against a buggy/restarting task
+  // chattering; the real (tunable) cadence policy lives in the calling task.
+  const lastThinkAt = new Map<string, number>();
+  const THINK_FLOOR_MS = 5 * 60_000;
+  reg.register({
+    op: 'think', requires: 'voice',
+    describe: 'await this.request("think", {text, coalesceKey?}) → { ok } — enqueue a self-thought '
+      + 'the brain will speak in its own words (deferred while a user is talking; '
+      + 'rate-floored station-side to one per 5 min per dock)',
+    when: 'a RARE spoken bit — say something unprompted, grounded in what the dock currently knows',
+    handler: (ctx, args) => {
+      const at = lastThinkAt.get(ctx.dock) ?? 0;
+      if (Date.now() - at < THINK_FLOOR_MS) return { ok: false, reason: 'rate-floored' };
+      const text = String(args.text ?? '').trim();
+      if (!text) return { ok: false, reason: 'empty text' };
+      lastThinkAt.set(ctx.dock, Date.now());
+      const key = typeof args.coalesceKey === 'string' && args.coalesceKey ? `${args.coalesceKey}:${ctx.dock}` : undefined;
+      const via = typeof args.via === 'string' && args.via ? args.via : `task:${ctx.instanceId}`;
+      d.enqueueThought(ctx.dock, text, key, via);
       return { ok: true };
     },
   });

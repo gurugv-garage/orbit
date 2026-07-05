@@ -237,6 +237,19 @@ Legend: `[x]` done · `[~]` in progress · `[ ]` not started · `[?]` open quest
   profile/state + obeys console commands)
 - [x] OTA module + Updates console tab (self-update for body + app, [ota.md](ota.md))
 - [x] Config: flat global keys + per-peer interest push + build-time bake
+- [x] Conductor v1: per-dock governor over conducted things (faceFollow task + wakeUp
+  behaviour), tunings + overrides + console tab ([conductor-v1-design.md](decision-traces/conductor-v1-design.md))
+- [x] Idle moods (2026-07-05): `moods` conducted thing + `idle-moods` task — bored/curious/
+  attention/sleepy/flavor bits; pure picker (quiet hours, speak gate, weights); `gesture` +
+  `think` task capabilities; per-bit body lease @35; live status per conducted thing in the
+  Conductor tab ([idle-moods-live-test.md](operations/idle-moods-live-test.md))
+- [ ] **Addressed vs overheard speech tagging** (verified missing 2026-07-05): speech
+  snapshots carry no addressed flag — the brain's addressed decision (`onAddressedFinal`)
+  never stamps the snapshot, so summaries/grounding/memory-curator treat "said to the dock"
+  and room chatter identically. Seam: back-patch `payload.addressed` via `SnapshotStore.update`
+  from `onAddressedFinal` (incl. not-addressed branches) → render `SPEECH→dock` vs `SPEECH`
+  in `summarizer.ts stitch()` → `addressed` on the curator's `Observation`/consolidate prompt.
+  All future perception consumers must respect this distinction.
 - [ ] HTTPS in real deployment; auth on the WS for non-LAN
 
 ### 3.1 Audio pipeline — ▸ SUPERSEDED by the built perception/media stack

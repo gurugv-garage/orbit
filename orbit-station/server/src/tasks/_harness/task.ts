@@ -307,6 +307,29 @@ export abstract class Task {
   protected frame(): Promise<string | undefined> { return this.request('frame'); }
   /** drive the dock body with move steps (fire-and-forget on the station side). */
   protected move(steps: unknown[]): Promise<void> { return this.request('move', { steps }); }
+  /** The latest on-device face boxes via `face-track` — [] on ANY error (a transient
+   *  read failure reads as "no faces", never a crash). Shared face source for body
+   *  tasks; callers needing the full typed shape can request('face-track') directly. */
+  protected async trackFaces(): Promise<Array<{ box?: unknown; name?: string }>> {
+    try {
+      const out = await this.request<{ faces?: Array<{ box?: unknown; name?: string }> }>('face-track');
+      return (out?.faces ?? []).filter((f) => f.box);
+    } catch { return []; }
+  }
+  /** Hold the body lease through `ms` of wall-clock (a long move/gesture playing
+   *  station-side): sleep in short slices, renewing via `bodyHeld` each slice. The slice
+   *  must stay well under the lease TTL (1500 ms — bodylink/lease.ts LeaseOpts; keep in
+   *  sync) or the hold expires mid-step and an equal-priority waiter legally steals the
+   *  body (seen live 2026-07-05). Returns false the moment we no longer hold. */
+  protected async holdBodyThrough(ms: number): Promise<boolean> {
+    const SLICE_MS = 500;
+    for (let remain = ms; remain > 0; remain -= SLICE_MS) {
+      await this.sleep(Math.min(remain, SLICE_MS));
+      const held = await this.request<{ held: boolean }>('bodyHeld').catch(() => ({ held: true }));
+      if (!held?.held) return false;
+    }
+    return true;
+  }
 
   // ── Memory (DIRECT — not a capability) ───────────────────────────────────────
   // Memory is a sqlite file + an env-keyed embedder, all reconstructible from the

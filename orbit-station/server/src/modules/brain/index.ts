@@ -28,8 +28,10 @@ import { readFileSync } from 'node:fs';
 import type { RouteContext, StationModule } from '../../core/module.js';
 import type { Directory } from '../docks/directory.js';
 import type { MotionExecutor } from '../bodylink/motion.js';
+import { gesturesFromConfig } from '../bodylink/motion.js';
 import { getFaceTools, getPerceptionGrounding, getMemoryApi, getGateApi, getTranscriptApi, getPerceiveStore } from '../perception/index.js';
 import { isRecording } from '../capture/index.js';
+import { getObsAccess } from '../observability/index.js';
 import type { VideoRecorderApi } from '../perception/record/recorder.js';
 import { RpcBroker } from './rpc.js';
 import { DockBrainSession, type TurnRequest, keyStatusFor } from './session.js';
@@ -194,10 +196,11 @@ export function getWakeApi(): WakeApi | undefined { return wakeApiRef.current; }
  *  a session-INDEPENDENT behaviour (design §4.1) without new task-lifecycle machinery. */
 export interface ConductorAccess {
   convMode(dock: string): string | null;
-  listTasks(dock: string): Array<{ name: string; instanceId: string; parentSessionId?: string; startedAt: number; state: string }>;
+  listTasks(dock: string): Array<{ name: string; instanceId: string; parentSessionId?: string; startedAt: number; state: string; status: string }>;
   /** start a packaged task by name under the dock's open session; returns instanceId | null
-   *  (null if no open session / unknown task). */
-  startTask(dock: string, taskName: string): string | null;
+   *  (null if no open session / unknown task). `params` are handed to the task verbatim
+   *  (the conductor passes a conducted thing's tunings — snapshot at start). */
+  startTask(dock: string, taskName: string, params?: Record<string, unknown>): string | null;
   stopTask(dock: string, instanceId: string): void;
 }
 const condAccessRef: { current?: ConductorAccess } = {};
@@ -261,9 +264,60 @@ export function brainModule(w: BrainWiring): StationModule {
   let bus: Bus;
   let rpc: RpcBroker;
 
+  // The ONE recording-guarded entry for a SELF-THOUGHT turn. The gate raise, the task
+  // `think` capability, the long-absence greeting, and the console think-poke all funnel
+  // here — the isRecording guard is a privacy invariant ("recording → dock stays silent")
+  // and must never be copy-pasted per call site (a copy that forgets it speaks during a
+  // recording). `session()` is the factory, so a cold dock is safe.
+  // The dock's recent UNPROMPTED remarks, derived on demand from data that already exists
+  // (the session index + the observability turn store — deliberately NO new ring or
+  // persisted structure). Injected into every self-thought so the model can't converge on
+  // one quip, and so anti-repetition survives session churn (the live failure: "cool
+  // fitness equipment" twice in 7 minutes across two sessions, 2026-07-05).
+  const recentSelfRemarks = (dock: string, limit = 6): string[] => {
+    const obs = getObsAccess();
+    if (!obs) return [];
+    const out: string[] = [];
+    for (const meta of store.sessions(dock).slice(0, 4)) {          // newest sessions first
+      const rec = obs.get(meta.sessionId);
+      for (const t of [...(rec?.turns ?? [])].reverse()) {           // newest turns first
+        if (t.trigger?.kind !== 'self') continue;
+        const said = [...(t.steps ?? [])].reverse().find((s) => s.text?.trim())?.text?.trim();
+        if (said) out.push(said);
+        if (out.length >= limit) return out;
+      }
+    }
+    return out;
+  };
+
+  const raiseSelfThought = (dock: string, text: string, opts: { key?: string; ttlMs?: number; idPrefix?: string; via?: string } = {}) => {
+    if (isRecording(dock)) return;
+    const recent = recentSelfRemarks(dock);
+    const antiRepeat = recent.length
+      ? ` Your recent unprompted remarks — do NOT repeat or resemble any of them (if you have nothing genuinely different, stay silent): ${recent.map((r) => `"${r}"`).join(' · ')}`
+      : '';
+    session(dock).enqueueAutonomousTurn({
+      turnId: `${opts.idPrefix ?? 'self'}-${randomUUID()}`,
+      // `via` = WHICH source raised this (mood bit / gate key / greet / console) —
+      // surfaced in the observability trace so a self turn is attributable at a glance.
+      trigger: { kind: 'self', text: text + antiRepeat, ...(opts.via ? { via: opts.via } : {}) },
+      expiresAt: Date.now() + (opts.ttlMs ?? 60_000),
+      ...(opts.key ? { coalesceKey: opts.key } : {}),
+    });
+  };
+
   // A task's parent signal (notify / finish / errored / stuck) → an autonomous
   // turn in that dock's conversational session (tasks §7a).
   const onTaskSignal = (dock: string, info: InstanceInfo, kind: SignalKind, ev: { text: string; image?: string }) => {
+    // A CONDUCTOR-standing task (face-follow, idle-moods) that errors is auto-restarted by
+    // the conductor's idempotent reconcile — do NOT speak the failure. With a body offline
+    // this was a crash loop of spoken apologies ("my servo is taking a nap…" ×3 in 4 min,
+    // seen in observability 2026-07-05); the conductor card + logs already surface it.
+    if (kind === 'errored' && condTaskDefs.has(info.name)) {
+      console.log(`[brain] ${dock}: standing task ${info.name} (${info.instanceId}) errored — not spoken (conductor restarts it): ${ev.text.slice(0, 140)}`);
+      pushTaskDigest(dock);
+      return;
+    }
     // Use the session FACTORY, not sessions.get: after a station restart the
     // in-memory DockBrainSession may not exist yet (it's created lazily on the
     // first turn), but the dock has running tasks + an open session in the store.
@@ -275,7 +329,7 @@ export function brainModule(w: BrainWiring): StationModule {
       + (kind === 'stuck' ? ` — call provide_input("${info.instanceId}", <answer>) once the user answers.` : '');
     s.enqueueAutonomousTurn({
       turnId: `auto-${randomUUID()}`,
-      trigger: { kind: 'task', text },
+      trigger: { kind: 'task', text, via: `${info.name}:${kind}` },
       ...(ev.image ? { imageBase64: ev.image } : {}),
       expiresAt: Date.now() + 120_000,
       // coalesce back-to-back signals from the SAME instance (notify+finish) into
@@ -315,6 +369,9 @@ export function brainModule(w: BrainWiring): StationModule {
   const capabilities = buildCapabilityRegistry({
     directory: w.directory, motion: w.motion, getFaces: getFaceTools,
     getPerceive: getPerceiveStore,
+    getGestures: () => gesturesFromConfig(w.config('faceGestures')),
+    // task `think` → the same self-thought lane as the attention gate (recording-guarded).
+    enqueueThought: (dock, text, coalesceKey, via) => raiseSelfThought(dock, text, { key: coalesceKey, via }),
   });
   const capBroker = new CapabilityBroker(capabilities, sendToTask);
 
@@ -402,14 +459,30 @@ export function brainModule(w: BrainWiring): StationModule {
     convMode: (dock) => sessions.get(dock)?.conversation().mode ?? null,
     listTasks: (dock) => supervisor.list(dock).map((i) => ({
       name: i.name, instanceId: i.instanceId, parentSessionId: i.parentSessionId,
-      startedAt: i.startedAt, state: i.state,
+      startedAt: i.startedAt, state: i.state, status: supervisor.status(i.instanceId),
     })),
-    startTask: (dock, taskName) => {
-      const parent = store.openSession(dock)?.sessionId;
-      if (!parent) return null; // no session to nest under (rare); reconcile retries next tick
+    startTask: (dock, taskName, params) => {
+      // brainTaskMax=0 means "tasks fully disabled" — that must include the conductor's
+      // standing tasks, or an operator who quieted a dock still gets body motion + idle
+      // speech (review finding 2026-07-05). Non-zero values only cap the brain's run_task
+      // tool; standing tasks don't compete for those slots.
+      if (Number(w.config('brainTaskMax') ?? 1) === 0) return null;
+      let parent = store.openSession(dock)?.sessionId;
+      if (!parent) {
+        // The session idle-CLOSED while the phone stayed connected — ensurePresenceSession
+        // only fires on peer-join, so nothing would ever reopen one and conducted tasks
+        // stalled in ARMING forever (seen live 2026-07-05, session s-gpet). The design
+        // intent (§3.0) is "a connected app always has a session for startTask to nest
+        // under": complete it here — presence (an online voice peer) + a conducted start
+        // is a legitimate reopen. The dock must still be genuinely present.
+        if (!w.directory.resolveCap(dock, 'voice')) return null;
+        session(dock).ensurePresenceSession();
+        parent = store.openSession(dock)?.sessionId;
+        if (!parent) return null; // still nothing (shouldn't happen); reconcile retries
+      }
       const def = condTaskDefs.get(taskName);
       if (!def) return null;
-      return supervisor.start({ dock, name: def.name, filePath: def.filePath, params: {}, parentSessionId: parent, model: def.manifest.model });
+      return supervisor.start({ dock, name: def.name, filePath: def.filePath, params: params ?? {}, parentSessionId: parent, model: def.manifest.model });
     },
     stopTask: (_dock, instanceId) => { supervisor.stop(instanceId); },
   };
@@ -426,7 +499,7 @@ export function brainModule(w: BrainWiring): StationModule {
       // Resolve the task defs the conductor may start (so ConductorAccess.startTask is
       // sync). Fire-and-forget — populated well before the first ~1Hz conductor tick.
       void (async () => {
-        for (const name of ['face-follow']) {
+        for (const name of ['face-follow', 'idle-moods']) {
           try { const d = await findTaskDef(taskRoots, name); condTaskDefs.set(name, { name: d.name, filePath: d.filePath, manifest: d.manifest }); }
           catch { /* def missing → conductor startTask returns null, reconcile retries */ }
         }
@@ -437,13 +510,8 @@ export function brainModule(w: BrainWiring): StationModule {
       // lane as tasks (user turns still win; it defers while listening/speaking). This
       // is the auto-raise replacement for the console's manual think-poke.
       getGateApi()?.onRaise((t) => {
-        if (isRecording(t.dockId)) return; // recording mode → dock stays silent
-        session(t.dockId).enqueueAutonomousTurn({
-          turnId: `self-${randomUUID()}`,
-          trigger: { kind: 'self', text: t.text },
-          expiresAt: Date.now() + 30_000,
-          coalesceKey: t.key, // dedup same-kind raises (e.g. 'arrival:guru')
-        });
+        // dedup same-kind raises via t.key (e.g. 'arrival:guru'); recording guard inside.
+        raiseSelfThought(t.dockId, t.text, { key: t.key, ttlMs: 30_000, via: `gate:${t.key}` });
       });
 
       // ADDRESSED TRANSCRIPT → TURN (A1.2, always-on-mic shift). The server STT
@@ -683,13 +751,10 @@ export function brainModule(w: BrainWiring): StationModule {
             const prev = lastFaceArrival.get(dock);
             lastFaceArrival.set(dock, nowMs);
             if (prev != null && nowMs - prev >= GREET_ABSENCE_MS) {
-              session(dock).enqueueAutonomousTurn({
-                turnId: `greet-${randomUUID()}`,
-                trigger: { kind: 'self', text:
-                  '[Someone just came into view after a long absence. If you recognise them, greet them warmly by name and note it\'s been a while; otherwise a friendly hello. Keep it to one short sentence.]' },
-                expiresAt: nowMs + 30_000,
-                coalesceKey: 'greet-arrival',
-              });
+              // recording guard rides in raiseSelfThought (this path previously lacked it).
+              raiseSelfThought(dock,
+                '[Someone just came into view after a long absence. If you recognise them, greet them warmly by name and note it\'s been a while; otherwise a friendly hello. Keep it to one short sentence.]',
+                { key: 'greet-arrival', ttlMs: 30_000, idPrefix: 'greet', via: 'greet-arrival' });
             }
             break;
           }
@@ -879,12 +944,8 @@ export function brainModule(w: BrainWiring): StationModule {
         // coalesce by thought KIND (default 'self:test') so a newer thought of the
         // same kind replaces a stale pending one, but different kinds don't clobber.
         const kind = typeof body.kind === 'string' && body.kind ? body.kind : 'test';
-        session(dock).enqueueAutonomousTurn({
-          turnId: `self-${randomUUID()}`,
-          trigger: { kind: 'self', text },
-          expiresAt: Date.now() + ttl,
-          coalesceKey: `self:${kind}`,
-        });
+        // recording guard rides in raiseSelfThought (a test poke must not speak mid-recording).
+        raiseSelfThought(dock, text, { key: `self:${kind}`, ttlMs: ttl, via: `console:${kind}` });
         json(res, 200, { ok: true });
         return true;
       }

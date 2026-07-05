@@ -8,14 +8,14 @@
  * Effects are injected so this is fully unit-testable with fakes (no supervisor, no brain).
  */
 import type { Conducted, ConductedState, World, Tunings } from './conducted.js';
-import { wakeTunings } from './conducted.js';
 
 /** What `reconcile` can DO — the conductor wires these to the real supervisor + brain. */
 export interface Effects {
   /** is a TASK currently running on this dock? (kind:'task') */
   isTaskRunning(dock: string, taskName: string): boolean;
-  /** start a TASK (kind:'task'). */
-  startTask(dock: string, taskName: string, priority: number): void;
+  /** start a TASK (kind:'task'). `tunings` are the thing's live config, handed to the task
+   *  as its params (snapshot at start — a tunings edit applies on the next start). */
+  startTask(dock: string, taskName: string, priority: number, tunings: Tunings): void;
   /** stop a TASK (kind:'task'). */
   stopTask(dock: string, taskName: string): void;
   /** enable/disable a BEHAVIOUR (kind:'behaviour') — the hardcoded-in-place reaction, e.g.
@@ -40,7 +40,10 @@ export function reconcile(
 ): void {
   for (const c of conducted) {
     const prev = states.get(c.name) ?? { desired: 'off' as const, windowOpenedAt: 0 };
-    const tunings = cfgFor(c.name);
+    // Merge the descriptor's defaults UNDER the live config so downstream consumers (the
+    // task's params, a behaviour's hook) see ONE source of truth for every knob — raw
+    // config alone let a task manifest's stale default win silently (review 2026-07-05).
+    const tunings = { ...c.defaults, ...cfgFor(c.name) };
     const decided = c.decide(tunings, world, prev);
     // a manual override wins over the rule; otherwise the rule decides.
     const ov = override(c.name);
@@ -55,7 +58,7 @@ export function reconcile(
       // but must NOT spam the log. The start/stop calls below run each tick regardless.
       const edge = desired !== prev.desired;
       if (desired === 'running' && !running) {
-        fx.startTask(dock, c.taskName!, c.priority ?? 0);
+        fx.startTask(dock, c.taskName!, c.priority ?? 0, tunings);
         if (edge) fx.onTransition?.(dock, c.name, prev.desired, 'running', 'start');
       } else if (desired === 'off' && running) {
         fx.stopTask(dock, c.taskName!);
@@ -65,8 +68,9 @@ export function reconcile(
       }
     } else {
       // behaviour: enact every tick (idempotent setter) so a live config edit applies; log
-      // only on a desired transition.
-      fx.setBehaviour(dock, c.name, desired === 'running', c.name === 'wakeUp' ? wakeTunings(tunings) : tunings);
+      // only on a desired transition. The descriptor's prepareTunings (if any) normalizes
+      // the merged tunings — reconcile stays name-agnostic.
+      fx.setBehaviour(dock, c.name, desired === 'running', c.prepareTunings ? c.prepareTunings(tunings) : tunings);
       if (desired !== prev.desired) {
         fx.onTransition?.(dock, c.name, prev.desired, desired, `behaviour ${desired === 'running' ? 'enabled' : 'disabled'}`);
       }

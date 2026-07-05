@@ -39,7 +39,7 @@ import { composeEnrichment, type ContextSources } from './modules/observability/
 import { stationProvenance } from './modules/feedback/provenance.js';
 import type { Provenance } from './modules/feedback/types.js';
 import {
-  getPerceptionGrounding, getSnapshotsApi, getMemoryApi, getGateApi,
+  getPerceptionGrounding, getSnapshotsApi, getMemoryApi, getGateApi, getPerceiveStore,
 } from './modules/perception/index.js';
 import { otaModule } from './modules/ota/index.js';
 import { stationModule } from './modules/station.js';
@@ -196,10 +196,20 @@ async function main() {
     config: () => configStore.get('conductor')?.value as Record<string, Record<string, Record<string, unknown>>> | undefined,
     convMode: (dock) => getConductorAccess()?.convMode(dock) ?? null,
     tasks: (dock) => getConductorAccess()?.listTasks(dock) ?? [],
-    startTask: (dock, taskName) => { getConductorAccess()?.startTask(dock, taskName); },
+    startTask: (dock, taskName, params) => { getConductorAccess()?.startTask(dock, taskName, params); },
     stopTask: (dock, instanceId) => { getConductorAccess()?.stopTask(dock, instanceId); },
     bodyHolder: (dock) => motion.bodyHolder(dock) ?? null,
+    bodyOnline: (dock) => motion.isOnline(dock),
     setWake: (dock, cfg) => { getWakeApi()?.setWakeConfig(dock, cfg); },
+    // someone visible RIGHT NOW: the on-device MLKit perceive stream (~1 Hz), fresh within
+    // 5 s. Drives faceFollow's presence gate (attention-director v1) — a stale frame or no
+    // perceive stream reads as absent, which only makes the dock stiller, never wrong.
+    present: (dock) => {
+      const store = getPerceiveStore();
+      const entry = store?.latest(dock);
+      if (!store || !entry || Date.now() - entry.ts > 5_000) return false;
+      return store.toFollowFaces(entry).length > 0;
+    },
   }));
   // feedback: a THIN layer over the enriched obs session — read the session's
   // stored context, add the user's words + a fresh static snapshot, write MD.

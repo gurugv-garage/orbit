@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { api } from '../lib/station';
-import { useDocks } from '../lib/useDocks';
+import { fmtDuration, relTime, useDocks, useNow } from '../lib/useDocks';
 
 /**
  * Conductor tab — the per-dock conductor's governable surface
@@ -27,7 +27,42 @@ interface ConductedView {
   instrumentedAt: string | null;
   /** the packaged task this conducts (kind:'task' only). */
   taskName: string | null;
+  /** the body-lease priority its motion runs at (kind:'task' only) — brain turn (60) and
+   *  console (70) always outrank; between conducted tasks, higher briefly wins the body. */
+  priority: number | null;
+  /** the running instance's live status line (kind:'task', running only) — e.g.
+   *  faceFollow "tracking guru (locked)", moods "performing bored.sigh". */
+  status: string | null;
+  /** per-thing activity time-log, newest first: lifecycle transitions + status changes. */
+  history: Array<{ ts: number; text: string }>;
 }
+
+/** What each tuning knob MEANS, in plain words (shown under the input). Keyed by knob
+ *  name — knob names are unique across the conducted things today. */
+const KNOB_HELP: Record<string, string> = {
+  // shared / faceFollow
+  activateAfterMs: 'start only after the dock has been conversation-idle this long',
+  runForMs: 'faceFollow: how long a tracking window may run before it rests',
+  idleNoFaceMs: 'faceFollow: nobody visible for this long → stop scanning and go still (a face reopens it instantly)',
+  rescanCooldownMs: 'faceFollow: while the room stays empty, do a brief look-around this often',
+  // wakeUp
+  phrase: 'the wake phrase matched in speech (e.g. "hey orbit")',
+  prompt: 'what the dock says when the wake phrase is heard',
+  aliases: 'extra names it also wakes on, comma-separated',
+  // moods
+  bitMinMs: 'shortest pause between idle bits (actual gap is random between min and max; 3× longer in quiet hours)',
+  bitMaxMs: 'longest pause between idle bits',
+  speakMinGapMs: 'at most one SPOKEN idle line per this interval',
+  speakIdleMinMs: 'never speak until this long after the last conversation',
+  quietStartHour: 'quiet hours begin (local hour 0–23): only sleepy bits, never speaks',
+  quietEndHour: 'quiet hours end (local hour 0–23). start = end disables quiet hours',
+  attentionAfterMs: 'someone must be continuously visible this long before attention bits play (one per visit)',
+  wBored: 'relative chance of bored bits — fidgets, sighs, slow looks, seeking company (0 disables)',
+  wCurious: 'relative chance of curious bits — tilts, peeks, fly-watching, wondering aloud (0 disables)',
+  wAttention: 'relative chance of attention bits when someone is around — perk, double-take, a spoken offer (0 disables)',
+  wSleepy: 'relative chance of sleepy bits during quiet hours — droop, nod-off, stir (0 disables)',
+  wFlavor: 'relative chance of rare flavor bits — existential musing, puzzlement, loneliness (keep tiny; 0 disables)',
+};
 
 export function Conductor() {
   const docks = useDocks();
@@ -91,9 +126,16 @@ export function Conductor() {
 }
 
 function StatePill({ c }: { c: ConductedView }) {
-  // running (green) / armed-but-not-running (amber) / off (grey).
-  const [bg, label] = c.running ? ['#2e7d32', 'RUNNING'] : c.desired === 'running' ? ['#b8860b', 'ARMING'] : ['#444', 'OFF'];
-  return <span style={{ background: bg, color: '#fff', borderRadius: 6, padding: '2px 8px', fontSize: 11, fontWeight: 700 }}>{label}</span>;
+  // RUNNING (green, actually running) / ARMING (amber, rule wants it but not up yet) /
+  // ENABLED (blue, enabled — the rule just isn't met yet, e.g. not idle long enough) /
+  // OFF (grey, disabled in tunings or pinned off). "OFF" used to cover ENABLED too,
+  // which read as "won't run" when it really meant "waiting for its moment".
+  const enabled = c.tunings.enabled !== false && c.override !== 'off';
+  const [bg, label, title] = c.running ? ['#2e7d32', 'RUNNING', 'actually running right now']
+    : c.desired === 'running' ? ['#b8860b', 'ARMING', 'rule satisfied — starting']
+    : enabled ? ['#1d4e89', 'ENABLED', 'enabled — will start by itself when its rule is met (e.g. idle long enough)']
+    : ['#444', 'OFF', 'disabled (tunings) or pinned off'];
+  return <span title={title} style={{ background: bg, color: '#fff', borderRadius: 6, padding: '2px 8px', fontSize: 11, fontWeight: 700 }}>{label}</span>;
 }
 
 function KindTag({ c }: { c: ConductedView }) {
@@ -107,6 +149,7 @@ function KindTag({ c }: { c: ConductedView }) {
 function ConductedCard({ dock, c, onTune, onChanged }: {
   dock: string; c: ConductedView; onTune: (name: string, key: string, value: unknown) => void; onChanged: () => void;
 }) {
+  const now = useNow(); // live tick so the time-log's relative labels don't go stale
   const enabled = c.tunings.enabled !== false;
   const act = async (action: 'run' | 'stop' | 'auto') => {
     try { await api.post(`/conductor/${encodeURIComponent(dock)}/${encodeURIComponent(c.name)}/${action}`, {}); onChanged(); } catch { /* */ }
@@ -127,7 +170,28 @@ function ConductedCard({ dock, c, onTune, onChanged }: {
         </div>
       )}
       {c.kind === 'task' && c.taskName && (
-        <div className="muted mono" style={{ fontSize: 10, marginTop: 6 }}>task: {c.taskName}</div>
+        <div className="muted mono" style={{ fontSize: 10, marginTop: 6 }}
+          title="body priority: who drives the body when two things want it — higher briefly wins; a brain turn (60) or the console (70) always preempts">
+          task: {c.taskName}{c.priority != null && <> · body&nbsp;@{c.priority}</>}
+        </div>
+      )}
+      {/* the live status line — what the thing is DOING right now (per-behaviour widget v1). */}
+      {c.running && c.status && (
+        <div className="mono" style={{ fontSize: 11, marginTop: 6, color: '#7fd77f', wordBreak: 'break-word' }}>
+          ◉ {c.status}
+        </div>
+      )}
+      {/* the activity time-log — what's been happening (bits performed, track/search/yield
+          phases, start/stop transitions), newest first. `?? []` guards a version-skewed
+          station response without the history field. */}
+      {(c.history ?? []).length > 0 && (
+        <div style={{ marginTop: 6, maxHeight: 96, overflowY: 'auto', borderTop: '1px solid #333', paddingTop: 4 }}>
+          {(c.history ?? []).slice(0, 12).map((e, i) => (
+            <div key={`${e.ts}-${i}`} className="mono muted" style={{ fontSize: 10, lineHeight: 1.5, wordBreak: 'break-word', opacity: i === 0 ? 1 : 0.7 }}>
+              <span style={{ color: '#888', marginRight: 6 }}>{relTime(e.ts, now)}</span>{e.text}
+            </div>
+          ))}
+        </div>
       )}
       {/* manual override — RUN NOW forces it on regardless of the rule; STOP forces off;
           AUTO returns to the rule. The current pin (if any) is shown. */}
@@ -159,14 +223,21 @@ function Knob({ name, k, v, onTune }: { name: string; k: string; v: unknown; onT
     if (isNum && Number.isNaN(value as number)) return;
     if (value !== v) onTune(name, k, value);
   };
+  const isMs = isNum && k.endsWith('Ms');
+  const help = KNOB_HELP[k];
   return (
-    <div className="row" style={{ gap: 8, alignItems: 'center', margin: '4px 0' }}>
-      <label className="muted mono" style={{ fontSize: 11, minWidth: 130 }}>{k}{isNum && k.endsWith('Ms') ? ' (ms)' : ''}</label>
-      <input
-        value={draft} onChange={(e) => setDraft(e.target.value)}
-        onBlur={commit} onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); }}
-        style={{ width: 160 }}
-      />
+    <div style={{ margin: '6px 0' }}>
+      <div className="row" style={{ gap: 8, alignItems: 'center' }}>
+        <label className="muted mono" style={{ fontSize: 11, minWidth: 130 }} title={help}>{k}{isMs ? ' (ms)' : ''}</label>
+        <input
+          value={draft} onChange={(e) => setDraft(e.target.value)}
+          onBlur={commit} onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); }}
+          style={{ width: 160 }}
+        />
+        {/* humanized duration so nobody mentally divides by 60000 */}
+        {isMs && <span className="muted mono" style={{ fontSize: 11 }}>= {fmtDuration(Number(draft) || 0)}</span>}
+      </div>
+      {help && <div className="muted" style={{ fontSize: 10, marginLeft: 138, marginTop: 1, maxWidth: 340, lineHeight: 1.4 }}>{help}</div>}
     </div>
   );
 }

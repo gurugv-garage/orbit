@@ -72,7 +72,9 @@ const CONV_TICK_MS = 500;
 
 export interface TurnRequest {
   turnId: string;
-  trigger: { kind: string; text: string };
+  /** `via` = WHICH source raised a non-user trigger (a mood bit id, a gate raise key,
+   *  the greet, the console poke) — provenance surfaced in the observability trace. */
+  trigger: { kind: string; text: string; via?: string };
   context?: { state?: string; battery?: number };
   imageBase64?: string;
   imageMime?: string;
@@ -187,6 +189,7 @@ export class DockBrainSession {
   #activeTurnId?: string;
   #triggerText = '';
   #triggerKind = 'user';
+  #triggerVia: string | undefined; // the raising source (mood bit / gate key / …) — obs only
   // A1.2: a station-originated user turn (an addressed always-on-mic utterance) —
   // the phone must adopt it even though its trigger.kind is 'user'.
   #stationOriginated = false;
@@ -746,6 +749,7 @@ export class DockBrainSession {
     this.#activeTurnId = req.turnId;
     this.#triggerText = req.trigger.text;
     this.#triggerKind = req.trigger.kind || 'user';
+    this.#triggerVia = req.trigger.via;
     this.#stationOriginated = req.stationOriginated === true;
     this.#cancelled = false;
     this.#timedOut = false;
@@ -1086,7 +1090,7 @@ export class DockBrainSession {
         // new user message, so deriving the trigger from history labeled
         // every turn with the PREVIOUS utterance (seen live on the console).
         this.#shipObs('TurnStart', {
-          trigger: { kind: this.#triggerKind, text: this.#triggerText },
+          trigger: { kind: this.#triggerKind, text: this.#triggerText, ...(this.#triggerVia ? { via: this.#triggerVia } : {}) },
         });
         break;
       case 'turn_start':
