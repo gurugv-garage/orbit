@@ -99,12 +99,21 @@ export function bodylinkModule(deps: {
     // drain window: let the last pongs return before we tally.
     await new Promise((r) => setTimeout(r, drainMs));
     const rtts: number[] = [];
-    for (let seq = firstSeq; seq < pingSeq; seq++) {
+    // Tally ONLY this burst's own seq range [firstSeq, lastSeq]. A concurrent
+    // probe (the console can fire /health-check while a prior drain is still
+    // open — rapid back-to-back checks) advances the shared `pingSeq`, so we
+    // must not tally up to the live counter or we'd fold in the other probe's
+    // pongs and report received > sent (the nonsense NEGATIVE loss %). Snapshot
+    // the end of our range from `count`, not from `pingSeq`.
+    const lastSeq = firstSeq + count;           // exclusive; our seqs are [firstSeq, lastSeq)
+    for (let seq = firstSeq; seq < lastSeq; seq++) {
       pendingPings.delete(seq);                 // clear whatever's left (drops)
       const rtt = rttBySeq.get(seq);
       if (rtt !== undefined) { rtts.push(rtt); rttBySeq.delete(seq); }
     }
-    const received = rtts.length;
+    // Defence in depth: a duplicate pong could still push a single seq's count,
+    // so clamp received to what we sent — loss % is never negative.
+    const received = Math.min(rtts.length, count);
     const lossPct = count === 0 ? 0 : Math.round(((count - received) / count) * 1000) / 10;
     const rep: HealthReport = { sent: count, received, lossPct };
     if (received) {
