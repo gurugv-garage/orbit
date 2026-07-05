@@ -174,6 +174,46 @@ esp_err_t wifi_sta_start(wifi_sta_on_got_ip_t on_got_ip) {
     // −74 dBm EVERY rung collapses (5/12 total drops, ~900 ms RTT). So 12 dBm is
     // the settled floor (lowest rail-safe TX that still holds range); the real
     // reliability lever is signal / antenna / distance (or the S3 body).
+    // 2026-07 PLACEMENT A/B (same distance, USB power, C3-only, unchanged TX/caps):
+    // walked one spot → another at the SAME "far" range and back. Old spot: −70/−74
+    // dBm, RTT 250-880 ms, loss 0→100 % blips (broken). Different spot, same distance:
+    // −66 dBm, 0 % loss, ~20 ms RTT (clean) — and rejoined clean across several
+    // reboots. Moving BACK reproduced the break exactly. CONFIRMS the KEY FINDING with
+    // a controlled A/B: at range, RSSI is dominated by PATH/obstruction, not distance,
+    // and placement alone swings it ±8-10 dB across the −74 collapse knee. Power/cap
+    // changes do NOT help a weak-RSSI spot (packets arrive but slow — receive-limited);
+    // the fix is position / orientation / a closer AP / the S3 body.
+    // 2026-07 ENCLOSURE/RF A/B (same far spot, own USB, other equipment OFF+disconnected):
+    // bare C3 = −66 dBm / 0 % / 20 ms (clean). Mounted on the BREADBOARD amid the rig
+    // (antenna reoriented to fit) = −77 to −85 dBm, 100 % loss, could not hold an
+    // association — a ~15-20 dB antenna hit purely from the board mass/jumpers/nearby
+    // equipment detuning+shadowing the C3 trace antenna. Removing it from the breadboard
+    // recovered ~10 dB immediately (−70/−75, re-associated). Power was RULED OUT (own USB,
+    // equipment off AND unplugged — still dead on the breadboard), so this is RF, not rail:
+    // no cap and no software knob recovers it. CONFIG IS EXHAUSTED for weak signal — TX is
+    // already at the rail-safe max (12 dBm; 15 gave nothing), beacon inactive-time is
+    // stretched to 20 s, PS is NONE. Remaining levers are all PHYSICAL: antenna orientation
+    // (edge facing AP, clear air), distance/position, a closer AP, a u.FL/IPEX external
+    // antenna (the XIAO C3 exposes the connector — the one cheap real-gain upgrade for THIS
+    // board), or the S3 body. Keep the antenna edge clear of the board/jumpers/metal.
+    // 2026-07 CROSS-BOARD RSSI IS NOT COMPARABLE (C3 vs S3): observed a NEARER S3
+    // reporting a LOWER rssi (−65) than a FARTHER C3 (−58) — looks backwards, isn't.
+    // The app WiFi/net code is one shared path (this file); the ONLY chip #if is the
+    // C3 TX cap below. But the RADIOS differ: C3 runs 12 dBm + FULL RF cal every boot
+    // (CONFIG_ESP_PHY_RF_CAL_FULL, sdkconfig.defaults.esp32c3), S3 runs full ~20 dBm +
+    // default (partial) cal — different silicon, front-end, antenna, AND calibration
+    // baseline. So rssi is a PER-RADIO ruler: only ever compare a board to ITSELF over
+    // time (e.g. the C3's own −85→−58). To compare two DIFFERENT boards, use the active
+    // loss/RTT probe, not rssi — by that metric the near S3 (0 %, ~18 ms) beat the C3
+    // (0 %, ~27 ms) even while its rssi number read "worse."
+    // 2026-07 S3 HOLDS RANGE where the C3 collapses (the counterpart to the C3 data
+    // above): the S3, moved to the FAR spots that broke the C3 (−74/−85, 800 ms,
+    // flapping), stayed −62/−65 dBm, 0 % loss, ~20-25 ms RTT, reconnects=1 — got
+    // slightly BETTER when moved farther (path, not distance). Confirms the standing
+    // conclusion: for far placement use the S3 (full 20 dBm + better front-end/antenna),
+    // not the C3. NB heat is NOT a factor in any of this — every failure was RF/rssi/
+    // antenna (receive-side), heap stayed stable, no thermal resets/throttle; a heatsink
+    // does nothing for connection reliability (it'd only matter for long servo-duty heat).
     #define BL_C3_TX_POWER_Q 48   // 48 * 0.25 = 12 dBm  (settled — see sweep above)
     {
         esp_err_t pr = esp_wifi_set_max_tx_power(BL_C3_TX_POWER_Q);
