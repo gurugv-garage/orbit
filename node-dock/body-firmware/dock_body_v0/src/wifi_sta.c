@@ -16,6 +16,13 @@ static const char *TAG = "wifi_sta";
 #define WIFI_CONNECTED_BIT  BIT0
 #define WIFI_FAIL_BIT       BIT1
 
+// RSSI-low telemetry threshold (dBm). When the averaged RSSI drops below this,
+// the driver posts WIFI_EVENT_STA_BSS_RSSI_LOW once; we log it and re-arm. This
+// is DIAGNOSTIC only (it doesn't change the link) — it surfaces "signal went
+// weak" proactively instead of us inferring it from loss bursts. −70 is the
+// knee where this C3's trace antenna starts dropping under load (empirical).
+#define WIFI_RSSI_LOW_DBM   (-70)
+
 // 20 retries × ~2s each = ~40s before giving up. Auto-retry continues
 // after the budget is hit if you call wifi_sta_start() again — but in
 // practice we never do; if Wi-Fi can't come up, the dock body parks at
@@ -70,12 +77,24 @@ static void event_handler(void *arg, esp_event_base_t base,
             ESP_LOGE(TAG, "Gave up after %d retries", kMaxRetries);
             xEventGroupSetBits(s_eg, WIFI_FAIL_BIT);
         }
+    } else if (base == WIFI_EVENT && id == WIFI_EVENT_STA_BSS_RSSI_LOW) {
+        // Averaged RSSI crossed below WIFI_RSSI_LOW_DBM. Log it and RE-ARM — the
+        // driver fires this only once per set_rssi_threshold() call, so without
+        // re-arming we'd hear about the first dip and never again.
+        wifi_event_bss_rssi_low_t *e = (wifi_event_bss_rssi_low_t *)data;
+        ESP_LOGW(TAG, "RSSI LOW: avg rssi=%d dBm (< %d) — link entering the weak-signal "
+                 "regime where drops/latency spike; not a firmware fault",
+                 (int)e->rssi, WIFI_RSSI_LOW_DBM);
+        esp_wifi_set_rssi_threshold(WIFI_RSSI_LOW_DBM);   // re-arm for the next crossing
     } else if (base == IP_EVENT && id == IP_EVENT_STA_GOT_IP) {
         ip_event_got_ip_t *e = (ip_event_got_ip_t *)data;
         ESP_LOGI(TAG, "Got IP: " IPSTR " (gateway " IPSTR ", netmask " IPSTR ")",
                  IP2STR(&e->ip_info.ip), IP2STR(&e->ip_info.gw),
                  IP2STR(&e->ip_info.netmask));
         s_retry_count = 0;
+        // Arm the RSSI-low telemetry now that we're associated (must be set while
+        // connected; it's cleared on disconnect, so we re-set it on every GOT_IP).
+        esp_wifi_set_rssi_threshold(WIFI_RSSI_LOW_DBM);
         if (s_on_got_ip) s_on_got_ip(e->ip_info.ip);
         xEventGroupSetBits(s_eg, WIFI_CONNECTED_BIT);
     }
@@ -114,6 +133,19 @@ esp_err_t wifi_sta_start(wifi_sta_on_got_ip_t on_got_ip) {
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wcfg));
     ESP_ERROR_CHECK(esp_wifi_set_ps(WIFI_PS_NONE));
     ESP_ERROR_CHECK(esp_wifi_set_storage(WIFI_STORAGE_RAM));
+
+    // Beacon-loss tolerance. By default a STA that misses beacons for ~6s FORCE-
+    // disconnects (WIFI_REASON_BEACON_TIMEOUT / ASSOC_EXPIRE). On this C3's weak
+    // −74 dBm trace-antenna link, a brief beacon gap during a fade trips that and
+    // tears down the WS — the "goes offline then reconnects" flapping we chased.
+    // Raise the inactive-time window so the STA RIDES OUT short dropouts instead
+    // of deauthing. This makes the link more FORGIVING of weak signal; it does
+    // NOT make the signal stronger (packet loss / latency at −74 are physics —
+    // the real fix is position / antenna / the S3 body). Range is [3,60]s.
+    esp_err_t it = esp_wifi_set_inactive_time(WIFI_IF_STA, 20);
+    ESP_LOGI(TAG, "beacon inactive-time set to 20s (was ~6s default): %s",
+             esp_err_to_name(it));
+
     ESP_ERROR_CHECK(esp_wifi_start());
 
 #if CONFIG_IDF_TARGET_ESP32C3
@@ -132,9 +164,17 @@ esp_err_t wifi_sta_start(wifi_sta_on_got_ip_t on_got_ip) {
     // testing the WPA handshake at CLOSE range (worst-case sag) after each step. If
     // the handshake starts failing again, we've hit the bare rail's ceiling — that's
     // where a 3V3 bulk cap comes in to push it higher. Step ladder (·0.25 dBm):
-    //   34 = 8.5 dBm (rail-safe baseline)   44 = 11 dBm (this step)
-    //   56 = 14 dBm                         78 = ~19.5 dBm (near default; needs the cap)
-    #define BL_C3_TX_POWER_Q 56   // 56 * 0.25 = 14 dBm  (paired with 3V3 bulk cap)
+    //   34 = 8.5 dBm (rail-safe baseline)   44 = 11 dBm   48 = 12 dBm (SETTLED)
+    //   56 = 14 dBm                         60 = 15 dBm
+    //   78 = ~19.5 dBm (near default; needs the cap)
+    // 2026-07 SWEEP RESULT: with 2× 100 µF caps, walked TX 15→14→12→11 and
+    // burst-tested each at ~−60 dBm. 12 dBm (q48) was drop-free (8/8 clean);
+    // 11 dBm (q44) showed a reproducible ~1-in-10 total-loss blip; 15 dBm gave
+    // no benefit. KEY FINDING: link reliability tracks RSSI, not TX rung — at
+    // −74 dBm EVERY rung collapses (5/12 total drops, ~900 ms RTT). So 12 dBm is
+    // the settled floor (lowest rail-safe TX that still holds range); the real
+    // reliability lever is signal / antenna / distance (or the S3 body).
+    #define BL_C3_TX_POWER_Q 48   // 48 * 0.25 = 12 dBm  (settled — see sweep above)
     {
         esp_err_t pr = esp_wifi_set_max_tx_power(BL_C3_TX_POWER_Q);
         ESP_LOGI(TAG, "C3 TX power set to %.2f dBm (set_max_tx_power=%d): %s",
