@@ -11,7 +11,7 @@ interface FeedbackMeta { id: string; sessionId?: string; turnId?: string; source
 interface ToolVM { id: string; name: string; args?: unknown; result?: string; isError?: boolean; startedAt?: number; endedAt?: number }
 interface StepVM { idx: number; model?: string; stopReason?: string; text?: string; tools: ToolVM[]; inTok?: number; outTok?: number; startedAt?: number; streamStartedAt?: number; endedAt?: number }
 interface SpeechVM { startedAt: number; endedAt?: number }
-interface TriggerVM { kind: string; text?: string }
+interface TriggerVM { kind: string; text?: string; via?: string }
 interface TurnVM { id: string; sessionId: string; source?: string; trigger?: TriggerVM; startedAt: number; endedAt?: number; ended: boolean; steps: StepVM[]; speech: SpeechVM[] }
 
 interface StoredTool { toolCallId: string; toolName: string; args?: unknown; result?: string; isError?: boolean; startedAt?: number; endedAt?: number }
@@ -155,15 +155,29 @@ export function Observability() {
       // sessions reusing an id must not merge into one row.
       const key = turnKey(ev.sessionId, ev.turnId);
       let i = turnIndex.current.get(key);
-      if (i == null) {
-        i = next.length;
+      // The index can be STALE: the slice(-300) truncation below shifts array positions
+      // (and the initial-load merge can race a live event) — dereferencing a stale index
+      // hit undefined and crashed the module on EVERY live event once the day crossed
+      // 300 turns (seen 2026-07-05). Verify the indexed entry actually matches; re-find
+      // or append when it doesn't.
+      if (i == null || next[i] == null || turnKey(next[i]!.sessionId, next[i]!.id) !== key) {
+        const found = next.findIndex((t) => turnKey(t.sessionId, t.id) === key);
+        if (found >= 0) { i = found; } else {
+          i = next.length;
+          next.push({ id: ev.turnId, sessionId: ev.sessionId, startedAt: ev.ts, ended: false, steps: [], speech: [] });
+        }
         turnIndex.current.set(key, i);
-        next.push({ id: ev.turnId, sessionId: ev.sessionId, startedAt: ev.ts, ended: false, steps: [], speech: [] });
       }
       const turn = { ...next[i]!, steps: next[i]!.steps.slice() };
       applyEvent(turn, ev);
       next[i] = turn;
-      return next.slice(-300);
+      const out = next.slice(-300);
+      if (out.length !== next.length) {
+        // truncation shifted every index — rebuild so the next event can't go stale.
+        turnIndex.current.clear();
+        out.forEach((t, idx) => turnIndex.current.set(turnKey(t.sessionId, t.id), idx));
+      }
+      return out;
     });
   }, []);
   useStationEvents('obs', onEvent);
@@ -314,6 +328,14 @@ function TurnRow({ turn, open, onToggle, feedback }: { turn: TurnVM; open: boole
         <span className="obs-caret">{open ? '▾' : '▸'}</span>
         <span className="obs-turn-time mono">{clockMs(turn.startedAt)}</span>
         <CopyChip value={turn.id} className="obs-turn-id mono" label={turn.id.replace('turn-', '')} />
+        {/* trigger-kind tag on the COLLAPSED line too (self/task/wake…) — 'user' stays
+            implicit (it's the default and would just be noise on every row). `via` names
+            the RAISING source (mood:curious.wonder / gate:arrival:x / face-follow:errored). */}
+        {turn.trigger?.kind && turn.trigger.kind !== 'user' && (
+          <span className={`obs-turn-kind trigger-${turn.trigger.kind}`} title={turn.trigger.via ?? turn.trigger.kind}>
+            {turn.trigger.kind}{turn.trigger.via ? `·${turn.trigger.via.split(':')[0]}` : ''}
+          </span>
+        )}
         {turn.trigger?.text && <span className="obs-turn-prompt" title={turn.trigger.text}>“{turn.trigger.text}”</span>}
         <span className={`obs-turn-dur${dur(turn) > 4000 ? ' slow' : ''}`}>{fmtMs(dur(turn))}</span>
         <span className="muted sm">{turn.steps.length} step{turn.steps.length !== 1 ? 's' : ''}</span>
@@ -388,6 +410,8 @@ function TurnTimeline({ turn }: { turn: TurnVM }) {
       {turn.trigger && (
         <div className={`obs-msg trigger-${turn.trigger.kind}`}>
           <span className="obs-msg-who">{turn.trigger.kind}</span>
+          {/* the raising source, in full (e.g. mood:curious.wonder, gate:arrival:guru) */}
+          {turn.trigger.via && <span className="obs-msg-via mono">{turn.trigger.via}</span>}
           {turn.trigger.text && <span className="obs-msg-text obs-copytext" title="double-click a word to select · click ⧉ to copy all">{turn.trigger.text}<CopyIco value={turn.trigger.text} /></span>}
         </div>
       )}

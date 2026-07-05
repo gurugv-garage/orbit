@@ -54,7 +54,7 @@ export interface AgentEventDto {
     isError?: boolean;
     result?: string;
     text?: string;
-    trigger?: { kind: string; text?: string };
+    trigger?: { kind: string; text?: string; via?: string };
     stopReason?: string;
     /** usage if the host reports it on StepEnd / MessageEnd. */
     usage?: { inputTokens?: number; outputTokens?: number; totalTokens?: number; cost?: number };
