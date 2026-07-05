@@ -30,10 +30,11 @@
 
 /** Priority levels (higher wins). Indicative — tune in the build. */
 export const PRIORITY = {
-  emergency: 100,   // future: "stop, about to fall" — outranks even the brain
+  emergency: 100,   // future: "stop, about to fall" — outranks even the operator
+  console: 70,      // a human at the Body Console FORCE-TAKES the body — overrides the
+                    // brain and the follow reflex; only a future emergency-stop outranks it
   brainTurn: 60,    // a conversation gesture / explicit user `move`
-  faceFollow: 30,   // the reflex — yields to the brain, outranks idle/console
-  console: 20,      // manual sliders
+  faceFollow: 30,   // the reflex — yields to the brain/operator, outranks idle
   idle: 0,          // heartbeat / nothing
 } as const;
 
