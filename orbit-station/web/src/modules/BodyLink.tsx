@@ -23,9 +23,19 @@ const bodyOnline = (d: DockInfo) =>
     (c) => ((c.caps ?? []).includes('servo') || c.component === 'body') && c.online,
   );
 
+// ── URL-hash dock persistence (mirrors the Cost view) — the selected dock
+// rides #bodylink?dock=<name> so it survives a refresh. ──────────────────────
+const dockFromHash = (): string =>
+  new URLSearchParams(location.hash.split('?')[1] ?? '').get('dock') ?? '';
+const writeDockHash = (dock: string): void => {
+  const view = location.hash.replace('#', '').split('?')[0] || 'bodylink';
+  // replaceState so switching bodies doesn't pile up in history, but survives refresh.
+  history.replaceState(null, '', dock ? `#${view}?dock=${encodeURIComponent(dock)}` : `#${view}`);
+};
+
 export function BodyLink() {
   const [docks, setDocks] = useState<DockInfo[]>([]);
-  const [dock, setDock] = useState<string>('');
+  const [dock, setDock] = useState<string>(dockFromHash);
   const [profile, setProfile] = useState<Profile | null>(null);
   const [state, setState] = useState<BodyState>({});
   const [online, setOnline] = useState(false);
@@ -34,6 +44,21 @@ export function BodyLink() {
   // active packet-loss/RTT probe result (only when the button is pressed).
   const [probe, setProbe] = useState<string | null>(null);
   const [probing, setProbing] = useState(false);
+
+  // Switch bodies: reset the per-dock view (stale rssi/probe/profile must NOT
+  // linger from the previously selected body) and persist the choice in the URL.
+  const selectDock = useCallback((name: string) => {
+    setDock((cur) => {
+      if (cur === name) return cur;
+      setProfile(null);
+      setHealth(null);   // clear stale passive metrics until the new body's digest lands
+      setProbe(null);    // clear the old active-probe result
+      setState({});      // drop the previous body's joint state
+      setOnline(false);  // until the new dock's state/digest confirms
+      writeDockHash(name);
+      return name;
+    });
+  }, []);
 
   const checkHealth = useCallback(() => {
     if (!dock) return;
@@ -53,12 +78,20 @@ export function BodyLink() {
       .finally(() => setProbing(false));
   }, [dock]);
 
-  // dock list: anything with a body slot; default to the first ONLINE body.
+  // dock list: anything with a body slot. Honour the URL's ?dock= if it still
+  // has a body; else default to the first ONLINE body. Persist the resolved pick.
   useEffect(() => {
     api.get<DockInfo[]>('/docks').then((all) => {
       const bodied = all.filter(hasBody);
       setDocks(bodied);
-      setDock((cur) => cur || (bodied.find(bodyOnline) ?? bodied[0])?.name || '');
+      setDock((cur) => {
+        const wanted = cur || dockFromHash();
+        const resolved =
+          (wanted && bodied.some((d) => d.name === wanted) ? wanted : '') ||
+          (bodied.find(bodyOnline) ?? bodied[0])?.name || '';
+        if (resolved && resolved !== dockFromHash()) writeDockHash(resolved);
+        return resolved;
+      });
     }).catch(() => {});
   }, []);
 
@@ -87,13 +120,21 @@ export function BodyLink() {
   }, [dock, load]));
 
   const picker = docks.length > 1 && (
-    <div className="row" style={{ gap: 6, marginBottom: 12 }}>
-      {docks.map((d) => (
-        <button key={d.name} onClick={() => { setProfile(null); setDock(d.name); }}
-          style={dock === d.name ? { borderColor: 'var(--accent)', color: 'var(--accent)' } : {}}>
-          {d.name}{bodyOnline(d) ? ' ●' : ''}
-        </button>
-      ))}
+    <div style={{ marginBottom: 12 }}>
+      <span className="muted" style={{ fontSize: 11, marginRight: 8 }}>body (per dock):</span>
+      <div className="row" style={{ gap: 6, marginTop: 4, flexWrap: 'wrap' }}>
+        {docks.map((d) => {
+          const on = bodyOnline(d);
+          return (
+            <button key={d.name} onClick={() => selectDock(d.name)}
+              title={on ? 'online' : 'offline'}
+              style={dock === d.name ? { borderColor: 'var(--accent)', color: 'var(--accent)' } : {}}>
+              <span style={{ color: on ? 'var(--good)' : 'var(--dim)', marginRight: 4 }}>●</span>
+              {d.name}
+            </button>
+          );
+        })}
+      </div>
     </div>
   );
 
