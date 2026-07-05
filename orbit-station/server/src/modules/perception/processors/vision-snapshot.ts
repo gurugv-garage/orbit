@@ -11,6 +11,7 @@
  * pass). The old per-frame moondream/md3 path is gone.
  */
 
+import * as tf from '@tensorflow/tfjs-node';
 import type { StreamContext, StreamProcessor } from '../processor.js';
 import { makeSnapshot, isoIst, type SnapshotStore } from '../snapshots.js';
 import { visionInstruction } from '../vision-instruction.js';
@@ -30,6 +31,43 @@ interface StreamState {
   running: boolean;  // the steady loop is active
   busy: boolean;     // a capture (loop cycle OR flush) is mid-inference
   inflight?: Promise<boolean>; // the in-flight capture, so captureNow can await it
+  /** the CHANGE GATE: a 16×16 grayscale signature of the last ANALYZED frame. The loop
+   *  probes one frame every PROBE_MS (~1 ms of CPU via the already-loaded tfjs runtime)
+   *  and only spends the ~4.5 s GPU inference when pixels actually moved past the
+   *  threshold — a static scene was previously re-described 8×/min (2026-07-05). */
+  lastSig?: Float32Array;
+  lastAnalyzedAt: number;
+  skippedProbes: number; // gated probes since the last analysis (surfaced in the payload)
+}
+
+/** Change-gate knobs. delta is mean |Δ| on a 16×16 grayscale [0..1]: sensor noise on a
+ *  static scene measures ≲0.02; a person entering/moving ≳0.05. REFRESH forces a real
+ *  analysis even with no pixel change (guards slow drift below the threshold).
+ *  PROBE_MS is deliberately SHORT — a probe costs ~1 ms of CPU, and slowing the SENSING
+ *  is how significant frames get missed (the earlier doubling-pause design was wrong for
+ *  exactly that reason; only the expensive interpretation should be gated, never the
+ *  cheap looking). Worst-case change-detection latency = one probe interval. */
+const PROBE_MS = Number(process.env.VISION_PROBE_MS ?? 1_500);
+const DIFF_THRESHOLD = Number(process.env.VISION_DIFF_THRESHOLD ?? 0.03);
+const REFRESH_MS = Number(process.env.VISION_REFRESH_MS ?? 300_000);
+
+/** 16×16 grayscale signature of a JPEG (null on decode failure). tf.tidy frees every
+ *  intermediate tensor; the returned Float32Array is plain memory. */
+function frameSignature(jpeg: Buffer): Float32Array | null {
+  try {
+    return tf.tidy(() => {
+      const img = tf.node.decodeJpeg(jpeg, 1);                       // grayscale HxWx1
+      const small = tf.image.resizeBilinear(img as tf.Tensor3D, [16, 16]);
+      return small.div(255).dataSync() as Float32Array;
+    });
+  } catch { return null; }
+}
+
+/** Mean absolute difference between two signatures (0 = identical, 1 = inverted). */
+function signatureDelta(a: Float32Array, b: Float32Array): number {
+  let sum = 0;
+  for (let i = 0; i < a.length; i++) sum += Math.abs(a[i]! - b[i]!);
+  return sum / a.length;
 }
 
 /** Run one inference; return the text + the sidecar round-trip latency (inferMs). */
@@ -100,21 +138,44 @@ export function visionSnapshotProcessor(store: SnapshotStore, getFrame: GetFrame
       source: { id: s.ctx.streamId, kind: 'vision', device: 'dock-webrtc', host: 'station' },
       model: { name: MODEL_NAME, endpoint: `${TEMPORAL_URL}/temporal` },
       from, to,
-      payload: { text, frames: frames.length, latencyMs: to.getTime() - from.getTime(), inferMs },
+      // gatedProbes = how many cheap change-checks concluded "nothing moved" since the
+      // previous analysis (Studio observability for the GPU savings).
+      payload: { text, frames: frames.length, latencyMs: to.getTime() - from.getTime(), inferMs, gatedProbes: s.skippedProbes },
     }));
     store.addKeyframe({ ts: isoIst(to), from: isoIst(from), jpegB64: frames[frames.length - 1]! });
     s.ctx.emit({ kind: 'scene', source: 'vision-snapshot', payload: { description: text }, confidence: 0.7 });
+    // change-gate bookkeeping: remember what the ANALYZED scene looked like, so the
+    // cheap probe can tell whether anything has moved since.
+    s.lastSig = frameSignature(Buffer.from(frames[frames.length - 1]!, 'base64')) ?? s.lastSig;
+    s.lastAnalyzedAt = Date.now();
+    s.skippedProbes = 0;
     return true;
   }
 
-  /** Latency-bound loop: sample frames over a span, analyze, emit, repeat. */
+  /** The CHANGE-GATED loop: every PROBE_MS grab ONE frame and compare its 16×16
+   *  signature against the last analyzed scene (~1 ms CPU). Only when pixels moved
+   *  past DIFF_THRESHOLD — or REFRESH_MS elapsed with no change (slow-drift guard) —
+   *  run the full multi-frame window + the ~4.5 s GPU inference. A static room costs
+   *  probes, not inferences; any visual change is analyzed within ~PROBE_MS. */
   async function loop(streamId: string) {
     const s = streams.get(streamId);
     if (!s || s.running) return;
     s.running = true;
     while (streams.has(streamId)) {
-      const committed = await captureOnce(s, WINDOW_FRAMES, FRAME_GAP_MS);
-      if (!committed) await sleep(500); // stream not live yet / inference failed
+      let analyze = true;
+      if (s.lastSig && Date.now() - s.lastAnalyzedAt < REFRESH_MS && !s.busy) {
+        const jpeg = getFrame(s.ctx.streamId);
+        const sig = jpeg ? frameSignature(jpeg) : null;
+        if (sig && signatureDelta(sig, s.lastSig) < DIFF_THRESHOLD) {
+          analyze = false;               // scene unchanged → no GPU this round
+          s.skippedProbes++;
+        }
+      }
+      if (analyze) {
+        const committed = await captureOnce(s, WINDOW_FRAMES, FRAME_GAP_MS);
+        if (!committed) { await sleep(500); continue; } // stream not live yet / inference failed
+      }
+      await sleep(PROBE_MS);
     }
     s.running = false;
   }
@@ -143,7 +204,7 @@ export function visionSnapshotProcessor(store: SnapshotStore, getFrame: GetFrame
     channels: [],
 
     onStreamStart(ctx: StreamContext) {
-      streams.set(ctx.streamId, { ctx, running: false, busy: false });
+      streams.set(ctx.streamId, { ctx, running: false, busy: false, lastAnalyzedAt: 0, skippedProbes: 0 });
       void loop(ctx.streamId);
     },
 

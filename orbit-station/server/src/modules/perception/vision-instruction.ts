@@ -14,15 +14,21 @@
 // Sweet spot (tested): captures the actual ACTION + any held object — the "who did
 // what" signal — without the fabricated rooms/people/clothing the loose prompt
 // produced. Too-strict prompts collapse to "the person is present" (useless).
+// The old BASE PRESUPPOSED a person ("describe what the person is doing") — shown an
+// empty room, the 3B model obliged the presupposition and INVENTED one ("the person is
+// standing holding a black object", every window, from a hanging strap; seen live
+// 2026-07-05 with identity simultaneously reporting "no one in view"). The prompt must
+// first allow "nobody here".
 const BASE =
-  'In one short sentence, describe what the person is doing — their action and ' +
-  'posture — and any object they are clearly holding or using. ' +
-  'Use "they"/"the person"; do not guess gender, age, or name. ' +
+  'In one short sentence, describe what is happening. ' +
+  'FIRST check whether any person is actually visible. If NO person is clearly visible, ' +
+  'start with "No one is visible" and add a few words about anything notable or changed. ' +
+  'If a person IS clearly visible, describe their action and posture and any object they ' +
+  'are clearly holding or using — use "they"/"the person"; do not guess gender, age, or name. ' +
   'Look at the object ITSELF and name what it actually is; if you are not sure what ' +
   'the object is, say "an object" rather than guessing a common one. ' +
   'Do NOT default to "laptop" or "phone" — only say so if you clearly see one. ' +
-  'State only what is clearly visible — do NOT describe the background or invent ' +
-  'details or other people.';
+  'State only what is clearly visible — do NOT invent people, actions, or details.';
 // NOTE: the examples ("typing on a laptop"…) were removed deliberately. qwen2.5-VL is
 // small and ANCHORS on the first in-prompt example when a 320×240 frame is ambiguous —
 // it was reading a held-up mug/cup as "typing on a laptop" (the seeded example) because
