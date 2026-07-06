@@ -43,9 +43,24 @@ export interface Bit {
  *  instead of converging on its three modal quips (the 50th-occurrence problem). */
 export const SPEAK_SEEDS = [
   'the light in the room', 'your own servos', 'something on the desk', 'the time of day',
-  'a sound you think you heard', 'dust', 'the concept of weekends', 'the ceiling',
-  'how still everything is', 'your reflection in something',
+  'a sound you think you heard', 'the ceiling',
+  'how still everything is', 'your reflection in something', 'the furthest thing you can see',
+  'what people usually do at this hour', 'a shadow', 'the temperature of the room', 'gravity',
 ];
+
+/** Style guard appended to every spoken-bit scenario (kept here with the bit data so a
+ *  bench can reproduce the EXACT prompt a live bit sends). */
+export const SPEAK_STYLE = ' Keep it under 12 words, no "Ah,"/"Well,"/"Hmm," openers, no exclamation overload.'
+  + ' Plain everyday words — no poetic imagery. If you have nothing genuinely fresh to say, stay silent.';
+
+/** The full self-thought text for a spoken bit: scenario + a random angle seed + style.
+ *  `rand` injectable so a bench can sweep seeds deterministically. */
+export function thoughtPrompt(bit: Bit, rand: () => number = Math.random): string {
+  const seed = SPEAK_SEEDS[Math.floor(rand() * SPEAK_SEEDS.length)];
+  // the seed is a FALLBACK muse, not a directive — benched (r2): "Angle, if helpful"
+  // made every line orbit the seed, colliding with past-line themes.
+  return `${bit.thought} If the scene and sounds offer nothing, a fallback muse: ${seed}.${SPEAK_STYLE}`;
+}
 
 export const BITS: Bit[] = [
   // ── bored — restless small motion, mostly silent ─────────────────────────────
@@ -143,9 +158,9 @@ export const BITS: Bit[] = [
   },
   {
     id: 'attention.bid', mood: 'attention', weight: 1, needsFace: true,
-    // an OFFER, not a bid — never asks for a response, never mentions being ignored.
-    thought: 'Someone is nearby, quietly busy. Offer one small, light observation or invitation — never a question '
-      + 'that demands an answer, never a mention of being ignored or lonely.',
+    // a light INVITATION aimed at the person (bench r2: plain observations tested as
+    // flat non-bids) — but never needy, never mentions being ignored.
+    thought: 'Someone has been nearby for a while but nobody is talking to you. Make one light, friendly BID for interaction — invite them to chat, ask a tiny question, or offer to help with what they seem busy with. It must be an invitation aimed at them, not a comment about the room.',
   },
 
   // ── sleepy — quiet-hours wind-down (never speaks; picker enforces it too) ────
@@ -173,14 +188,15 @@ export const BITS: Bit[] = [
   // ── flavor — rare spice on the same machinery ────────────────────────────────
   {
     id: 'flavor.existential', mood: 'flavor', weight: 1,
-    thought: 'A brief existential flicker: you are a small desk robot. One wry, lighthearted musing anchored in a '
-      + 'tiny concrete thing near you — never consciousness, dreams, or "just a robot" clichés. Charming, not dark.',
+    thought: 'A brief existential flicker: you are a small desk robot. One wry, lighthearted musing about YOUR OWN '
+      + 'little existence — your job, your view, your day — hooked to a tiny concrete thing near you (e.g. "I have '
+      + 'watched this staircase all day; I think guarding it is my calling"). The musing must be about YOU, not a '
+      + 'plain remark about the room. Never consciousness, dreams, or "just a robot" clichés. Charming, not dark.',
   },
   {
     id: 'flavor.puzzled', mood: 'flavor', weight: 1, gesture: 'concerned',
-    // the head-shake now has a MOTIVE (a context-free shake reads as a fault).
-    thought: 'You just had the strange feeling you forgot something — but you are a robot and forget nothing. '
-      + 'One short puzzled line about that.',
+    // MOTION-ONLY: its spoken lines benched incoherent (r1) — puzzlement is a head-tilt,
+    // not a sentence.
   },
   {
     id: 'flavor.lonely', mood: 'flavor', weight: 1, needsNoFace: true,

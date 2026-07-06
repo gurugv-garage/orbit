@@ -14,7 +14,7 @@
  * authors + speaks the line with its own context (rate-capped here AND floored station-side).
  */
 import { Task, runTask, type TaskManifest } from '../../_harness/index.js';
-import { BITS, SPEAK_SEEDS, type Bit } from './bits.js';
+import { BITS, thoughtPrompt, type Bit } from './bits.js';
 import { inQuietHours, pickBit, type MoodCfg } from './picker.js';
 
 export const manifest = {
@@ -47,12 +47,6 @@ const PRESENCE_GRACE_MS = 12_000;   // face flicker tolerance for the continuous
 // silence escape hatch (the LLM as its own quality gate — quiet beats filler). A random
 // concrete ANGLE seed forces line-to-line divergence (identical prompts converge on the
 // model's three modal quips by the 50th occurrence).
-const SPEAK_STYLE = ' Keep it under 12 words, no "Ah,"/"Well,"/"Hmm," openers, no exclamation overload.'
-  + ' If you have nothing genuinely fresh to say, stay silent.';
-function thoughtPrompt(bit: Bit): string {
-  const seed = SPEAK_SEEDS[Math.floor(Math.random() * SPEAK_SEEDS.length)];
-  return `${bit.thought} Angle, if helpful: ${seed}.${SPEAK_STYLE}`;
-}
 
 class IdleMoodsTask extends Task {
   async run(): Promise<void> {
