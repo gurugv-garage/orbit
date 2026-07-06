@@ -29,7 +29,7 @@ import type { RouteContext, StationModule } from '../../core/module.js';
 import type { Directory } from '../docks/directory.js';
 import type { MotionExecutor } from '../bodylink/motion.js';
 import { gesturesFromConfig } from '../bodylink/motion.js';
-import { getFaceTools, getPerceptionGrounding, getMemoryApi, getGateApi, getTranscriptApi, getPerceiveStore } from '../perception/index.js';
+import { getFaceTools, getPerceptionGrounding, getMemoryApi, getGateApi, getTranscriptApi, getPerceiveStore, getBgAddressedApi } from '../perception/index.js';
 import { isRecording } from '../capture/index.js';
 import { getObsAccess } from '../observability/index.js';
 import type { VideoRecorderApi } from '../perception/record/recorder.js';
@@ -294,13 +294,21 @@ export function brainModule(w: BrainWiring): StationModule {
     if (isRecording(dock)) return;
     const recent = recentSelfRemarks(dock);
     const antiRepeat = recent.length
-      ? ` Your recent unprompted remarks — do NOT repeat or resemble any of them (if you have nothing genuinely different, stay silent): ${recent.map((r) => `"${r}"`).join(' · ')}`
+      ? ` Your recent unprompted remarks — do NOT repeat or resemble any of them, and do not REUSE their subjects or themes (if you have nothing genuinely different, stay silent): ${recent.map((r) => `"${r}"`).join(' · ')}`
       : '';
+    // Attach the CURRENT camera frame (when live) so the model authors the line while
+    // LOOKING at the scene, not just reading vision's one-line text description —
+    // speech is the dock's one channel that reaches people who aren't watching it,
+    // so the words carry the visual grounding (2026-07-06 direction: rely on speech
+    // + keyframes; screen/motion are garnish nobody is usually looking at).
+    const streamId = w.directory.resolveCap(dock, 'camera')?.id;
+    const frame = streamId ? getFaceTools()?.frame(streamId) : undefined;
     session(dock).enqueueAutonomousTurn({
       turnId: `${opts.idPrefix ?? 'self'}-${randomUUID()}`,
       // `via` = WHICH source raised this (mood bit / gate key / greet / console) —
       // surfaced in the observability trace so a self turn is attributable at a glance.
       trigger: { kind: 'self', text: text + antiRepeat, ...(opts.via ? { via: opts.via } : {}) },
+      ...(frame ? { imageBase64: frame } : {}),
       expiresAt: Date.now() + (opts.ttlMs ?? 60_000),
       ...(opts.key ? { coalesceKey: opts.key } : {}),
     });
@@ -509,6 +517,22 @@ export function brainModule(w: BrainWiring): StationModule {
       // becomes a self-thought turn on the dock's session — the SAME autonomous-turn
       // lane as tasks (user turns still win; it defers while listening/speaking). This
       // is the auto-raise replacement for the console's manual think-poke.
+      // BG-AUDIO WAKE FALLBACK: the online interpreter heard someone address the robot
+      // (calling "orbit", telling it something) where the LOCAL STT mis-rendered the
+      // name (Parakeet: "orbit" → "alright"/"hey now" — seen live 2026-07-05), so the
+      // local wake matcher never fired. The observation arrives ~2-4 s late (Gemini
+      // RTT); we act on it ONLY when the wake behaviour is armed, the dock is fully
+      // idle (a local wake/turn already engaging = natural dedupe), confidence is
+      // decent, and we're not recording. The BRAIN decides — perception only observed.
+      getBgAddressedApi().onAddressed((e) => {
+        const cfg = wakeCfg.get(e.dockId);
+        if (!cfg?.enabled || e.conf < 0.6 || isRecording(e.dockId)) return;
+        const s2 = session(e.dockId);
+        if (s2.conversation().mode !== 'idle') return; // already engaged
+        console.log(`[wake] bg-audio fallback FIRED (conf ${e.conf.toFixed(2)}): ${e.directive || e.transcript}`);
+        s2.wake(cfg.prompt);
+      });
+
       getGateApi()?.onRaise((t) => {
         // dedup same-kind raises via t.key (e.g. 'arrival:guru'); recording guard inside.
         raiseSelfThought(t.dockId, t.text, { key: t.key, ttlMs: 30_000, via: `gate:${t.key}` });
