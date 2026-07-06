@@ -50,13 +50,17 @@ export interface SourceContext {
  * Observation, preferring the diarized `text`, carrying the raw `sttText` for
  * corroboration, and attaching who-was-present at the utterance's event-time.
  */
+/** The snapshot kinds the curator consolidates from: spoken words AND interpreted
+ *  acoustic events (bg-audio 'sound' records — laughter, a crash, music). */
+const OBSERVABLE_KINDS = new Set(['speech', 'sound']);
+
 export function observationsIn(
   ctx: SourceContext, dockId: string, fromIso: string, toIso: string, kind: SourceKind = 'diarized-speech',
 ): Observation[] {
   if (kind !== 'diarized-speech') return [];
   return ctx.store
     .inWindow(fromIso, toIso)
-    .filter((r) => r.dockId === dockId && r.source.kind === 'speech')
+    .filter((r) => r.dockId === dockId && OBSERVABLE_KINDS.has(r.source.kind))
     .map((r) => toObservation(r, ctx))
     .filter((o): o is Observation => o != null);
 }
@@ -69,15 +73,20 @@ export function observationsIn(
  */
 export function pendingObservations(
   ctx: SourceContext, dockId: string, watermarkIso: string, limit: number, kind: SourceKind = 'diarized-speech',
-): Observation[] {
-  if (kind !== 'diarized-speech' || limit <= 0) return [];
+): { obs: Observation[]; scannedThroughIso: string } {
+  if (kind !== 'diarized-speech' || limit <= 0) return { obs: [], scannedThroughIso: '' };
   const all = ctx.store.list()
-    .filter((r) => r.dockId === dockId && r.source.kind === 'speech' && r.interval.from > watermarkIso)
+    .filter((r) => r.dockId === dockId && OBSERVABLE_KINDS.has(r.source.kind) && r.interval.from > watermarkIso)
     .sort((a, b) => (a.interval.from < b.interval.from ? -1 : a.interval.from > b.interval.from ? 1 : 0));
-  return all
-    .slice(0, limit)
-    .map((r) => toObservation(r, ctx))
-    .filter((o): o is Observation => o != null);
+  const batch = all.slice(0, limit);
+  // scannedThroughIso = the last record LOOKED AT (null-filtered or not). The watermark
+  // must advance to here, NOT to the last surviving observation — an all-filtered batch
+  // (wordless/low-salience records) used to advance nothing and the curator re-scanned
+  // the same span every tick forever (bg-audio doc §4.1 landmine 2).
+  return {
+    obs: batch.map((r) => toObservation(r, ctx)).filter((o): o is Observation => o != null),
+    scannedThroughIso: batch.length ? batch[batch.length - 1]!.interval.from : '',
+  };
 }
 
 /** Count + oldest-event-time of pending (post-watermark) speech for a dock — the inputs
@@ -87,7 +96,7 @@ export function pendingStats(
 ): { count: number; oldestIso: string; newestIso: string } {
   let count = 0; let oldestIso = ''; let newestIso = '';
   for (const r of store.list()) {
-    if (r.dockId !== dockId || r.source.kind !== 'speech' || r.interval.from <= watermarkIso) continue;
+    if (r.dockId !== dockId || !OBSERVABLE_KINDS.has(r.source.kind) || r.interval.from <= watermarkIso) continue;
     count++;
     if (!oldestIso || r.interval.from < oldestIso) oldestIso = r.interval.from;
     if (!newestIso || r.interval.from > newestIso) newestIso = r.interval.from;
@@ -95,15 +104,31 @@ export function pendingStats(
   return { count, oldestIso, newestIso };
 }
 
-/** A speech snapshot → an Observation (diarized text preferred; raw kept; identity
- *  attached as-of the utterance start). Returns null for an empty/word-less utterance. */
+/** A speech/sound snapshot → an Observation. Speech: refined text preferred, raw kept,
+ *  identity attached as-of the utterance start. WORDLESS records survive when they carry
+ *  an interpreted acoustic event of at least `notable` salience (laughter, a crash —
+ *  bg-audio doc §4.1 landmine 1: these used to be silently dropped, so "the baby cried
+ *  for 20 minutes" could never become a memory). Low-salience wordless noise stays out. */
 function toObservation(r: SnapshotRecord, ctx: SourceContext): Observation | null {
-  const p = r.payload as { text?: string; sttText?: string; speaker?: number };
-  // diarized `text` is the refined read; if a raw sttText exists it's the original
-  // Parakeet (text was overwritten by diarization) — keep it for corroboration.
-  const text = (p.text ?? '').trim();
-  if (!text || text.replace(/[^a-z0-9]/gi, '').length < 2) return null; // no real words
+  const p = r.payload as {
+    text?: string; sttText?: string; speaker?: number;
+    audioKind?: string; salience?: string; summary?: string;
+  };
   const atIso = r.interval.from;
+  const text = (p.text ?? '').trim();
+  const wordless = !text || text.replace(/[^a-z0-9]/gi, '').length < 2;
+  if (wordless) {
+    // admit an acoustic EVENT (non-speech kind, notable+) as an observation of what was
+    // HEARD — the curator decides whether it's memory-worthy, same as chit-chat.
+    if (p.audioKind && p.audioKind !== 'speech' && (p.salience === 'notable' || p.salience === 'startling')) {
+      return {
+        lineageId: `${r.source.kind}@${atIso}`, atIso,
+        text: `[heard: ${p.audioKind}${p.salience === 'startling' ? ', startling' : ''}] ${(p.summary ?? '').trim()}`.trim(),
+        presentAt: ctx.presentAt(atIso),
+      };
+    }
+    return null; // no words, no notable event
+  }
   return {
     lineageId: `${r.source.kind}@${atIso}`,
     atIso,

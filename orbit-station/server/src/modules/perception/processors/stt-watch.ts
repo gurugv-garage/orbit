@@ -34,6 +34,8 @@ import type { MediaKind } from '../../media/tap.js';
 import type { StreamContext, StreamProcessor } from '../processor.js';
 import { makeSnapshot, type SnapshotStore } from '../snapshots.js';
 import { dockConditions } from '../../../core/conditions.js';
+import { AudioTrigger } from './audio-trigger.js';
+import type { BgAudioEvent } from './background-audio.js';
 
 const SIDECAR_URL = process.env.PERCEPTION_SIDECAR_URL ?? 'http://127.0.0.1:8078';
 /** A1.4: the echo-gate (drop audio while the dock speaks) is OFF by default — the
@@ -54,6 +56,10 @@ const FRAME_SAMPLES = (SAMPLE_RATE * FRAME_MS) / 1000;
  *  clean gap: it catches marginal-gain restart speech with margin, while staying well
  *  above comfort noise. See docs/findings/inprogress-stt-issue.md. */
 const SILENCE_RMS = Number(process.env.STT_SILENCE_RMS ?? 0.012);
+/** The background-audio payload window: a continuous never-drained PCM ring of the
+ *  last N ms, snapshotted at a trigger so the interpreter hears the LEAD-UP too
+ *  (bg-audio-summarizer.md §2 "trigger vs payload"). */
+const BG_WINDOW_MS = Number(process.env.PERCEPTION_BG_WINDOW_MS ?? 10_000);
 /** Silence this long after speech ends the utterance (endpoint). 1.3 s so natural
  *  mid-sentence pauses ("What time is the … meeting?") don't split a thought; the
  *  cost is ~0.6 s longer to commit after you actually stop. */
@@ -181,6 +187,10 @@ export class UtteranceDetector {
   // decoder used to fail silently; see the post-restart STT investigation).
   #decodeOk = 0;
   #decodeFail = 0;
+  // BACKGROUND-AUDIO substrate: a continuous ring of the last BG_WINDOW_MS of frames
+  // (voiced or not — never drained, unlike #utter) + the cheap per-frame trigger.
+  #ring: Int16Array[] = [];
+  #acoustic = new AudioTrigger();
 
   // Same as onUtterance but awaitable — used by flushNow so the caller knows the
   // transcript is persisted. Set alongside the constructor callback.
@@ -193,6 +203,10 @@ export class UtteranceDetector {
   // The listening gate — interims are skipped unless this returns true (or is unset,
   // in which case interims never fire: opt-in). Cheap, called per candidate tick.
   shouldInterim?: () => boolean;
+  // ACOUSTIC TRIGGER hook (background audio): fired on an impulse (crash/bang) or a
+  // sustained-energy stretch (music/alarm) with the last BG_WINDOW_MS of PCM — the
+  // lead-up included. Speech endpoints stay on the onUtterance path. Opt-in.
+  onAcousticTrigger?: (kind: 'impulse' | 'sustained', windowPcm: Int16Array, at: Date) => void;
 
   constructor(onUtterance: (pcm: Int16Array, startedAt: Date, endedAt: Date) => void | Promise<void>) {
     this.#onUtterance = onUtterance;
@@ -250,7 +264,20 @@ export class UtteranceDetector {
   #vadFrame(frame: Int16Array): void {
     let sum = 0;
     for (let i = 0; i < frame.length; i++) { const v = frame[i]! / 32768; sum += v * v; }
-    const voiced = Math.sqrt(sum / frame.length) >= SILENCE_RMS;
+    const rms = Math.sqrt(sum / frame.length);
+    const voiced = rms >= SILENCE_RMS;
+
+    // BACKGROUND-AUDIO ring + trigger: every frame (voiced or not) lands in the ring;
+    // the cheap trigger runs per frame and snapshots the ring when something acoustically
+    // significant that is NOT a speech endpoint happens. Sensing is never slowed — the
+    // expensive interpretation downstream owns its own cooldown.
+    this.#ring.push(frame);
+    const ringCap = BG_WINDOW_MS / FRAME_MS;
+    if (this.#ring.length > ringCap) this.#ring.shift();
+    if (this.onAcousticTrigger) {
+      const trig = this.#acoustic.frame(rms, FRAME_MS, Date.now(), this.#inSpeech);
+      if (trig) this.onAcousticTrigger(trig, concatFrames(this.#ring), new Date());
+    }
 
     if (this.#inSpeech) {
       this.#utter.push(frame);
@@ -531,11 +558,12 @@ export function sttWatchProcessor(
    *  drop audio then so the station never transcribes the dock's own voice (the
    *  self-transcribe feedback loop). Defaults to never-speaking. */
   isSpeaking?: (dockId: string) => boolean,
-  /** PRODUCTION background STT upgrade: given a finished utterance's PCM, return a
-   *  better DIARIZED transcript (online, e.g. Gemini flash-lite) to replace the live
-   *  local-engine text in the snapshot. Async + best-effort — the live path never waits
-   *  on it. Undefined = local engine only (Parakeet/Whisper; the default). */
-  backgroundStt?: (pcm: Int16Array, sampleRate: number, dockId: string) => Promise<{ text: string; speaker?: number; model?: string } | null>,
+  /** PRODUCTION background AUDIO interpreter (bg-audio-summarizer.md): given an acoustic
+   *  window's PCM + what triggered it, return the interpreted event (kind/salience/
+   *  transcript/summary). Speech endpoints UPGRADE the speech snapshot in place;
+   *  impulse/sustained triggers become their own 'sound' snapshots. Async + best-effort —
+   *  the live path never waits on it. Undefined = local engine only (the default). */
+  backgroundAudio?: (pcm: Int16Array, sampleRate: number, dockId: string, trigger: 'speech' | 'impulse' | 'sustained') => Promise<(BgAudioEvent & { model?: string }) | null>,
   /** LIVE INTERIMS: emitted mid-utterance for the dock caption UI. Undefined = no
    *  interims (default). Best-effort, decoupled from the authoritative final path. */
   onInterim?: (e: InterimTranscriptEvent) => void,
@@ -612,21 +640,34 @@ export function sttWatchProcessor(
         });
         store.add(rec);
         // BACKGROUND UPGRADE (production split): the snapshot lands NOW with the local
-        // engine's text (fast); if a background engine is wired, async re-transcribe this
-        // utterance with the better diarized model and PATCH the snapshot in place.
+        // engine's text (fast); if the background audio interpreter is wired, async
+        // interpret this utterance and PATCH the snapshot in place with the acoustic
+        // event fields (+ a transcript upgrade when the model heard the words better).
+        // NO speaker indices — per-clip diarization was structurally broken and polluted
+        // 81% of long-term memories with "speaker 0" (bg-audio-summarizer.md §1).
         // Best-effort — never blocks the live addressed-turn path below.
-        if (backgroundStt) {
-          void backgroundStt(pcm, SAMPLE_RATE, ctx.dockId).then((up) => {
-            if (up?.text) {
-              store.update(rec, {
-                sttText: rec.payload.text as string, // PRESERVE the raw STT transcript (the
-                                                     // diarized text overwrites `text` below)
-                text: up.text,
-                ...(up.speaker != null ? { speaker: up.speaker } : {}),
-                bgModel: true,                  // marks this snapshot as diarization-upgraded
-                ...(up.model ? { diarizeModel: up.model } : {}), // the DIARIZATION engine (distinct from STT model above)
-              });
-            }
+        if (backgroundAudio) {
+          void backgroundAudio(pcm, SAMPLE_RATE, ctx.dockId, 'speech').then((ev) => {
+            if (!ev) return;
+            store.update(rec, {
+              // The interpreter's transcript REPLACES the local text only when the local
+              // engine was itself unsure (shaky/garbage tier) — a confident local read is
+              // authoritative (Gemini rewrote "Hey now, are you still…" into mush, seen
+              // live 2026-07-05; the doc's original complaint). Otherwise the alternate
+              // read rides along as bgTranscript for corroboration.
+              ...(ev.transcript && tier !== 'good' ? {
+                sttText: rec.payload.text as string, // PRESERVE the raw local transcript
+                text: ev.transcript,
+              } : ev.transcript && ev.transcript !== (rec.payload.text as string) ? {
+                bgTranscript: ev.transcript,
+              } : {}),
+              audioKind: ev.kind, audioKindConf: ev.kindConf,
+              salience: ev.salience, salienceConf: ev.salienceConf,
+              summary: ev.summary,
+              ...(ev.addressedToRobot ? { addressedToRobot: true, addressConf: ev.addressConf, directive: ev.directive } : {}),
+              bgModel: true,                       // marks this snapshot as bg-upgraded
+              ...(ev.model ? { audioModel: ev.model } : {}), // the background audio interpreter engine
+            });
           }).catch(() => { /* keep the local STT text */ });
         }
         // confidence rides along so downstream sees the engine's certainty, not a constant.
@@ -651,6 +692,30 @@ export function sttWatchProcessor(
       };
       const detector = new UtteranceDetector((pcm, startedAt, endedAt) => { void commit(pcm, startedAt, endedAt); });
       detector.commit = commit; // flushNow awaits this; the live path stays fire-and-forget
+      // NON-SPEECH acoustic events (impulse/sustained): interpret the ring window and
+      // land a 'sound' snapshot — laughter, music, a crash now exist in the record
+      // (they were structurally invisible to the words-only pipeline).
+      if (backgroundAudio) {
+        detector.onAcousticTrigger = (trig, windowPcm, at) => {
+          void backgroundAudio(windowPcm, SAMPLE_RATE, ctx.dockId, trig).then((ev) => {
+            if (!ev) return;
+            const windowMs = Math.round(windowPcm.length / (SAMPLE_RATE / 1000));
+            store.add(makeSnapshot({
+              dockId: ctx.dockId,
+              source: { id: ctx.streamId, kind: 'sound', device: 'dock-webrtc', host: 'station' },
+              model: { name: ev.model ?? 'bg-audio', endpoint: 'gemini' },
+              from: new Date(at.getTime() - windowMs), to: at,
+              payload: {
+                text: ev.summary || `[${ev.kind}]`,
+                audioKind: ev.kind, audioKindConf: ev.kindConf,
+                salience: ev.salience, salienceConf: ev.salienceConf,
+                ...(ev.addressedToRobot ? { addressedToRobot: true, addressConf: ev.addressConf, directive: ev.directive } : {}),
+                trigger: trig,
+              },
+            }));
+          }).catch(() => { /* best-effort */ });
+        };
+      }
       // LIVE INTERIMS — only when a consumer (onInterim) AND a gate (isListening) are
       // wired. The detector calls onInterim(pcm) at INTERIM_INTERVAL_MS while in-speech;
       // we transcribe the partial and forward it with a per-utterance monotonic seq. A

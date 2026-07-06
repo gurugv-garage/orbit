@@ -1,11 +1,23 @@
-> **DECISION TRACE (in progress).** The reframe of the perception `background-stt`
-> path into a `background-audio-processor` — an auditory *scene interpreter*, not a
-> transcriber. Captures the motivation, the evidence (live data + external
-> benchmarks), the blast radius across the codebase, and the phased plan. No code
-> has moved yet; this is the design record as it was reasoned out.
+> **DECISION TRACE — Phase 1 BUILT (2026-07-05, incl. the §7a review additions).**
+> The reframe of the perception `background-stt` path into a background audio
+> processor — an auditory *scene interpreter*, not a transcriber. §1–§7 are the
+> design record as reasoned out; §7a is the pre-build review. As built:
+> [`background-audio.ts`](../../orbit-station/server/src/modules/perception/processors/background-audio.ts)
+> (kind/salience/transcript/summary, NO speaker indices),
+> [`audio-trigger.ts`](../../orbit-station/server/src/modules/perception/processors/audio-trigger.ts)
+> (pure impulse + sustained-energy triggers), the never-drained ring + `sound`
+> snapshot kind in `stt-watch.ts`/`snapshots.ts`, per-dock cooldown with
+> repeat-stretch + impulse bypass in `perception/index.ts`
+> (`/api/perception/bg-audio`; `/bg-stt` + `PERCEPTION_BG_STT_MODEL` are legacy
+> aliases), a dock-directed-intent OBSERVATION on every event (`addressedToRobot` +
+> `directive` — someone calling "orbit" / telling it to stop; the brain's addressed
+> latch remains the sole decision authority), both §4.1 curator landmines fixed (wordless notable+ events become
+> observations; the watermark advances over scanned-but-filtered records), the
+> Studio's diarization lane renamed to the 🔊 audio lane, and the one-off
+> `scripts/migrate-speaker-subjects.mjs` (825 "speaker N" subjects cleared).
+> Phase 2 (affect) remains gated behind the own-audio bench.
 >
 > Canonical pipeline doc: [../perception-pipeline.md](../perception-pipeline.md).
-> Producer today: [`background-stt.ts`](../../orbit-station/server/src/modules/perception/processors/background-stt.ts).
 
 # Background audio processor — from transcriber to auditory scene interpreter
 

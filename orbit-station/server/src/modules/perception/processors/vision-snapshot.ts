@@ -38,6 +38,9 @@ interface StreamState {
   lastSig?: Float32Array;
   lastAnalyzedAt: number;
   skippedProbes: number; // gated probes since the last analysis (surfaced in the payload)
+  /** the previous window's description — fed back into the prompt so the model reports
+   *  WHAT CHANGED as a separate structured field (not just a fresh description). */
+  lastText?: string;
 }
 
 /** Change-gate knobs. delta is mean |Δ| on a 16×16 grayscale [0..1]: sensor noise on a
@@ -51,14 +54,17 @@ const PROBE_MS = Number(process.env.VISION_PROBE_MS ?? 1_500);
 const DIFF_THRESHOLD = Number(process.env.VISION_DIFF_THRESHOLD ?? 0.03);
 const REFRESH_MS = Number(process.env.VISION_REFRESH_MS ?? 300_000);
 
-/** 16×16 grayscale signature of a JPEG (null on decode failure). tf.tidy frees every
- *  intermediate tensor; the returned Float32Array is plain memory. */
+/** 16×16 grayscale ZERO-MEAN signature of a JPEG (null on decode failure). Subtracting
+ *  the frame's own mean makes the gate exposure-invariant: a night camera's auto-exposure
+ *  hunting shifts EVERY pixel at once (a pure brightness change) and used to beat the
+ *  threshold with nothing structurally different in the scene — only SPATIAL change
+ *  (something actually moved) survives the subtraction. tf.tidy frees every tensor. */
 function frameSignature(jpeg: Buffer): Float32Array | null {
   try {
     return tf.tidy(() => {
       const img = tf.node.decodeJpeg(jpeg, 1);                       // grayscale HxWx1
-      const small = tf.image.resizeBilinear(img as tf.Tensor3D, [16, 16]);
-      return small.div(255).dataSync() as Float32Array;
+      const small = tf.image.resizeBilinear(img as tf.Tensor3D, [16, 16]).div(255);
+      return small.sub(small.mean()).dataSync() as Float32Array;
     });
   } catch { return null; }
 }
@@ -126,10 +132,33 @@ export function visionSnapshotProcessor(store: SnapshotStore, getFrame: GetFrame
       if (i < n - 1) await sleep(gapMs);
     }
     if (frames.length < 2) return false; // stream not live yet
-    const res = await analyze(frames, visionInstruction());
+    // STRUCTURED output: the description PLUS an explicit "what changed" field, judged
+    // against the PREVIOUS window's description (fed back as reference). The change is
+    // the signal downstream actually wants — the description alone hides it.
+    const prompt = `${visionInstruction()}\n\n`
+      + 'Return STRICT JSON: {"description":"<the one-sentence description>",'
+      + '"change":"<what SIGNIFICANTLY changed versus the previous description below, in a few words — or an empty string if nothing significant changed>"}'
+      + (s.lastText ? `\nPREVIOUS description (from a few seconds ago): "${s.lastText}"` : '\nThere is no previous description (first look) — set "change" to "".')
+      + '\nJSON only.';
+    const res = await analyze(frames, prompt);
     const to = new Date();
     if (!res) return false;
-    const { text, inferMs } = res;
+    const { inferMs } = res;
+    // Parse the structured reply; a model that ignores the JSON ask degrades gracefully
+    // to "the whole reply is the description".
+    let text = res.text; let change = '';
+    try {
+      const parsed = JSON.parse(res.text.replace(/^```(?:json)?\s*|\s*```$/g, '')) as { description?: string; change?: string };
+      if (parsed.description?.trim()) text = parsed.description.trim();
+      change = (parsed.change ?? '').trim();
+    } catch { /* free-text fallback */ }
+    // change is only meaningful AGAINST a previous description; and a model that echoes
+    // the whole description into `change` (seen on the first look) or writes "the scene
+    // remains unchanged" (seen live) is saying nothing — normalize those to empty.
+    if (!s.lastText || change.toLowerCase() === text.toLowerCase()
+        || /remains? (the same|unchanged)|no (significant )?changes?\b|nothing (significant(ly)? )?(has )?changed/i.test(change)) {
+      change = '';
+    }
     // Vision describes WHAT (no identity). WHO is the separate identity stream
     // (face-api, with boxes); a later LLM merge fuses them. No string-replace.
     // latencyMs = whole window (sampling + inference); inferMs = sidecar compute only.
@@ -139,11 +168,13 @@ export function visionSnapshotProcessor(store: SnapshotStore, getFrame: GetFrame
       model: { name: MODEL_NAME, endpoint: `${TEMPORAL_URL}/temporal` },
       from, to,
       // gatedProbes = how many cheap change-checks concluded "nothing moved" since the
-      // previous analysis (Studio observability for the GPU savings).
-      payload: { text, frames: frames.length, latencyMs: to.getTime() - from.getTime(), inferMs, gatedProbes: s.skippedProbes },
+      // previous analysis (Studio observability for the GPU savings). `change` = the
+      // model's own account of what differs vs the previous window (structured field).
+      payload: { text, ...(change ? { change } : {}), frames: frames.length, latencyMs: to.getTime() - from.getTime(), inferMs, gatedProbes: s.skippedProbes },
     }));
     store.addKeyframe({ ts: isoIst(to), from: isoIst(from), jpegB64: frames[frames.length - 1]! });
-    s.ctx.emit({ kind: 'scene', source: 'vision-snapshot', payload: { description: text }, confidence: 0.7 });
+    s.ctx.emit({ kind: 'scene', source: 'vision-snapshot', payload: { description: text, ...(change ? { change } : {}) }, confidence: 0.7 });
+    s.lastText = text;
     // change-gate bookkeeping: remember what the ANALYZED scene looked like, so the
     // cheap probe can tell whether anything has moved since.
     s.lastSig = frameSignature(Buffer.from(frames[frames.length - 1]!, 'base64')) ?? s.lastSig;

@@ -113,8 +113,10 @@ export interface CuratorDeps {
    *  consolidate cadence. `newestIso` lets us compute since-last-speech. */
   pendingStats: (dockId: string, watermarkIso: string) => PendingStats;
   /** the bounded, oldest-first pending observations to consolidate THIS pass
-   *  (event-time-aligned). Returns ≤ limit; advances exactly-once via the watermark. */
-  pendingObservations: (dockId: string, watermarkIso: string, limit: number) => Observation[];
+   *  (event-time-aligned). Returns ≤ limit surviving obs PLUS the iso of the last
+   *  record SCANNED (filtered or not) — the watermark must advance to scannedThroughIso
+   *  so an all-filtered batch can't stall the cursor (§4.1 landmine 2). */
+  pendingObservations: (dockId: string, watermarkIso: string, limit: number) => { obs: Observation[]; scannedThroughIso: string };
   /** RESTART-SAFE watermark seed: the newest source event-time this dock has ALREADY
    *  consolidated from (derived from belief lineage), or '' if none. Called ONCE per
    *  dock to initialise its watermark, so a restart resumes where it left off instead
@@ -174,8 +176,18 @@ export function startLongTermMemoryCurator(d: CuratorDeps): CuratorHandle {
   const consolidate = async (dock: string, atMs: number, st: DockState, reason: ConsolidateReason): Promise<void> => {
     // bounded, oldest-first pending span — never the whole ring (flood-safe).
     const take = batchSize(d.pendingStats(dock, st.watermarkIso).count, cadenceCfg(), config.maxBatch);
-    const obs = d.pendingObservations(dock, st.watermarkIso, take);
-    if (obs.length === 0) return;
+    const { obs, scannedThroughIso } = d.pendingObservations(dock, st.watermarkIso, take);
+    if (obs.length === 0) {
+      // An all-filtered batch (wordless / low-salience records) still ADVANCES the
+      // watermark over what was scanned — otherwise the curator re-scans the same span
+      // every tick forever (bg-audio doc §4.1 landmine 2). Nothing usable ≠ nothing seen.
+      if (scannedThroughIso) {
+        st.watermarkIso = scannedThroughIso;
+        states.set(dock, st);
+        record({ ts: atMs, dockId: dock, op: 'consolidate', reviewed: 0, skipped: 'all scanned records filtered (no words / low salience)', changes: [], reason });
+      }
+      return;
+    }
     const known = await d.beliefs(dock, batch);
     let verdict;
     try {
@@ -192,9 +204,10 @@ export function startLongTermMemoryCurator(d: CuratorDeps): CuratorHandle {
       try { await d.create(dock, b); created++; changes.push({ kind: 'create', claim: b.claim }); }
       catch { /* a single write failure shouldn't sink the pass */ }
     }
-    // advance the watermark over EXACTLY what we sent (the newest obs we processed), so
-    // these utterances are never re-sent and the rest of a flood drains next tick.
-    st.watermarkIso = obs[obs.length - 1]!.atIso;
+    // advance the watermark over EXACTLY what we SCANNED (not just the surviving obs —
+    // filtered records inside the batch must not be re-scanned next pass), so these
+    // records are never re-sent and the rest of a flood drains next tick.
+    st.watermarkIso = scannedThroughIso || obs[obs.length - 1]!.atIso;
     st.consolidateAt = atMs;
     states.set(dock, st);
     record({ ts: atMs, dockId: dock, op: 'consolidate', reviewed: obs.length, created, changes, reason });

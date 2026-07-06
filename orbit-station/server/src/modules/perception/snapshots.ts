@@ -30,7 +30,10 @@ export interface SnapshotSource {
   // camera is on a robot that can pan/drive, so "the view changed" may be ego-motion
   // (the robot moved) not world change (someone left). Other streams + the summarizer
   // read this to avoid mistaking one for the other.
-  kind: 'vision' | 'speech' | 'identity' | 'emotion' | 'bodymotion';
+  // 'sound' = an interpreted NON-SPEECH acoustic event from the background audio
+  // processor (laughter, music, a crash — bg-audio-summarizer.md): an EVENT stream;
+  // payload carries { text: summary, audioKind, salience, … }.
+  kind: 'vision' | 'speech' | 'identity' | 'emotion' | 'bodymotion' | 'sound';
   device: string;
   host: string;
 }

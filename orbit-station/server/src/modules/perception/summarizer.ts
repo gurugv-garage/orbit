@@ -176,11 +176,18 @@ export function stitch(records: SnapshotRecord[]): string {
         lines.push(`${t} SPEECH  [unclear speech${secs ? `, ~${secs}s` : ''}]${tag}`);
       } else {
         const conf = tier === 'shaky' ? ' [low-confidence]' : '';
-        lines.push(`${t} SPEECH  ${r.payload.text}${tag}${conf}`);
+        // dock-directed intent OBSERVED by the audio interpreter (the brain's addressed
+        // latch stays the authority) — surfaced so the summary knows it was spoken TO.
+        const pr = r.payload as { addressedToRobot?: boolean; directive?: string };
+        const toRobot = pr.addressedToRobot ? ` [→ robot${pr.directive ? `: ${pr.directive}` : ''}]` : '';
+        lines.push(`${t} SPEECH  ${r.payload.text}${tag}${conf}${toRobot}`);
       }
     } else {
       flushRuns();
-      lines.push(`${t} ${r.source.kind.toUpperCase().padEnd(8)} ${r.payload.text}`);
+      // vision windows may carry a structured CHANGE field (what differs vs the previous
+      // window) — the signal the summarizer actually wants; render it distinctly.
+      const change = (r.payload as { change?: string }).change;
+      lines.push(`${t} ${r.source.kind.toUpperCase().padEnd(8)} ${r.payload.text}${change ? ` [changed: ${change}]` : ''}`);
     }
   }
   flushRuns();

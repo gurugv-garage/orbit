@@ -166,6 +166,31 @@ test('observationsIn: drops word-less utterances, filters to the dock + speech',
   assert.deepEqual(obs.map((o) => o.text), ['real words here']);
 });
 
+test('landmine 1: a WORDLESS acoustic event of notable+ salience becomes an observation', () => {
+  const recs = [
+    speechRec('d1', 't1', '', { audioKind: 'crying', salience: 'notable', summary: 'a child crying nearby' }),
+    speechRec('d1', 't2', '', { audioKind: 'ambient', salience: 'low', summary: 'room hum' }),   // low → dropped
+    speechRec('d1', 't3', '', { audioKind: 'impact', salience: 'startling', summary: 'a loud crash' }),
+  ];
+  const store = { inWindow: () => recs } as unknown as SnapshotStore;
+  const obs = observationsIn({ store, presentAt: () => undefined }, 'd1', 'a', 'z');
+  assert.deepEqual(obs.map((o) => o.text), [
+    '[heard: crying] a child crying nearby',
+    '[heard: impact, startling] a loud crash',
+  ]);
+});
+
+test('landmine 2: an all-filtered batch still reports scannedThroughIso (no watermark stall)', () => {
+  const recs = [
+    speechRec('d1', '2026-01-01T10:00:00+05:30', '!!'),   // no words → filtered
+    speechRec('d1', '2026-01-01T10:01:00+05:30', 'm.'),   // <2 alnum → filtered
+  ];
+  const store = { list: () => recs } as unknown as SnapshotStore;
+  const pend = pendingObservations({ store, presentAt: () => undefined }, 'd1', '', 10);
+  assert.deepEqual(pend.obs, []);
+  assert.equal(pend.scannedThroughIso, '2026-01-01T10:01:00+05:30', 'the cursor can advance over junk');
+});
+
 test('pendingStats + pendingObservations: post-watermark, oldest-first, capped', () => {
   const recs = [
     speechRec('d1', '2026-01-01T10:00:00+05:30', 'one'),
@@ -183,8 +208,9 @@ test('pendingStats + pendingObservations: post-watermark, oldest-first, capped',
   assert.equal(after1.count, 2);
   assert.equal(after1.oldestIso, '2026-01-01T10:01:00+05:30');
   // capped + oldest-first
-  const obs = pendingObservations(ctx, 'd1', '', 2);
-  assert.deepEqual(obs.map((o) => o.text), ['one', 'two']);
+  const pend = pendingObservations(ctx, 'd1', '', 2);
+  assert.deepEqual(pend.obs.map((o) => o.text), ['one', 'two']);
+  assert.equal(pend.scannedThroughIso, '2026-01-01T10:01:00+05:30', 'scanned through the last record in the batch');
 });
 
 // ── the loop (injected effects) — models a real pending queue + watermark ───────
@@ -196,7 +222,7 @@ test('tick runs BOTH ops: consolidate creates, reconcile maintains', async () =>
     activeDocks: () => ['d1'],
     watermarkSeed: () => '',
     pendingStats: (_d, wm) => { const p = obs.filter((o) => o.atIso > wm); return { count: p.length, oldestIso: p[0]?.atIso ?? '', newestIso: p[p.length - 1]?.atIso ?? '' }; },
-    pendingObservations: (_d, wm, limit) => obs.filter((o) => o.atIso > wm).slice(0, limit),
+    pendingObservations: (_d, wm, limit) => { const b = obs.filter((o) => o.atIso > wm).slice(0, limit); return { obs: b, scannedThroughIso: b.length ? b[b.length - 1]!.atIso : '' }; },
     beliefs: async () => [belief('m1', 'stale'), belief('m2', 'b'), belief('m3', 'c'), belief('m4', 'd')],
     reflect: async (_p, _d, purpose) => purpose === 'consolidate'
       ? '{"beliefs":[{"type":"preference","subject":"guru","claim":"guru loves espresso","support":["speech@t1"]}]}'
@@ -222,7 +248,7 @@ test('FLOOD drains over ticks, EXACTLY-ONCE (watermark advances, no re-send)', a
     activeDocks: () => ['d1'],
     watermarkSeed: () => '',
     pendingStats: (_d, wm) => { const p = obs.filter((o) => o.atIso > wm); return { count: p.length, oldestIso: p[0]?.atIso ?? '', newestIso: p[p.length - 1]?.atIso ?? '' }; },
-    pendingObservations: (_d, wm, limit) => obs.filter((o) => o.atIso > wm).slice(0, limit),
+    pendingObservations: (_d, wm, limit) => { const b = obs.filter((o) => o.atIso > wm).slice(0, limit); return { obs: b, scannedThroughIso: b.length ? b[b.length - 1]!.atIso : '' }; },
     beliefs: async () => [],
     reflect: async (prompt, _d, purpose) => {
       if (purpose !== 'consolidate') return '{}';
@@ -259,7 +285,7 @@ test('RESTART-SAFE: a fresh curator seeded from belief lineage does NOT re-conso
     activeDocks: () => ['d1'],
     watermarkSeed: () => seedWatermark,        // ← derived from lineage on (re)start
     pendingStats: (_d, wm) => { const p = obs.filter((o) => o.atIso > wm); return { count: p.length, oldestIso: p[0]?.atIso ?? '', newestIso: p[p.length - 1]?.atIso ?? '' }; },
-    pendingObservations: (_d, wm, limit) => obs.filter((o) => o.atIso > wm).slice(0, limit),
+    pendingObservations: (_d, wm, limit) => { const b = obs.filter((o) => o.atIso > wm).slice(0, limit); return { obs: b, scannedThroughIso: b.length ? b[b.length - 1]!.atIso : '' }; },
     beliefs: async () => [],
     reflect: async (prompt, _d, purpose) => {
       if (purpose !== 'consolidate') return '{}';
@@ -285,7 +311,7 @@ test('an LLM error does NOT advance the watermark (the span retries, no data los
     activeDocks: () => ['d1'],
     watermarkSeed: () => '',
     pendingStats: (_d, wm) => { const p = obs.filter((o) => o.atIso > wm); return { count: p.length, oldestIso: p[0]?.atIso ?? '', newestIso: p[p.length - 1]?.atIso ?? '' }; },
-    pendingObservations: (_d, wm, limit) => obs.filter((o) => o.atIso > wm).slice(0, limit),
+    pendingObservations: (_d, wm, limit) => { const b = obs.filter((o) => o.atIso > wm).slice(0, limit); return { obs: b, scannedThroughIso: b.length ? b[b.length - 1]!.atIso : '' }; },
     beliefs: async () => [],
     reflect: async (_p, _d, purpose) => {
       if (purpose !== 'consolidate') return '{}';
@@ -316,7 +342,7 @@ test('LIVE CONFIG: setConfig is read on the next pass (no restart), clamped to b
     watermarkSeed: () => '',
     // not a forced tick — use the natural loop decision so cadence/config actually gates it.
     pendingStats: (_d, wm) => { const p = obs.filter((o) => o.atIso > wm); return { count: p.length, oldestIso: p[0]?.atIso ?? '', newestIso: p[p.length - 1]?.atIso ?? '' }; },
-    pendingObservations: (_d, wm, limit) => obs.filter((o) => o.atIso > wm).slice(0, limit),
+    pendingObservations: (_d, wm, limit) => { const b = obs.filter((o) => o.atIso > wm).slice(0, limit); return { obs: b, scannedThroughIso: b.length ? b[b.length - 1]!.atIso : '' }; },
     beliefs: async () => [],
     reflect: async (_p, _d, purpose) => { if (purpose === 'consolidate') consolidated++; return '{}'; },
     create: async () => 'id', revise: async () => null, forget: () => false,
@@ -342,7 +368,7 @@ test('disabled curator does nothing', async () => {
     activeDocks: () => ['d1'],
     watermarkSeed: () => '',
     pendingStats: () => ({ count: 1, oldestIso: obs[0]!.atIso, newestIso: obs[0]!.atIso }),
-    pendingObservations: () => obs,
+    pendingObservations: () => ({ obs, scannedThroughIso: obs[obs.length - 1]!.atIso }),
     beliefs: async () => [],
     reflect: async () => '{"beliefs":[{"claim":"x","support":["speech@t1"]}]}',
     create: async (_d, b) => { created.push(b.claim); return 'id'; },

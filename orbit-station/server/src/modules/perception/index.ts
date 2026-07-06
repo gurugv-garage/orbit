@@ -25,7 +25,7 @@ import { faceRecognitionProcessor } from './processors/face-recognition.js';
 import { visionSnapshotProcessor } from './processors/vision-snapshot.js';
 import { identitySnapshotProcessor } from './processors/identity-snapshot.js';
 import { sttWatchProcessor } from './processors/stt-watch.js';
-import { backgroundTranscribe } from './processors/background-stt.js';
+import { interpretAudio } from './processors/background-audio.js';
 import { bodyMotionWatchProcessor, type MotionCommand } from './processors/bodymotion-watch.js';
 import { SnapshotStore, isoIst, sampleEvenly, type SnapshotRecord } from './snapshots.js';
 import { PerceiveStore, type PerceivePayload } from './perceive.js';
@@ -229,12 +229,23 @@ export function getMemoryStore(): MemoryStore | undefined {
   return memoryStoreRef.current;
 }
 
-/** RUNTIME state of the background diarized-STT (Gemini) pipeline — flippable live
- *  from the Perception Studio (GET/POST /api/perception/bg-stt). `enabled` gates
- *  whether each utterance gets re-transcribed online; `model` is which Gemini model
- *  does it. Seeded from PERCEPTION_BG_STT_MODEL at module init. */
-const bgStt_ = { enabled: false, model: 'gemini-2.5-flash-lite' };
-export function getBgStt() { return { ...bgStt_ }; }
+/** RUNTIME state of the background AUDIO interpreter (Gemini) — flippable live from
+ *  the Perception Studio (GET/POST /api/perception/bg-audio; /bg-stt legacy alias).
+ *  `enabled` gates whether significant acoustic windows get interpreted online
+ *  (kind/salience/summary + a cleaner transcript); `model` is which Gemini model does
+ *  it. Seeded from PERCEPTION_BG_AUDIO_MODEL (legacy PERCEPTION_BG_STT_MODEL). */
+const bgAudio_ = { enabled: false, model: 'gemini-2.5-flash-lite' };
+export function getBgAudio() { return { ...bgAudio_ }; }
+
+/** Dock-addressed OBSERVATIONS from the background audio interpreter — the brain
+ *  registers a handler and DECIDES (wake fallback for the local STT mis-hearing the
+ *  robot's name: Parakeet renders "orbit" as "alright"/"hey now", so the local wake
+ *  matcher never sees it, but the online interpreter hears the name in the audio). */
+export interface BgAddressedEvent { dockId: string; directive: string; transcript: string; conf: number }
+let bgAddressedHandler: ((e: BgAddressedEvent) => void) | undefined;
+export function getBgAddressedApi() {
+  return { onAddressed: (h: (e: BgAddressedEvent) => void) => { bgAddressedHandler = h; } };
+}
 
 /**
  * The proactive ATTENTION GATE control surface (docs/perception-to-brain.md Phase 5).
@@ -391,9 +402,11 @@ export function perceptionModule(getHub: () => ProcessingHub): StationModule {
   // flips it live) rather than a fixed env var: PERCEPTION_BG_STT_MODEL only seeds
   // the model name + the initial enabled state, so existing setups behave as before
   // (env set → on at boot; env unset → off, but still flippable on at runtime).
-  const DEFAULT_BG_STT_MODEL = 'gemini-2.5-flash-lite';
-  bgStt_.model = process.env.PERCEPTION_BG_STT_MODEL || DEFAULT_BG_STT_MODEL;
-  bgStt_.enabled = !!process.env.PERCEPTION_BG_STT_MODEL;
+  const DEFAULT_BG_AUDIO_MODEL = 'gemini-2.5-flash-lite';
+  // PERCEPTION_BG_STT_MODEL is the legacy alias — existing setups keep working.
+  const bgAudioEnv = process.env.PERCEPTION_BG_AUDIO_MODEL || process.env.PERCEPTION_BG_STT_MODEL;
+  bgAudio_.model = bgAudioEnv || DEFAULT_BG_AUDIO_MODEL;
+  bgAudio_.enabled = !!bgAudioEnv;
   // CONTEXT-AWARE: assemble the recent-discussion context for a dock (rolling summary
   // + who's present) so Gemini disambiguates names/topic/homophones. Cheap (a few
   // hundred chars; audio dominates the cost).
@@ -413,19 +426,39 @@ export function perceptionModule(getHub: () => ProcessingHub): StationModule {
   // Always wired; gated at CALL time on the runtime toggle so it can flip live
   // without rebuilding the processor. Disabled → returns null (the stt-watch path
   // then keeps the local-Whisper text, exactly like the old env-unset case).
-  const bgStt = async (pcm: Int16Array, rate: number, dockId: string) => {
-    if (!bgStt_.enabled) return null;
-    const model = bgStt_.model; // snapshot the model used for THIS call (it can flip live)
-    const up = await backgroundTranscribe(pcm, rate, model, bgContext(dockId), dockId);
-    // tag the result with the diarization model so the snapshot records STT and
-    // diarization models SEPARATELY (the two stages are distinct engines).
-    return up ? { ...up, model } : null;
+  // Per-dock DEBOUNCE for the background audio interpreter — the primary cost/noise
+  // clamp (bg-audio doc §5 + §7a.4): at most one call per cooldown, an in-flight guard,
+  // and a REPEAT-STRETCH (the same acoustic story back-to-back — music for an hour —
+  // doubles the cooldown up to the cap; anything new resets it). An 'impulse' trigger
+  // (a crash) BYPASSES the cooldown — its own 5 s refractory in the detector bounds it.
+  const BG_COOLDOWN_MS = Number(process.env.PERCEPTION_BG_COOLDOWN_MS ?? 8_000);
+  const BG_COOLDOWN_MAX_MS = 120_000;
+  const bgState = new Map<string, { until: number; ms: number; lastSig: string; inflight: boolean }>();
+  const bgAudio = async (pcm: Int16Array, rate: number, dockId: string, trigger: 'speech' | 'impulse' | 'sustained') => {
+    if (!bgAudio_.enabled) return null;
+    let st = bgState.get(dockId);
+    if (!st) { st = { until: 0, ms: BG_COOLDOWN_MS, lastSig: '', inflight: false }; bgState.set(dockId, st); }
+    if (st.inflight || (trigger !== 'impulse' && Date.now() < st.until)) return null;
+    st.inflight = true;
+    try {
+      const model = bgAudio_.model; // snapshot the model used for THIS call (it can flip live)
+      const ev = await interpretAudio(pcm, rate, model, bgContext(dockId), dockId);
+      if (!ev) { st.until = Date.now() + st.ms; return null; }
+      if (ev.addressedToRobot) {
+        bgAddressedHandler?.({ dockId, directive: ev.directive, transcript: ev.transcript, conf: ev.addressConf });
+      }
+      const sig = `${ev.kind}|${ev.summary.toLowerCase().replace(/[^a-z]+/g, ' ').trim()}`;
+      st.ms = sig === st.lastSig ? Math.min(st.ms * 2, BG_COOLDOWN_MAX_MS) : BG_COOLDOWN_MS;
+      st.lastSig = sig;
+      st.until = Date.now() + st.ms;
+      return { ...ev, model };
+    } finally { st.inflight = false; }
   };
   const stt = sttWatchProcessor(
     snapshots,
     (e) => finalHandler?.(e),
     (dockId) => Date.now() < (speakingUntil.get(dockId) ?? 0),
-    bgStt,
+    bgAudio,
     // LIVE INTERIMS → brain → directed caption frame to the dock. Gated on the
     // brain's listening-resolver (only during an active listening/followup turn);
     // if the brain never registers one, interims never fire (resolver stays undefined).
@@ -1166,17 +1199,18 @@ export function perceptionModule(getHub: () => ProcessingHub): StationModule {
         json(res, 200, { base: visionBase(), extra: getVisionExtra() });
         return true;
       }
-      // Diarized background-STT (Gemini) pipeline toggle. GET → {enabled, model};
-      // POST {enabled?, model?} flips it live (no restart). Off ⇒ local-Whisper only.
-      if (req.method === 'GET' && subPath === '/bg-stt') {
-        json(res, 200, getBgStt());
+      // Background AUDIO interpreter toggle. GET → {enabled, model}; POST {enabled?,
+      // model?} flips it live (no restart). Off ⇒ local engine only. '/bg-stt' is the
+      // legacy route alias (older consoles).
+      if (req.method === 'GET' && (subPath === '/bg-audio' || subPath === '/bg-stt')) {
+        json(res, 200, getBgAudio());
         return true;
       }
-      if (req.method === 'POST' && subPath === '/bg-stt') {
+      if (req.method === 'POST' && (subPath === '/bg-audio' || subPath === '/bg-stt')) {
         const body = await parseBody<{ enabled?: boolean; model?: string }>(req);
-        if (typeof body.enabled === 'boolean') bgStt_.enabled = body.enabled;
-        if (typeof body.model === 'string' && body.model) bgStt_.model = body.model;
-        json(res, 200, getBgStt());
+        if (typeof body.enabled === 'boolean') bgAudio_.enabled = body.enabled;
+        if (typeof body.model === 'string' && body.model) bgAudio_.model = body.model;
+        json(res, 200, getBgAudio());
         return true;
       }
       // DEBUG: dump the current decoded frame the face processor sees, to inspect

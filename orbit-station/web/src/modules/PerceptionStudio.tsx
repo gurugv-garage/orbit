@@ -33,13 +33,20 @@ interface Snapshot {
     inferMs?: number | null; confidence?: number; // perf + match confidence (all streams)
     // speech: low-confidence flag + Whisper's own metrics (for the playground)
     lowConfidence?: boolean; avgLogprob?: number | null; noSpeechProb?: number | null; compressionRatio?: number | null;
-    // speech diarization (the background Gemini upgrade): speaker index, a marker
-    // that this text was replaced by the diarized transcript, and the DIARIZATION
-    // model (distinct from source.model, which is the live STT engine).
-    speaker?: number; bgModel?: boolean; diarizeModel?: string;
-    // the RAW STT transcript, preserved when diarization overwrites `text` — so the
-    // 🎙 STT row shows what the live engine heard and the 🗣 diarization row shows the
-    // upgraded text. Absent on un-upgraded records (then the STT row uses `text`).
+    // background AUDIO interpretation (bg-audio-summarizer.md): the acoustic event
+    // fields patched onto a speech snapshot (or carried by a standalone 'sound'
+    // snapshot). bgModel marks an upgraded record; audioModel is the interpreter
+    // engine (distinct from source.model, the live STT engine). `speaker` survives
+    // only on OLD records (per-clip diarization is retired).
+    bgModel?: boolean; audioModel?: string; speaker?: number;
+    audioKind?: string; salience?: string; summary?: string; trigger?: string;
+    // vision: the model's structured "what changed vs the previous window" field.
+    change?: string;
+    // audio: dock-directed intent observed in the clip.
+    addressedToRobot?: boolean; directive?: string;
+    // the RAW STT transcript, preserved when the interpreter upgrades `text` — so the
+    // 🎙 STT row shows what the live engine heard and the 🔊 audio row shows the
+    // upgraded read. Absent on un-upgraded records (then the STT row uses `text`).
     sttText?: string;
   };
 }
@@ -49,11 +56,13 @@ interface Snapshot {
  *  an unknown stream). label = human name shown in the lane header. */
 const KIND_META: Record<string, { icon: string; color: string; label: string }> = {
   vision:     { icon: '👁', color: '#dfe',    label: 'vision' },
-  // STT and DIARIZATION are SEPARATE concepts everywhere, though they ride the same
-  // 'speech' snapshot: STT = the live transcript (parakeet/whisper); diarization =
-  // the background Gemini upgrade that adds speaker labels + a cleaner transcript.
+  // STT and the background AUDIO interpretation are SEPARATE concepts, though they
+  // ride the same 'speech' snapshot: STT = the live transcript (parakeet/whisper);
+  // audio = the background interpreter's read (what KIND of sound, how salient, a
+  // cleaner transcript). Standalone non-speech events land as 'sound' snapshots.
   stt:         { icon: '🎙', color: '#9ecbff', label: 'STT' },
-  diarization: { icon: '🗣', color: '#c9b6ff', label: 'diarization' },
+  audio:       { icon: '🔊', color: '#c9b6ff', label: 'audio' },
+  sound:       { icon: '🔊', color: '#c9b6ff', label: 'sound' },
   identity:   { icon: '👤', color: '#ffd9a0', label: 'identity' },
   emotion:    { icon: '😮', color: '#ff9ed4', label: 'emotion' },
   bodymotion: { icon: '🤖', color: '#a0e0c0', label: 'bodymotion' },
@@ -63,10 +72,7 @@ function kindMeta(kind: string) {
   return KIND_META[kind] ?? { ...KIND_FALLBACK, label: kind };
 }
 /** Preferred lane/filter order; unknown (future) kinds sort after, alphabetically. */
-const KIND_ORDER = ['vision', 'stt', 'diarization', 'identity', 'emotion', 'bodymotion'];
-/** Stable color per diarized speaker index (S0, S1, …) so the eye tracks turns. */
-const SPEAKER_PALETTE = ['#7ee0a0', '#ffb86b', '#9ecbff', '#ff9ed4', '#d0a0ff', '#e0d060'];
-function SPEAKER_COLOR(n: number): string { return SPEAKER_PALETTE[n % SPEAKER_PALETTE.length]!; }
+const KIND_ORDER = ['vision', 'stt', 'audio', 'sound', 'identity', 'emotion', 'bodymotion'];
 
 /** Trim a model id to its recognizable short name (drops the org/quant suffix). */
 function MODEL_SHORT(name: string): string {
@@ -201,11 +207,11 @@ export function PerceptionStudio() {
   // the studio shows up/down + model, with start/stop/restart buttons.
   const [sidecars, setSidecars] = useState<SidecarHealth[]>([]);
   const [sidecarBusy, setSidecarBusy] = useState<string | null>(null); // "<name>:<op>"
-  // Background diarized-STT (Gemini) pipeline — a live runtime toggle (was an env
-  // var). enabled = re-transcribe each utterance online for a better diarized
+  // Background AUDIO interpreter (Gemini) — a live runtime toggle. enabled =
+  // interpret significant acoustic windows online (kind/salience/summary + a cleaner
   // transcript; off = local Whisper only.
-  const [bgStt, setBgStt] = useState<{ enabled: boolean; model: string }>({ enabled: false, model: 'gemini-2.5-flash-lite' });
-  const [bgSttBusy, setBgSttBusy] = useState(false);
+  const [bgAudio, setBgAudio] = useState<{ enabled: boolean; model: string }>({ enabled: false, model: 'gemini-2.5-flash-lite' });
+  const [bgAudioBusy, setBgAudioBusy] = useState(false);
   // MEMORY CURATOR — the pipeline's belief-maintenance loop. Live toggle + a feed of
   // recent passes (what it revised/forgot) + a "run now" debug button.
   const [showCurator, setShowCurator] = useState(false);
@@ -222,12 +228,12 @@ export function PerceptionStudio() {
   const meterRef = useRef<number | null>(null);
   const feedRef = useRef<HTMLDivElement>(null);
 
-  // Load instruction + bg-stt state once.
+  // Load instruction + bg-audio state once.
   useEffect(() => {
     api.get<{ base: string; extra: string }>('/perception/instruction')
       .then((r) => { setBase(r.base); setExtra(r.extra); }).catch(() => {});
-    api.get<{ enabled: boolean; model: string }>('/perception/bg-stt')
-      .then(setBgStt).catch(() => {});
+    api.get<{ enabled: boolean; model: string }>('/perception/bg-audio')
+      .then(setBgAudio).catch(() => {});
   }, []);
 
   // LIVE on-device face-track for the selected dock (the `perceive` stream): poll ~1 Hz
@@ -339,12 +345,12 @@ export function PerceptionStudio() {
     });
   }, [source, hiddenKinds]);
 
-  // Flip the diarized-STT pipeline (or change its model) live.
-  const setBgSttState = useCallback(async (patch: { enabled?: boolean; model?: string }) => {
-    setBgSttBusy(true);
-    try { setBgStt(await api.post<{ enabled: boolean; model: string }>('/perception/bg-stt', patch)); }
+  // Flip the background audio interpreter (or change its model) live.
+  const setBgAudioState = useCallback(async (patch: { enabled?: boolean; model?: string }) => {
+    setBgAudioBusy(true);
+    try { setBgAudio(await api.post<{ enabled: boolean; model: string }>('/perception/bg-audio', patch)); }
     catch { /* leave prior state */ }
-    finally { setBgSttBusy(false); }
+    finally { setBgAudioBusy(false); }
   }, []);
 
   // Poll the LIVE snapshot ring (ordered by interval.from). Paused while a take is
@@ -612,15 +618,15 @@ export function PerceptionStudio() {
   const ordered = [...snaps].sort((a, b) =>
     a.interval.from < b.interval.from ? -1 : a.interval.from > b.interval.from ? 1 : 0);
 
-  // Expand snapshots into TIMELINE ROWS. STT and DIARIZATION are separate row types
-  // even though they ride one 'speech' snapshot: a diarized utterance yields BOTH a
-  // 🎙 STT row (the live engine's transcript) AND a 🗣 diarization row (Gemini +
-  // speaker). Every other kind is one row, keyed by its own kind. `viewKind` is what
-  // the per-type filter + icon/model use.
+  // Expand snapshots into TIMELINE ROWS. STT and the background AUDIO read are
+  // separate row types even though they ride one 'speech' snapshot: an upgraded
+  // utterance yields BOTH a 🎙 STT row (the live engine's transcript) AND a 🔊 audio
+  // row (the interpreter's kind/salience/summary + cleaner transcript). Every other
+  // kind (incl. standalone 'sound' events) is one row, keyed by its own kind.
   const rows: { snap: Snapshot; viewKind: string }[] = ordered.flatMap((s) => {
     if (s.source.kind === 'speech') {
       const out = [{ snap: s, viewKind: 'stt' }];
-      if (s.payload.bgModel) out.push({ snap: s, viewKind: 'diarization' });
+      if (s.payload.bgModel) out.push({ snap: s, viewKind: 'audio' });
       return out;
     }
     return [{ snap: s, viewKind: s.source.kind }];
@@ -657,7 +663,7 @@ export function PerceptionStudio() {
         .perc-indeterminate { animation: perc-indeterminate 1s ease-in-out infinite; }
       `}</style>
       {/* ONE compact control bar. Left: SOURCE chips (the primary control — what you're
-          watching). Right (secondary): Summarize, the diarization toggle, and tiny
+          watching). Right (secondary): Summarize, the bg-audio toggle, and tiny
           sidecar status dots. Everything that expands (Summarize options, takes,
           result) drops BELOW this bar, only when opened — so the resting height is one
           row, not three stacked panels. */}
@@ -701,14 +707,14 @@ export function PerceptionStudio() {
               background: showSummarizer ? '#1e3a5f' : '#13243a', color: '#cfe', border: '1px solid #2c4a6f' }}>
             🧠 summarize {showSummarizer ? '▾' : '▸'}
           </button>
-          {/* DIARIZATION toggle */}
-          <button disabled={bgSttBusy} onClick={() => void setBgSttState({ enabled: !bgStt.enabled })}
-            title={bgStt.enabled ? `diarization ON (${bgStt.model}) — click to turn off` : 'diarization OFF (local STT only) — click to turn on'}
-            style={{ display: 'flex', alignItems: 'center', gap: 5, padding: '4px 10px', borderRadius: 8, fontSize: 11, cursor: bgSttBusy ? 'default' : 'pointer',
-              background: bgStt.enabled ? '#13301f' : '#10182a', color: bgStt.enabled ? '#7ee0a0' : '#9cd',
-              border: `1px solid ${bgStt.enabled ? '#2c6f4a' : '#1c2233'}` }}>
-            <span style={{ width: 7, height: 7, borderRadius: '50%', background: bgStt.enabled ? '#3ad29f' : '#5a6172' }} />
-            🗣 diarize {bgSttBusy ? '…' : bgStt.enabled ? 'on' : 'off'}
+          {/* BACKGROUND AUDIO INTERPRETER toggle */}
+          <button disabled={bgAudioBusy} onClick={() => void setBgAudioState({ enabled: !bgAudio.enabled })}
+            title={bgAudio.enabled ? `background audio interpreter ON (${bgAudio.model}) — click to turn off` : 'background audio interpreter OFF (local STT only) — click to turn on'}
+            style={{ display: 'flex', alignItems: 'center', gap: 5, padding: '4px 10px', borderRadius: 8, fontSize: 11, cursor: bgAudioBusy ? 'default' : 'pointer',
+              background: bgAudio.enabled ? '#13301f' : '#10182a', color: bgAudio.enabled ? '#7ee0a0' : '#9cd',
+              border: `1px solid ${bgAudio.enabled ? '#2c6f4a' : '#1c2233'}` }}>
+            <span style={{ width: 7, height: 7, borderRadius: '50%', background: bgAudio.enabled ? '#3ad29f' : '#5a6172' }} />
+            🔊 bg audio {bgAudioBusy ? '…' : bgAudio.enabled ? 'on' : 'off'}
           </button>
           {/* SIDECARS — status dots + label; click for the full panel */}
           <button onClick={() => setShowSidecars((v) => !v)} title="sidecar health (vision / speech) — click for controls"
@@ -1038,7 +1044,7 @@ export function PerceptionStudio() {
             </div>
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 12, fontSize: 12, opacity: 0.85, flexWrap: 'wrap' }}>
-            {/* ONE checkbox per row type present (data-driven — STT, diarization,
+            {/* ONE checkbox per row type present (data-driven — STT, audio, sound,
                 vision, identity, emotion, bodymotion, + any future kind). */}
             {presentKinds.map((k) => {
               const km = kindMeta(k);
@@ -1078,25 +1084,25 @@ export function PerceptionStudio() {
             : filtered.map(({ snap: s, viewKind }, i) => {
               const p = s.payload;
               const m = kindMeta(viewKind);
-              const isDiar = viewKind === 'diarization';
+              const isAudio = viewKind === 'audio';
               const isStt = viewKind === 'stt';
-              // model per row type: diarization → the Gemini engine; everything else
-              // (incl. STT) → the snapshot's own model.
-              const modelName = isDiar ? (p.diarizeModel ?? 'gemini') : s.model.name;
+              // model per row type: the audio row → the interpreter engine; everything
+              // else (incl. STT) → the snapshot's own model.
+              const modelName = isAudio ? (p.audioModel ?? 'gemini') : s.model.name;
               const conf = p.confidence != null ? `${Math.round(p.confidence * 100)}%` : null;
-              // STT row shows the RAW transcript (preserved); diarization row shows the
-              // upgraded text. When they're identical, the diarization row's value was
-              // ONLY the speaker label — say so instead of repeating the words.
+              // STT row shows the RAW transcript (preserved); the audio row shows the
+              // interpreter's read. When the words are identical, show the acoustic
+              // SUMMARY instead of repeating them.
               const sttText = p.sttText ?? p.text;
-              const diarSameWords = isDiar && p.text.trim() === sttText.trim();
+              const audioSameWords = isAudio && p.text.trim() === sttText.trim();
               return (
                 <div key={i} style={{ display: 'flex', gap: 8, color: m.color, alignItems: 'baseline',
-                  // the diarization row is a CHILD of its STT row — indent + dim so the
-                  // pair reads as "utterance → enriched by diarization", not two equals.
-                  ...(isDiar ? { opacity: 0.82, paddingLeft: 14 } : {}) }}>
-                  <span style={{ opacity: 0.45, fontVariantNumeric: 'tabular-nums', width: isDiar ? 124 : 138, fontSize: 12 }}>
-                    {isDiar
-                      ? <span style={{ opacity: 0.7 }}>↳ diarized</span>
+                  // the audio row is a CHILD of its STT row — indent + dim so the pair
+                  // reads as "utterance → interpreted acoustically", not two equals.
+                  ...(isAudio ? { opacity: 0.82, paddingLeft: 14 } : {}) }}>
+                  <span style={{ opacity: 0.45, fontVariantNumeric: 'tabular-nums', width: isAudio ? 124 : 138, fontSize: 12 }}>
+                    {isAudio
+                      ? <span style={{ opacity: 0.7 }}>↳ audio</span>
                       : <>{istTime(s.interval.from)}–{istTime(s.interval.to)}<span style={{ opacity: 0.6 }}> ({secs(s.interval.durationMs)})</span></>}
                   </span>
                   <span style={{ width: 18 }} title={m.label}>{m.icon}</span>
@@ -1106,17 +1112,39 @@ export function PerceptionStudio() {
                     {MODEL_SHORT(modelName)}
                   </span>
                   <span style={{ flex: 1 }}>
-                    {/* DIARIZATION row: speaker tag (S0/S1/…) from the Gemini upgrade. */}
-                    {isDiar && p.speaker != null && (
-                      <span title="diarized speaker" style={{ marginRight: 6, fontSize: 11, fontWeight: 700, color: SPEAKER_COLOR(p.speaker) }}>
-                        S{p.speaker}
+                    {/* AUDIO row: structured chips — kind, salience (when it matters), and
+                        dock-directed intent — each visually distinct. */}
+                    {(isAudio || viewKind === 'sound') && p.audioKind && (
+                      <span title="acoustic kind"
+                        style={{ marginRight: 5, fontSize: 10, fontWeight: 700, color: '#7ee0a0', border: '1px solid #2c6f4a', borderRadius: 4, padding: '0 5px' }}>
+                        {p.audioKind}
                       </span>
                     )}
-                    {isDiar
-                      ? (diarSameWords
-                          ? <span style={{ opacity: 0.5, fontStyle: 'italic' }}>{p.speaker != null ? '(same words)' : p.text}</span>
+                    {(isAudio || viewKind === 'sound') && (p.salience === 'notable' || p.salience === 'startling') && (
+                      <span title="salience — would a head turn?"
+                        style={{ marginRight: 5, fontSize: 10, fontWeight: 700, color: p.salience === 'startling' ? '#ff9e6b' : '#ffd9a0',
+                          border: `1px solid ${p.salience === 'startling' ? '#7a3d20' : '#5a4a20'}`, borderRadius: 4, padding: '0 5px' }}>
+                        {p.salience}{p.salience === 'startling' ? ' ⚡' : ''}
+                      </span>
+                    )}
+                    {(isAudio || viewKind === 'sound') && p.addressedToRobot && (
+                      <span title="the clip audibly addresses the robot (observation — the brain still decides)"
+                        style={{ marginRight: 5, fontSize: 10, fontWeight: 700, color: '#7ec8ff', border: '1px solid #2c4a6f', borderRadius: 4, padding: '0 5px' }}>
+                        → orbit{p.directive ? `: ${p.directive}` : ''}
+                      </span>
+                    )}
+                    {isAudio
+                      ? (audioSameWords
+                          ? <span style={{ opacity: 0.6, fontStyle: 'italic' }}>{p.summary || '(same words)'}</span>
                           : p.text)
                       : sttText}
+                    {/* vision: the structured what-changed field — a distinct Δ pill. */}
+                    {viewKind === 'vision' && p.change && (
+                      <span title="what changed vs the previous window"
+                        style={{ marginLeft: 8, fontSize: 10, color: '#ffd9a0', border: '1px solid #5a4a20', borderRadius: 4, padding: '1px 6px', whiteSpace: 'nowrap' }}>
+                        Δ {p.change}
+                      </span>
+                    )}
                     {/* low-confidence is an STT (Whisper/parakeet) tell — only on the STT row. */}
                     {isStt && p.lowConfidence && (
                       <span title="the STT engine flagged this transcript as shaky (sent to the LLM tagged [low-confidence])"
@@ -1128,7 +1156,7 @@ export function PerceptionStudio() {
                   {/* PERF + CONFIDENCE meta, right-aligned, tabular */}
                   <span style={{ fontVariantNumeric: 'tabular-nums', fontSize: 10, opacity: 0.5, textAlign: 'right', whiteSpace: 'nowrap', display: 'flex', gap: 8 }}>
                     {conf && <span title="match/expression confidence">◷ {conf}</span>}
-                    {!isDiar && p.inferMs != null && <span title="inference latency (sidecar/in-process compute)">⚡{fmtMs(p.inferMs)}</span>}
+                    {!isAudio && p.inferMs != null && <span title="inference latency (sidecar/in-process compute)">⚡{fmtMs(p.inferMs)}</span>}
                     {viewKind === 'vision' && p.frames != null && <span title="frames sampled this window">🎞{p.frames}</span>}
                     {isStt && p.noSpeechProb != null && (
                       <span title="STT metrics — avg_logprob / no_speech_prob / compression_ratio">
@@ -1145,8 +1173,8 @@ export function PerceptionStudio() {
   );
 }
 
-/** NOW — compact live read: the latest result per active stream. STT and diarization
- *  shown separately (diarization shows its speaker). Data-driven: any present kind
+/** NOW — compact live read: the latest result per active stream. STT and the audio
+ *  read shown separately (audio shows the acoustic kind). Data-driven: any present kind
  *  (incl. future ones) gets a line; nothing present → a waiting hint. */
 /** A glance at the dock's latest on-device face-track (the `perceive` stream, §7) — the
  *  fast MLKit signal faceFollow steers on: face count + the primary face's NDC pose, and
@@ -1181,12 +1209,12 @@ function LiveNow({ snaps, liveStt }: {
   snaps: Snapshot[];
   liveStt?: { text: string; isFinal: boolean } | null;
 }) {
-  // latest snapshot per view-kind (speech → both stt + its diarized form).
+  // latest snapshot per view-kind (speech → both stt + its interpreted audio form).
   const latest = new Map<string, Snapshot>();
   for (const s of snaps) {
     if (s.source.kind === 'speech') {
       latest.set('stt', s);
-      if (s.payload.bgModel) latest.set('diarization', s);
+      if (s.payload.bgModel) latest.set('audio', s);
     } else latest.set(s.source.kind, s);
   }
   const kinds = [...latest.keys()].sort((a, b) => {
@@ -1224,7 +1252,7 @@ function LiveNow({ snaps, liveStt }: {
             <div key={k} style={{ display: 'flex', gap: 8, alignItems: 'baseline', color: m.color, fontSize: 14, lineHeight: 1.35 }}>
               <span title={m.label} style={{ width: 20 }}>{m.icon}</span>
               <span style={{ flex: 1 }}>
-                {k === 'diarization' && p.speaker != null && <b style={{ marginRight: 5, color: SPEAKER_COLOR(p.speaker) }}>S{p.speaker}</b>}
+                {(k === 'audio' || k === 'sound') && p.audioKind && <b style={{ marginRight: 5, color: p.salience === 'startling' ? '#ff9e6b' : '#7ee0a0' }}>{p.audioKind}</b>}
                 {text || <span style={{ opacity: 0.4 }}>…</span>}
               </span>
               <span style={{ fontSize: 10, opacity: 0.35, fontVariantNumeric: 'tabular-nums' }}>{s.interval.from.slice(11, 19)}</span>

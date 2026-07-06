@@ -20,14 +20,17 @@
 // 2026-07-05 with identity simultaneously reporting "no one in view"). The prompt must
 // first allow "nobody here".
 const BASE =
-  'In one short sentence, describe what is happening. ' +
-  'FIRST check whether any person is actually visible. If NO person is clearly visible, ' +
-  'start with "No one is visible" and add a few words about anything notable or changed. ' +
-  'If a person IS clearly visible, describe their action and posture and any object they ' +
+  'You are given a few frames spanning several seconds, in order. In one short sentence, ' +
+  'describe WHAT IS HAPPENING — the action, motion, or change ACROSS the frames. That is ' +
+  'the most important thing: compare the frames and report what moved, appeared, or changed. ' +
+  'If a person is clearly visible, lead with their action and posture and any object they ' +
   'are clearly holding or using — use "they"/"the person"; do not guess gender, age, or name. ' +
-  'Look at the object ITSELF and name what it actually is; if you are not sure what ' +
-  'the object is, say "an object" rather than guessing a common one. ' +
-  'Do NOT default to "laptop" or "phone" — only say so if you clearly see one. ' +
+  'If NO person is clearly visible and nothing is moving, start with "No one visible —" then ' +
+  'describe the actual scene: the setting, the lighting, anything that stands out (e.g. ' +
+  '"No one visible — a dim staircase with gym rings hanging, a light on upstairs"). Never ' +
+  'answer with just "no one is visible". ' +
+  'Look at objects THEMSELVES and name what they actually are; if unsure, say "an object" ' +
+  'rather than guessing a common one. Do NOT default to "laptop" or "phone". ' +
   'State only what is clearly visible — do NOT invent people, actions, or details.';
 // NOTE: the examples ("typing on a laptop"…) were removed deliberately. qwen2.5-VL is
 // small and ANCHORS on the first in-prompt example when a 320×240 frame is ambiguous —
