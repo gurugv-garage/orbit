@@ -11,7 +11,8 @@
  * stillness as part of the act (the freeze sells the joke).
  *
  * Thought prompts: scenario only — the task appends the shared STYLE guard (brevity, no
- * tic openers, the "stay silent if nothing fresh" escape hatch) + a random angle seed.
+ * tic openers, the "stay silent if nothing fresh" escape hatch). No injected topics:
+ * variety comes from real perception/memory or not at all.
  */
 
 export type MoodName = 'bored' | 'curious' | 'attention' | 'sleepy' | 'flavor';
@@ -39,27 +40,20 @@ export interface Bit {
   seek?: boolean;
 }
 
-/** Random concrete angles appended to spoken bits — a seed forces the LLM to diverge
- *  instead of converging on its three modal quips (the 50th-occurrence problem). */
-export const SPEAK_SEEDS = [
-  'the light in the room', 'your own servos', 'something on the desk', 'the time of day',
-  'a sound you think you heard', 'the ceiling',
-  'how still everything is', 'your reflection in something', 'the furthest thing you can see',
-  'what people usually do at this hour', 'a shadow', 'the temperature of the room', 'gravity',
-];
-
 /** Style guard appended to every spoken-bit scenario (kept here with the bit data so a
  *  bench can reproduce the EXACT prompt a live bit sends). */
 export const SPEAK_STYLE = ' Keep it under 12 words, no "Ah,"/"Well,"/"Hmm," openers, no exclamation overload.'
   + ' Plain everyday words — no poetic imagery. If you have nothing genuinely fresh to say, stay silent.';
 
-/** The full self-thought text for a spoken bit: scenario + a random angle seed + style.
- *  `rand` injectable so a bench can sweep seeds deterministically. */
-export function thoughtPrompt(bit: Bit, rand: () => number = Math.random): string {
-  const seed = SPEAK_SEEDS[Math.floor(rand() * SPEAK_SEEDS.length)];
-  // the seed is a FALLBACK muse, not a directive — benched (r2): "Angle, if helpful"
-  // made every line orbit the seed, colliding with past-line themes.
-  return `${bit.thought} If the scene and sounds offer nothing, a fallback muse: ${seed}.${SPEAK_STYLE}`;
+/** The full self-thought text for a spoken bit: the scenario + the style guard. NO
+ *  artificial angle seeds (removed 2026-07-06, bench r4): injected random topics are an
+ *  unnatural variety mechanism — every line orbited the seed (the dust and weekend
+ *  epidemics, bench r1/r2) instead of the world. Variety must come from REAL inputs —
+ *  the attached camera frame, the heard sounds, the day's memory, the time — and when
+ *  the world offers nothing new, the honest output is SILENCE (the style guard's escape
+ *  hatch). Speech rate tracking environment richness IS the realistic behavior. */
+export function thoughtPrompt(bit: Bit): string {
+  return `${bit.thought}${SPEAK_STYLE}`;
 }
 
 export const BITS: Bit[] = [

@@ -46,7 +46,6 @@ const GROUNDINGS: Record<string, string> = {
 };
 
 const SPOKEN_BITS = BITS.filter((b) => b.thought);
-const seededRand = (i: number) => () => ((i * 9301 + 49297) % 233280) / 233280;
 
 async function gen(system: string, user: string): Promise<string> {
   const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent?key=${KEY}`, {
@@ -71,7 +70,7 @@ for (const [gname, grounding] of Object.entries(GROUNDINGS)) {
   const system = buildSystemPrompt({ grounding, selfThought: true, now: new Date('2026-07-06T17:45:00+05:30') });
   for (let i = 0; i < SPOKEN_BITS.length; i++) {
     const bit = SPOKEN_BITS[i]!;
-    const user = thoughtPrompt(bit, seededRand(i + 3)) + antiRepeat;
+    const user = thoughtPrompt(bit) + antiRepeat;
     const line = await gen(system, user);
     console.log(`  ${bit.id.padEnd(22)} → ${line.replace(/\n+/g, ' ⏎ ').slice(0, 140)}`);
   }
