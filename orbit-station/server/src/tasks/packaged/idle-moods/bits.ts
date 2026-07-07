@@ -42,8 +42,12 @@ export interface Bit {
 
 /** Style guard appended to every spoken-bit scenario (kept here with the bit data so a
  *  bench can reproduce the EXACT prompt a live bit sends). */
-export const SPEAK_STYLE = ' Keep it under 12 words, no "Ah,"/"Well,"/"Hmm," openers, no exclamation overload.'
-  + ' Plain everyday words — no poetic imagery. If you have nothing genuinely fresh to say, stay silent.';
+export const SPEAK_STYLE = ' A short FRAGMENT beats a sentence ("huh, new chair" over "I notice there is a new'
+  + ' chair") — inner speech is condensed; save full sentences for genuinely striking moments. Under 12 words,'
+  + ' no "Ah,"/"Well,"/"Hmm," openers, no exclamation overload, plain everyday words — no poetic imagery.'
+  + ' If nothing actually happened worth reacting to, staying silent is the RIGHT choice: reply with'
+  + ' NOTHING AT ALL — an empty reply. Never write the word "silence" or any placeholder, and never'
+  + ' fall back to describing scenery that was already there.';
 
 /** The full self-thought text for a spoken bit: the scenario + the style guard. NO
  *  artificial angle seeds (removed 2026-07-06, bench r4): injected random topics are an
@@ -87,8 +91,12 @@ export const BITS: Bit[] = [
   },
   {
     id: 'bored.muse', mood: 'bored', weight: 1,
-    thought: 'You have been sitting idle a while and feel a bit bored. Maybe say one short, playful line about '
-      + 'it — or about something you can currently see or hear around you.',
+    // boredom research (docs/research/idle-cognition.md §5): boredom is a PUSH to engage,
+    // not a state to narrate — the line must be it FINDING something, or nothing at all.
+    thought: 'You are bored — which is really an itch to find something engaging. Look at what you can '
+      + 'currently see and hear: if anything at all offers a spark of interest — something that happened, '
+      + 'changed, or you had not noticed before — react to it in a few words. Do not announce that you are '
+      + 'bored; if nothing genuinely engages you, stay silent.',
   },
   {
     id: 'bored.seek-company', mood: 'bored', weight: 2, needsNoFace: true, seek: true,
@@ -131,10 +139,11 @@ export const BITS: Bit[] = [
     // hears everything — the room's sounds are where the variety lives. Activities in
     // plain view/earshot (a game, dancing, laughter, music) are fair game; appearance,
     // screen contents, and quoting people's words back stay off-limits.
-    thought: 'Something you SEE or HEAR caught your attention. One short curious or delighted remark about a '
-      + 'thing you see, a lively activity happening (a game, a sport, dancing), or the sounds around you '
-      + '(laughter, music, a commotion). Never about someone\'s appearance or their screen, and never quote '
-      + 'or repeat anyone\'s words back.',
+    thought: 'Something JUST HAPPENED or changed around you and it caught your attention — a sound, a '
+      + 'movement, a lively activity (a game, music, laughter, a commotion), something new in view. One short '
+      + 'curious or delighted reaction to that happening. Standing scenery that was already there does not '
+      + 'count. Never about someone\'s appearance or their screen, and never quote or repeat anyone\'s '
+      + 'words back.',
   },
 
   // ── attention — someone is around but nobody is talking to you ───────────────
