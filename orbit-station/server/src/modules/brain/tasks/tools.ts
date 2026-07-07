@@ -49,14 +49,14 @@ function authoringFixHints(diag: string): string {
     const m = diag.match(/Cannot find name '(\w+)'/i);
     hints.push(`FIX: "${m?.[1]}" is undefined — if it's a module, add it to \`imports\`; if it's a `
       + `typo for a Task method, the available ones are this.status / this.notifyAgent / `
-      + `this.askAgentInput / this.finish / this.errored / this.sleep / this.checkpoint / `
-      + `this.frame / this.move (camera/body only if this dock has them).`);
+      + `this.askAgentInput / this.finish / this.errored / this.sleep / this.sleepUntil / `
+      + `this.checkpoint / this.frame / this.move (camera/body only if this dock has them).`);
   }
   if (/Property '(\w+)' does not exist on type 'Task'|does not exist on type/i.test(diag)) {
     hints.push('FIX: you called a method that does not exist on the Task base. Use only: this.status, '
-      + 'this.notifyAgent, this.askAgentInput, this.finish, this.errored, this.sleep, this.checkpoint, '
-      + 'this.params, this.state (and this.frame/this.move if advertised). For anything else, write '
-      + 'plain code or import a module via `imports`.');
+      + 'this.notifyAgent, this.askAgentInput, this.finish, this.errored, this.sleep, this.sleepUntil, '
+      + 'this.checkpoint, this.params, this.state (and this.frame/this.move if advertised). For anything '
+      + 'else, write plain code or import a module via `imports`.');
   }
   if (/'(\w+)' is of type 'unknown'|is possibly 'undefined'|not assignable to/i.test(diag)) {
     hints.push('FIX: `this.params.X` is typed `unknown` — CAST it before use '
@@ -77,12 +77,13 @@ const num = (v: unknown, d: number) => (typeof v === 'number' && Number.isFinite
 
 export function buildTaskTools(d: TaskToolDeps): AgentTool<any>[] {
   if (d.config('brainTaskMax') === 0) return []; // tasks disabled
-  // search GENERATED first, then PACKAGED — prefer a recently-authored task over
-  // a shipped one when both match (your manual pruning later promotes generated
-  // ones into the packaged folder).
+  // search PACKAGED first, then GENERATED — a curated, committed task must always
+  // beat an LLM-authored one with the same name, otherwise a stale generated def
+  // keeps masking every fix promoted into packaged/. (write_task also refuses
+  // packaged-name collisions, but defs authored before that guard may still exist.)
   const roots = [
-    { root: d.userTasksRoot, source: 'generated' as const },
     { root: d.tasksRoot, source: 'packaged' as const },
+    { root: d.userTasksRoot, source: 'generated' as const },
   ];
 
   // The models a task author may pick for a task's own reasoning (config
@@ -199,6 +200,13 @@ export function buildTaskTools(d: TaskToolDeps): AgentTool<any>[] {
     },
     async (_id, args: { name?: string; description?: string; goal?: string; params?: TaskParam[]; imports?: string[]; body?: string; status?: string; model?: string }) => {
       if (!args?.name || !args?.description || !args?.body) throw new Error('write_task needs name, description, body');
+      // PACKAGED names are reserved — a generated def must never shadow a curated one.
+      try {
+        await findTaskDef([{ root: d.tasksRoot, source: 'packaged' }], args.name);
+        return txt(`"${args.name}" is a SHIPPED task — do not re-author it. Start it directly with `
+          + `run_task("${args.name}", { … }) (list_tasks shows its params). If you need genuinely `
+          + `different behaviour, pick a different name.`);
+      } catch { /* no packaged def with that name — free to create */ }
       const allowed = allowedTaskModels();
       if (args.model && !allowed.includes(args.model)) {
         throw new Error(`model "${args.model}" is not allowed for tasks on this dock. Choose one of: ${allowed.join(', ')} (or omit model for the dock default).`);

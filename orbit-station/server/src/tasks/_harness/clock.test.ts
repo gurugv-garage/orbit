@@ -1,7 +1,7 @@
 /**
- * remind-at clock parsing + next-occurrence math — the historically brittle
- * part (the old LLM-generated task only matched "7:20PM"). Lock the formats
- * and the "already passed today → tomorrow" roll.
+ * Harness clock parsing + next-occurrence math (Task.sleepUntil / remind-at) —
+ * the historically brittle part (the old LLM-generated task only matched
+ * "7:20PM"). Lock the formats and the "already passed today → tomorrow" roll.
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';

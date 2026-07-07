@@ -7,11 +7,10 @@
  * This ships PACKAGED (not LLM-generated) on purpose: absolute-time reminders
  * were the brain's most failure-prone hand-written task — brittle time regexes
  * (only `7:20PM` matched, not `7:20` / `19:20` / `7:20 pm`) and ad-hoc
- * timezone/past-midnight math. `parseClock` here accepts the common forms and
- * the "already passed today → tomorrow" roll is done once, correctly.
+ * timezone/past-midnight math. The harness's `parseClock` accepts the common
+ * forms and the "already passed today → tomorrow" roll is done once, correctly.
  */
-import { Task, runTask, type TaskManifest } from '../../_harness/index.js';
-import { parseClock, msUntilNext } from './clock.js';
+import { Task, runTask, parseClock, msUntilNext, type TaskManifest } from '../../_harness/index.js';
 
 export const manifest = {
   name: 'remind-at',

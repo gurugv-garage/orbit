@@ -255,8 +255,8 @@ export function brainModule(w: BrainWiring): StationModule {
   const tasksRoot = defaultTasksRoot();
   const userTasks = userTasksRoot();
   const taskRoots = [
-    { root: userTasks, source: 'generated' as const }, // generated first, then packaged
-    { root: tasksRoot, source: 'packaged' as const },
+    { root: tasksRoot, source: 'packaged' as const }, // packaged first: curated beats generated
+    { root: userTasks, source: 'generated' as const },
   ];
   // Task defs the CONDUCTOR may start (resolved in init so ConductorAccess.startTask is
   // synchronous). v1: just face-follow.

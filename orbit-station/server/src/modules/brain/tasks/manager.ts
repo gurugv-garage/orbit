@@ -104,8 +104,8 @@ export async function loadTaskDefs(root: string): Promise<TaskDef[]> {
 export interface LabeledRoot { root: string; source: TaskSource }
 
 /** Load definitions from labeled roots in ORDER — the FIRST root to define a name
- *  WINS (so list generated-first to prefer recently-authored tasks). Each def is
- *  tagged with its source. Missing roots are skipped. */
+ *  WINS (list packaged-first: a curated def must beat an LLM-authored one with the
+ *  same name). Each def is tagged with its source. Missing roots are skipped. */
 export async function loadAllTaskDefs(roots: LabeledRoot[]): Promise<TaskDef[]> {
   const byName = new Map<string, TaskDef>();
   for (const { root, source } of roots) {

@@ -38,6 +38,7 @@
 import { WebSocket } from 'ws';
 import type { Agent, AgentMessage } from '@earendil-works/pi-agent-core';
 import { durationMs } from './types.js';
+import { parseClock, msUntilNext } from './clock.js';
 import { DockMemory } from './memory.js';
 
 /** Liveness: the station's hub pings every ~2s. If a task hears nothing at all for
@@ -439,6 +440,15 @@ export abstract class Task {
     const n = typeof ms === 'number' ? ms : durationMs(ms);
     if (!Number.isFinite(n) || n < 0) throw new Error(`sleep got a bad duration (${JSON.stringify(ms)})`);
     return this.#sleepReal(n);
+  }
+  /** Wait until the NEXT wall-clock occurrence of `time` — "19:20", "7:20pm",
+   *  "4:40 PM", "7am" — in the station's local timezone (today if still ahead,
+   *  else tomorrow). Use this for "at TIME of day"; never hand-parse clock times. */
+  protected sleepUntil(time: string): Promise<void> {
+    const clock = parseClock(time);
+    if (!clock) throw new Error(`sleepUntil could not parse the time ${JSON.stringify(time)} — use e.g. "7:20pm" or "19:20"`);
+    const tz = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+    return this.#sleepReal(msUntilNext(clock, tz));
   }
 
   // ── internals ──────────────────────────────────────────────────────────────

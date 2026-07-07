@@ -18,6 +18,8 @@ const PRIMITIVES =
   + '• this.status(text) — set the status the user can pull anytime via get_task_status\n'
   + '• this.finish(summary) — done;  this.errored(why) — failed\n'
   + '• await this.sleep("5s") — wait (string duration or ms number)\n'
+  + '• await this.sleepUntil("7:20pm") — wait until the next wall-clock time ("19:20" / "7:20 PM" / '
+  + '"7am" all work). NEVER hand-parse clock times or compute the delay yourself\n'
   + '• const answer = await this.askAgentInput(prompt) — ask the user and AWAIT their answer\n'
   + '• this.state.<k> = …; this.checkpoint() — optional: persist state so a resume reloads it\n';
 

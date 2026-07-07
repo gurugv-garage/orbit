@@ -2,7 +2,7 @@
  * Task manager — loads the real shipped definitions STATICALLY (never executes a
  * task.ts, since running one connects to the station), validates write (typecheck
  * + class/manifest shape) with rollback, path-guards removal, builds the prompt
- * block, and resolves generated-over-packaged.
+ * block, and resolves packaged-over-generated.
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -88,35 +88,34 @@ test('loadTaskDef throws a clear error for a missing manifest', async () => {
 
 // ── packaged vs generated: search order + source labels ──────────────────────
 
-test('generated tasks win over packaged when names collide; each is source-tagged', async () => {
+test('packaged tasks win over generated when names collide; each is source-tagged', async () => {
   const gen = mkdtempSync(join(tmpdir(), 'gen-'));
-  await writeTaskDef(gen, 'remind-after', validTask('remind-after', 'GENERATED override'));
+  await writeTaskDef(gen, 'remind-after', validTask('remind-after', 'GENERATED shadow'));
 
   const roots = [
-    { root: gen, source: 'generated' as const },
     { root: SHIPPED, source: 'packaged' as const },
+    { root: gen, source: 'generated' as const },
   ];
 
   const found = await findTaskDef(roots, 'remind-after');
-  assert.equal(found.description, 'GENERATED override');
-  assert.equal(found.source, 'generated');
+  assert.notEqual(found.description, 'GENERATED shadow');
+  assert.equal(found.source, 'packaged');
 
   const all = await loadAllTaskDefs(roots);
   const ra = all.filter((d) => d.name === 'remind-after');
   assert.equal(ra.length, 1, 'collision deduped to one');
-  assert.equal(ra[0]!.source, 'generated');
-  const re = all.find((d) => d.name === 'remind-every')!;
-  assert.equal(re.source, 'packaged');
+  assert.equal(ra[0]!.source, 'packaged');
 });
 
-test('packaged is found when there is no generated override', async () => {
-  const gen = mkdtempSync(join(tmpdir(), 'gen-empty-'));
+test('generated is found when no packaged task has that name', async () => {
+  const gen = mkdtempSync(join(tmpdir(), 'gen-'));
+  await writeTaskDef(gen, 'only-generated', validTask('only-generated'));
   const roots = [
-    { root: gen, source: 'generated' as const },
     { root: SHIPPED, source: 'packaged' as const },
+    { root: gen, source: 'generated' as const },
   ];
-  const found = await findTaskDef(roots, 'remind-every');
-  assert.equal(found.source, 'packaged');
+  const found = await findTaskDef(roots, 'only-generated');
+  assert.equal(found.source, 'generated');
 });
 
 // ── authoring: typecheck-on-write + imports ──────────────────────────────────

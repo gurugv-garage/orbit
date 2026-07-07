@@ -1,7 +1,8 @@
 /**
- * Wall-clock parsing + next-occurrence math for remind-at. Kept SEPARATE from
- * task.ts (which calls runTask() at import — process.exit) so the historically
- * brittle time logic is unit-testable without launching a task process.
+ * Wall-clock parsing + next-occurrence math — the harness's ONE implementation
+ * of "at TIME of day". Every task (packaged or LLM-generated) must use this
+ * (directly or via Task.sleepUntil) rather than hand-rolling clock parsing:
+ * hand-rolled versions kept breaking on formats like "4:40 PM".
  */
 
 /**
