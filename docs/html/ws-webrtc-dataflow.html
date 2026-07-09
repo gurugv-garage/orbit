@@ -100,24 +100,30 @@
 
 <section>
   <div class="wrap">
-    <h2>Media plane · the seam</h2>
-    <p class="step-title"><span class="step-n">M2</span>PerceptionProcessingHub <em>is</em> the SFU's one MediaTap</p>
-    <p>The tap is a deliberately narrow interface — <code class="inl">onTrack(streamId, kind, track)</code> and <code class="inl">onProducerGone(streamId)</code>. The SFU knows nothing about STT or vision. The renamed <code class="inl">PerceptionProcessingHub</code> <em>implements</em> that interface, so it plugs into the SFU as a single observer while fanning out to many processors underneath.</p>
+    <h2>Media plane · the router</h2>
+    <p class="step-title"><span class="step-n">M2</span>What PerceptionProcessingHub does: route two feeds to a processor registry</p>
+    <p>It does <em>not</em> touch media samples — the processors do that. The hub is a <strong>router / multiplexer</strong>: it takes two unrelated feeds, stamps each with dock identity, and delivers exactly the right slice to each processor. It also implements <code class="inl">MediaTap</code>, which is just how the SFU hands it the first feed.</p>
+    <table class="cmp">
+      <thead><tr><th>Takes in</th><th>Transforms</th><th>Produces</th></tr></thead>
+      <tbody>
+        <tr><td class="rtcc">RTP tracks (SFU <code class="inl">onTrack</code>)</td><td rowspan="2">resolves <code class="inl">streamId → dockId</code>; source-filters by each processor's <code class="inl">mediaKinds</code> / <code class="inl">channels</code>; manages per-stream lifecycle (start / teardown, gated by <code class="inl">dockReady</code>)</td><td>RTP → each interested processor's <code class="inl">onRtp</code></td></tr>
+        <tr><td class="wsc"><code class="inl">client</code> facts (bus)</td><td>facts → <code class="inl">ChannelItem</code> → <code class="inl">onChannelItem</code></td></tr>
+        <tr><td colspan="2" style="color:var(--ink)">a processor's <code class="inl">ctx.emit(result)</code></td><td>stamped via <code class="inl">makeResult</code> → <code class="inl">perception</code> topic ×2</td></tr>
+      </tbody>
+    </table>
+    <p>The one thing it hands each processor is a <code class="inl">StreamContext</code> — the processor's whole outward surface: <code class="inl">ctx.emit()</code> (a result → the <code class="inl">perception</code> topic) and <code class="inl">ctx.publish()</code> (a fact → <em>other</em> processors, which is how the graph edges from M3 exist).</p>
     <div class="code">
-      <div class="bar"><span class="fname">perception/perception-processing-hub.ts</span><span>the class + the wiring knot (main.ts)</span></div>
-<pre><span class="k">export class</span> PerceptionProcessingHub <span class="k">implements</span> MediaTap { … }
-
-<span class="c">// main.ts — built BEFORE the perception module registers processors,</span>
-<span class="c">// and handed to the media module as its tap:</span>
-perceptionProcessingHub = <span class="k">new</span> PerceptionProcessingHub(
-  bus,
-  (streamId) => roster.find(p => p.id===streamId)?.dock ?? label ?? streamId,
-  (streamId) => { <span class="c">/* dockReady: gate out UNCLAIMED devices */</span> },
-);</pre>
+      <div class="bar"><span class="fname">perception/perception-processing-hub.ts</span><span>the StreamContext it gives each processor</span></div>
+<pre><span class="k">const</span> ctx: StreamContext = {
+  streamId, dockId,                       <span class="c">// identity, resolved once</span>
+  emit: (r) => <span class="k">this</span>.#publishResult(makeResult({ ...r, streamId, dockId })),
+  publish: (channel, payload) => { <span class="c">/* fan to OTHER processors → edges */</span> },
+};
+<span class="k">this</span>.#safe(() => reg.p.onStreamStart(ctx));  <span class="c">// try/catch — a processor can't kill the SFU</span></pre>
     </div>
     <div class="note wire">
       <span class="tag">decoupled</span>
-      <p>The hub imports no other module. It takes the <code class="inl">bus</code>, a <code class="inl">resolveDock</code> closure (peer id → dock, read live from the gateway's roster), and a <code class="inl">dockReady</code> gate. That's how the media module stays portable and perception stays swappable — they meet only through these closures.</p>
+      <p>It imports no other module — just a <code class="inl">bus</code>, a <code class="inl">resolveDock</code> closure (peer id → dock, live from the roster), and the <code class="inl">dockReady</code> gate. So media stays portable and the processor set stays swappable; they meet only through these closures.</p>
     </div>
   </div>
 </section>
