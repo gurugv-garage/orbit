@@ -23,7 +23,7 @@ import { bodylinkModule } from './modules/bodylink/index.js';
 import { MotionExecutor } from './modules/bodylink/motion.js';
 import { mediaModule } from './modules/media/index.js';
 import { PerceptionProcessingHub } from './modules/perception/perception-processing-hub.js';
-import { perceptionModule } from './modules/perception/index.js';
+import { perceptionModule, setCameraMoving } from './modules/perception/index.js';
 import { buildVideoRecorder } from './modules/perception/record/recorder.js';
 import { captureModule } from './modules/capture/index.js';
 import { slackModule } from './modules/slack/index.js';
@@ -132,6 +132,10 @@ async function main() {
   const captureDir = fileURLToPath(new URL('../data/captures', import.meta.url));
 
   modules.push(perceptionModule(() => perceptionProcessingHub!));
+  // Feed the body's "my head just moved" signal into perception (self-motion vs world
+  // change) — the executor's lastMotionAt is the real signal; faceFollow's pans never
+  // reach the bodymotion snapshot stream. Keeps perception decoupled from bodylink.
+  setCameraMoving((dock) => motion.recentlyMoved(dock));
   modules.push(docksModule(directory, () => hub, bindings));
   modules.push(bodylinkModule({ directory, motion, getHub: () => hub }));
 

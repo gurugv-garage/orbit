@@ -88,6 +88,11 @@ const EMBED_THRESHOLD = Number(process.env.VISION_EMBED_THRESHOLD ?? 0.06);
  *  live 2026-07-09: static dim scene ~0.006-0.02, a person walking in 0.25-0.53 — a huge
  *  clean gap, so 0.06 is well-separated and not a knife-edge. */
 const EMBED_DEBUG = process.env.VISION_EMBED_DEBUG === '1';
+/** VISION_SELFMOTION_SUPPRESS=1 → defer a change-trigger while the head is panning (the
+ *  view slid because WE moved, not the world) — a deferral, not a cache. Opt-in until the
+ *  self-motion fraction is measured on a live body (2026-07-09 finding: faceFollow pans
+ *  never reached the bodymotion stream, so this signal now comes from motion.recentlyMoved).*/
+const SELFMOTION_SUPPRESS = process.env.VISION_SELFMOTION_SUPPRESS === '1';
 
 /** 16×16 grayscale ZERO-MEAN signature of a JPEG (null on decode failure). Subtracting
  *  the frame's own mean makes the gate exposure-invariant: a night camera's auto-exposure
@@ -123,7 +128,15 @@ async function analyze(frames: string[], prompt: string): Promise<{ text: string
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-export function visionSnapshotProcessor(store: SnapshotStore, getFrame: GetFrame): StreamProcessor & {
+export function visionSnapshotProcessor(
+  store: SnapshotStore,
+  getFrame: GetFrame,
+  /** Is the dock's camera moving (its head panned within the settle window)? Tagged onto
+   *  each record (camMoving) to tell "the WORLD changed" from "I panned my own head" — a
+   *  change-gate trigger while moving is likely self-motion, same scene. Sourced from the
+   *  MotionExecutor's lastMotionAt (faceFollow's pans never reach the bodymotion stream). */
+  cameraMoving?: (dockId: string) => boolean,
+): StreamProcessor & {
   /** Capture + analyze the CURRENT frames right now and commit, awaiting the
    *  result. Used by the Summarize flush so the freshest visual moment is in the
    *  store before we summarize (the continuous loop's in-flight cycle hasn't
@@ -196,6 +209,7 @@ export function visionSnapshotProcessor(store: SnapshotStore, getFrame: GetFrame
       // store ALL of them — showing only the last would misrepresent the input (the very
       // leak this panel exists to catch). ~16-30KB each in a bounded ring — a debug cost.
       payload: { text, frames: frames.length, latencyMs: to.getTime() - from.getTime(), inferMs, gatedProbes: s.skippedProbes, gateTrigger: s.lastTrigger ?? 'on-demand',
+        camMoving: cameraMoving?.(s.ctx.dockId) ?? false,   // self-motion tag (dock's head moving at fire time)
         inputImages: frames, inputPrompt: prompt },
     }));
     store.addKeyframe({ ts: isoIst(to), from: isoIst(from), jpegB64: frames[frames.length - 1]! });
@@ -287,6 +301,15 @@ export function visionSnapshotProcessor(store: SnapshotStore, getFrame: GetFrame
         // person entering 0.25-0.53. Fallback: the pixel signature + learned noise floor,
         // used only when the embedder is unavailable (VISION_EMBED_GATE=0 / model missing).
         const changed = s.lastEmb ? await embedChanged(s, jpeg) : pixelChanged(s, jpeg);
+        // SELF-MOTION SUPPRESSION (VISION_SELFMOTION_SUPPRESS=1, opt-in until measured): a
+        // change-trigger WHILE THE HEAD IS PANNING is most likely the view sliding because
+        // WE moved, not the world changing — so DEFER (don't wake the VLM), let the head
+        // settle, and re-probe next tick against a stable view. This is a deferral, not a
+        // cache: no stale description risk. captureNow/first-look bypass (not gated here).
+        if (SELFMOTION_SUPPRESS && changed && cameraMoving?.(s.ctx.dockId)) {
+          if (EMBED_DEBUG) console.log(`[vision] ${s.ctx.dockId} defer: ${changed} but head is moving (self-motion)`);
+          s.skippedProbes++; await sleep(PROBE_MS); continue;
+        }
         // changed === null → couldn't probe (no frame) → fail OPEN (look).
         if (changed === null) trigger = 'no-probe-frame';
         else if (changed) trigger = changed;
