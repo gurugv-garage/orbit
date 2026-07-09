@@ -23,26 +23,44 @@ const MODEL_PATH = fileURLToPath(new URL('../../../models/embed/dinov2_vits14.on
 const MEAN = [0.485, 0.456, 0.406];
 const STD = [0.229, 0.224, 0.225];
 
-let session: ort.InferenceSession | null = null;
-let loadFailed = false;
+/** The semantic (embedding) change-gate is OPT-IN until stabilized: set VISION_EMBED_GATE=1
+ *  to enable. Default off → the proven pixel gate runs, no ONNX loaded. This is deliberate —
+ *  a silent embedding failure would masquerade as a vision-quality regression with no clue
+ *  where it came from, so we don't run it by default and we make its state LOUD (below). */
+export const EMBED_GATE_ENABLED = process.env.VISION_EMBED_GATE === '1';
 
-/** Lazy-load the ONNX session once. Returns null if the model file is missing or ORT
- *  can't load it — callers fall back to the pixel gate, so a missing model never breaks
- *  perception. */
+let session: ort.InferenceSession | null = null;
+let loadState: 'unloaded' | 'ok' | 'failed' = 'unloaded';
+
+/** Human status of the embed gate, for the health surface / Studio: is it enabled, and if
+ *  so did the model actually load? Lets an operator SEE "requested but degraded to pixels"
+ *  instead of silently getting worse gating. */
+export function embedGateStatus(): { enabled: boolean; state: 'unloaded' | 'ok' | 'failed' } {
+  return { enabled: EMBED_GATE_ENABLED, state: loadState };
+}
+
+/** Lazy-load the ONNX session once, ONLY when the gate is enabled. Returns null if
+ *  disabled, or if the model is missing/unloadable — and in the FAILURE case it warns
+ *  LOUDLY + repeatedly-suppressed-to-once, because "enabled but failed" is a degraded
+ *  state the operator must know about (not a silent fallback). */
 async function getSession(): Promise<ort.InferenceSession | null> {
-  if (session || loadFailed) return session;
+  if (!EMBED_GATE_ENABLED) return null;               // opt-in: default pixel gate
+  if (session || loadState === 'failed') return session;
   if (!existsSync(MODEL_PATH)) {
-    console.warn(`[embed] DINOv2 ONNX not found at ${MODEL_PATH} — change-gate falls back to pixels`);
-    loadFailed = true;
+    console.error(`[embed] ⚠️  VISION_EMBED_GATE=1 but DINOv2 ONNX missing at ${MODEL_PATH} — `
+      + 'gate is DEGRADED to the pixel path. Run scripts/export-dino.py or unset the flag.');
+    loadState = 'failed';
     return null;
   }
   try {
     session = await ort.InferenceSession.create(MODEL_PATH);
-    console.log('[embed] DINOv2-small ONNX loaded (in-process change-gate)');
+    loadState = 'ok';
+    console.log('[embed] ✅ DINOv2-small ONNX loaded — SEMANTIC change-gate active');
     return session;
   } catch (err) {
-    console.warn(`[embed] failed to load DINOv2 ONNX: ${String(err)} — falling back to pixels`);
-    loadFailed = true;
+    console.error(`[embed] ⚠️  VISION_EMBED_GATE=1 but DINOv2 ONNX FAILED to load: ${String(err)} — `
+      + 'gate is DEGRADED to the pixel path.');
+    loadState = 'failed';
     return null;
   }
 }

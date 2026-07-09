@@ -15,7 +15,7 @@ import * as tf from '@tensorflow/tfjs-node';
 import type { StreamContext, StreamProcessor } from '../processor.js';
 import { makeSnapshot, isoIst, type SnapshotStore } from '../snapshots.js';
 import { visionInstruction } from '../vision-instruction.js';
-import { embedFrame, embedDistance } from '../embed.js';
+import { embedFrame, embedDistance, embedderReady, embedGateStatus } from '../embed.js';
 
 const TEMPORAL_URL = process.env.TEMPORAL_SIDECAR_URL ?? 'http://127.0.0.1:8080';
 /** Frames per analysis window, spread over the capture span for temporal signal. */
@@ -278,6 +278,13 @@ export function visionSnapshotProcessor(store: SnapshotStore, getFrame: GetFrame
     const s = streams.get(streamId);
     if (!s || s.running) return;
     s.running = true;
+    // announce which gate is driving this stream, so it's never a mystery which path ran.
+    void embedderReady().then((ok) => {
+      const st = embedGateStatus();
+      if (!st.enabled) console.log(`[vision] ${s.ctx.dockId}: change-gate = PIXEL (embed gate off; set VISION_EMBED_GATE=1 to enable)`);
+      else if (ok) console.log(`[vision] ${s.ctx.dockId}: change-gate = SEMANTIC (DINOv2 embedding)`);
+      else console.error(`[vision] ${s.ctx.dockId}: change-gate = PIXEL (DEGRADED — embed gate enabled but model unavailable)`);
+    });
     while (streams.has(streamId)) {
       let trigger: string | null = 'first-look';
       if ((s.lastEmb || s.lastSig) && !s.busy) {
