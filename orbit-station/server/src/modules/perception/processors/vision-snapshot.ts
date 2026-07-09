@@ -15,6 +15,7 @@ import * as tf from '@tensorflow/tfjs-node';
 import type { StreamContext, StreamProcessor } from '../processor.js';
 import { makeSnapshot, isoIst, type SnapshotStore } from '../snapshots.js';
 import { visionInstruction } from '../vision-instruction.js';
+import { embedFrame, embedDistance } from '../embed.js';
 
 const TEMPORAL_URL = process.env.TEMPORAL_SIDECAR_URL ?? 'http://127.0.0.1:8080';
 /** Frames per analysis window, spread over the capture span for temporal signal. */
@@ -36,6 +37,11 @@ interface StreamState {
    *  and only spends the ~4.5 s GPU inference when pixels actually moved past the
    *  threshold — a static scene was previously re-described 8×/min (2026-07-05). */
   lastSig?: Float32Array;
+  /** the last ANALYZED frame's DINOv2 embedding — the SEMANTIC change-gate anchor. When
+   *  the embedder is available this replaces the pixel signature: cosine distance to it
+   *  decides whether the scene changed, robust to the lighting/compression jitter that
+   *  false-fired the pixel gate. Pixels stay as fallback when the model is unavailable. */
+  lastEmb?: Float32Array;
   lastAnalyzedAt: number;
   skippedProbes: number; // gated probes since the last analysis (surfaced in the payload)
   /** the previous window's description — fed back into the prompt so the model reports
@@ -76,6 +82,11 @@ const NOISE_K = 5;   // headroom over a flickery edge cell's learned jitter (3 t
 /** at most one sense-wake look per this window (continuous audio ≠ visual change). */
 const SENSE_WAKE_COOLDOWN_MS = Number(process.env.VISION_SENSE_WAKE_COOLDOWN_MS ?? 120_000);
 const REFRESH_MS = Number(process.env.VISION_REFRESH_MS ?? 300_000);
+/** SEMANTIC gate: cosine distance between L2-normalized DINOv2 embeddings above which the
+ *  scene is "meaningfully changed" (0=identical). Tuned on the real dock: static-scene
+ *  probe-to-probe distance sits ~0.00-0.02 (lighting/compression), a person/object change
+ *  is >=0.1. 0.06 sits in the clean gap. Env-tunable while dialing in. */
+const EMBED_THRESHOLD = Number(process.env.VISION_EMBED_THRESHOLD ?? 0.06);
 
 /** 16×16 grayscale ZERO-MEAN signature of a JPEG (null on decode failure). Subtracting
  *  the frame's own mean makes the gate exposure-invariant: a night camera's auto-exposure
@@ -235,7 +246,9 @@ export function visionSnapshotProcessor(store: SnapshotStore, getFrame: GetFrame
     s.lastText = text;
     // change-gate bookkeeping: remember what the ANALYZED scene looked like, so the
     // cheap probe can tell whether anything has moved since.
-    s.lastSig = frameSignature(Buffer.from(frames[frames.length - 1]!, 'base64')) ?? s.lastSig;
+    const lastJpeg = Buffer.from(frames[frames.length - 1]!, 'base64');
+    s.lastSig = frameSignature(lastJpeg) ?? s.lastSig;
+    s.lastEmb = (await embedFrame(lastJpeg)) ?? s.lastEmb;   // semantic anchor (null → pixel path)
     s.lastAnalyzedAt = Date.now();
     s.skippedProbes = 0;
     return true;
@@ -267,9 +280,27 @@ export function visionSnapshotProcessor(store: SnapshotStore, getFrame: GetFrame
     s.running = true;
     while (streams.has(streamId)) {
       let trigger: string | null = 'first-look';
-      if (s.lastSig && !s.busy) {
+      if ((s.lastEmb || s.lastSig) && !s.busy) {
         trigger = null;
         const jpeg = getFrame(s.ctx.streamId);
+        // ── SEMANTIC gate (preferred): cosine distance of this frame's embedding to the
+        //    last analyzed frame's. Robust to lighting/compression flicker that false-fired
+        //    the pixel gate; fires on real content change. Falls through to pixels only when
+        //    the embedder is unavailable (no ONNX model / load failure). ──
+        if (s.lastEmb) {
+          const emb = jpeg ? await embedFrame(jpeg) : null;
+          if (!emb) trigger = 'no-probe-frame';
+          else {
+            const d = embedDistance(emb, s.lastEmb);
+            if (d >= EMBED_THRESHOLD) trigger = `scene-change emb=${d.toFixed(3)}`;
+            else if (Date.now() - (s.lastSenseWakeAt ?? 0) >= SENSE_WAKE_COOLDOWN_MS && senseWake(s)) {
+              trigger = 'sense-wake'; s.lastSenseWakeAt = Date.now();
+            } else if (Date.now() - s.lastAnalyzedAt >= REFRESH_MS) trigger = 'heartbeat';
+          }
+          if (trigger) { s.lastTrigger = trigger; }
+          if (trigger) { /* fall through to the analyze block below */ }
+          else { s.skippedProbes++; await sleep(PROBE_MS); continue; }
+        } else {
         const sig = jpeg ? frameSignature(jpeg) : null;
         if (!sig) {
           trigger = 'no-probe-frame';    // can't verify "unchanged" → look (fail open)
@@ -288,7 +319,7 @@ export function visionSnapshotProcessor(store: SnapshotStore, getFrame: GetFrame
           s.prevProbeSig = sig;
           let excessSum = 0; let excessMax = 0;
           for (let i = 0; i < sig.length; i++) {
-            const excess = Math.max(0, Math.abs(sig[i]! - s.lastSig[i]!) - NOISE_K * s.noiseFloor[i]!);
+            const excess = Math.max(0, Math.abs(sig[i]! - s.lastSig![i]!) - NOISE_K * s.noiseFloor[i]!);
             excessSum += excess; if (excess > excessMax) excessMax = excess;
           }
           const excessMean = excessSum / sig.length;
@@ -300,6 +331,7 @@ export function visionSnapshotProcessor(store: SnapshotStore, getFrame: GetFrame
           }
           else if (Date.now() - s.lastAnalyzedAt >= REFRESH_MS) trigger = 'heartbeat';
         }
+        } // end pixel-fallback branch
       }
       if (trigger) {
         s.lastTrigger = trigger;
