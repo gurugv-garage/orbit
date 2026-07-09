@@ -28,13 +28,14 @@ import {
 } from './processor.js';
 
 /**
- * Which bus messages become fact channels. The dock publishes client facts on the
- * `client` topic (kind = the fact name); we expose them as channel `client.<kind>`.
- * Other processors' outputs are delivered directly (not via the bus) for latency,
- * so this map is just the external (WS) → channel bridge.
+ * Which `client`-topic messages become fact channels. The dock publishes client
+ * facts on the `client` topic (kind = the fact name); we expose them as channel
+ * `client.<kind>`. Other processors' outputs are delivered directly (not via the
+ * bus) for latency, so this map is just the external (WS) → channel bridge. Only
+ * the `client` topic is bridged here — hence the name, not `…ForBusMsg`.
  */
 const CLIENT_TOPIC = 'client' as const;
-const channelForBusMsg = (m: BusMessage): string | null =>
+const channelForClientMsg = (m: BusMessage): string | null =>
   m.topic === CLIENT_TOPIC ? `${CLIENT_TOPIC}.${m.kind}` : null;
 
 /** map key for a live track (so a late processor can re-subscribe to its RTP). */
@@ -70,7 +71,7 @@ export class PerceptionProcessingHub implements MediaTap {
     this.#resolveDock = resolveDock;
     this.#dockReady = dockReady ?? (() => true);
     // WS facts → channel items, fanned to interested processors.
-    this.#bus.on(CLIENT_TOPIC, (m) => this.#onBusFact(m));
+    this.#bus.on(CLIENT_TOPIC, (m) => this.#onClientFact(m));
   }
 
   /** The dock a stream/peer id is grouped under — the same mapping snapshots use
@@ -152,9 +153,9 @@ export class PerceptionProcessingHub implements MediaTap {
 
   // ── WS facts → processors ──────────────────────────────────────────────────
 
-  #onBusFact(m: BusMessage): void {
+  #onClientFact(m: BusMessage): void {
     if (m.source === 'station') return; // ignore our own emissions
-    const channel = channelForBusMsg(m);
+    const channel = channelForClientMsg(m);
     if (!channel) return;
     const streamId = m.source;
     const item: ChannelItem = {

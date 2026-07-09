@@ -1,0 +1,228 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Orbit — WS + WebRTC data flow</title>
+<!-- shared design system for docs/html/ — see assets/doc.css -->
+<link rel="stylesheet" href="assets/doc.css">
+</head>
+<body>
+
+<header class="hero">
+  <div class="wrap">
+    <div class="eyebrow">orbit-station · data-flow walkthrough</div>
+    <h1>Two transports, one peer: WS control &amp; WebRTC media</h1>
+    <p class="lede">A dock holds two connections to the station at once. One carries discrete JSON control frames; the other carries a continuous live A/V stream. They ride different classes, meet only at the bus, and are keyed by the same id. This traces both — and where they cross.</p>
+    <div class="planes">
+      <div class="plane ws">
+        <h3><span class="pill">plane 1</span> Control &amp; facts</h3>
+        <p><span class="cls">WebSocketGateway</span> — owns the <code class="inl">/ws</code> server. hello / subscribe / publish / <b>event</b> frames. Small discrete JSON.</p>
+      </div>
+      <div class="plane rtc">
+        <h3><span class="pill">plane 2</span> Live media</h3>
+        <p><span class="cls">Sfu</span> + <span class="cls">PerceptionProcessingHub</span> — WebRTC RTP in, tapped and fanned to perception processors. Continuous.</p>
+      </div>
+    </div>
+  </div>
+</header>
+
+<section>
+  <div class="wrap">
+    <h2>Orientation</h2>
+    <p class="step-title">The same peer id keys both planes</p>
+    <p>The dock app's <strong>peer id</strong> is the unifying key. On the media side the SFU calls it <code class="inl">streamId</code>; on the bus side every WS frame is stamped with it as <code class="inl">source</code>. Because they're the same string, one processor subscription can correlate a video frame with a battery-level fact from the same device.</p>
+    <table class="cmp">
+      <thead><tr><th></th><th>Control plane (WS)</th><th>Media plane (WebRTC)</th></tr></thead>
+      <tbody>
+        <tr><td>Class</td><td class="wsc">WebSocketGateway</td><td class="rtcc">Sfu → PerceptionProcessingHub</td></tr>
+        <tr><td>File</td><td class="wsc">core/websocket-gateway.ts</td><td class="rtcc">media/sfu.ts · perception/…-hub.ts</td></tr>
+        <tr><td>Owns a server?</td><td class="wsc">yes — WebSocketServer</td><td class="rtcc">Sfu owns the RTCPeerConnections</td></tr>
+        <tr><td>Carries</td><td>JSON frames (hello, subscribe, publish, event)</td><td>Opus audio + VP8 video RTP</td></tr>
+        <tr><td>Key</td><td><code class="inl">source</code> = peer id</td><td><code class="inl">streamId</code> = peer id</td></tr>
+        <tr><td>Meets the other at</td><td colspan="2" style="text-align:center;color:var(--ink)"><b>the in-process Bus</b> — via named <b>topics</b>, the only seam between the two planes</td></tr>
+      </tbody>
+    </table>
+    <div class="note wire">
+      <span class="tag">note</span>
+      <p>WebRTC is <em>negotiated over</em> the WS — the SDP offer/answer and ICE candidates ride as <code class="inl">media</code>-topic frames through the <code class="inl">WebSocketGateway</code>. But once negotiated, the media itself flows as RTP into the <code class="inl">Sfu</code>, not through the gateway. Signaling = control plane; payload = media plane.</p>
+    </div>
+    <div class="note">
+      <span class="tag">say "topic," not "bus"</span>
+      <p>There is exactly <strong>one</strong> <code class="inl">Bus</code> (a generic <code class="inl">Map&lt;topic, handler&gt;</code> in <code class="inl">core/bus.ts</code>) and <strong>15 topics</strong> on it. "The dock's facts go on the bus" and "perception results go on the bus" are both literally true — but they're different <em>topics</em> (<code class="inl">client</code> vs <code class="inl">perception</code>), opposite directions. The bus is the pipe; the <strong>topic</strong> is the traffic type. Below, we always name the topic.</p>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <h2>Control plane · inbound</h2>
+    <p class="step-title"><span class="step-n w">W1</span>A peer dials <code class="inl">/ws</code> and the gateway bridges it to the bus</p>
+    <p>The <code class="inl">WebSocketGateway</code> owns the one WebSocket server. Every peer — dock phone, ESP32 body, browser console — connects here, says <code class="inl">hello</code>, and gets a <code class="inl">welcome</code> with its resolved dock/component. Two inbound frame types drive everything:</p>
+    <ul class="tight">
+      <li><code class="inl">subscribe</code> — the peer names the topics it wants; the gateway records them per-peer.</li>
+      <li><code class="inl">publish</code> — the peer emits a fact; the gateway forwards it to the in-process bus, stamped with <code class="inl">source: peer.id</code>.</li>
+    </ul>
+    <div class="code">
+      <div class="bar"><span class="fname">core/websocket-gateway.ts</span><span>inbound publish → bus</span></div>
+<pre>case <span class="s">'publish'</span>:
+  <span class="c">// heartbeats also refresh links / build / rssi on the roster …</span>
+  <span class="k">this</span>.#bus.publish({
+    topic: f.topic, kind: f.kind, payload: f.payload,
+    source: peer.id,          <span class="c">// ← the unifying key, stamped here</span>
+  });
+  break;</pre>
+    </div>
+    <p>From here a fact is on the bus, and any module subscribed to that topic reacts. Notably, the <code class="inl">PerceptionProcessingHub</code> subscribes to the <code class="inl">client</code> topic — so a dock's on-device VAD or battery fact enters the <em>media</em> plane's processors through this WS path.</p>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <h2>Media plane · ingest</h2>
+    <p class="step-title"><span class="step-n">M1</span>The SFU answers the dock's offer and taps its tracks</p>
+    <p>After the dock's SDP offer arrives (as a <code class="inl">media</code> control frame), <code class="inl">Sfu.onProducerOffer</code> builds an <code class="inl">RTCPeerConnection</code> keyed by <code class="inl">streamId = dockId</code>, answers, and subscribes to <code class="inl">pc.onTrack</code>. That handler is the crossroads:</p>
+    <div class="code">
+      <div class="bar"><span class="fname">media/sfu.ts</span><span>pc.onTrack.subscribe</span></div>
+<pre><span class="k">if</span> (track.kind === <span class="s">'video'</span>) <span class="k">this</span>.#startKeyframeRequests(...); <span class="c">// RTCP PLI / 2s</span>
+
+<span class="c">// hand the track to the processing tap — STT/vision/recording see</span>
+<span class="c">// the SAME inbound RTP the SFU forwards to browser viewers.</span>
+<span class="k">this</span>.#tap?.onTrack(streamId, track.kind <span class="k">as</span> MediaKind, track);</pre>
+    </div>
+    <p>That one line is why the SFU runs server-side rather than peer-to-peer: routing media through a server means <strong>every producer's stream passes one observable point</strong> — the tap. In production, <code class="inl">#tap</code> is the <code class="inl">PerceptionProcessingHub</code>.</p>
+    <div class="note warn">
+      <span class="tag">why PLI</span>
+      <p>The dock sends a keyframe only at connect; under packet loss the decoded P-frames smear. The SFU asks for a fresh keyframe every 2s so both viewers and the vision/face processors stay sharp.</p>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <h2>Media plane · the seam</h2>
+    <p class="step-title"><span class="step-n">M2</span>PerceptionProcessingHub <em>is</em> the SFU's one MediaTap</p>
+    <p>The tap is a deliberately narrow interface — <code class="inl">onTrack(streamId, kind, track)</code> and <code class="inl">onProducerGone(streamId)</code>. The SFU knows nothing about STT or vision. The renamed <code class="inl">PerceptionProcessingHub</code> <em>implements</em> that interface, so it plugs into the SFU as a single observer while fanning out to many processors underneath.</p>
+    <div class="code">
+      <div class="bar"><span class="fname">perception/perception-processing-hub.ts</span><span>the class + the wiring knot (main.ts)</span></div>
+<pre><span class="k">export class</span> PerceptionProcessingHub <span class="k">implements</span> MediaTap { … }
+
+<span class="c">// main.ts — built BEFORE the perception module registers processors,</span>
+<span class="c">// and handed to the media module as its tap:</span>
+perceptionProcessingHub = <span class="k">new</span> PerceptionProcessingHub(
+  bus,
+  (streamId) => roster.find(p => p.id===streamId)?.dock ?? label ?? streamId,
+  (streamId) => { <span class="c">/* dockReady: gate out UNCLAIMED devices */</span> },
+);</pre>
+    </div>
+    <div class="note wire">
+      <span class="tag">decoupled</span>
+      <p>The hub imports no other module. It takes the <code class="inl">bus</code>, a <code class="inl">resolveDock</code> closure (peer id → dock, read live from the gateway's roster), and a <code class="inl">dockReady</code> gate. That's how the media module stays portable and perception stays swappable — they meet only through these closures.</p>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <h2>Media plane · fan-out</h2>
+    <p class="step-title"><span class="step-n">M3</span>Fuse RTP + client-topic facts, source-filtered, to processors</p>
+    <p>The hub merges its two inputs — <strong>RTP</strong> from the SFU and <strong><code class="inl">client</code>-topic facts</strong> (the dock's on-device VAD/battery/face, arriving over WS) — per source. Its handler for those facts is named for the topic it listens to: <code class="inl">#onClientFact</code>, wired only to <code class="inl">bus.on('client', …)</code> — not "bus facts" in general. Each processor declares <code class="inl">sources</code> / <code class="inl">mediaKinds</code> / <code class="inl">channels</code>; the hub delivers only matching items, each wrapped in try/catch so a processor can never kill the SFU.</p>
+    <div class="diagram">
+<pre>   <span class="hlw">client topic (client.*)</span>          <span class="hl">SFU onTrack(rtp)</span>
+   via WebSocketGateway ─┐         via Sfu tap ─┐
+                        ▼                       ▼
+      <span class="hl">┌──────────────  PerceptionProcessingHub  ───────────────┐</span>
+      │  onClientFact: wantsSource? + channels? → onChannelItem │
+      │  onTrack:      wantsSource? + mediaKinds? → subscribeRtp │
+      <span class="hl">└───┬──────────────┬──────────────┬──────────────┬──────┘</span>
+          ▼              ▼              ▼              ▼
+      <span class="hl">stt-watch</span>       <span class="hl">face-recog</span>      <span class="hl">vision</span>        <span class="hl">presence</span>
+      opus→PCM→VAD    vp8→JPEG→api    reads frame    (facts only)
+          │              │              │              │
+          └──────────────┴─── ctx.emit(result) ───────┘
+                             ▼
+                <span class="hl">#publishResult → bus.publish('perception', …)</span> ×2</pre>
+    </div>
+    <div class="grid">
+      <div class="card"><h4><span class="ico">🎙</span> stt-watch</h4><p>Depacketizes Opus RTP → 16 kHz PCM → VAD endpoints utterances → STT sidecar (:8078, parakeet). One clean transcript per utterance.</p><span class="mk">onRtp · audio</span></div>
+      <div class="card"><h4><span class="ico">👁</span> vision-snapshot</h4><p>Reuses the face processor's already-decoded frame (one ffmpeg per dock), sends to the qwen2.5-VL sidecar (:8080).</p><span class="mk">lifecycle-only</span></div>
+      <div class="card"><h4><span class="ico">👤</span> face-recognition</h4><p>Owns the VP8→JPEG grabber; runs face-api descriptors against the gallery. Its frame is shared with vision.</p><span class="mk">onRtp · video</span></div>
+      <div class="card"><h4><span class="ico">🫥</span> presence</h4><p>Fact-only — reacts to <code class="inl">client.*</code> facts (the WS plane) to track whether anyone's at the dock.</p><span class="mk">onChannelItem</span></div>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <h2>Where the planes cross</h2>
+    <p class="step-title"><span class="step-n w">×</span>Media understanding returns via the WS gateway</p>
+    <p>A processor calls <code class="inl">ctx.emit(result)</code>; the hub stamps it and publishes to the <code class="inl">perception</code> topic <strong>twice</strong> — directed to the dock, plus an undirected copy for the console. This is the exact hand-off from the media plane back to the control plane:</p>
+    <div class="code">
+      <div class="bar"><span class="fname">perception/perception-processing-hub.ts</span><span>#publishResult</span></div>
+<pre><span class="c">// directed to the dock — its brain re-grounds on the fact</span>
+<span class="k">this</span>.#bus.publish({ topic:<span class="s">'perception'</span>, kind:r.kind, payload:r, source:<span class="s">'station'</span>, <span class="k">to</span>:r.dockId });
+<span class="c">// undirected copy — the console + world-state aggregator</span>
+<span class="k">this</span>.#bus.publish({ topic:<span class="s">'perception'</span>, kind:r.kind, payload:r, source:<span class="s">'station'</span> });</pre>
+    </div>
+    <p>That <code class="inl">perception</code>-topic message is now caught by the <code class="inl">WebSocketGateway</code>, whose one <code class="inl">bus.on('*')</code> subscription turns <em>every</em> bus message into an <code class="inl">event</code> frame for peers subscribed to that topic — the reverse of the inbound <code class="inl">publish</code> path:</p>
+    <div class="code">
+      <div class="bar"><span class="fname">core/websocket-gateway.ts</span><span>bus '*' → outbound event frames</span></div>
+<pre>bus.on(<span class="s">'*'</span>, (msg) => {
+  <span class="k">const</span> frame: EventFrame = { t:<span class="s">'event'</span>, topic:msg.topic, kind:msg.kind, payload:msg.payload, ts:msg.ts };
+  <span class="k">for</span> (<span class="k">const</span> peer <span class="k">of</span> <span class="k">this</span>.#peers.values()) {
+    <span class="k">if</span> (!peer.topics.has(msg.topic)) <span class="k">continue</span>;        <span class="c">// not subscribed → skip</span>
+    <span class="k">if</span> (isDirected(msg)) { <span class="c">/* only the addressed dock: to / toAddr */</span> }
+    peer.ws.send(json);
+  }
+});</pre>
+    </div>
+    <div class="note wire">
+      <span class="tag">full circle</span>
+      <p>Media entered as RTP on the media plane; understanding leaves as a JSON <code class="inl">event</code> frame on the control plane. The <strong>directed</strong> copy reaches only the dock it's about (its brain re-grounds the next turn); the <strong>undirected</strong> copy feeds the Perception Studio console. The Bus is the only place the two planes touch.</p>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <h2>The whole path</h2>
+    <p class="step-title">One turn, both planes</p>
+    <div class="diagram">
+<pre>  dock phone
+     │
+     ├── <span class="hlw">WS ─▶ WebSocketGateway</span> ─▶ Bus ─[client]─▶ modules (brain, docks, …)
+     │       hello / subscribe / publish            ▲
+     │                                               │  Bus [perception] → event frame
+     │                                               │  (directed to dock + undirected)
+     └── <span class="hl">WebRTC/RTP ─▶ Sfu</span> ─(tap)─▶ <span class="hl">PerceptionProcessingHub</span>
+                                       │  source-filtered fan-out
+                          ┌────────────┼────────────┐
+                          ▼            ▼            ▼
+                      stt-watch    face-recog    vision
+                       :8078        gallery       :8080
+                          │            │            │
+                          └─── ctx.emit(result) ────┘
+                                       ▼
+                   #publishResult → <span class="dim">Bus [perception]</span> ───────┘
+                                (crosses back to the WS plane above)</pre>
+    </div>
+    <p>Read the code in this order:</p>
+    <ul class="tight">
+      <li><a class="file" href="../../orbit-station/server/src/core/websocket-gateway.ts">websocket-gateway.ts</a> — inbound <code class="inl">publish</code> → bus (control-plane in)</li>
+      <li><a class="file" href="../../orbit-station/server/src/modules/media/sfu.ts">media/sfu.ts</a> — <code class="inl">onProducerOffer</code> → <code class="inl">pc.onTrack</code> → <code class="inl">#tap.onTrack</code></li>
+      <li><a class="file" href="../../orbit-station/server/src/modules/media/tap.ts">media/tap.ts</a> — the <code class="inl">MediaTap</code> contract</li>
+      <li><a class="file" href="../../orbit-station/server/src/modules/perception/perception-processing-hub.ts">perception-processing-hub.ts</a> — fan-out + <code class="inl">#publishResult</code></li>
+      <li><a class="file" href="../../orbit-station/server/src/main.ts">main.ts</a> — the hub built as the SFU's tap</li>
+      <li><a class="file" href="../../orbit-station/server/src/core/bus.ts">core/bus.ts</a> — the generic Bus (15 topics ride it)</li>
+    </ul>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">
+    <span class="mono">orbit-station · WS control + WebRTC media</span> — reflects the <code style="font-family:var(--mono)">Hub→WebSocketGateway</code>, <code style="font-family:var(--mono)">ProcessingHub→PerceptionProcessingHub</code> rename. Line refs approximate to the working tree.
+  </div>
+</footer>
+
+</body>
+</html>

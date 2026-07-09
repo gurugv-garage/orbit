@@ -1,0 +1,149 @@
+/* ============================================================================
+ * orbit docs — shared HTML-doc design system
+ * ----------------------------------------------------------------------------
+ * The stylesheet every self-contained HTML doc under docs/html/ links to, so
+ * the whole set reads as one system (theme-aware, code-forward, calm neutrals
+ * biased toward the pipeline's signal-cyan). Design tokens live on :root; both
+ * light and dark are first-class (OS preference via prefers-color-scheme, and a
+ * data-theme override if a viewer toggles).
+ *
+ * Usage in a doc (docs/html/<name>.html):
+ *   <link rel="stylesheet" href="assets/doc.css">
+ * Then use the component classes: .wrap, header.hero, .planes/.plane, section,
+ * .step-title/.step-n, .code, .note[.wire|.warn], .diagram, .grid/.card,
+ * table.cmp, ul.tight, footer. Class vocabulary is documented inline below.
+ *
+ * NB: fonts are system stacks (no webfont fetch), so a doc opened from file://
+ * with no network still renders correctly.
+ * ==========================================================================*/
+
+:root {
+  --bg: #f4f6f8; --surface: #ffffff; --surface-2: #eef1f4;
+  --ink: #14181d; --ink-2: #4a555f; --ink-3: #7c8791;
+  --line: #dde3e8; --line-strong: #c3ccd3;
+  --accent: #0f9d8a; --accent-ink: #0a6d60; --accent-soft: #d7f0eb;   /* media plane */
+  --wire: #1f7ae0; --wire-ink: #155bad; --wire-soft: #dbe9fb;         /* control plane */
+  --warn: #c26a1a;
+  --code-bg: #0f1419; --code-ink: #d7dee6; --code-dim: #7e8a96;
+  --code-key: #6fd0bd; --code-str: #d9a15f; --code-com: #5b6b6a;
+  --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+  --sans: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  --radius: 10px; --maxw: 960px;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0d1116; --surface: #151b22; --surface-2: #1b232c;
+    --ink: #e7edf2; --ink-2: #a9b6c0; --ink-3: #6f7d88;
+    --line: #253039; --line-strong: #33424e;
+    --accent: #2bc3ab; --accent-ink: #6fe0cd; --accent-soft: #14312d;
+    --wire: #4a97ec; --wire-ink: #7fb4f0; --wire-soft: #14263c;
+    --warn: #d78a3f; --code-bg: #0a0e12;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0d1116; --surface: #151b22; --surface-2: #1b232c;
+  --ink: #e7edf2; --ink-2: #a9b6c0; --ink-3: #6f7d88;
+  --line: #253039; --line-strong: #33424e;
+  --accent: #2bc3ab; --accent-ink: #6fe0cd; --accent-soft: #14312d;
+  --wire: #4a97ec; --wire-ink: #7fb4f0; --wire-soft: #14263c;
+  --warn: #d78a3f; --code-bg: #0a0e12;
+}
+:root[data-theme="light"] {
+  --bg: #f4f6f8; --surface: #ffffff; --surface-2: #eef1f4;
+  --ink: #14181d; --ink-2: #4a555f; --ink-3: #7c8791;
+  --line: #dde3e8; --line-strong: #c3ccd3;
+  --accent: #0f9d8a; --accent-ink: #0a6d60; --accent-soft: #d7f0eb;
+  --wire: #1f7ae0; --wire-ink: #155bad; --wire-soft: #dbe9fb;
+  --warn: #c26a1a; --code-bg: #0f1419;
+}
+
+/* reset (committed docs aren't wrapped in a host skeleton, so carry their own) */
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body { margin: 0; background: var(--bg); color: var(--ink); font-family: var(--sans); line-height: 1.6; -webkit-font-smoothing: antialiased; }
+img { max-width: 100%; }
+@media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
+
+.wrap { max-width: var(--maxw); margin: 0 auto; padding: 0 24px; }
+
+/* hero */
+header.hero { padding: 56px 0 40px; border-bottom: 1px solid var(--line); }
+.eyebrow { font-family: var(--mono); font-size: 12px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--accent-ink); font-weight: 600; }
+h1 { font-size: clamp(30px, 5vw, 44px); line-height: 1.1; margin: 14px 0 12px; letter-spacing: -0.02em; text-wrap: balance; font-weight: 700; }
+.lede { font-size: 18px; color: var(--ink-2); max-width: 64ch; margin: 0; }
+
+/* two-plane legend (.planes > .plane.ws | .plane.rtc) */
+.planes { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-top: 28px; }
+@media (max-width: 620px) { .planes { grid-template-columns: 1fr; } }
+.plane { border: 1px solid var(--line-strong); border-radius: var(--radius); padding: 15px 17px; background: var(--surface); }
+.plane.ws { border-top: 3px solid var(--wire); }
+.plane.rtc { border-top: 3px solid var(--accent); }
+.plane h3 { margin: 0 0 4px; font-size: 15px; display: flex; align-items: center; gap: 8px; }
+.plane .pill { font-family: var(--mono); font-size: 10px; letter-spacing: 0.06em; text-transform: uppercase; padding: 2px 7px; border-radius: 20px; font-weight: 700; }
+.plane.ws .pill { background: var(--wire-soft); color: var(--wire-ink); }
+.plane.rtc .pill { background: var(--accent-soft); color: var(--accent-ink); }
+.plane p { margin: 6px 0 0; font-size: 13.5px; color: var(--ink-2); }
+.plane .cls { font-family: var(--mono); font-size: 12px; color: var(--ink); font-weight: 600; }
+
+/* sections + headings */
+section { padding: 44px 0; border-bottom: 1px solid var(--line); }
+section:last-of-type { border-bottom: none; }
+h2 { font-size: 13px; font-family: var(--mono); text-transform: uppercase; letter-spacing: 0.12em; color: var(--ink-3); margin: 0 0 4px; }
+.step-title { font-size: clamp(21px, 3vw, 27px); letter-spacing: -0.015em; margin: 0 0 14px; line-height: 1.2; text-wrap: balance; font-weight: 650; }
+.step-n { display: inline-block; font-family: var(--mono); color: var(--accent); font-weight: 700; margin-right: 4px; }  /* .w → wire/control tint */
+.step-n.w { color: var(--wire); }
+p { color: var(--ink-2); max-width: 70ch; }
+p strong { color: var(--ink); font-weight: 600; }
+code.inl { font-family: var(--mono); font-size: 0.85em; background: var(--surface-2); border: 1px solid var(--line); padding: 1px 5px; border-radius: 4px; color: var(--ink); white-space: nowrap; }
+a.file { color: var(--wire); text-decoration: none; font-family: var(--mono); font-size: 0.85em; border-bottom: 1px dotted var(--wire); }
+a.file:hover { border-bottom-style: solid; }
+a.file:focus-visible { outline: 2px solid var(--wire); outline-offset: 2px; border-radius: 2px; }
+
+/* code block (.code > .bar + pre; tokens: .c comment .k keyword .s string) */
+.code { background: var(--code-bg); border-radius: var(--radius); margin: 18px 0; overflow-x: auto; border: 1px solid var(--line-strong); }
+.code .bar { display: flex; justify-content: space-between; align-items: center; padding: 8px 14px; border-bottom: 1px solid rgba(255,255,255,0.07); font-family: var(--mono); font-size: 11.5px; color: var(--code-dim); }
+.code .bar .fname { color: var(--code-key); }
+pre { margin: 0; padding: 14px 16px; font-family: var(--mono); font-size: 12.8px; line-height: 1.62; color: var(--code-ink); overflow-x: auto; }
+pre .c { color: var(--code-com); font-style: italic; }
+pre .k { color: var(--code-key); }
+pre .s { color: var(--code-str); }
+
+/* callout (.note[.wire|.warn] > .tag + p) */
+.note { display: grid; grid-template-columns: auto 1fr; gap: 12px; background: var(--surface); border: 1px solid var(--line); border-left: 3px solid var(--accent); border-radius: 8px; padding: 14px 16px; margin: 18px 0; font-size: 14.5px; color: var(--ink-2); }
+.note.wire { border-left-color: var(--wire); }
+.note.warn { border-left-color: var(--warn); }
+.note .tag { font-family: var(--mono); font-size: 10.5px; letter-spacing: 0.08em; text-transform: uppercase; font-weight: 700; color: var(--accent-ink); padding-top: 2px; white-space: nowrap; }
+.note.wire .tag { color: var(--wire-ink); }
+.note.warn .tag { color: var(--warn); }
+.note p { margin: 0; max-width: none; }
+@media (max-width: 560px) { .note { grid-template-columns: 1fr; gap: 4px; } }
+
+/* ASCII diagram (.diagram > pre; tokens: .hl media .hlw control .dim) */
+.diagram { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 22px; margin: 8px 0 4px; overflow-x: auto; }
+.diagram pre { background: none; color: var(--ink-2); padding: 0; font-size: 12.5px; line-height: 1.5; white-space: pre; }
+.diagram .hl { color: var(--accent-ink); font-weight: 600; }
+.diagram .hlw { color: var(--wire-ink); font-weight: 600; }
+.diagram .dim { color: var(--ink-3); }
+
+/* card grid (.grid > .card) */
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 12px; margin: 18px 0; }
+.card { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 14px 15px; }
+.card h4 { margin: 0 0 5px; font-size: 14.5px; display: flex; align-items: center; gap: 7px; }
+.card h4 .ico { font-size: 15px; }
+.card p { font-size: 13px; margin: 0; max-width: none; line-height: 1.5; }
+.card .mk { display: inline-block; font-family: var(--mono); font-size: 10px; color: var(--ink-3); margin-top: 8px; letter-spacing: 0.03em; }
+
+/* comparison table (table.cmp; cell tints .wsc control, .rtcc media) */
+table.cmp { width: 100%; border-collapse: collapse; margin: 18px 0; font-size: 13.5px; }
+table.cmp th, table.cmp td { text-align: left; padding: 9px 12px; border-bottom: 1px solid var(--line); vertical-align: top; }
+table.cmp thead th { font-family: var(--mono); font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--ink-3); font-weight: 600; }
+table.cmp td:first-child { color: var(--ink); font-weight: 500; width: 26%; }
+table.cmp .wsc { color: var(--wire-ink); font-family: var(--mono); font-size: 12px; }
+table.cmp .rtcc { color: var(--accent-ink); font-family: var(--mono); font-size: 12px; }
+
+/* lists + footer */
+ul.tight { color: var(--ink-2); max-width: 70ch; padding-left: 20px; }
+ul.tight li { margin: 6px 0; }
+ul.tight code.inl { white-space: normal; }
+footer { padding: 34px 0 60px; color: var(--ink-3); font-size: 13px; }
+footer .mono { font-family: var(--mono); font-size: 12px; }
