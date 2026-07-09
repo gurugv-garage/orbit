@@ -668,14 +668,38 @@ export function PerceptionStudio() {
   const win = sumResult?.window ?? pinnedWindow;
   const from = win?.from ?? istIso(sumWindow);
   const to = win?.to ?? istIso(0);
-  const filtered = rows
+  const filteredRaw = rows
     .filter((r) => !hiddenKinds.has(r.viewKind))
     .filter((r) => !limitToWindow || (r.snap.interval.to >= from && r.snap.interval.from <= to));
+  // COLLAPSE consecutive frame-accounting GAP rows of the same kind into ONE line. The server
+  // flushes a static stretch every ~30s (GAP_MAX_MS), so a long quiet period lands as several
+  // adjacent no-change records — but the reader wants a single "nothing from A to B" line, not
+  // a stack. Merge runs of the same gapKind (broken by any inference/self-motion/other row):
+  // widen the interval to [firstFrom, lastTo] and sum the probe counts.
+  const filtered: typeof filteredRaw = [];
+  for (const r of filteredRaw) {
+    const p = r.snap.payload as { gap?: boolean; gapKind?: string; gapProbes?: number };
+    const prev = filtered[filtered.length - 1];
+    const pp = prev?.snap.payload as { gap?: boolean; gapKind?: string; gapProbes?: number } | undefined;
+    if (p.gap && pp?.gap && pp.gapKind === p.gapKind) {
+      // extend the previous merged gap row in place (clone so we don't mutate the store)
+      const merged = { ...prev!, snap: { ...prev!.snap,
+        interval: { ...prev!.snap.interval, to: r.snap.interval.to,
+          durationMs: new Date(r.snap.interval.to).getTime() - new Date(prev!.snap.interval.from).getTime() },
+        payload: { ...prev!.snap.payload, gapProbes: (pp.gapProbes ?? 0) + (p.gapProbes ?? 0) } } };
+      filtered[filtered.length - 1] = merged;
+    } else {
+      filtered.push(r);
+    }
+  }
   const latestVision = [...ordered].reverse().find((s) => s.source.kind === 'vision');
   const istTime = (iso: string) => iso.slice(11, 19);
   const secs = (ms: number) => `${(ms / 1000).toFixed(1)}s`;
-  // epoch ms → HH:MM:SS.mmm in IST (for the per-frame capture times on a vision window).
-  const istClockMs = (ms: number) => new Date(ms + 5.5 * 3600_000).toISOString().slice(11, 23);
+  // epoch ms → IST clock. `full` keeps milliseconds (HH:MM:SS.mmm) for the summary line;
+  // default is HH:MM:SS for the small per-frame chips. IST because the whole console is IST
+  // (matches the row timestamps, which are the server's isoIst()).
+  const istClockMs = (ms: number, full = false) =>
+    new Date(ms + 5.5 * 3600_000).toISOString().slice(11, full ? 23 : 19);
   const visionModel = latestVision?.model.name ?? snaps.find((s) => s.source.kind === 'vision')?.model.name ?? 'qwen2.5-vl';
 
   return (
@@ -1288,7 +1312,7 @@ export function PerceptionStudio() {
                           {(p.frameFrom != null || p.inferMs != null) && (
                             <div style={{ fontSize: 10, color: '#7a8ca8', fontVariantNumeric: 'tabular-nums', marginBottom: 4 }}>
                               {p.frameFrom != null && p.frameTo != null
-                                ? <>frames {istClockMs(p.frameFrom)} → {istClockMs(p.frameTo)} <span style={{ opacity: 0.6 }}>({secs(p.frameTo - p.frameFrom)} span)</span></>
+                                ? <>frames {istClockMs(p.frameFrom, true)} → {istClockMs(p.frameTo, true)} <span style={{ opacity: 0.6 }}>IST ({secs(p.frameTo - p.frameFrom)} span)</span></>
                                 : null}
                               {p.inferMs != null && <span style={{ marginLeft: p.frameFrom != null ? 8 : 0 }}>· run {secs(Number(p.inferMs))}</span>}
                             </div>
@@ -1303,7 +1327,8 @@ export function PerceptionStudio() {
                                     style={{ width: 150, borderRadius: 5, border: '1px solid #223' }} />
                                   <span style={{ position: 'absolute', top: 2, left: 2, fontSize: 9, background: '#000a', color: '#9ab', borderRadius: 3, padding: '0 4px' }}>{i + 1}/{p.inputImages!.length}</span>
                                   {p.frameTimes?.[i] != null && (
-                                    <span style={{ position: 'absolute', bottom: 2, left: 2, right: 2, fontSize: 9, background: '#000b', color: '#9ab', borderRadius: 3, padding: '0 4px', textAlign: 'center', fontVariantNumeric: 'tabular-nums' }}>{istClockMs(p.frameTimes[i]!).slice(3)}</span>
+                                    <span title={`${istClockMs(p.frameTimes[i]!, true)} IST`}
+                                      style={{ position: 'absolute', bottom: 2, left: 2, right: 2, fontSize: 9, background: '#000b', color: '#9ab', borderRadius: 3, padding: '0 4px', textAlign: 'center', fontVariantNumeric: 'tabular-nums' }}>{istClockMs(p.frameTimes[i]!)}</span>
                                   )}
                                 </div>
                               ))}
