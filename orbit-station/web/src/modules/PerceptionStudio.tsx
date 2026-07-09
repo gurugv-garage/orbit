@@ -218,6 +218,15 @@ export function PerceptionStudio() {
   // fast MLKit signal faceFollow steers on. Polled (not bus-pushed) since it's a glance,
   // not a log. Null = nothing arrived (or this source is the browser, not a dock).
   const [perceive, setPerceive] = useState<PerceiveFrame | null>(null);
+  // Timeline image lightbox: the base64 frame currently viewed at original size (null = closed).
+  // Any timeline thumbnail (gap sample, reused frames, filmstrip) opens it; Esc / click closes.
+  const [zoomImg, setZoomImg] = useState<string | null>(null);
+  useEffect(() => {
+    if (!zoomImg) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setZoomImg(null); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [zoomImg]);
   const [autoScroll, setAutoScroll] = useState(true);
   const [limitToWindow, setLimitToWindow] = useState(false);
   const [enrollName, setEnrollName] = useState('');
@@ -1168,8 +1177,9 @@ export function PerceptionStudio() {
                       {istTime(s.interval.from)}–{istTime(s.interval.to)}<span style={{ opacity: 0.6 }}> ({secs(s.interval.durationMs)})</span>
                     </span>
                     <span style={{ width: 18 }} title="frames not sent to the VLM (accounted-for gap)">⋯</span>
-                    {thumb && <img src={`data:image/jpeg;base64,${thumb}`} alt="gap sample"
-                      style={{ width: 40, height: 30, objectFit: 'cover', borderRadius: 3, border: '1px dashed #2a3550', opacity: 0.8 }} />}
+                    {thumb && <img src={`data:image/jpeg;base64,${thumb}`} alt="gap sample" title="click to view original size"
+                      onClick={() => setZoomImg(thumb)}
+                      style={{ width: 40, height: 30, objectFit: 'cover', borderRadius: 3, border: '1px dashed #2a3550', opacity: 0.8, cursor: 'zoom-in' }} />}
                     <span style={{ flex: 1, fontSize: 12 }}>
                       {label}{p.gapProbes ? ` — ${p.gapProbes} probes, no inference` : ''}
                     </span>
@@ -1284,8 +1294,9 @@ export function PerceptionStudio() {
                             { img: p.inputImages[1]!, label: 'original (reused from)', tint: '#3a4a6a' },
                           ].map((f, i) => (
                             <div key={i} style={{ position: 'relative', flexShrink: 0 }}>
-                              <img src={`data:image/jpeg;base64,${f.img}`} alt={f.label}
-                                style={{ width: 170, borderRadius: 5, border: `1px solid ${f.tint}` }} />
+                              <img src={`data:image/jpeg;base64,${f.img}`} alt={f.label} title="click to view original size"
+                                onClick={() => setZoomImg(f.img)}
+                                style={{ width: 170, borderRadius: 5, border: `1px solid ${f.tint}`, cursor: 'zoom-in' }} />
                               <span style={{ position: 'absolute', top: 2, left: 2, fontSize: 9, background: '#000b', color: '#cfe', borderRadius: 3, padding: '1px 5px' }}>{f.label}</span>
                             </div>
                           ))}
@@ -1323,8 +1334,9 @@ export function PerceptionStudio() {
                             <div style={{ display: 'flex', gap: 4, overflowX: 'auto', paddingBottom: 4 }}>
                               {p.inputImages.map((img, i) => (
                                 <div key={i} style={{ position: 'relative', flexShrink: 0 }}>
-                                  <img src={`data:image/jpeg;base64,${img}`} alt={`qwen frame ${i + 1}`}
-                                    style={{ width: 150, borderRadius: 5, border: '1px solid #223' }} />
+                                  <img src={`data:image/jpeg;base64,${img}`} alt={`qwen frame ${i + 1}`} title="click to view original size"
+                                    onClick={() => setZoomImg(img)}
+                                    style={{ width: 150, borderRadius: 5, border: '1px solid #223', cursor: 'zoom-in' }} />
                                   <span style={{ position: 'absolute', top: 2, left: 2, fontSize: 9, background: '#000a', color: '#9ab', borderRadius: 3, padding: '0 4px' }}>{i + 1}/{p.inputImages!.length}</span>
                                   {p.frameTimes?.[i] != null && (
                                     <span title={`${istClockMs(p.frameTimes[i]!, true)} IST`}
@@ -1367,6 +1379,18 @@ export function PerceptionStudio() {
             })}
         </div>
       </div>
+      {/* TIMELINE LIGHTBOX — any frame thumbnail (gap sample, reused, filmstrip) opens here at
+          ORIGINAL size. If the image is larger than the viewport the box scrolls; click the
+          backdrop or press Esc to close. Natural size (no downscale) so pixels are inspectable. */}
+      {zoomImg && (
+        <div onClick={() => setZoomImg(null)}
+          style={{ position: 'fixed', inset: 0, zIndex: 1000, background: 'rgba(0,0,0,0.88)',
+            display: 'grid', placeItems: 'center', overflow: 'auto', cursor: 'zoom-out' }}>
+          <img src={`data:image/jpeg;base64,${zoomImg}`} alt="frame (original size)"
+            onClick={(e) => e.stopPropagation()}
+            style={{ display: 'block', margin: 'auto', borderRadius: 6, boxShadow: '0 8px 40px #000', cursor: 'default' }} />
+        </div>
+      )}
     </div>
   );
 }
