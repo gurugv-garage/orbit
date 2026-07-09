@@ -1172,9 +1172,10 @@ export function PerceptionStudio() {
                         if (p.trigger) bits.push(`woken by: ${p.trigger}`);
                         if (p.bgTranscript && p.bgTranscript !== p.text) bits.push(`alt hearing: “${p.bgTranscript}”`);
                       } else if (viewKind === 'vision') {
-                        if (p.gateTrigger) bits.push(`looked because: ${String(p.gateTrigger).replace('local-change', 'something moved locally').replace('scene-change', 'the scene changed').replace('sense-wake', 'it heard something').replace('first-look', 'first look').replace('heartbeat', 'periodic re-check')}`);
+                        if (p.reused) bits.push('REUSED a recently-seen view — no VLM call (saved ~5s)');
+                        else if (p.gateTrigger) bits.push(`looked because: ${String(p.gateTrigger).replace('local-change', 'something moved locally').replace('scene-change', 'the scene changed').replace('sense-wake', 'it heard something').replace('first-look', 'first look').replace('heartbeat', 'periodic re-check')}`);
                         if (p.gatedProbes) bits.push(`${p.gatedProbes} quiet checks before this`);
-                        if (p.inferMs) bits.push(`took ${(Number(p.inferMs) / 1000).toFixed(1)}s`);
+                        if (!p.reused && p.inferMs) bits.push(`took ${(Number(p.inferMs) / 1000).toFixed(1)}s`);
                       } else if (viewKind === 'summary') {
                         if (p.inputCount != null) bits.push(`fused ${p.inputCount} records into this`);
                       } else if (viewKind === 'stt') {

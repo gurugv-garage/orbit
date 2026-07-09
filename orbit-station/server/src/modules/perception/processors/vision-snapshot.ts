@@ -105,7 +105,7 @@ const SELFMOTION_SUPPRESS = process.env.VISION_SELFMOTION_SUPPRESS !== '0';
  *  view"), the cached entry is younger than REUSE_TTL_MS, and we never hold more than
  *  REUSE_MAX entries. Short TTL is the safety: a person can't appear+vanish inside it
  *  without the embedding being far enough to MISS the cache. */
-const REUSE_CACHE = process.env.VISION_REUSE_CACHE === '1';
+const REUSE_CACHE = process.env.VISION_REUSE_CACHE !== '0';
 const REUSE_DIST = Number(process.env.VISION_REUSE_DIST ?? 0.04);
 const REUSE_TTL_MS = Number(process.env.VISION_REUSE_TTL_MS ?? 20_000);
 const REUSE_MAX = Number(process.env.VISION_REUSE_MAX ?? 8);
@@ -364,16 +364,11 @@ export function visionSnapshotProcessor(
         const probe = s.lastEmb ? await embedChanged(s, jpeg) : null;
         const changed = probe ? probe.trigger : (s.lastEmb ? null : pixelChanged(s, jpeg));
         const probeEmb = probe?.emb ?? null;
-        // SELF-MOTION SUPPRESSION: a change-trigger WHILE THE HEAD IS PANNING is most likely
-        // the view sliding because WE moved, not the world changing — DEFER (don't wake the
-        // VLM), let the head settle, re-probe next tick. A deferral, not a cache.
-        if (SELFMOTION_SUPPRESS && changed && cameraMoving?.(s.ctx.dockId)) {
-          if (EMBED_DEBUG) console.log(`[vision] ${s.ctx.dockId} defer: ${changed} but head is moving (self-motion)`);
-          s.skippedProbes++; await sleep(PROBE_MS); continue;
-        }
-        // RECENT-ANALYSIS CACHE: the view changed, but is it a view we JUST described (a pan
-        // sweeping back to the staircase we saw 8 s ago)? Reuse that description — commit a
-        // record with it, skip the 5 s VLM. Tight distance + short TTL keep it safe.
+        // RECENT-ANALYSIS CACHE — checked BEFORE suppression: the view changed, but is it a
+        // view we JUST described (the head swept back to the staircase we saw 8 s ago)? Reuse
+        // that description — even WHILE MOVING, because "returning to a known view" is exactly
+        // the case that suppression would otherwise just defer. Reuse is cheap + safe (tight
+        // distance + short TTL), and strictly better than deferring when we already know the view.
         if (changed && probeEmb) {
           const hit = reuseFromCache(s, probeEmb);
           if (hit) {
@@ -381,6 +376,14 @@ export function visionSnapshotProcessor(
             commitReused(s, hit.text, probeEmb);
             s.skippedProbes++; await sleep(PROBE_MS); continue;
           }
+        }
+        // SELF-MOTION SUPPRESSION: a change to a view we DON'T know, while the head pans, is
+        // most likely the view sliding because WE moved — DEFER (don't wake the VLM), let the
+        // head settle, re-probe next tick. A deferral, not a cache. (Cache already handled the
+        // known-view case above; this only catches genuinely-new views mid-motion.)
+        if (SELFMOTION_SUPPRESS && changed && cameraMoving?.(s.ctx.dockId)) {
+          if (EMBED_DEBUG) console.log(`[vision] ${s.ctx.dockId} defer: ${changed} but head is moving (self-motion)`);
+          s.skippedProbes++; await sleep(PROBE_MS); continue;
         }
         // changed === null → couldn't probe (no frame) → fail OPEN (look).
         if (changed === null) trigger = 'no-probe-frame';
