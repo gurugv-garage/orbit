@@ -357,6 +357,35 @@ const MOVES: Array<{ id: string; label: string; emoji: string; len: 'short' | 'l
     ],
   },
   {
+    id: 'twerk', label: 'Twerk', emoji: '🍑', len: 'long',
+    steps: [
+      // 1) drop it low — bend all the way forward and get into position
+      { parts: [{ part: 'neck', degrees: 35 }, { part: 'foot', degrees: -18 }], duration_ms: 450, wait_ms: 200 },
+      // 2) fast rhythmic bounce: pop up a touch, drop back down, over and over,
+      //    with a little hip-swivel side-to-side on each beat. snap = punchy.
+      { parts: [{ part: 'neck', degrees: 20 }, { part: 'foot', degrees: 18 }], duration_ms: 130, snap: true },
+      { parts: [{ part: 'neck', degrees: 35 }, { part: 'foot', degrees: -18 }], duration_ms: 130, snap: true },
+      { parts: [{ part: 'neck', degrees: 20 }, { part: 'foot', degrees: 18 }], duration_ms: 130, snap: true },
+      { parts: [{ part: 'neck', degrees: 35 }, { part: 'foot', degrees: -18 }], duration_ms: 130, snap: true },
+      { parts: [{ part: 'neck', degrees: 20 }, { part: 'foot', degrees: 18 }], duration_ms: 130, snap: true },
+      { parts: [{ part: 'neck', degrees: 35 }, { part: 'foot', degrees: -18 }], duration_ms: 130, snap: true },
+      // 3) faster now — really shake it, tighter swivel, double-time
+      { parts: [{ part: 'neck', degrees: 22 }, { part: 'foot', degrees: 22 }], duration_ms: 100, snap: true },
+      { parts: [{ part: 'neck', degrees: 35 }, { part: 'foot', degrees: -22 }], duration_ms: 100, snap: true },
+      { parts: [{ part: 'neck', degrees: 22 }, { part: 'foot', degrees: 22 }], duration_ms: 100, snap: true },
+      { parts: [{ part: 'neck', degrees: 35 }, { part: 'foot', degrees: -22 }], duration_ms: 100, snap: true },
+      { parts: [{ part: 'neck', degrees: 22 }, { part: 'foot', degrees: 22 }], duration_ms: 100, snap: true },
+      { parts: [{ part: 'neck', degrees: 35 }, { part: 'foot', degrees: -22 }], duration_ms: 100, snap: true },
+      { parts: [{ part: 'neck', degrees: 22 }, { part: 'foot', degrees: 22 }], duration_ms: 100, snap: true },
+      { parts: [{ part: 'neck', degrees: 35 }, { part: 'foot', degrees: -22 }], duration_ms: 100, snap: true, wait_ms: 150 },
+      // 4) one last big shake, then pop back up cheeky — look up, settle home
+      { parts: [{ part: 'neck', degrees: 20 }, { part: 'foot', degrees: 30 }], duration_ms: 150, snap: true },
+      { parts: [{ part: 'neck', degrees: 35 }, { part: 'foot', degrees: -30 }], duration_ms: 150, snap: true },
+      { parts: [{ part: 'neck', degrees: -20 }, { part: 'foot', degrees: 0 }], duration_ms: 350, wait_ms: 250 },
+      { part: 'neck', degrees: 0, duration_ms: 300 },
+    ],
+  },
+  {
     id: 'attitude', label: 'Attitude', emoji: '💅', len: 'long',
     steps: [
       // 1) sharp head-snap to face them, chin up — "excuse me?"
