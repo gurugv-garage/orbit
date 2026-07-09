@@ -61,7 +61,7 @@ interface StreamState {
   /** RECENT-ANALYSIS CACHE: the last few views we actually described, so a pan that sweeps
    *  back to a just-seen view (staircase → gym → staircase) REUSES the description instead
    *  of re-calling the 5 s VLM. Bounded + expiring — a recent memory, not a database. */
-  recent?: Array<{ emb: Float32Array; text: string; at: number }>;
+  recent?: Array<{ emb: Float32Array; text: string; at: number; frameB64: string }>;
 }
 
 /** Change-gate knobs. delta is mean |Δ| on a 16×16 grayscale [0..1]: sensor noise on a
@@ -249,7 +249,9 @@ export function visionSnapshotProcessor(
     // RECENT-ANALYSIS CACHE: remember this view's description so a pan sweeping back to it
     // reuses it instead of re-calling the VLM. Only cache real (non-empty) descriptions.
     if (REUSE_CACHE && analyzedEmb && text.trim()) {
-      s.recent = [{ emb: analyzedEmb, text, at: Date.now() }, ...(s.recent ?? [])].slice(0, REUSE_MAX);
+      // keep the analyzed frame too, so a reuse can show the ORIGINAL view it's reusing
+      // alongside the current probe frame (verify the match by eye in the Studio).
+      s.recent = [{ emb: analyzedEmb, text, at: Date.now(), frameB64: frames[frames.length - 1]! }, ...(s.recent ?? [])].slice(0, REUSE_MAX);
     }
     return true;
   }
@@ -257,17 +259,21 @@ export function visionSnapshotProcessor(
   /** Commit a vision record with a REUSED description (cache hit — no VLM call). Advances
    *  the change-gate anchor to this frame's embedding so the loop doesn't immediately
    *  re-fire on the same view; tags reused:true so the Studio shows it wasn't a fresh look. */
-  function commitReused(s: StreamState, text: string, emb: Float32Array): void {
+  function commitReused(s: StreamState, hit: { text: string; dist: number; frameB64: string }, emb: Float32Array, currentB64: string): void {
     const now = new Date();
+    // inputImages = [CURRENT probe frame, ORIGINAL analyzed frame] so the Studio can show
+    // "reusing THIS view (left) → because it matches the view we already described (right)".
+    // reusedFromB64 names which is the original; reusedDist is the embedding match distance.
     store.add(makeSnapshot({
       dockId: s.ctx.dockId,
       source: { id: s.ctx.streamId, kind: 'vision', device: 'dock-webrtc', host: 'station' },
       model: { name: MODEL_NAME, endpoint: `${TEMPORAL_URL}/temporal` },
       from: now, to: now,
-      payload: { text, frames: 0, latencyMs: 0, inferMs: 0, gatedProbes: s.skippedProbes,
-        gateTrigger: 'reused', reused: true, camMoving: cameraMoving?.(s.ctx.dockId) ?? false },
+      payload: { text: hit.text, frames: 0, latencyMs: 0, inferMs: 0, gatedProbes: s.skippedProbes,
+        gateTrigger: 'reused', reused: true, reusedDist: hit.dist, camMoving: cameraMoving?.(s.ctx.dockId) ?? false,
+        inputImages: [currentB64, hit.frameB64], reusedFromB64: hit.frameB64 },
     }));
-    s.ctx.emit({ kind: 'scene', source: 'vision-snapshot', payload: { description: text }, confidence: 0.7 });
+    s.ctx.emit({ kind: 'scene', source: 'vision-snapshot', payload: { description: hit.text }, confidence: 0.7 });
     s.lastEmb = emb;               // anchor to the reused view (don't re-fire on it)
     s.lastAnalyzedAt = Date.now();
     s.skippedProbes = 0;
@@ -275,14 +281,14 @@ export function visionSnapshotProcessor(
 
   /** Cache lookup: does the probe embedding match a FRESH recently-analyzed view closely
    *  enough to reuse its description (skip the VLM)? Returns the reused text or null. */
-  function reuseFromCache(s: StreamState, emb: Float32Array): { text: string; dist: number } | null {
+  function reuseFromCache(s: StreamState, emb: Float32Array): { text: string; dist: number; frameB64: string } | null {
     if (!REUSE_CACHE || !s.recent?.length) return null;
     const now = Date.now();
     s.recent = s.recent.filter((e) => now - e.at < REUSE_TTL_MS);   // expire stale entries
-    let best: { text: string; dist: number } | null = null;
+    let best: { text: string; dist: number; frameB64: string } | null = null;
     for (const e of s.recent) {
       const d = embedDistance(emb, e.emb);
-      if (d < REUSE_DIST && (!best || d < best.dist)) best = { text: e.text, dist: d };
+      if (d < REUSE_DIST && (!best || d < best.dist)) best = { text: e.text, dist: d, frameB64: e.frameB64 };
     }
     return best;
   }
@@ -379,7 +385,7 @@ export function visionSnapshotProcessor(
           }
           if (hit) {
             if (EMBED_DEBUG) console.log(`[vision] ${s.ctx.dockId} REUSE (d=${hit.dist.toFixed(3)}): ${hit.text.slice(0, 50)}`);
-            commitReused(s, hit.text, probeEmb);
+            commitReused(s, hit, probeEmb, jpeg!.toString('base64'));  // probeEmb set ⇒ jpeg was non-null
             s.skippedProbes++; await sleep(PROBE_MS); continue;
           }
         }

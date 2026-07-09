@@ -54,6 +54,9 @@ interface Snapshot {
     gateTrigger?: string;
     // vision leak-hunt: the exact frame qwen saw + the prompt it received.
     inputImages?: string[]; inputPrompt?: string; reused?: boolean;
+    // reused row: inputImages = [current probe frame, original analyzed frame]; reusedFromB64
+    // names the original; reusedDist is the embedding match distance that triggered the reuse.
+    reusedFromB64?: string; reusedDist?: number;
     // the RAW STT transcript, preserved when the interpreter upgrades `text` — so the
     // 🎙 STT row shows what the live engine heard and the 🔊 audio row shows the
     // upgraded read. Absent on un-upgraded records (then the STT row uses `text`).
@@ -1127,10 +1130,16 @@ export function PerceptionStudio() {
                       : <>{istTime(s.interval.from)}–{istTime(s.interval.to)}<span style={{ opacity: 0.6 }}> ({secs(s.interval.durationMs)})</span></>}
                   </span>
                   <span style={{ width: 18 }} title={m.label}>{m.icon}</span>
-                  {/* WHAT MODEL produced this row */}
-                  <span title={s.model.endpoint ?? ''}
-                    style={{ width: 116, opacity: 0.5, fontSize: 11, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                    {MODEL_SHORT(modelName)}
+                  {/* WHAT MODEL produced this row. On a REUSED vision row the model was NOT
+                      called — so we strike + dim its name and tag "· cached" to make it read at
+                      a glance as "no VLM ran here" versus a fresh qwen inference. */}
+                  <span title={p.reused ? `${modelName} was NOT called — description reused from a recently-analyzed near-identical view` : (s.model.endpoint ?? '')}
+                    style={{ width: 116, fontSize: 11, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                      ...(p.reused
+                        ? { opacity: 0.7, color: '#7ee0a0' }
+                        : { opacity: 0.5 }) }}>
+                    <span style={p.reused ? { textDecoration: 'line-through', opacity: 0.55, fontStyle: 'italic' } : undefined}>{MODEL_SHORT(modelName)}</span>
+                    {p.reused && <span style={{ opacity: 0.9 }}> · cached</span>}
                   </span>
                   <span style={{ flex: 1 }}>
                     {/* AUDIO row: structured chips — kind, salience (when it matters), and
@@ -1203,9 +1212,33 @@ export function PerceptionStudio() {
                         Δ {p.change}
                       </span>
                     )}
+                    {/* REUSED vision row: show CURRENT frame vs the ORIGINAL analyzed frame side
+                        by side, so the reuse is verifiable by eye — "yes, same view, fair to reuse"
+                        (or catch a bad match). inputImages = [current, original]; reusedDist is the
+                        embedding match distance. */}
+                    {viewKind === 'vision' && p.reused && p.inputImages && p.inputImages.length >= 2 && (
+                      <details style={{ marginTop: 4 }} open>
+                        <summary style={{ cursor: 'pointer', fontSize: 10, color: '#7ee0a0' }}>
+                          ♻ reused view{p.reusedDist != null ? ` — match d=${p.reusedDist.toFixed(3)}` : ''} (current vs original)
+                        </summary>
+                        <div style={{ marginTop: 4, display: 'flex', gap: 8, overflowX: 'auto', paddingBottom: 4 }}>
+                          {[
+                            { img: p.inputImages[0]!, label: 'now', tint: '#2c6f4a' },
+                            { img: p.inputImages[1]!, label: 'original (reused from)', tint: '#3a4a6a' },
+                          ].map((f, i) => (
+                            <div key={i} style={{ position: 'relative', flexShrink: 0 }}>
+                              <img src={`data:image/jpeg;base64,${f.img}`} alt={f.label}
+                                style={{ width: 170, borderRadius: 5, border: `1px solid ${f.tint}` }} />
+                              <span style={{ position: 'absolute', top: 2, left: 2, fontSize: 9, background: '#000b', color: '#cfe', borderRadius: 3, padding: '1px 5px' }}>{f.label}</span>
+                            </div>
+                          ))}
+                        </div>
+                      </details>
+                    )}
                     {/* vision LEAK-HUNT: the EXACT frame qwen saw + the prompt it got, so a
-                        hallucinated description is diagnosable ("was it in the image?"). */}
-                    {viewKind === 'vision' && ((p.inputImages && p.inputImages.length) || p.inputPrompt) && (
+                        hallucinated description is diagnosable ("was it in the image?"). Not on
+                        reused rows — those get the current-vs-original comparison above. */}
+                    {viewKind === 'vision' && !p.reused && ((p.inputImages && p.inputImages.length) || p.inputPrompt) && (
                       <details style={{ marginTop: 4 }}>
                         <summary style={{ cursor: 'pointer', fontSize: 10, color: '#7a8ca8' }}>
                           🖼 what qwen saw{p.inputImages?.length ? ` (${p.inputImages.length} frames)` : ''} + prompt
