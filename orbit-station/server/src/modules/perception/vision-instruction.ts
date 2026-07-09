@@ -19,19 +19,17 @@
 // standing holding a black object", every window, from a hanging strap; seen live
 // 2026-07-05 with identity simultaneously reporting "no one in view"). The prompt must
 // first allow "nobody here".
+// SIMPLE by hard-won lesson (2026-07-09): an elaborate multi-rule prompt (forced "No one
+// visible —" opener + a two-line DESCRIPTION/CHANGE format + a fed-back previous
+// description) POISONED the 3B model — it echoed a stale "None visible" while a person was
+// plainly on the stairs. The SAME frames with this short prompt caught "a person ascending
+// a staircase" 3/3. A small model needs a small ask: describe what you see, don't invent.
 const BASE =
-  'You are given a few frames spanning several seconds, in order. In one short sentence, ' +
-  'describe WHAT IS HAPPENING — the action, motion, or change ACROSS the frames. That is ' +
-  'the most important thing: compare the frames and report what moved, appeared, or changed. ' +
-  'If a person is clearly visible, lead with their action and posture and any object they ' +
-  'are clearly holding or using — use "they"/"the person"; do not guess gender, age, or name. ' +
-  'If NO person is clearly visible and nothing is moving, start with "No one visible —" then ' +
-  'describe the actual scene: the setting, the lighting, anything that stands out (e.g. ' +
-  '"No one visible — a dim staircase with gym rings hanging, a light on upstairs"). Never ' +
-  'answer with just "no one is visible". ' +
-  'Look at objects THEMSELVES and name what they actually are; if unsure, say "an object" ' +
-  'rather than guessing a common one. Do NOT default to "laptop" or "phone". ' +
-  'State only what is clearly visible — do NOT invent people, actions, or details.';
+  'In one short sentence, say what is happening across these frames. If a person is ' +
+  'visible, describe what they are doing (use "they"/"the person"; do not guess gender, ' +
+  'age, or name). If truly no person is present, briefly describe the scene. Name objects ' +
+  'as what they actually are; if unsure, say "an object". Describe only what is clearly ' +
+  'visible — do not invent people, actions, or details.';
 // NOTE: the examples ("typing on a laptop"…) were removed deliberately. qwen2.5-VL is
 // small and ANCHORS on the first in-prompt example when a 320×240 frame is ambiguous —
 // it was reading a held-up mug/cup as "typing on a laptop" (the seeded example) because

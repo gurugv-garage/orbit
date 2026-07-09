@@ -44,9 +44,6 @@ interface StreamState {
   lastEmb?: Float32Array;
   lastAnalyzedAt: number;
   skippedProbes: number; // gated probes since the last analysis (surfaced in the payload)
-  /** the previous window's description — fed back into the prompt so the model reports
-   *  WHAT CHANGED as a separate structured field (not just a fresh description). */
-  lastText?: string;
   /** WHY the last analysis ran (scene-change / local-change / sense-wake / heartbeat /
    *  first-look) — committed onto the payload so gating is debuggable from the Studio. */
   lastTrigger?: string;
@@ -165,60 +162,23 @@ export function visionSnapshotProcessor(store: SnapshotStore, getFrame: GetFrame
     if (frames.length < 2) return false; // stream not live yet
     // STRUCTURED output: the description PLUS an explicit "what changed" field, judged
     // against the PREVIOUS window's description (fed back as reference). The change is
-    // the signal downstream actually wants — the description alone hides it.
-    // LINE-BASED output, not JSON (root fix, 2026-07-08): a 4-bit 3B model asked for
-    // strict JSON WILL corrupt it when it rambles into the token cap — the corruption
-    // was created by the format request, not by parsing. Two labeled lines cannot fail
-    // the same way: DESCRIPTION completes before CHANGE starts, so truncation only
-    // ever costs the tail of the delta. This record is a SOURCE for the summarizer,
-    // the curator, and spoken grounding — it must be clean text at birth.
-    const prompt = `${visionInstruction()}\n\n`
-      + 'Reply in EXACTLY this two-line format (plain text, no JSON, no markdown):\n'
-      + 'DESCRIPTION: <the one-sentence description>\n'
-      + 'CHANGE: <what significantly changed vs the previous description, UNDER 12 words — or the single word NONE>'
-      + (s.lastText ? `\nPREVIOUS description (from a few seconds ago): "${s.lastText}"` : '\nThere is no previous description (first look) — CHANGE is NONE.');
+    // SIMPLE PROMPT (root fix, 2026-07-09): the elaborate two-line DESCRIPTION/CHANGE
+    // format + a fed-back PREVIOUS description was POISONING a 3B model — it echoed the
+    // stale "None visible" anchor into DESCRIPTION while correctly putting the person in
+    // CHANGE, and we surfaced only DESCRIPTION → a plainly-visible person reported as
+    // "None visible", repeated verbatim for minutes (verified live: the SAME frames +
+    // this simple prompt caught "a person ascending a staircase" 3/3, the complex prompt
+    // failed). A small model needs a small ask. No CHANGE field, no previous-anchor.
+    const prompt = visionInstruction();
     const res = await analyze(frames, prompt);
     const to = new Date();
     if (!res) return false;
     const { inferMs } = res;
-    // Extract description + change. The 3B model is unreliable about the format — it
-    // may use the labels, repeat the sentence across lines with NO labels, or emit a
-    // JSON stray. Whatever it does, the DESCRIPTION is ALWAYS a single sentence, so we
-    // reduce to the first sentence on every path (the doubling was an unlabelled repeat
-    // falling through to the raw reply — seen live 2026-07-08).
-    let text = res.text; let change = '';
-    const stripped = res.text.replace(/^```(?:json)?\s*|\s*```\s*$/g, '').trim();
-    const dLabel = stripped.match(/DESCRIPTION:\s*([\s\S]*?)(?=\s*CHANGE:|$)/i);
-    const cLabel = stripped.match(/CHANGE:\s*([\s\S]*)$/i);
-    if (dLabel) {
-      text = dLabel[1]!.trim();
-      change = (cLabel?.[1] ?? '').trim();
-    } else {
-      // no labels — try a JSON stray, else the reply itself is the description.
-      try {
-        const parsed = JSON.parse(stripped) as { description?: string; change?: string };
-        text = parsed.description?.trim() || stripped;
-        change = (parsed.change ?? '').trim();
-      } catch {
-        const dm = stripped.match(/"description"\s*:\s*"((?:[^"\\]|\\.)*)"/);
-        text = dm ? dm[1]!.replace(/\\"/g, '"').trim() : stripped;
-      }
-    }
-    // FIRST SENTENCE ONLY — the description is one sentence by contract; any repeat /
-    // extra line / trailing ramble is noise, whatever produced it.
-    text = (text.split(/\n/)[0]!.match(/^.*?[.!?](?=\s|$)/)?.[0] ?? text.split(/\n/)[0]!).trim();
-    change = change.split(/\n/)[0]!.trim();
-    if (/^none\.?$/i.test(change)) change = '';
-    // clamp a rambling change — it must be a short delta, never a paragraph.
-    const cw = change.split(/\s+/);
-    if (cw.length > 18) change = `${cw.slice(0, 18).join(' ')}…`;
-    // change is only meaningful AGAINST a previous description; and a model that echoes
-    // the whole description into `change` (seen on the first look) or writes "the scene
-    // remains unchanged" (seen live) is saying nothing — normalize those to empty.
-    if (!s.lastText || change.toLowerCase() === text.toLowerCase()
-        || /remains? (the same|unchanged)|no (significant )?changes?\b|nothing (significant(ly)? )?(has )?changed/i.test(change)) {
-      change = '';
-    }
+    // First non-empty line, first sentence — strip any stray markdown/label the model adds.
+    let text = res.text.replace(/^```(?:json)?\s*|\s*```\s*$/g, '').replace(/^(DESCRIPTION|SCENE):\s*/i, '').trim();
+    text = (text.split(/\n/).find((l) => l.trim())?.trim() ?? text);
+    text = (text.match(/^.*?[.!?](?=\s|$)/)?.[0] ?? text).trim();
+    const change = ''; // change-field retired with the two-line format (it was the poison).
     // Vision describes WHAT (no identity). WHO is the separate identity stream
     // (face-api, with boxes); a later LLM merge fuses them. No string-replace.
     // latencyMs = whole window (sampling + inference); inferMs = sidecar compute only.
@@ -235,12 +195,11 @@ export function visionSnapshotProcessor(store: SnapshotStore, getFrame: GetFrame
       // reasons over ALL `frames` in the window (a mini filmstrip, per the prompt), so we
       // store ALL of them — showing only the last would misrepresent the input (the very
       // leak this panel exists to catch). ~16-30KB each in a bounded ring — a debug cost.
-      payload: { text, ...(change ? { change } : {}), frames: frames.length, latencyMs: to.getTime() - from.getTime(), inferMs, gatedProbes: s.skippedProbes, gateTrigger: s.lastTrigger ?? 'on-demand',
+      payload: { text, frames: frames.length, latencyMs: to.getTime() - from.getTime(), inferMs, gatedProbes: s.skippedProbes, gateTrigger: s.lastTrigger ?? 'on-demand',
         inputImages: frames, inputPrompt: prompt },
     }));
     store.addKeyframe({ ts: isoIst(to), from: isoIst(from), jpegB64: frames[frames.length - 1]! });
-    s.ctx.emit({ kind: 'scene', source: 'vision-snapshot', payload: { description: text, ...(change ? { change } : {}) }, confidence: 0.7 });
-    s.lastText = text;
+    s.ctx.emit({ kind: 'scene', source: 'vision-snapshot', payload: { description: text }, confidence: 0.7 });
     // change-gate bookkeeping: remember what the ANALYZED scene looked like, so the
     // cheap probe can tell whether anything has moved since.
     const lastJpeg = Buffer.from(frames[frames.length - 1]!, 'base64');
