@@ -32,7 +32,7 @@ import { tapFromEnv, type MediaTap } from './tap.js';
 
 /**
  * @param getTap optional provider for the media tap (the perception module's
- *   ProcessingHub). When given, it takes precedence over MEDIA_SINK; the hub is
+ *   PerceptionProcessingHub). When given, it takes precedence over MEDIA_SINK; the hub is
  *   responsible for any sidecar forwarding. Omitted → fall back to tapFromEnv().
  *   This keeps `media` import-free of `perception` (main.ts wires the two).
  */
@@ -51,7 +51,7 @@ export function mediaModule(
     description: 'WebRTC live A/V SFU (dock → station → viewers)',
 
     init(bus: Bus) {
-      // Processing tap: the perception module's ProcessingHub if wired (main.ts),
+      // Processing tap: the perception module's PerceptionProcessingHub if wired (main.ts),
       // else MEDIA_SINK forwarding (e.g. udp://127.0.0.1:5004). The hub multiplexes
       // to N processors; tapFromEnv is the standalone fallback. See
       // docs/media-processing.md + the perception module.

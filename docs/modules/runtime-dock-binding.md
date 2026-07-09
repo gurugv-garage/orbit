@@ -172,7 +172,7 @@ behave very differently for a dock-less peer.
 
 | Module | Keys on | Unclaimed (dock null) | On claim / rebind | Change needed |
 |---|---|---|---|---|
-| **hub** (`core/hub.ts`) | — | sends `welcome`; collision loop already guarded by `if (peer.dock && peer.component)`; `toAddr` fan-out won't match a null-dock peer | needs a **claim API**: mutate `peer.dock`, re-announce `peer-updated`, push binding frame | **YES — the core change** |
+| **hub** (`core/websocket-gateway.ts`) | — | sends `welcome`; collision loop already guarded by `if (peer.dock && peer.component)`; `toAddr` fan-out won't match a null-dock peer | needs a **claim API**: mutate `peer.dock`, re-announce `peer-updated`, push binding frame | **YES — the core change** |
 | **ota** (`modules/ota`) | `peer.kind` + `to: peerId` | ✅ works — offers by software kind, directed by peer id | no-op | **none** |
 | **config** (`modules/config`) | interest map + `to: peerId` | ✅ works — pushes by peer id; keys are flat/global (not per-dock) | no-op | **none** |
 | **docks directory** (`modules/docks`) | `(dock, component)`; `noteSeen` early-returns on null dock | invisible (by design — same path as ephemeral peers) | `noteSeen` runs on `peer-updated` → dock appears in directory | small: **`GET /unclaimed`** + **claim/bind REST** (see below) |
@@ -207,7 +207,7 @@ state under old name" is the *only* state question, cleanly answered.
    API: `lookup(deviceId)`, `bind(deviceId, dock)`, `unbind(deviceId)`, `list()`.
    (Slot is derived from `kind`, not stored.)
 
-2. **Resolve binding on hello — `core/hub.ts` `#onMessage` `hello` case (~L208).**
+2. **Resolve binding on hello — `core/websocket-gateway.ts` `#onMessage` `hello` case (~L208).**
    - After populating the peer: if `f.dock` present, `bindings.bind(f.id, f.dock)`
      (self-bind from a dev-override). Else `peer.dock = bindings.lookup(f.id)?.dock`.
    - Extend the **welcome** frame to carry the resolved name:

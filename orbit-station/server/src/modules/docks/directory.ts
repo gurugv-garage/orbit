@@ -20,7 +20,7 @@
 
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
-import type { RosterEntry } from '../../core/hub.js';
+import type { RosterEntry } from '../../core/websocket-gateway.js';
 import type { DockComponent, DockInfo } from '../../core/protocol.js';
 
 interface PersistedDock {

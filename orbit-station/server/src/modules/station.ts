@@ -6,10 +6,10 @@
  */
 
 import { json } from '../core/http.js';
-import type { Hub } from '../core/hub.js';
+import type { WebSocketGateway } from '../core/websocket-gateway.js';
 import type { StationModule, RouteContext } from '../core/module.js';
 
-export function stationModule(getModules: () => StationModule[], getHub: () => Hub): StationModule {
+export function stationModule(getModules: () => StationModule[], getHub: () => WebSocketGateway): StationModule {
   const startedAt = Date.now();
   return {
     name: 'station',

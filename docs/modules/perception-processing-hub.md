@@ -1,4 +1,4 @@
-# Perception Hub (`ProcessingHub`)
+# Perception Processing Hub (`PerceptionProcessingHub`)
 
 > The single **fusion point** for the perception pipeline. It IS the media SFU's
 > one [`MediaTap`](../../orbit-station/server/src/modules/media/tap.ts), AND it
@@ -7,13 +7,13 @@
 > bodymotion), and routes each processor's `PerceptionResult` back onto the
 > `perception` topic.
 >
-> Code: [`orbit-station/server/src/modules/perception/hub.ts`](../../orbit-station/server/src/modules/perception/hub.ts).
+> Code: [`orbit-station/server/src/modules/perception/perception-processing-hub.ts`](../../orbit-station/server/src/modules/perception/perception-processing-hub.ts).
 > The processor interface it drives: [`perception/processor.ts`](../../orbit-station/server/src/modules/perception/processor.ts).
 > The media seam it implements: [`media/tap.ts`](../../orbit-station/server/src/modules/media/tap.ts)
 > ([media-processing.md](../media-processing.md)).
 > The pipeline it anchors: [perception-pipeline.md](../perception-pipeline.md).
 
-This is **not** the network hub. The [WebSocket Hub](websocket-hub.md) is the
+This is **not** the network hub. The [WebSocket Gateway](websocket-gateway.md) is the
 station's switchboard for *all* peers; the Perception Hub is a perception-module
 *consumer* that sits on top of it (and on top of the SFU). They share an
 abstraction — a bus-decoupled, callback-injected, crash-isolated fan-out from
@@ -55,54 +55,54 @@ The hub fuses three sources into the `StreamProcessor` callbacks:
 1. **WebRTC media** — via the `MediaTap` interface. The SFU calls
    `onTrack(streamId, kind, track)` / `onProducerGone(streamId)`; the hub
    subscribes each interested processor's `onRtp` to the live RTP.
-   ([hub.ts:103-143](../../orbit-station/server/src/modules/perception/hub.ts#L103-L143))
+   ([perception-processing-hub.ts:103-143](../../orbit-station/server/src/modules/perception/perception-processing-hub.ts#L103-L143))
 2. **WS bus facts** — the hub subscribes to the `client` topic; each
    `client.<kind>` message becomes a `ChannelItem` delivered via
    `onChannelItem`. No media — e.g. bodymotion proprioception, on-device VAD.
-   ([hub.ts:36-38](../../orbit-station/server/src/modules/perception/hub.ts#L36-L38),
-   [hub.ts:147-162](../../orbit-station/server/src/modules/perception/hub.ts#L147-L162))
+   ([perception-processing-hub.ts:36-38](../../orbit-station/server/src/modules/perception/perception-processing-hub.ts#L36-L38),
+   [perception-processing-hub.ts:147-162](../../orbit-station/server/src/modules/perception/perception-processing-hub.ts#L147-L162))
 3. **Processor outputs** — a processor's `ctx.publish(channel, payload)` makes
    its output a `ChannelItem` other processors consume (a small in-process DAG;
-   no wire). ([hub.ts:176-184](../../orbit-station/server/src/modules/perception/hub.ts#L176-L184))
+   no wire). ([perception-processing-hub.ts:176-184](../../orbit-station/server/src/modules/perception/perception-processing-hub.ts#L176-L184))
 
 There is a first-class notion of a **lifecycle-only processor** (`mediaKinds: []`)
 that wants `onStreamStart`/`End` and facts but no media at all — e.g. bodymotion,
 or a processor that reads frames from another processor's grabber.
-([hub.ts:113-117](../../orbit-station/server/src/modules/perception/hub.ts#L113-L117))
+([perception-processing-hub.ts:113-117](../../orbit-station/server/src/modules/perception/perception-processing-hub.ts#L113-L117))
 
 ## Output
 
 Each emitted `PerceptionResult` is published **twice**
-([hub.ts:190-195](../../orbit-station/server/src/modules/perception/hub.ts#L190-L195)):
+([perception-processing-hub.ts:190-195](../../orbit-station/server/src/modules/perception/perception-processing-hub.ts#L190-L195)):
 
 - **directed to the dock** (`to: dockId`) so its brain re-grounds; and
 - an **undirected copy** for the console panel + the state aggregator.
 
 Both go on the `perception` topic — so they flow back out through the
-[WebSocket Hub](websocket-hub.md) to subscribers (the dock app, the Studio).
+[WebSocket Gateway](websocket-gateway.md) to subscribers (the dock app, the Studio).
 
 ## Use cases
 
 | Use case | What the hub does | Code |
 |---|---|---|
-| **Run vision/STT on a live stream** | media processor subscribes to a dock's RTP, emits snapshots | [hub.ts:105-122](../../orbit-station/server/src/modules/perception/hub.ts#L105-L122) |
-| **Run a fact-only processor** | bodymotion/VAD arrive as `client.*` bus facts → `onChannelItem` | [hub.ts:147-162](../../orbit-station/server/src/modules/perception/hub.ts#L147-L162) |
-| **Hot-add / hot-remove a processor** | `register()` starts it on already-live streams and returns an unregister thunk — toggle a stream from the Studio without a restart | [hub.ts:78-101](../../orbit-station/server/src/modules/perception/hub.ts#L78-L101) |
-| **Chain processors** | one processor's output becomes another's input via `ctx.publish` | [hub.ts:176-184](../../orbit-station/server/src/modules/perception/hub.ts#L176-L184) |
-| **Late subscription** | a processor registered *after* a stream went live still gets its RTP (the hub keeps live tracks per `streamId\|kind`) | [hub.ts:88-94](../../orbit-station/server/src/modules/perception/hub.ts#L88-L94), [hub.ts:127-134](../../orbit-station/server/src/modules/perception/hub.ts#L127-L134) |
-| **Gate unclaimed devices** | `#dockReady` skips streams from an unclaimed device so snapshots aren't filed under a raw ws id | [hub.ts:166-170](../../orbit-station/server/src/modules/perception/hub.ts#L166-L170) |
-| **Stream lifecycle** | `onStreamStart`/`onStreamEnd` fire as producers come and go; per-stream `ctx` cached | [hub.ts:136-143](../../orbit-station/server/src/modules/perception/hub.ts#L136-L143), [hub.ts:166-188](../../orbit-station/server/src/modules/perception/hub.ts#L166-L188) |
+| **Run vision/STT on a live stream** | media processor subscribes to a dock's RTP, emits snapshots | [perception-processing-hub.ts:105-122](../../orbit-station/server/src/modules/perception/perception-processing-hub.ts#L105-L122) |
+| **Run a fact-only processor** | bodymotion/VAD arrive as `client.*` bus facts → `onChannelItem` | [perception-processing-hub.ts:147-162](../../orbit-station/server/src/modules/perception/perception-processing-hub.ts#L147-L162) |
+| **Hot-add / hot-remove a processor** | `register()` starts it on already-live streams and returns an unregister thunk — toggle a stream from the Studio without a restart | [perception-processing-hub.ts:78-101](../../orbit-station/server/src/modules/perception/perception-processing-hub.ts#L78-L101) |
+| **Chain processors** | one processor's output becomes another's input via `ctx.publish` | [perception-processing-hub.ts:176-184](../../orbit-station/server/src/modules/perception/perception-processing-hub.ts#L176-L184) |
+| **Late subscription** | a processor registered *after* a stream went live still gets its RTP (the hub keeps live tracks per `streamId\|kind`) | [perception-processing-hub.ts:88-94](../../orbit-station/server/src/modules/perception/perception-processing-hub.ts#L88-L94), [perception-processing-hub.ts:127-134](../../orbit-station/server/src/modules/perception/perception-processing-hub.ts#L127-L134) |
+| **Gate unclaimed devices** | `#dockReady` skips streams from an unclaimed device so snapshots aren't filed under a raw ws id | [perception-processing-hub.ts:166-170](../../orbit-station/server/src/modules/perception/perception-processing-hub.ts#L166-L170) |
+| **Stream lifecycle** | `onStreamStart`/`onStreamEnd` fire as producers come and go; per-stream `ctx` cached | [perception-processing-hub.ts:136-143](../../orbit-station/server/src/modules/perception/perception-processing-hub.ts#L136-L143), [perception-processing-hub.ts:166-188](../../orbit-station/server/src/modules/perception/perception-processing-hub.ts#L166-L188) |
 
 ## Properties
 
-- **Single instance, the SFU's only tap.** `ProcessingHub implements MediaTap`
-  ([hub.ts:49](../../orbit-station/server/src/modules/perception/hub.ts#L49)); the
+- **Single instance, the SFU's only tap.** `PerceptionProcessingHub implements MediaTap`
+  ([perception-processing-hub.ts:49](../../orbit-station/server/src/modules/perception/perception-processing-hub.ts#L49)); the
   media module is handed this hub as its tap in `main.ts`, so the SFU stays
   unchanged and unaware that many consumers exist.
 - **Bus-decoupled, callback-injected.** The constructor takes a `Bus`, a
   `resolveDock(streamId)`, and an optional `dockReady(streamId)` — it imports no
   other module, preserving media's portability.
-  ([hub.ts:64-74](../../orbit-station/server/src/modules/perception/hub.ts#L64-L74))
+  ([perception-processing-hub.ts:64-74](../../orbit-station/server/src/modules/perception/perception-processing-hub.ts#L64-L74))
 - **The unifying key is the producer peer id.** The SFU keys media by it
   (`streamId`); the bus stamps WS facts with it (`source`). One subscription
   correlates both transports for the same dock.
@@ -121,23 +121,23 @@ Both go on the `perception` topic — so they flow back out through the
 
 1. **Crash isolation.** Every processor callback runs inside `#safe()` (try/
    catch) — a processor can never kill the SFU or the bus.
-   ([hub.ts:197-199](../../orbit-station/server/src/modules/perception/hub.ts#L197-L199))
+   ([perception-processing-hub.ts:197-199](../../orbit-station/server/src/modules/perception/perception-processing-hub.ts#L197-L199))
 2. **Main-loop threading.** Every callback runs on the main event loop, so they
    must be non-blocking; heavy decode/ML belongs in a worker_thread or sidecar.
    ([processor.ts:19-21](../../orbit-station/server/src/modules/perception/processor.ts#L19-L21))
 3. **Idempotent start.** `#startOn` caches `ctx` per stream — starting a
    processor on a stream twice is a no-op.
-   ([hub.ts:166-167](../../orbit-station/server/src/modules/perception/hub.ts#L166-L167))
+   ([perception-processing-hub.ts:166-167](../../orbit-station/server/src/modules/perception/perception-processing-hub.ts#L166-L167))
 4. **Self-gating subscriptions.** An RTP subscription checks the processor is
    still registered + active on the stream before delivering, so a removed or
    late processor stays correct.
-   ([hub.ts:130-133](../../orbit-station/server/src/modules/perception/hub.ts#L130-L133))
+   ([perception-processing-hub.ts:130-133](../../orbit-station/server/src/modules/perception/perception-processing-hub.ts#L130-L133))
 5. **No own-emission feedback.** Bus facts whose `source === 'station'` are
    ignored, so the hub never re-ingests its own published results.
-   ([hub.ts:148](../../orbit-station/server/src/modules/perception/hub.ts#L148))
+   ([perception-processing-hub.ts:148](../../orbit-station/server/src/modules/perception/perception-processing-hub.ts#L148))
 6. **Unclaimed = inert.** While `#dockReady` is false for a stream, no processor
    starts on it — perception waits until the device is claimed and a fresh
-   track/fact arrives. ([hub.ts:168-170](../../orbit-station/server/src/modules/perception/hub.ts#L168-L170))
+   track/fact arrives. ([perception-processing-hub.ts:168-170](../../orbit-station/server/src/modules/perception/perception-processing-hub.ts#L168-L170))
 
 ## Lifecycle
 
@@ -165,7 +165,7 @@ Constructed once, wired so the media module uses it as the tap and the
 perception module registers processors into it:
 
 ```ts
-processingHub = new ProcessingHub(
+processingHub = new PerceptionProcessingHub(
   bus,
   // resolveDock: stable identity a snapshot is grouped under —
   //   dock WS peer → dock name; else SFU producer label; else raw streamId.
@@ -187,7 +187,7 @@ mediaModule(() => processingHub, …)
 modules.push(perceptionModule(() => processingHub!));
 ```
 
-Both `resolveDock` and `dockReady` read the [WebSocket Hub](websocket-hub.md)'s
+Both `resolveDock` and `dockReady` read the [WebSocket Gateway](websocket-gateway.md)'s
 live roster — the concrete link between the two hubs.
 
 ## Boundaries (what it does *not* do)
@@ -203,7 +203,7 @@ live roster — the concrete link between the two hubs.
 
 ## Related
 
-- [websocket-hub.md](websocket-hub.md) — the network switchboard whose roster +
+- [websocket-gateway.md](websocket-gateway.md) — the network switchboard whose roster +
   bus this hub consumes, and through which its results flow back to peers.
 - [perception-pipeline.md](../perception-pipeline.md) — the as-built pipeline
   this hub anchors (component map + the five streams + the escalation pyramid).

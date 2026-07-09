@@ -4,7 +4,7 @@
  * WebM; this is its audio sibling so a recorded capture session has BOTH tracks (you
  * can't judge STT accuracy without the audio).
  *
- * Reuses the perception substrate: a one-shot StreamProcessor on the ProcessingHub
+ * Reuses the perception substrate: a one-shot StreamProcessor on the PerceptionProcessingHub
  * for ONE streamId, fed the same inbound Opus RTP the STT watcher gets. Each Opus
  * packet → 48 kHz mono PCM-16 (same decode as stt-watch), appended to a buffer; on
  * stop we prepend a WAV header and write the file. 48 kHz mono keeps it aligned with
@@ -16,7 +16,7 @@ import { join } from 'node:path';
 import { dePacketizeRtpPackets, type RtpPacket } from 'werift';
 import OpusScript from 'opusscript';
 import type { MediaKind } from '../media/tap.js';
-import type { ProcessingHub } from '../perception/hub.js';
+import type { PerceptionProcessingHub } from '../perception/perception-processing-hub.js';
 import type { StreamContext, StreamProcessor } from '../perception/processor.js';
 
 const OPUS_RATE = 48_000; // WebRTC Opus is 48 kHz mono
@@ -31,7 +31,7 @@ export interface AudioRecordHandle {
 /** Start recording `streamId`'s audio to `outPath` (.wav). Returns a handle to stop.
  *  Rejects via the stop() promise if no audio ever flowed. */
 export function startAudioRecording(
-  hub: ProcessingHub,
+  hub: PerceptionProcessingHub,
   streamId: string,
   outPath: string,
 ): AudioRecordHandle {

@@ -24,7 +24,7 @@ import { spawn } from 'node:child_process';
 import type { IncomingMessage } from 'node:http';
 import type { Bus } from '../../core/bus.js';
 import { json } from '../../core/http.js';
-import type { Hub, RosterEntry } from '../../core/hub.js';
+import type { WebSocketGateway, RosterEntry } from '../../core/websocket-gateway.js';
 import type { RouteContext, StationModule } from '../../core/module.js';
 import { OtaStore, ARTIFACT_FILE, type OtaMeta, type OtaTarget } from './store.js';
 import { launchBuild, isRunning, attachCmd, sessionName } from './build.js';
@@ -51,7 +51,7 @@ interface BuildStatus {
   exitCode?: number;
 }
 
-export function otaModule(getHub: () => Hub): StationModule {
+export function otaModule(getHub: () => WebSocketGateway): StationModule {
   const store = new OtaStore();
   let bus: Bus;
   const build: Record<OtaTarget, BuildStatus> = {

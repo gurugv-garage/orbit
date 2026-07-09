@@ -230,7 +230,7 @@ export function visionSnapshotProcessor(store: SnapshotStore, getFrame: GetFrame
     sources: '*',
     // No media: vision reads frames from the face processor's grabber (getFrame),
     // so it needs stream LIFECYCLE but not its own RTP/decode. Started via the hub's
-    // media-less lifecycle path (see ProcessingHub).
+    // media-less lifecycle path (see PerceptionProcessingHub).
     mediaKinds: [],
     channels: [],
 

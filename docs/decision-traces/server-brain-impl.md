@@ -922,7 +922,7 @@ prompt,safe-compute,store}.ts` + tests; `modules/bodylink/{motion,heartbeat,
 state}.ts` + tests; `modules/docks/directory.ts` (+ presence fan-out) +
 tests; `dev/fake-phone.ts`. Edits: `core/protocol.ts` (+`agent` topic;
 **hello v2**: `component`/`kind`/`caps`, `role` collapses to
-device|browser, `bodyAddr` removed), `core/bus.ts` + `core/hub.ts`
+device|browser, `bodyAddr` removed), `core/bus.ts` + `core/websocket-gateway.ts`
 (`toAddr {dock, component}` resolution at fan-out; WS ping/pong idle
 timeout), `main.ts` (register brain), `modules/config/registry.ts`
 (+`brain*` entries incl. `brainGrants`, +`dockManifest`; `bodyAddr` entry

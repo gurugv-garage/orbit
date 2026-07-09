@@ -1,5 +1,5 @@
 /**
- * ProcessingHub — the single fusion point for stream processing.
+ * PerceptionProcessingHub — the single fusion point for stream processing.
  *
  * It IS the SFU's one MediaTap (so the SFU stays unchanged and unaware there are
  * many consumers), AND it subscribes to the bus for WS-origin facts. It fans both,
@@ -46,7 +46,7 @@ interface Registered {
   ctx: Map<string, StreamContext>;
 }
 
-export class ProcessingHub implements MediaTap {
+export class PerceptionProcessingHub implements MediaTap {
   #bus: Bus;
   #resolveDock: (streamId: string) => string;
   /** Gate (docs/modules/runtime-dock-binding.md): false ⇒ this stream's

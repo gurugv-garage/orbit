@@ -1,6 +1,6 @@
 /**
  * Task PROCESS integration — proves the separate-process + WebSocket model end to
- * end with REAL processes (no model, no browser). A real Hub + Bus on a real port,
+ * end with REAL processes (no model, no browser). A real WebSocketGateway + Bus on a real port,
  * the `tasks` topic wired exactly as the brain does, and actual `tsx` task
  * processes connecting back over ws://. Covers the happy path plus the resiliency
  * cases that only the real wire can show: a crashing task → errored; stop kills the
@@ -13,7 +13,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Bus } from '../../../core/bus.js';
-import { Hub } from '../../../core/hub.js';
+import { WebSocketGateway } from '../../../core/websocket-gateway.js';
 import { TaskSupervisor, describeInstance, type InstanceInfo, type SignalKind } from './supervisor.js';
 import { CapabilityRegistry, CapabilityBroker } from './capabilities.js';
 import { defaultTasksRoot } from './manager.js';
@@ -37,7 +37,7 @@ async function makeRig(): Promise<Rig> {
   });
   const port = (http.address() as { port: number }).port;
   const bus = new Bus();
-  const hub = new Hub(http, bus);
+  const hub = new WebSocketGateway(http, bus);
   const signals: Rig['signals'] = [];
   const sendToTask = (dock: string, instanceId: string, kind: string, payload: Record<string, unknown>) => {
     bus.publish({

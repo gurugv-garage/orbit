@@ -1,6 +1,6 @@
 /**
  * Perception module — owns the `perception` topic, the per-dock world-state, and
- * the processor registry's contents. The ProcessingHub itself is built in main.ts
+ * the processor registry's contents. The PerceptionProcessingHub itself is built in main.ts
  * (it must be the SFU's media tap, wired before the perception module inits); this
  * module registers processors onto it and aggregates their results into
  * PerceptionState, exposed over REST + pushed live on the `perception` topic.
@@ -18,7 +18,7 @@ import { json } from '../../core/http.js';
 import type { IncomingMessage } from 'node:http';
 import type { RouteContext, StationModule } from '../../core/module.js';
 import { fileURLToPath } from 'node:url';
-import type { ProcessingHub } from './hub.js';
+import type { PerceptionProcessingHub } from './perception-processing-hub.js';
 import { PerceptionState } from './state.js';
 import { presenceProcessor } from './processors/presence.js';
 import { faceRecognitionProcessor } from './processors/face-recognition.js';
@@ -344,7 +344,7 @@ export function getPerceiveStore(): PerceiveStore | undefined {
 }
 
 
-export function perceptionModule(getHub: () => ProcessingHub): StationModule {
+export function perceptionModule(getHub: () => PerceptionProcessingHub): StationModule {
   let state: PerceptionState;
   const snapshots = new SnapshotStore(); // WebRTC vision+speech snapshot records
   snapshotsRef.current = {

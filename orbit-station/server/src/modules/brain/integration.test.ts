@@ -21,7 +21,7 @@ import {
   createAssistantMessageEventStream, type AssistantMessageEventStream, type AssistantMessage,
 } from '@earendil-works/pi-ai';
 import { Bus } from '../../core/bus.js';
-import type { RosterEntry } from '../../core/hub.js';
+import type { RosterEntry } from '../../core/websocket-gateway.js';
 import { Directory } from '../docks/directory.js';
 import { MotionExecutor } from '../bodylink/motion.js';
 import { RpcBroker } from './rpc.js';

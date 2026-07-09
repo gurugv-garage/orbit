@@ -4,7 +4,7 @@ import { mkdtempSync, writeFileSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Directory } from './directory.js';
-import type { RosterEntry } from '../../core/hub.js';
+import type { RosterEntry } from '../../core/websocket-gateway.js';
 
 function peer(p: Partial<RosterEntry> & { dock: string; component: string }): RosterEntry {
   return {

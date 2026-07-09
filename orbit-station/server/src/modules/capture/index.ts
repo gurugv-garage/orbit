@@ -29,7 +29,7 @@ import type { Bus } from '../../core/bus.js';
 import { json } from '../../core/http.js';
 import type { StationModule, RouteContext } from '../../core/module.js';
 import type { Directory } from '../docks/directory.js';
-import type { ProcessingHub } from '../perception/hub.js';
+import type { PerceptionProcessingHub } from '../perception/perception-processing-hub.js';
 import { getSnapshotsApi } from '../perception/index.js';
 import { isoIst } from '../perception/snapshots.js';
 import { startAudioRecording, type AudioRecordHandle } from './audio-recorder.js';
@@ -38,7 +38,7 @@ import { reprocessStt, reprocessProgress } from './reprocess.js';
 import { cleanRun } from './clean.js';
 
 export interface CaptureWiring {
-  getHub: () => ProcessingHub;
+  getHub: () => PerceptionProcessingHub;
   directory: Directory;
   /** absolute dir for capture artifacts (created on first use). */
   dir: string;

@@ -8,7 +8,7 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { dePacketizeRtpPackets, type RtpPacket } from 'werift';
 import type { MediaKind } from '../media/tap.js';
-import type { ProcessingHub } from '../perception/hub.js';
+import type { PerceptionProcessingHub } from '../perception/perception-processing-hub.js';
 import type { StreamContext, StreamProcessor } from '../perception/processor.js';
 import { ivfFrameHeader, ivfHeader, vp8KeyframeSize } from '../perception/face/frame-grabber.js';
 
@@ -19,7 +19,7 @@ export interface VideoRecordHandle {
 
 /** Start recording `streamId`'s video to `outPath` (.webm). */
 export function startVideoRecording(
-  hub: ProcessingHub,
+  hub: PerceptionProcessingHub,
   streamId: string,
   outPath: string,
 ): VideoRecordHandle {

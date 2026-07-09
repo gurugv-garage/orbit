@@ -33,7 +33,7 @@ import type { IncomingMessage } from 'node:http';
 import type { RouteContext, StationModule } from '../../core/module.js';
 import type { PresenceFrame } from '../../core/protocol.js';
 import type { Directory } from './directory.js';
-import type { Hub, RosterEntry } from '../../core/hub.js';
+import type { WebSocketGateway, RosterEntry } from '../../core/websocket-gateway.js';
 import type { BindingStore } from './bindings.js';
 
 /** slow re-send so devices that missed a presence frame self-heal. */
@@ -46,7 +46,7 @@ interface PeerEvt {
 
 export function docksModule(
   directory: Directory,
-  getHub: () => Hub,
+  getHub: () => WebSocketGateway,
   bindings: BindingStore,
 ): StationModule {
   let bus: Bus;

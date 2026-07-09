@@ -1,5 +1,5 @@
 /**
- * ProcessingHub unit tests (node:test). Verify the hub fans media + WS facts to
+ * PerceptionProcessingHub unit tests (node:test). Verify the hub fans media + WS facts to
  * registered processors with source/kind/channel filtering, routes emitted results
  * to the perception topic, and handles runtime register/unregister + teardown.
  * No real WebRTC — we drive onTrack with a fake track object.
@@ -10,7 +10,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { Bus, type BusMessage } from '../../core/bus.js';
-import { ProcessingHub } from './hub.js';
+import { PerceptionProcessingHub } from './perception-processing-hub.js';
 import type { ChannelItem, StreamContext, StreamProcessor } from './processor.js';
 import type { MediaKind } from '../media/tap.js';
 
@@ -50,7 +50,7 @@ function collectPerception(bus: Bus) {
 const hubWith = () => {
   const bus = new Bus();
   // resolveDock: strip a trailing "-app" to a friendly name, else identity.
-  const hub = new ProcessingHub(bus, (id) => id.replace(/-app$/, ''));
+  const hub = new PerceptionProcessingHub(bus, (id) => id.replace(/-app$/, ''));
   return { bus, hub };
 };
 

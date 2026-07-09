@@ -312,7 +312,7 @@ rather than trusting the design prose. Verdicts:
   which is the only working path. The §3 table was corrected.
 - **"Delivery copies `task-digest` (directed frame, 3 s sweep, free crash-recovery)." → TRUE,**
   with one caveat: the sweep is unconditional and directed frames **bypass the hub's
-  1 MB backpressure shed** ([hub.ts:146](../../orbit-station/server/src/core/hub.ts#L146)).
+  1 MB backpressure shed** ([websocket-gateway.ts:146](../../orbit-station/server/src/core/websocket-gateway.ts#L146)).
   task-digest is tiny (4 string fields, no images), so this is free **today**. A
   notification digest carrying **base64 images re-pushed every 3 s** is a real cost
   cliff (~165 KB/s for 10 images). Mitigation already deferred in §6.1 (images via asset

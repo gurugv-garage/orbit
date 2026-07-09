@@ -87,7 +87,7 @@ interface Peer {
   missedPongs: number;
 }
 
-export class Hub {
+export class WebSocketGateway {
   #wss: WebSocketServer;
   #peers = new Map<WebSocket, Peer>();
   #bus: Bus;

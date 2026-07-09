@@ -12,7 +12,7 @@ import { networkInterfaces } from 'node:os';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { Bus } from './core/bus.js';
-import { Hub } from './core/hub.js';
+import { WebSocketGateway } from './core/websocket-gateway.js';
 import { createServer } from './core/http.js';
 import { startWebWatch, stopWebWatch } from './core/web-watch.js';
 import type { StationModule } from './core/module.js';
@@ -22,7 +22,7 @@ import { ConfigStore } from './modules/config/store.js';
 import { bodylinkModule } from './modules/bodylink/index.js';
 import { MotionExecutor } from './modules/bodylink/motion.js';
 import { mediaModule } from './modules/media/index.js';
-import { ProcessingHub } from './modules/perception/hub.js';
+import { PerceptionProcessingHub } from './modules/perception/perception-processing-hub.js';
 import { perceptionModule } from './modules/perception/index.js';
 import { buildVideoRecorder } from './modules/perception/record/recorder.js';
 import { captureModule } from './modules/capture/index.js';
@@ -78,12 +78,12 @@ async function main() {
   //  - Directory: dock composition + capability addressing (docks module
   //    publishes it; brain/bodylink/media resolve through it).
   //  - MotionExecutor: the body's single master (brain tools + console).
-  //  - ProcessingHub: the SFU's media tap (perception processors).
+  //  - PerceptionProcessingHub: the SFU's media tap (perception processors).
   const configStore = new ConfigStore();
   // deviceId→dock bindings: the station-owned source of truth for which dock a
   // device belongs to (docs/modules/runtime-dock-binding.md).
   const bindings = new BindingStore();
-  let processingHub: ProcessingHub | undefined;
+  let perceptionProcessingHub: PerceptionProcessingHub | undefined;
   // SFU streamId→published-label lookup (set once the media module's SFU exists),
   // so a browser stream resolves to its stable label (e.g. 'console-perception')
   // for perception grouping instead of its ephemeral WS peer id.
@@ -92,13 +92,13 @@ async function main() {
   const modules: StationModule[] = [
     observabilityModule(),
     configModule(configStore),
-    mediaModule(() => processingHub, (fn) => { labelOf = fn; }),   // WebRTC SFU; tap = the processing hub (or MEDIA_SINK fallback).
+    mediaModule(() => perceptionProcessingHub, (fn) => { labelOf = fn; }),   // WebRTC SFU; tap = the processing hub (or MEDIA_SINK fallback).
     slackModule(),                       // inbound Slack via Socket Mode (ingest only for now)
     benchModule(),
   ];
 
   const { server, secure } = createServer(modules);
-  const hub = new Hub(server, bus, bindings);
+  const hub = new WebSocketGateway(server, bus, bindings);
 
   // Roster-dependent wiring (needs the hub).
   const directory = new Directory(() => hub.roster());
@@ -109,7 +109,7 @@ async function main() {
   //  3. else the raw streamId (last resort — an unlabelled/ephemeral source).
   // Without (2) a browser stream landed under its random WS id (ui-xxxxx), so the
   // console source selector (which filters by the stable label) never matched it.
-  processingHub = new ProcessingHub(
+  perceptionProcessingHub = new PerceptionProcessingHub(
     bus,
     (streamId) =>
       hub.roster().find((p) => p.id === streamId)?.dock
@@ -128,10 +128,10 @@ async function main() {
   );
   // record_video: capture a dock's live SFU stream to a WebM clip (under data/recordings/).
   const recordingsDir = fileURLToPath(new URL('../data/recordings', import.meta.url));
-  const videoRecorder = buildVideoRecorder(processingHub, recordingsDir);
+  const videoRecorder = buildVideoRecorder(perceptionProcessingHub, recordingsDir);
   const captureDir = fileURLToPath(new URL('../data/captures', import.meta.url));
 
-  modules.push(perceptionModule(() => processingHub!));
+  modules.push(perceptionModule(() => perceptionProcessingHub!));
   modules.push(docksModule(directory, () => hub, bindings));
   modules.push(bodylinkModule({ directory, motion, getHub: () => hub }));
 
@@ -225,7 +225,7 @@ async function main() {
     constants: () => feedbackConstants(),
   }));
   // capture-judging harness: record a dock's A/V + snapshots for replay/judging.
-  modules.push(captureModule({ getHub: () => processingHub!, directory, dir: captureDir }));
+  modules.push(captureModule({ getHub: () => perceptionProcessingHub!, directory, dir: captureDir }));
   modules.push(otaModule(() => hub));   // OTA: version-compare against live roster
   // station meta module needs the registry + hub; add it last.
   modules.push(stationModule(() => modules, () => hub));

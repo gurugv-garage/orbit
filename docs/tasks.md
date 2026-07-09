@@ -371,7 +371,7 @@ an **open session** (the same 409 guard), which opens on the first chat turn.
   adversarial input via a fake spawn seam (no real processes): stop/finish races,
   double-terminal, lifecycle guards, tenancy + unknown-instance + malformed-frame
   drops, cascade scoping, runCount-on-resume.
-- **`modules/brain/tasks/process.test.ts`** — REAL task processes over a real Hub:
+- **`modules/brain/tasks/process.test.ts`** — REAL task processes over a real WebSocketGateway:
   connect→init→notify→finish, a throwing task → `errored`, `stop()` kills the whole
   tree (no orphan), `askAgentInput`↔`provideInput` round-trip, a superseded ask, an
   unhandled rejection still reporting `errored`.

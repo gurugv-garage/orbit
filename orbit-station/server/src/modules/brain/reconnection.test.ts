@@ -20,7 +20,7 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Bus, type BusMessage } from '../../core/bus.js';
-import type { RosterEntry } from '../../core/hub.js';
+import type { RosterEntry } from '../../core/websocket-gateway.js';
 import { Directory } from '../docks/directory.js';
 import { MotionExecutor } from '../bodylink/motion.js';
 import { RpcBroker } from './rpc.js';

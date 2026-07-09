@@ -91,7 +91,7 @@ npx tsx --test --test-force-exit \
 
 > **TODO (automate the gaps):**
 > - Add `npm run test:behaviour-tasks` that runs A0 + these test files in one shot.
-> - **No process-level test** for `this.memory` over a REAL task process + Hub (we have
+> - **No process-level test** for `this.memory` over a REAL task process + WebSocketGateway (we have
 >   it for `frame` in `media-task.test.ts`). Spawn a real task that calls
 >   `this.memory.remember()/recall()`, assert the shared db changed (closes A1-A7
 >   in-process ↔ the separate-process + two-connections path).

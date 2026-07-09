@@ -16,7 +16,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Bus } from '../../../core/bus.js';
-import { Hub } from '../../../core/hub.js';
+import { WebSocketGateway } from '../../../core/websocket-gateway.js';
 import { TaskSupervisor, type SignalKind } from './supervisor.js';
 import { CapabilityBroker } from './capabilities.js';
 import { buildCapabilityRegistry } from './register-capabilities.js';
@@ -42,11 +42,11 @@ test('a task pulls a REAL decoded camera frame (committed VP8 file → grabber �
   pump();
   const pumper = setInterval(pump, 400);
 
-  // ── real station: Hub + Bus + supervisor + capability broker ─────────────────
+  // ── real station: WebSocketGateway + Bus + supervisor + capability broker ─────────────────
   const http = await new Promise<Server>((res) => { const s = createServer(); s.listen(0, '127.0.0.1', () => res(s)); });
   const port = (http.address() as { port: number }).port;
   const bus = new Bus();
-  const hub = new Hub(http, bus);
+  const hub = new WebSocketGateway(http, bus);
   const signals: Array<{ kind: SignalKind; text: string }> = [];
   const sendToTask = (dock: string, instanceId: string, kind: string, payload: Record<string, unknown>) =>
     bus.publish({ topic: 'tasks', kind, payload: { instanceId, ...payload }, source: 'station', toAddr: { dock, component: `task:${instanceId}` } });

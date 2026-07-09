@@ -22,7 +22,7 @@
 
 import type { Bus } from '../../core/bus.js';
 import { json } from '../../core/http.js';
-import type { Hub } from '../../core/hub.js';
+import type { WebSocketGateway } from '../../core/websocket-gateway.js';
 import { dockConditions } from '../../core/conditions.js';
 import { readFileSync } from 'node:fs';
 import type { RouteContext, StationModule } from '../../core/module.js';
@@ -220,6 +220,7 @@ export interface BrainWiring {
   directory: Directory;
   motion: MotionExecutor;
   getHub: () => Hub;
+  getHub: () => WebSocketGateway;
   /** effective config value by key (the shared ConfigStore). */
   config: (key: string) => unknown;
   /** live video recorder (record_video tool). Optional — undefined disables it. */

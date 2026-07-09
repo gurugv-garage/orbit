@@ -33,7 +33,7 @@
 import type { Bus } from '../../core/bus.js';
 import { json } from '../../core/http.js';
 import type { IncomingMessage } from 'node:http';
-import type { Hub } from '../../core/hub.js';
+import type { WebSocketGateway } from '../../core/websocket-gateway.js';
 import type { RouteContext, StationModule } from '../../core/module.js';
 import type { Directory } from '../docks/directory.js';
 import type { MotionExecutor } from './motion.js';
@@ -64,7 +64,7 @@ interface DockBody {
 export function bodylinkModule(deps: {
   directory: Directory;
   motion: MotionExecutor;
-  getHub: () => Hub;
+  getHub: () => WebSocketGateway;
 }): StationModule {
   let bus: Bus;
   const docks = new Map<string, DockBody>();

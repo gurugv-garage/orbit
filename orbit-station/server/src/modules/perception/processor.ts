@@ -1,6 +1,6 @@
 /**
  * StreamProcessor — a stage that consumes a dock's streams (media + WS facts,
- * source-filtered) and emits PerceptionResults. The ProcessingHub ([hub.ts]) owns
+ * source-filtered) and emits PerceptionResults. The PerceptionProcessingHub ([hub.ts]) owns
  * the one MediaTap and the bus subscription, and fans both to processors here.
  *
  * Why media AND facts here (not in MediaTap): a processor that correlates audio +

@@ -5,7 +5,7 @@
  * uploads it / notifies (so the turn never blocks for the whole recording).
  *
  * It reuses the perception substrate: a one-shot StreamProcessor registered on
- * the ProcessingHub for ONE streamId, fed the same inbound VP8 RTP the face
+ * the PerceptionProcessingHub for ONE streamId, fed the same inbound VP8 RTP the face
  * recognizer gets. We assemble RTP → IVF (the FrameGrabber trick — IVF carries
  * explicit dims so ffmpeg opens the stream without a keyframe wait) and pipe IVF
  * into ffmpeg, which STREAM-COPIES VP8 into a WebM container (no re-encode →
@@ -21,7 +21,7 @@ import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { dePacketizeRtpPackets, type RtpPacket } from 'werift';
 import type { MediaKind } from '../../media/tap.js';
-import type { ProcessingHub } from '../hub.js';
+import type { PerceptionProcessingHub } from '../perception-processing-hub.js';
 import type { StreamContext, StreamProcessor } from '../processor.js';
 import { ivfFrameHeader, ivfHeader, vp8KeyframeSize } from '../face/frame-grabber.js';
 
@@ -47,7 +47,7 @@ export interface VideoRecorderApi {
 }
 
 /** Build the recorder API. `recordingsDir` is created on first use. */
-export function buildVideoRecorder(hub: ProcessingHub, recordingsDir: string): VideoRecorderApi {
+export function buildVideoRecorder(hub: PerceptionProcessingHub, recordingsDir: string): VideoRecorderApi {
   return {
     async record(streamId: string, seconds: number): Promise<RecordResult> {
       const secs = Math.max(1, Math.min(MAX_RECORD_SECONDS, Math.floor(seconds || 0)));

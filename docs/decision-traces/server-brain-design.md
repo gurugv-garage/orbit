@@ -263,7 +263,7 @@ SpeechRecognizer; the server never sees raw audio (no diarization/emotion);
 transcript-only debugging.
 
 **Option B — server media brain.** Uplink is half-built: the SFU already
-receives the dock's Opus and the `ProcessingHub` is a `MediaTap` designed for
+receives the dock's Opus and the `PerceptionProcessingHub` is a `MediaTap` designed for
 an STT sidecar ([media-processing.md](../media-processing.md)). But: server VAD
 endpointing replaces Silero-on-device; wake word either stays on-device
 (gating when audio "counts") or goes always-streaming (battery/privacy);

@@ -1,7 +1,7 @@
 /**
- * Hub ↔ runtime dock binding (docs/modules/runtime-dock-binding.md).
+ * WebSocketGateway ↔ runtime dock binding (docs/modules/runtime-dock-binding.md).
  *
- * Exercises the real WS path end-to-end against a live Hub:
+ * Exercises the real WS path end-to-end against a live WebSocketGateway:
  *   - a device that dials in with NO dock gets a welcome { dock: null } (UNCLAIMED)
  *   - with a pre-seeded binding, the same hello resolves the dock + a slot
  *     derived from `kind`, echoed in the welcome
@@ -18,12 +18,12 @@ import { createServer, type Server } from 'node:http';
 import { WebSocket } from 'ws';
 import Database from 'better-sqlite3';
 import { Bus, type BusMessage } from './bus.js';
-import { Hub } from './hub.js';
+import { WebSocketGateway } from './websocket-gateway.js';
 import { BindingStore } from '../modules/docks/bindings.js';
 
 interface Rig {
   url: string;
-  hub: Hub;
+  hub: WebSocketGateway;
   bus: Bus;
   bindings: BindingStore;
   close: () => Promise<void>;
@@ -37,7 +37,7 @@ async function makeRig(): Promise<Rig> {
   const port = (http.address() as { port: number }).port;
   const bus = new Bus();
   const bindings = new BindingStore(new Database(':memory:'));
-  const hub = new Hub(http, bus, bindings);
+  const hub = new WebSocketGateway(http, bus, bindings);
   return {
     url: `ws://127.0.0.1:${port}/ws`,
     hub, bus, bindings,

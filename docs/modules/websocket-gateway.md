@@ -1,4 +1,4 @@
-# WebSocket Hub (`core/hub.ts`)
+# WebSocket Gateway (`core/websocket-gateway.ts`)
 
 > The station's single network switchboard. **One** `WebSocketServer` on `/ws`
 > that every dock app, ESP32 body, browser console, and background task connects
@@ -6,7 +6,7 @@
 > and back, tracks every peer's identity + subscriptions, and routes directed
 > traffic against the live peer set.
 >
-> Code: [`orbit-station/server/src/core/hub.ts`](../../orbit-station/server/src/core/hub.ts).
+> Code: [`orbit-station/server/src/core/websocket-gateway.ts`](../../orbit-station/server/src/core/websocket-gateway.ts).
 > Wire vocabulary it speaks: [`core/protocol.ts`](../../orbit-station/server/src/core/protocol.ts).
 > Bus it bridges to: [`core/bus.ts`](../../orbit-station/server/src/core/bus.ts).
 > The *why* (one WS for all peers, raw `ws` not socket.io): [PLAN.md](../PLAN.md)
@@ -15,7 +15,7 @@
 
 This is platform plumbing: every module (brain, bodylink, ota, config,
 perception results, tasks) rides this one hub. Contrast the
-[Perception Hub](perception-hub.md), which is a perception-module *consumer* that
+[Perception Processing Hub](perception-processing-hub.md), which is a perception-module *consumer* that
 sits on top of this one — they share an abstraction (a bus-decoupled fan-out
 point) but operate at different layers.
 
@@ -52,21 +52,21 @@ job is to:
 
 | Use case | What the hub does | Code |
 |---|---|---|
-| **Device joins** | peer dials `/ws`, sends `hello`, gets a `welcome` with its resolved dock/component; announced on `station` topic (`peer-joined`) | [hub.ts:294-345](../../orbit-station/server/src/core/hub.ts#L294-L345) |
-| **Topic pub/sub fan-out** | a module publishes to a topic → hub delivers an `event` frame to exactly the peers subscribed to that topic | [hub.ts:116-149](../../orbit-station/server/src/core/hub.ts#L116-L149) |
-| **Directed delivery** | a tool-call goes to *one* dock's phone via `to` (peer id) or `toAddr` (dock+component), resolved against the live roster at send time | [hub.ts:130-136](../../orbit-station/server/src/core/hub.ts#L130-L136) |
-| **Peer publishes a fact** | inbound `publish` frame → `bus.publish({…, source: peer.id})`; heartbeats also refresh `links`/`build` on the roster | [hub.ts:353-373](../../orbit-station/server/src/core/hub.ts#L353-L373) |
-| **Liveness** | ping every 2 s; terminate a peer after 3 missed pongs (~6 s dead-link detection); any frame/pong resets the counter | [hub.ts:102-112](../../orbit-station/server/src/core/hub.ts#L102-L112) |
-| **Roster / directory** | snapshot of announced peers for the console and `/api/docks` | [hub.ts:165-181](../../orbit-station/server/src/core/hub.ts#L165-L181) |
-| **Claim a device into a dock** | console binds a device id → dock, mutates the live peer in place, pushes a fresh `welcome` so it adopts without reconnecting | [hub.ts:192-219](../../orbit-station/server/src/core/hub.ts#L192-L219) |
-| **Unclaim / displace** | re-park a device UNCLAIMED, or evict whoever holds a (dock, component) slot so a new claimant can take it | [hub.ts:226-256](../../orbit-station/server/src/core/hub.ts#L226-L256) |
-| **Backpressure protection** | shed *broadcast* traffic to a peer with >1 MB buffered (sleeping tab, dead phone link); directed frames always send | [hub.ts:142-147](../../orbit-station/server/src/core/hub.ts#L142-L147) |
-| **Graceful shutdown** | stop the ping timer, terminate every socket, close the WS server so the process can exit on SIGINT/SIGTERM | [hub.ts:155-162](../../orbit-station/server/src/core/hub.ts#L155-L162) |
+| **Device joins** | peer dials `/ws`, sends `hello`, gets a `welcome` with its resolved dock/component; announced on `station` topic (`peer-joined`) | [websocket-gateway.ts:294-345](../../orbit-station/server/src/core/websocket-gateway.ts#L294-L345) |
+| **Topic pub/sub fan-out** | a module publishes to a topic → hub delivers an `event` frame to exactly the peers subscribed to that topic | [websocket-gateway.ts:116-149](../../orbit-station/server/src/core/websocket-gateway.ts#L116-L149) |
+| **Directed delivery** | a tool-call goes to *one* dock's phone via `to` (peer id) or `toAddr` (dock+component), resolved against the live roster at send time | [websocket-gateway.ts:130-136](../../orbit-station/server/src/core/websocket-gateway.ts#L130-L136) |
+| **Peer publishes a fact** | inbound `publish` frame → `bus.publish({…, source: peer.id})`; heartbeats also refresh `links`/`build` on the roster | [websocket-gateway.ts:353-373](../../orbit-station/server/src/core/websocket-gateway.ts#L353-L373) |
+| **Liveness** | ping every 2 s; terminate a peer after 3 missed pongs (~6 s dead-link detection); any frame/pong resets the counter | [websocket-gateway.ts:102-112](../../orbit-station/server/src/core/websocket-gateway.ts#L102-L112) |
+| **Roster / directory** | snapshot of announced peers for the console and `/api/docks` | [websocket-gateway.ts:165-181](../../orbit-station/server/src/core/websocket-gateway.ts#L165-L181) |
+| **Claim a device into a dock** | console binds a device id → dock, mutates the live peer in place, pushes a fresh `welcome` so it adopts without reconnecting | [websocket-gateway.ts:192-219](../../orbit-station/server/src/core/websocket-gateway.ts#L192-L219) |
+| **Unclaim / displace** | re-park a device UNCLAIMED, or evict whoever holds a (dock, component) slot so a new claimant can take it | [websocket-gateway.ts:226-256](../../orbit-station/server/src/core/websocket-gateway.ts#L226-L256) |
+| **Backpressure protection** | shed *broadcast* traffic to a peer with >1 MB buffered (sleeping tab, dead phone link); directed frames always send | [websocket-gateway.ts:142-147](../../orbit-station/server/src/core/websocket-gateway.ts#L142-L147) |
+| **Graceful shutdown** | stop the ping timer, terminate every socket, close the WS server so the process can exit on SIGINT/SIGTERM | [websocket-gateway.ts:155-162](../../orbit-station/server/src/core/websocket-gateway.ts#L155-L162) |
 
 ## Properties
 
-- **Singleton.** One `Hub` per station process, constructed in
-  [main.ts](../../orbit-station/server/src/main.ts) as `new Hub(server, bus, bindings)`.
+- **Singleton.** One `WebSocketGateway` per station process, constructed in
+  [main.ts](../../orbit-station/server/src/main.ts) as `new WebSocketGateway(server, bus, bindings)`.
   It owns the only `/ws` `WebSocketServer`.
 - **Bus-decoupled.** The hub depends on the `Bus` and an injected `DockBindings`
   interface — it imports **no module**. Modules never see sockets; the hub never
@@ -88,29 +88,29 @@ job is to:
 These are the invariants the hub upholds for the rest of the system:
 
 1. **Subscription gating.** A peer only ever receives `event` frames for topics
-   it has explicitly `subscribe`d to. ([hub.ts:126](../../orbit-station/server/src/core/hub.ts#L126))
+   it has explicitly `subscribe`d to. ([websocket-gateway.ts:126](../../orbit-station/server/src/core/websocket-gateway.ts#L126))
 2. **Directed isolation.** A directed message (`to` / `toAddr`) reaches *only*
    the addressed peer(s) — still gated on topic subscription. `toAddr` is
    resolved against the **live** roster at fan-out, so reconnects/hardware swaps
-   need nothing special on the send path. ([hub.ts:130-136](../../orbit-station/server/src/core/hub.ts#L130-L136))
+   need nothing special on the send path. ([websocket-gateway.ts:130-136](../../orbit-station/server/src/core/websocket-gateway.ts#L130-L136))
 3. **No self-echo.** A peer never receives its own publishes back
    (`peer.id === msg.source` is skipped) — this is why the dock's ~15 KB
    recognize-request photos stopped bouncing back to the phone.
-   ([hub.ts:137-141](../../orbit-station/server/src/core/hub.ts#L137-L141))
+   ([websocket-gateway.ts:137-141](../../orbit-station/server/src/core/websocket-gateway.ts#L137-L141))
 4. **Bounded buffering.** Broadcast traffic to a peer buffered past 1 MB is
    dropped; **directed** frames (signaling, results, tool-calls) are never
-   dropped — they must arrive. ([hub.ts:142-147](../../orbit-station/server/src/core/hub.ts#L142-L147))
+   dropped — they must arrive. ([websocket-gateway.ts:142-147](../../orbit-station/server/src/core/websocket-gateway.ts#L142-L147))
 5. **Fast liveness.** A silently-dead peer is terminated within ~6 s, not at TCP
-   timeout. ([hub.ts:34-39](../../orbit-station/server/src/core/hub.ts#L34-L39))
+   timeout. ([websocket-gateway.ts:34-39](../../orbit-station/server/src/core/websocket-gateway.ts#L34-L39))
 6. **Binding is source of truth.** On `hello`, a station-side binding ALWAYS wins
    over the dock the device asserts — a console claim is never silently
    overwritten by a device's stale compiled-in `DOCK_NAME`. A device-supplied
    dock only *seeds* a binding when none exists.
-   ([hub.ts:314-319](../../orbit-station/server/src/core/hub.ts#L314-L319))
+   ([websocket-gateway.ts:314-319](../../orbit-station/server/src/core/websocket-gateway.ts#L314-L319))
 7. **One device per slot.** A second peer claiming an occupied `(dock, component)`
    displaces the old one (newest wins); the displaced peer is told and dropped.
-   Applies on both `hello` and `claim`. ([hub.ts:325-336](../../orbit-station/server/src/core/hub.ts#L325-L336),
-   [hub.ts:248-256](../../orbit-station/server/src/core/hub.ts#L248-L256))
+   Applies on both `hello` and `claim`. ([websocket-gateway.ts:325-336](../../orbit-station/server/src/core/websocket-gateway.ts#L325-L336),
+   [websocket-gateway.ts:248-256](../../orbit-station/server/src/core/websocket-gateway.ts#L248-L256))
 8. **Handler isolation.** The bus itself wraps every handler in try/catch
    ([bus.ts:62-68](../../orbit-station/server/src/core/bus.ts#L62-L68)), so one
    module throwing can't break fan-out to the rest.
@@ -164,7 +164,7 @@ roster-dependent wiring can be built after it):
 
 ```ts
 const bindings = new BindingStore();              // deviceId→dock source of truth
-const hub = new Hub(server, bus, bindings);
+const hub = new WebSocketGateway(server, bus, bindings);
 
 const directory = new Directory(() => hub.roster());     // dock directory off the roster
 modules.push(docksModule(directory, () => hub, bindings));
@@ -182,11 +182,11 @@ the perception hub's `resolveDock`/`dockReady` all read.
   reads/writes is owned by an injected `DockBindings` store, not the hub.
 - **No media.** WebRTC A/V does not flow through the hub — only the `media`
   topic's SDP/ICE **signaling** does. The media plane is the SFU; the
-  [Perception Hub](perception-hub.md) taps that.
+  [Perception Processing Hub](perception-processing-hub.md) taps that.
 
 ## Related
 
-- [perception-hub.md](perception-hub.md) — the perception-module fusion point
+- [perception-processing-hub.md](perception-processing-hub.md) — the perception-module fusion point
   that consumes this hub's roster + bus and publishes results back through it.
 - [runtime-dock-binding.md](runtime-dock-binding.md) — the claim/unclaim/displace
   design the `claim`/`unclaim`/`#displaceFromSlot` methods implement.

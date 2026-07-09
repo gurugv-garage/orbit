@@ -507,13 +507,13 @@ ample for one dock; watch `data/recordings/` if you record a lot.
 ### 10.6 Security gap before 24/7-public (do NOT skip)
 
 Today the hub is **plain ws:// and accepts any connection** (no token — confirmed in
-`core/hub.ts`). IP-allowlisting in §10.2 is the *only* thing protecting it now, which
+`core/websocket-gateway.ts`). IP-allowlisting in §10.2 is the *only* thing protecting it now, which
 is fine for a private test but brittle (dock IP changes, you travel). Before genuinely
 always-on/public, add **both**:
 1. **TLS** — `npm run certs` (self-signed; dock must trust it) **or** front it with
    Caddy/Nginx + Let's Encrypt once you have a domain → `wss://`.
 2. **A WS auth token** on the `hello` handshake (does not exist yet — small add in
-   `core/hub.ts`; the dock sends it, the hub rejects without it).
+   `core/websocket-gateway.ts`; the dock sends it, the hub rejects without it).
 Until both exist, keep 8099 locked to known IPs.
 
 ### 10.7 Recovery
