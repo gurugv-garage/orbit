@@ -112,7 +112,11 @@
       </tbody>
     </table>
     <p>The one thing it hands each processor is a <code class="inl">StreamContext</code> — the processor's whole outward surface: <code class="inl">ctx.emit()</code> (a result → the <code class="inl">perception</code> topic) and <code class="inl">ctx.publish()</code> (a fact → <em>other</em> processors, which is how the graph edges from M3 exist).</p>
-    <p><strong>One output format, always.</strong> Every processor — vision, STT, face, all of them — emits the <em>same</em> envelope, <code class="inl">PerceptionResult</code>. One <code class="inl">perception</code> topic carries them all, discriminated by <code class="inl">kind</code>; adding a processor adds a <code class="inl">kind</code>, never a new shape or topic. The hub stamps the common fields (it knows the identity); the processor fills only <code class="inl">kind</code> + <code class="inl">payload</code>:</p>
+    <div class="note warn">
+      <span class="tag">the hub does NOT create meaning</span>
+      <p>Key point: at this stage the hub has only audio, video, and facts — it has <em>no idea</em> what "presence" or "identity" is. It never builds a <code class="inl">PerceptionResult</code>. The <strong>processor</strong> does: it runs the model (VAD / face-api / the VLM sidecar), decides "this is <code class="inl">presence</code>, <code class="inl">{present:true}</code>", and calls <code class="inl">ctx.emit(that)</code>. The hub's <code class="inl">emit</code> only <em>stamps</em> routing fields onto the already-built result (<code class="inl">makeResult({...r, streamId, dockId})</code>) and forwards it. Meaning is 100% the processor's; the hub is a dumb pipe that enforces the envelope shape.</p>
+    </div>
+    <p><strong>One output format, always.</strong> Every processor — vision, STT, face, all of them — emits the <em>same</em> envelope, <code class="inl">PerceptionResult</code>. One <code class="inl">perception</code> topic carries them all, discriminated by <code class="inl">kind</code>; adding a processor adds a <code class="inl">kind</code>, never a new shape or topic. The processor fills <code class="inl">kind</code> + <code class="inl">payload</code> (the meaning); the hub only stamps the common routing fields:</p>
     <div class="code">
       <div class="bar"><span class="fname">perception/result.ts</span><span>PerceptionResult — the single envelope</span></div>
 <pre><span class="k">interface</span> PerceptionResult {
