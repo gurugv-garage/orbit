@@ -128,6 +128,10 @@
 <span class="c">// ctx.emit takes only { kind, payload, source, confidence? };</span>
 <span class="c">// the hub adds dockId/streamId/ts via makeResult, then publishes ×2.</span></pre>
     </div>
+    <div class="note">
+      <span class="tag">kind is producer-owned, not consumer-demand</span>
+      <p>This is push, not pull — <strong>no consumer asks for anything.</strong> A processor emits whatever it computed; <code class="inl">kind</code> is the <em>producer's</em> self-declaration of <em>what kind of fact this is</em> (<code class="inl">stt-watch</code> always emits <code class="inl">transcript</code>; <code class="inl">face</code> always <code class="inl">identity</code> — a fixed 1:1). Consumers then <em>dispatch</em> on it (<code class="inl">switch(kind)</code>) to know how to read <code class="inl">payload</code>. So <code class="inl">kind</code> serves both sides but is <strong>authored by the producer</strong> — it's a tagged-union tag, not a request. (Compare a <code class="inl">tool-call</code>, which <em>is</em> demand: the model asks, the phone answers. Perception is the opposite — unsolicited broadcast.)</p>
+    </div>
     <div class="note wire">
       <span class="tag">decoupled</span>
       <p>It imports no other module — just a <code class="inl">bus</code>, a <code class="inl">resolveDock</code> closure (peer id → dock, live from the roster), and the <code class="inl">dockReady</code> gate. So media stays portable and the processor set stays swappable; they meet only through these closures.</p>
