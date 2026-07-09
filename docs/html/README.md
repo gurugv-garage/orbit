@@ -27,9 +27,12 @@ Convention: the two planes get consistent color — **control/WS = wire (blue)**
 
 ## Contents
 
-- [`ws-webrtc-dataflow.html`](ws-webrtc-dataflow.html) — the two transports (WS
-  control plane via `WebSocketGateway`, WebRTC media plane via `Sfu` →
-  `PerceptionProcessingHub`), how a packet becomes perception, and where the two
-  planes cross (the Bus, by topic). Companion to
-  [`../modules/websocket-gateway.md`](../modules/websocket-gateway.md) and
-  [`../modules/perception-processing-hub.md`](../modules/perception-processing-hub.md).
+- [`ws-webrtc-dataflow.html`](ws-webrtc-dataflow.html) — one moment traced
+  **packet to behaviour**: a dock's WebRTC media in → `Sfu` →
+  `PerceptionProcessingHub` → processors → a `perception` result → the **brain**
+  (grounding + the addressed turn) → LLM loop → `speak` / `tool-call` / motion
+  back out. Shows both transports (WS control via `WebSocketGateway`, WebRTC
+  media), where they cross (the Bus, by topic), and the full round-trip.
+  Companion to [`../modules/websocket-gateway.md`](../modules/websocket-gateway.md),
+  [`../modules/perception-processing-hub.md`](../modules/perception-processing-hub.md),
+  and the [`../modules/bus-topics.md`](../modules/bus-topics.md) registry.
