@@ -14,6 +14,7 @@ It is NOT a place for orbit's own design decisions — those live in
 
 | Entry | Subject | First researched | Last updated | Status |
 |---|---|---|---|---|
+| [perceptual-memory.md](perceptual-memory.md) | Visual entity memory (faces/places/things) via embeddings + small VLM — feasibility & POCs | 2026-07-08 | 2026-07-08 | active |
 | [pibot.md](pibot.md) | `badlogic/pibot` — local-first voice robot on the same `pi` agent kernel | 2026-06-22 | 2026-06-22 | active |
 
 <!-- add a row per entry; keep newest research at the top of the table -->
