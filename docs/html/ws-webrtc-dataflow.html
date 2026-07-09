@@ -12,7 +12,7 @@
 <header class="hero">
   <div class="wrap">
     <div class="eyebrow">orbit-station · data-flow walkthrough</div>
-    <h1>Two transports, one peer: packet to behaviour</h1>
+    <h1>One moment, packet to behaviour</h1>
     <p class="lede">Follow one moment end to end: a dock's camera photons and mic audio enter over WebRTC, become perception, ground a brain turn, and return as spoken words and body motion. Two transports, keyed by the same peer id, crossing at the bus — traced from packet to behaviour.</p>
     <div class="planes">
       <div class="plane ws">
@@ -124,30 +124,76 @@ perceptionProcessingHub = <span class="k">new</span> PerceptionProcessingHub(
 
 <section>
   <div class="wrap">
-    <h2>Media plane · fan-out</h2>
-    <p class="step-title"><span class="step-n">M3</span>Fuse RTP + client-topic facts, source-filtered, to processors</p>
-    <p>The hub merges its two inputs — <strong>RTP</strong> from the SFU and <strong><code class="inl">client</code>-topic facts</strong> (the dock's on-device VAD/battery/face, arriving over WS) — per source, via <code class="inl">#onClientFact</code> on <code class="inl">bus.on('client', …)</code>. Each processor declares <code class="inl">sources</code> / <code class="inl">mediaKinds</code> / <code class="inl">channels</code>; the hub delivers only matching items, each wrapped in try/catch so a processor can never kill the SFU.</p>
+    <h2>Media plane · the processor graph</h2>
+    <p class="step-title"><span class="step-n">M3</span>Not a flat fan-out — a graph, and every node has two outputs</p>
+    <p>The hub delivers each processor only what it declared it wants (<code class="inl">mediaKinds</code> for RTP, <code class="inl">channels</code> for <code class="inl">client</code> facts), each callback try/catch-wrapped so one can't kill the SFU. But the processors aren't independent — <strong>some read others' work</strong>, and <strong>each writes to two places</strong>: the live <code class="inl">perception</code> topic <em>and</em> the durable SnapshotStore ring.</p>
     <div class="diagram">
-<pre>   <span class="hlw">client topic (client.*)</span>          <span class="hl">SFU onTrack(rtp)</span>
-   via WebSocketGateway ─┐         via Sfu tap ─┐
-                        ▼                       ▼
-      <span class="hl">┌──────────────  PerceptionProcessingHub  ───────────────┐</span>
-      │  onClientFact: wantsSource? + channels? → onChannelItem │
-      │  onTrack:      wantsSource? + mediaKinds? → subscribeRtp │
-      <span class="hl">└───┬──────────────┬──────────────┬──────────────┬──────┘</span>
-          ▼              ▼              ▼              ▼
-      <span class="hl">stt-watch</span>       <span class="hl">face-recog</span>      <span class="hl">vision</span>        <span class="hl">presence</span>
-      opus→PCM→VAD    vp8→JPEG→api    reads frame    (facts only)
-          │              │              │              │
-          └──────────────┴─── ctx.emit(result) ───────┘
-                             ▼
-                <span class="hl">#publishResult → bus.publish('perception', …)</span> ×2</pre>
+<pre>       RTP (Sfu tap)                          client facts (WS)
+       │        │                                    │
+   <span class="dim">audio</span>    <span class="dim">video</span>                                  │
+       ▼        ▼                                    ▼
+  <span class="hl">🎙 stt-watch</span>  <span class="hl">👤 face-recognition</span>  ◀── owns VP8→JPEG   <span class="hl">🫥 presence</span>
+   opus→PCM      decode + face-api            frame grabber   (facts only)
+   →VAD          │        │                                   │
+   →:8078 STT    │        └──frame──┐  └──recognitions──┐      │
+       │         │                 ▼                    ▼      │
+       │         │          <span class="hl">👁 vision</span>          <span class="hl">😮 identity</span>          │
+       │         │        reads face's frame     reads face + body    │
+       │         │        →:8080 VLM         (ego-aware debounce)      │
+       │         │              │                    │                 │
+   ┌───┴─────────┴──────────────┴────────────────────┴─────────────────┘
+   │   <span class="hl">🤖 bodymotion</span> (station feeds body commands → proprioception)
+   │        │
+   ▼        ▼   each node emits TWICE:
+  ① <span class="hl">store.add(snapshot)</span> ──▶ SnapshotStore ring  (durable; the memory arm)
+  ② <span class="hl">ctx.emit(result)</span>   ──▶ bus [<span class="hlw">perception</span>] ×2  (live; dock + console)</pre>
     </div>
-    <div class="grid">
-      <div class="card"><h4><span class="ico">🎙</span> stt-watch</h4><p>Depacketizes Opus RTP → 16 kHz PCM → VAD endpoints utterances → STT sidecar (:8078, parakeet). One clean transcript per utterance.</p><span class="mk">onRtp · audio</span></div>
-      <div class="card"><h4><span class="ico">👁</span> vision-snapshot</h4><p>Reuses the face processor's already-decoded frame (one ffmpeg per dock), sends to the qwen2.5-VL sidecar (:8080).</p><span class="mk">lifecycle-only</span></div>
-      <div class="card"><h4><span class="ico">👤</span> face-recognition</h4><p>Owns the VP8→JPEG grabber; runs face-api descriptors against the gallery. Its frame is shared with vision.</p><span class="mk">onRtp · video</span></div>
-      <div class="card"><h4><span class="ico">🫥</span> presence</h4><p>Fact-only — reacts to <code class="inl">client.*</code> facts (the WS plane) to track whether anyone's at the dock.</p><span class="mk">onChannelItem</span></div>
+    <p><strong>The edges are the point.</strong> Only <code class="inl">face-recognition</code> decodes video (one ffmpeg per dock); <code class="inl">vision</code> and <code class="inl">identity</code> read <em>its</em> decoded frame and recognitions rather than decoding again. That coupling is safe because everything is keyed to the same <code class="inl">streamId</code>.</p>
+    <table class="cmp">
+      <thead><tr><th>Processor</th><th>Consumes</th><th>Emits</th></tr></thead>
+      <tbody>
+        <tr><td class="rtcc">🎙 stt-watch</td><td>audio RTP → PCM → VAD utterances → STT sidecar :8078</td><td><code class="inl">speech</code> / <code class="inl">sound</code> snapshot + <code class="inl">onFinal</code> transcript</td></tr>
+        <tr><td class="rtcc">👤 face-recognition</td><td>video RTP → decodes VP8→JPEG (owns the grabber) → face-api</td><td>the decoded frame + recognitions (read by others)</td></tr>
+        <tr><td class="rtcc">👁 vision-snapshot</td><td><em>face's</em> frame (no own decode) → qwen2.5-VL :8080</td><td><code class="inl">vision</code> / <code class="inl">scene</code> snapshot</td></tr>
+        <tr><td class="rtcc">😮 identity-snapshot</td><td><em>face's</em> recognitions + <em>bodymotion's</em> ego-motion</td><td><code class="inl">identity</code> / <code class="inl">emotion</code> snapshot + who's-present</td></tr>
+        <tr><td class="rtcc">🫥 presence</td><td><code class="inl">client.*</code> facts (WS) — no media</td><td>presence state</td></tr>
+        <tr><td class="rtcc">🤖 bodymotion</td><td>the body's own motion commands (station-fed)</td><td><code class="inl">bodymotion</code> proprioception snapshot</td></tr>
+      </tbody>
+    </table>
+    <div class="note">
+      <span class="tag">two sinks, remember</span>
+      <p>Output ① (the ring) and ② (the topic) serve different masters. ② is the <em>live</em> reaction — reaches the dock + console this instant. ① is the <em>record</em> — it accumulates into the memory arm below. A single snapshot does both.</p>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <h2>The memory arm</h2>
+    <p class="step-title"><span class="step-n">M4</span>The ring is digested — twice, on two clocks</p>
+    <p>Raw snapshots are noisy (a small VLM misreads a mug as a "ruler" frame to frame). Nothing acts on raw mush directly. The <strong>summarizer</strong> fuses a recent window of the ring into one coherent picture; that picture feeds the brain two ways, on two cadences:</p>
+    <div class="diagram">
+<pre>  SnapshotStore ring  (all processors write here)
+        │
+        ├──▶ <span class="hl">summarizer</span> (Gemini, windowed) ──▶ <span class="hl">lastSummary</span>  the rolling picture
+        │         │                                 │
+        │         │ (also added back as a           ▼
+        │         │  'summary' ring record)   <span class="hlw">grounding</span>  ── per-turn, SYNC ──▶ brain prompt
+        │         ▼                            (summary + salient tail; no LLM on the turn)
+        │    <span class="hl">curator</span> (background clock)
+        │     consolidate: salient speech → durable BELIEFS
+        │     reconcile:   revise / forget old beliefs
+        │         │
+        │         ▼
+        └──▶ <span class="hl">long-term memory</span> (sqlite, embedded) ── on demand ──▶ brain's recall_memory tool</pre>
+    </div>
+    <ul class="tight">
+      <li><strong>Grounding</strong> — pulled <em>synchronously</em> when a turn is built: the last summary (stamped with staleness) + the salient stream since. No network on the turn's critical path. This is what the model always sees.</li>
+      <li><strong>Curator</strong> — a <em>background</em> job on its own clock. It consolidates <em>summaries</em> (never raw utterances — the coherence diet) into durable per-dock beliefs, and periodically reconciles them (revise/forget). The brain reaches these on demand via <code class="inl">recall_memory</code>.</li>
+    </ul>
+    <div class="note wire">
+      <span class="tag">why the summarizer is the gate</span>
+      <p>Both memory paths feed from the <strong>summary pulse</strong>, not the raw ring — that's deliberate. Consolidating raw per-utterance speech once produced 81% junk "speaker 0" beliefs. Digest first, then remember.</p>
     </div>
   </div>
 </section>
@@ -185,60 +231,38 @@ perceptionProcessingHub = <span class="k">new</span> PerceptionProcessingHub(
 
 <section>
   <div class="wrap">
-    <h2>Into the brain · grounding + the turn</h2>
-    <p class="step-title"><span class="step-n w">B1</span>A result isn't the end — it grounds and triggers a turn</p>
-    <p>The <code class="inl">perception</code> frame reaching the dock is where most diagrams stop. But perception exists to <em>drive behaviour</em>. Two things happen with it:</p>
-    <ul class="tight">
-      <li><strong>Grounding (passive).</strong> The brain keeps a rolling picture per dock. When any turn is built it pulls the grounding block — the last summary + the salient stream since — synchronously (no LLM on the turn's critical path) and injects it into the prompt. So the model always knows who's present and what just happened.</li>
-      <li><strong>Triggering (active).</strong> A <code class="inl">🎙 speech</code> result carrying a final transcript fires the brain's <code class="inl">onFinal</code> hook. The brain runs the <strong>addressed decision</strong> — was this said <em>to</em> the dock, or is it room chatter? — and only an addressed utterance becomes a turn.</li>
-    </ul>
-    <div class="code">
-      <div class="bar"><span class="fname">brain/index.ts</span><span>onFinal → addressed → enqueue</span></div>
-<pre>getTranscriptApi()?.onFinal((t) => {
-  <span class="c">// addressed latch: is this utterance to the dock, or overheard?</span>
-  <span class="k">if</span> (!session(t.dockId).utteranceAddressed(t.endedAt, ...)) <span class="k">return</span>; <span class="c">// room chatter → drop</span>
-  session(t.dockId).enqueueTurn({ text: t.text, ... });          <span class="c">// → an agent turn</span>
-});</pre>
-    </div>
-    <div class="note wire">
-      <span class="tag">two ways in</span>
-      <p>A turn also starts <em>without</em> a user: the <strong>attention gate</strong> watches the same snapshot stream and, on something worth reacting to (an arrival, strong emotion), calls <code class="inl">onRaise → enqueueAutonomousTurn</code> — a self-thought. Same turn machinery, no utterance.</p>
-    </div>
-  </div>
-</section>
-
-<section>
-  <div class="wrap">
-    <h2>The turn · LLM → behaviour</h2>
-    <p class="step-title"><span class="step-n w">B2</span>The session runs the loop and streams words + actions back down</p>
-    <p>A <code class="inl">DockBrainSession</code> runs the agent loop (pi, per dock). As the model produces output it streams frames back to the dock's phone on the <code class="inl">agent</code> topic — directed by <code class="inl">toAddr: (dock, 'phone')</code>, so they reach exactly that dock:</p>
+    <h2>The consumer · DockBrainSession</h2>
+    <p class="step-title"><span class="step-n w">B</span>Where the pipeline is consumed — and turned into behaviour</p>
+    <p>Perception feeds a <code class="inl">DockBrainSession</code> (the pi agent loop, one per dock). It consumes the pipeline's output in <strong>three</strong> ways, then produces behaviour:</p>
     <table class="cmp">
-      <thead><tr><th>Frame down</th><th>What the dock does</th></tr></thead>
+      <thead><tr><th>Consumes from perception</th><th>How</th></tr></thead>
       <tbody>
-        <tr><td class="wsc">speak</td><td>TTS — the phone says the sentence aloud</td></tr>
-        <tr><td class="wsc">tool-call</td><td>the phone executes a device tool (photo, motion, zoom) and replies</td></tr>
-        <tr><td class="wsc">turn-status</td><td>drives the face UI: thinking / speaking / listening</td></tr>
+        <tr><td class="rtcc">grounding (live picture)</td><td>pulled <em>synchronously</em> into every turn's prompt — summary + salient tail</td></tr>
+        <tr><td class="rtcc">long-term memory (beliefs)</td><td>on demand via the <code class="inl">recall_memory</code> tool (curator's output)</td></tr>
+        <tr><td class="rtcc">the trigger</td><td>a <code class="inl">🎙 speech</code> result's <code class="inl">onFinal</code> → <strong>addressed?</strong> → enqueue a turn</td></tr>
       </tbody>
     </table>
-    <p>Body motion is driven server-side too: a motion tool publishes to the <code class="inl">bodylink</code> topic → the ESP32 moves. So a single turn fans into <strong>three</strong> topics — <code class="inl">agent</code> (speech/UI), <code class="inl">bodylink</code> (motion), and back to <code class="inl">perception</code> if it grabs a fresh look.</p>
-  </div>
-</section>
-
-<section>
-  <div class="wrap">
-    <h2>The tool round-trip</h2>
-    <p class="step-title"><span class="step-n">B3</span>A tool-call is an awaited RPC over the bus</p>
-    <p>When the model calls a device tool, the brain's <code class="inl">RpcBroker</code> publishes a <code class="inl">tool-call</code> down (directed to the phone) and <em>awaits</em> the matching <code class="inl">tool-result</code> by <code class="inl">reqId</code> — a request/response over the same pub/sub bus. The phone runs the tool (e.g. capture a clean camera JPEG), publishes the result up, and the model's turn continues with the answer.</p>
     <div class="code">
-      <div class="bar"><span class="fname">brain/rpc.ts</span><span>RpcBroker — awaited tool call</span></div>
-<pre><span class="c">// down: directed tool-call to the dock's phone</span>
-bus.publish({ topic:<span class="s">'agent'</span>, kind:<span class="s">'tool-call'</span>, payload:{ reqId, name, args }, toAddr:{ dock, component:<span class="s">'phone'</span> } });
-<span class="c">// up: the phone's tool-result, matched by reqId, resolves the await</span>
-bus.on(<span class="s">'agent'</span>, (msg) => { <span class="k">if</span> (msg.kind===<span class="s">'tool-result'</span>) resolve(byReqId(msg.payload.reqId)); });</pre>
+      <div class="bar"><span class="fname">brain/index.ts</span><span>trigger: onFinal → addressed → enqueue</span></div>
+<pre>getTranscriptApi()?.onFinal((t) => {
+  <span class="k">if</span> (!session(t.dockId).utteranceAddressed(t.endedAt, ...)) <span class="k">return</span>; <span class="c">// room chatter → drop</span>
+  session(t.dockId).enqueueTurn({ text: t.text, ... });          <span class="c">// addressed → a turn</span>
+});
+<span class="c">// or, no user at all: the attention gate raises a self-thought</span>
+getGateApi()?.onRaise((thought) => session(dock).enqueueAutonomousTurn(thought));</pre>
     </div>
+    <p>Once a turn runs, the session streams its output back out as <strong>directed</strong> frames (<code class="inl">toAddr: dock/phone</code>) — and this is where the pipeline ends, in more than one place:</p>
+    <table class="cmp">
+      <thead><tr><th>Produces</th><th>Topic → where</th></tr></thead>
+      <tbody>
+        <tr><td class="wsc">speak · turn-status</td><td><code class="inl">agent</code> → the phone (TTS + face UI)</td></tr>
+        <tr><td class="wsc">motion</td><td><code class="inl">bodylink</code> → the ESP32 body moves</td></tr>
+        <tr><td class="wsc">tool-call ↔ tool-result</td><td><code class="inl">agent</code> → phone runs a device tool, replies (awaited RPC by <code class="inl">reqId</code>; a mid-turn round-trip, not a stage)</td></tr>
+      </tbody>
+    </table>
     <div class="note">
-      <span class="tag">the loop closes</span>
-      <p>Photons entered as RTP; the brain reasoned over the digested perception; and the response left as speech (<code class="inl">agent</code>), motion (<code class="inl">bodylink</code>), and possibly a fresh perceptual look — every leg a message on the bus, keyed to the same dock. <em>That's</em> the end of the dataflow: not a published result, but the robot acting.</p>
+      <span class="tag">the ends (plural)</span>
+      <p>There is no single "end." A moment fans into several sinks: <strong>speech + face UI</strong> (<code class="inl">agent</code>→phone), <strong>body motion</strong> (<code class="inl">bodylink</code>→ESP32), the <strong>durable memory</strong> the curator wrote (for future turns), and the <strong>console</strong> (the undirected perception copy). The pipeline's true output is the robot changing state in the world — not a published frame.</p>
     </div>
   </div>
 </section>
@@ -248,37 +272,44 @@ bus.on(<span class="s">'agent'</span>, (msg) => { <span class="k">if</span> (msg
     <h2>The whole path</h2>
     <p class="step-title">One moment, packet to behaviour</p>
     <div class="diagram">
-<pre>  dock phone ──<span class="hl">WebRTC/RTP</span>──▶ <span class="hl">Sfu</span> ─(tap)─▶ <span class="hl">PerceptionProcessingHub</span>
-                                                  │ source-filtered fan-out
-                                    ┌─────────────┼─────────────┐
-                                    ▼             ▼             ▼
-                                stt-watch     face-recog     vision
-                                 :8078         gallery        :8080
-                                    └──── ctx.emit(result) ────┘
-                                                  ▼
-                              #publishResult → <span class="hl">Bus [perception]</span>
-                                                  │
-   ┌──────────────────────────────────────────────┤
-   ▼                                                ▼  (directed to dock)
-<span class="hlw">brain</span> grounds + onFinal→addressed              dock re-grounds / Studio shows
-   │  enqueueTurn
-   ▼
-<span class="hlw">DockBrainSession</span> ── LLM loop ──┬──▶ Bus [<span class="hlw">agent</span>]  speak / tool-call / turn-status ─▶ phone
-                                ├──▶ Bus [<span class="hlw">bodylink</span>]  motion command ────────────────▶ ESP32
-                                └──◀ Bus [<span class="hlw">agent</span>]  tool-result (reqId) ◀── phone runs tool
-                                       ▲
-                        all delivered out via <span class="hlw">WebSocketGateway</span> event frames
-                                (packet ──▶ perception ──▶ turn ──▶ behaviour)</pre>
+<pre>  dock ──<span class="hl">WebRTC/RTP</span>──▶ <span class="hl">Sfu</span> ─tap─▶ <span class="hl">PerceptionProcessingHub</span> ◀── <span class="hlw">client facts (WS)</span>
+                                        │
+        ┌───────────────┬──────────────┼───────────────┐
+        ▼               ▼              (edges)           ▼
+  <span class="hl">face-recog</span> ──frame──▶ <span class="hl">vision</span>    <span class="hl">stt-watch</span>            <span class="hl">presence</span>
+        └──recog──▶ <span class="hl">identity</span> ◀──body── <span class="hl">bodymotion</span>       (+ <span class="hl">bg-audio</span>)
+        │               │               │                │
+        └───────────────┴──── each emits TWICE ──────────┘
+                     │                          │
+          ① <span class="hl">SnapshotStore</span> ring          ② bus [<span class="hlw">perception</span>] ×2
+                     │                          ├──▶ dock  (directed)
+        <span class="hl">summarizer</span> ─▶ lastSummary          └──▶ console (undirected)
+             │            │
+        <span class="hl">curator</span>      <span class="hlw">grounding</span> (per-turn, sync)
+             │            │
+   <span class="hl">long-term memory</span>    │
+      (recall tool) │    │
+             └──┬───┴────┘
+                ▼
+        <span class="hlw">DockBrainSession</span>  (grounding + memory in; onFinal/gate triggers a turn)
+                │  LLM loop
+     ┌──────────┼───────────────┬────────────────────┐
+     ▼          ▼               ▼                     ▼
+  bus[<span class="hlw">agent</span>]   bus[<span class="hlw">bodylink</span>]    bus[<span class="hlw">agent</span>] tool RPC     (memory,
+  speak/UI     motion          call ↔ result          written
+   ▶ phone      ▶ ESP32          ▶ phone               earlier)
+   ══════════ THE ENDS: speech · motion · memory · console ══════════
+        all wire-bound legs exit via <span class="hlw">WebSocketGateway</span> event frames</pre>
     </div>
     <p>Read the code in this order — the full journey:</p>
     <ul class="tight">
-      <li><a class="file" href="../../orbit-station/server/src/modules/media/sfu.ts">media/sfu.ts</a> — <code class="inl">onProducerOffer</code> → <code class="inl">pc.onTrack</code> → <code class="inl">#tap.onTrack</code> <em>(media in)</em></li>
-      <li><a class="file" href="../../orbit-station/server/src/modules/media/tap.ts">media/tap.ts</a> — the <code class="inl">MediaTap</code> contract</li>
-      <li><a class="file" href="../../orbit-station/server/src/modules/perception/perception-processing-hub.ts">perception-processing-hub.ts</a> — fan-out + <code class="inl">#publishResult</code> <em>(→ perception)</em></li>
-      <li><a class="file" href="../../orbit-station/server/src/modules/brain/index.ts">brain/index.ts</a> — grounding + <code class="inl">onFinal</code> → addressed → <code class="inl">enqueueTurn</code> <em>(→ turn)</em></li>
-      <li><a class="file" href="../../orbit-station/server/src/modules/brain/session.ts">brain/session.ts</a> — the LLM loop → <code class="inl">speak</code> / <code class="inl">turn-status</code> down <em>(→ behaviour)</em></li>
-      <li><a class="file" href="../../orbit-station/server/src/modules/brain/rpc.ts">brain/rpc.ts</a> — <code class="inl">tool-call</code> ↔ <code class="inl">tool-result</code> RPC over the bus</li>
-      <li><a class="file" href="../../orbit-station/server/src/core/websocket-gateway.ts">websocket-gateway.ts</a> — bus <code class="inl">*</code> → outbound <code class="inl">event</code> frames (every leg out)</li>
+      <li><a class="file" href="../../orbit-station/server/src/modules/media/sfu.ts">media/sfu.ts</a> → <a class="file" href="../../orbit-station/server/src/modules/media/tap.ts">tap.ts</a> — media in, the <code class="inl">MediaTap</code> seam</li>
+      <li><a class="file" href="../../orbit-station/server/src/modules/perception/perception-processing-hub.ts">perception-processing-hub.ts</a> — the processor graph + dual output</li>
+      <li><a class="file" href="../../orbit-station/server/src/modules/perception/index.ts">perception/index.ts</a> — where processors + edges + the summarizer/curator are wired</li>
+      <li><a class="file" href="../../orbit-station/server/src/modules/perception/summarizer.ts">summarizer.ts</a> + <a class="file" href="../../orbit-station/server/src/modules/perception/memory/longterm/curator.ts">memory/longterm/curator.ts</a> — the memory arm</li>
+      <li><a class="file" href="../../orbit-station/server/src/modules/perception/grounding.ts">grounding.ts</a> — the per-turn context block the brain injects</li>
+      <li><a class="file" href="../../orbit-station/server/src/modules/brain/session.ts">brain/session.ts</a> + <a class="file" href="../../orbit-station/server/src/modules/brain/index.ts">index.ts</a> — <code class="inl">DockBrainSession</code>: consumes grounding/memory, trigger, LLM loop → behaviour</li>
+      <li><a class="file" href="../../orbit-station/server/src/core/websocket-gateway.ts">websocket-gateway.ts</a> — bus <code class="inl">*</code> → outbound <code class="inl">event</code> frames (every wire-bound leg)</li>
       <li><a class="file" href="../modules/bus-topics.md">bus-topics.md</a> — the full topic registry (all 15)</li>
     </ul>
   </div>
@@ -286,9 +317,11 @@ bus.on(<span class="s">'agent'</span>, (msg) => { <span class="k">if</span> (msg
 
 <footer>
   <div class="wrap">
-    <span class="mono">orbit-station · packet to behaviour</span> — WS control (<code style="font-family:var(--mono)">WebSocketGateway</code>) + WebRTC media (<code style="font-family:var(--mono)">Sfu</code> → <code style="font-family:var(--mono)">PerceptionProcessingHub</code>) → brain turn → speech + motion. Line refs approximate to the working tree.
+    <span class="mono">orbit-station · packet to behaviour</span> — WebRTC media → perception (processor graph + memory arm) → DockBrainSession → speech · motion · memory · console. Classes: WebSocketGateway (WS), Sfu + PerceptionProcessingHub (media). Line refs approximate to the working tree.
   </div>
 </footer>
 
+
 </body>
+
 </html>
