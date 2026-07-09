@@ -141,7 +141,7 @@
        │       <span class="hlw">JPEG frame</span>│        │<span class="hlw">DetectedFace[]</span>          │
        │                ▼        ▼                     │
        │           <span class="hl">👁 vision</span>    <span class="hl">😮 identity</span>               │
-       │           :8080 VLM   fuse + debounce         │
+       │        gate→:8080 VLM  fuse + debounce         │
        │                │        │                     │
        └────────────────┴────────┴─────────────────────┘
                         │  every node calls ctx.emit(…)
@@ -156,6 +156,10 @@
   (→ the memory arm)</pre>
     </div>
     <p><strong>The edges are the point.</strong> Only <code class="inl">face-recognition</code> decodes video (one ffmpeg per dock); <code class="inl">vision</code> and <code class="inl">identity</code> read <em>its</em> decoded frame and recognitions rather than decoding again. That coupling is safe because everything is keyed to the same <code class="inl">streamId</code>.</p>
+    <div class="note warn">
+      <span class="tag">vision is change-gated, not per-frame</span>
+      <p><code class="inl">vision</code> does <em>not</em> run the ~5&nbsp;s VLM on every decoded frame. It probes ONE frame every ~1.5&nbsp;s and embeds it with an in-process <strong>DINOv2</strong> model (<code class="inl">perception/embed.ts</code>, onnxruntime, no sidecar). The expensive qwen call fires <em>only</em> when the frame's embedding has moved past a distance threshold from the last analyzed one — i.e. the <strong>scene actually changed</strong> — or on a <code class="inl">sense-wake</code> (the mic heard something salient) or a 5-min <code class="inl">heartbeat</code>. A static room costs cheap embeddings, not VLM inferences. Further gating built on the same embedder: a recent-view <strong>cache</strong> (reuse a description when the head sweeps back to a spot it just saw), <strong>self-motion suppression</strong> (defer while the head is panning), and <strong>window dedup</strong> (collapse near-identical frames in a window). So the <code class="inl">scene</code> results you see are change events, not a fixed cadence — the timeline in the Perception Studio labels each with why it ran (<code class="inl">scene-change</code> / <code class="inl">sense-wake</code> / <code class="inl">heartbeat</code> / <code class="inl">reused</code>) and accounts for the gated gaps. See <a class="file" href="../../orbit-station/server/src/modules/perception/processors/vision-snapshot.ts">vision-snapshot.ts</a>.</p>
+    </div>
     <p>Every processor emits the <em>same</em> envelope — <code class="inl">PerceptionResult</code>. One <code class="inl">perception</code> topic carries all of them, discriminated by <code class="inl">kind</code>; a new processor adds a <code class="inl">kind</code>, never a new shape or topic. The processor authors <code class="inl">kind</code> + <code class="inl">payload</code> (the meaning it just computed); the hub stamped the rest:</p>
     <div class="code">
       <div class="bar"><span class="fname">perception/result.ts</span><span>PerceptionResult — the one envelope every processor emits</span></div>
@@ -175,9 +179,9 @@
     <table class="cmp">
       <thead><tr><th>Processor · code</th><th>Consumes (input shape)</th><th><code class="inl">kind</code> → <code class="inl">payload</code> shape</th></tr></thead>
       <tbody>
-        <tr><td class="rtcc">🎙 stt-watch<br><span style="color:var(--ink-3);font-size:11px">processors/stt-watch.ts · sttWatchProcessor()</span></td><td><code class="inl">RtpPacket</code> (audio) → PCM → VAD utterance → STT :8078</td><td><code class="inl">transcript</code> → <code class="inl">{ text, isFinal }</code></td></tr>
+        <tr><td class="rtcc">🎙 stt-watch<br><span style="color:var(--ink-3);font-size:11px">processors/stt-watch.ts · sttWatchProcessor()</span></td><td><code class="inl">RtpPacket</code> (audio) → PCM → VAD utterance → STT sidecar :8078 (<strong>parakeet-tdt</strong> default, whisper fallback)</td><td><code class="inl">transcript</code> → <code class="inl">{ text, isFinal }</code></td></tr>
         <tr><td class="rtcc">👤 face-recognition<br><span style="color:var(--ink-3);font-size:11px">processors/face-recognition.ts · faceRecognitionProcessor()</span></td><td><code class="inl">RtpPacket</code> (video) → decodes VP8→JPEG (owns grabber)</td><td>the decoded frame + recognitions (read by others; not a result)</td></tr>
-        <tr><td class="rtcc">👁 vision-snapshot<br><span style="color:var(--ink-3);font-size:11px">processors/vision-snapshot.ts · visionSnapshotProcessor()</span></td><td><em>face's</em> JPEG frame → qwen2.5-VL :8080</td><td><code class="inl">scene</code> → <code class="inl">{ description, change? }</code></td></tr>
+        <tr><td class="rtcc">👁 vision-snapshot<br><span style="color:var(--ink-3);font-size:11px">processors/vision-snapshot.ts · visionSnapshotProcessor()</span></td><td><em>face's</em> JPEG frame, <strong>change-gated</strong> (DINOv2) → qwen2.5-VL :8080</td><td><code class="inl">scene</code> → <code class="inl">{ description }</code></td></tr>
         <tr><td class="rtcc">😮 identity-snapshot<br><span style="color:var(--ink-3);font-size:11px">processors/identity-snapshot.ts · identitySnapshotProcessor()</span></td><td><em>face's</em> recognitions + <em>bodymotion's</em> ego-motion</td><td><code class="inl">identity</code> → <code class="inl">{ name }</code>; <code class="inl">emotion</code> → <code class="inl">{ kind, confidence }</code></td></tr>
         <tr><td class="rtcc">🫥 presence<br><span style="color:var(--ink-3);font-size:11px">processors/presence.ts · presenceProcessor()</span></td><td><code class="inl">ChannelItem</code> (<code class="inl">client.*</code> fact) — no media</td><td><code class="inl">presence</code> → <code class="inl">{ present }</code></td></tr>
         <tr><td class="rtcc">🤖 bodymotion<br><span style="color:var(--ink-3);font-size:11px">processors/bodymotion-watch.ts · bodyMotionWatchProcessor()</span></td><td>the body's motion commands (station-fed)</td><td><code class="inl">bodymotion</code> → <code class="inl">{ text, … }</code></td></tr>
@@ -195,7 +199,7 @@
   <div class="wrap">
     <h2>The memory arm</h2>
     <p class="step-title"><span class="step-n">M4</span>The ring is digested — twice, on two clocks</p>
-    <p>Raw snapshots are noisy (a small VLM misreads a mug as a "ruler" frame to frame). Nothing acts on raw mush directly. The <strong>summarizer</strong> fuses a recent window of the ring into one coherent picture; that picture feeds the brain two ways, on two cadences:</p>
+    <p>Raw snapshots are noisy (a small VLM misreads a mug as a "ruler" frame to frame, or straps on a hook as "a person on a pull-up bar"). Nothing acts on raw mush directly. The <strong>summarizer</strong> (Gemini) fuses a recent window of the ring into one coherent picture — and it's sent the window's <strong>keyframe images</strong> alongside the text, so it can <em>see</em> the scene and override a bad VLM line rather than propagate it. That picture feeds the brain two ways, on two cadences:</p>
     <div class="diagram">
 <pre>  SnapshotStore ring  (all processors write here)
         │
