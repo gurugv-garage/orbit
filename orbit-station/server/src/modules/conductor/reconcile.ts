@@ -45,9 +45,16 @@ export function reconcile(
     // config alone let a task manifest's stale default win silently (review 2026-07-05).
     const tunings = { ...c.defaults, ...cfgFor(c.name) };
     const decided = c.decide(tunings, world, prev);
-    // a manual override wins over the rule; otherwise the rule decides.
+    // PHONE-PRESENCE gate: with the phone (face) gone the dock has no one to perform for and
+    // no perception source, so a non-bgTask thing is forced OFF and its task is killed via the
+    // normal stopTask path below. A `bgTask` thing is exempt — it runs regardless. This is the
+    // ONE place the gate lives, so it covers every current + future conducted thing uniformly
+    // (individual decide()s don't re-check phonePresent).
+    const gatedOff = !world.phonePresent && !c.bgTask;
+    // a manual override wins over the rule + the gate (the human escape hatch); otherwise the
+    // gate forces off, else the rule decides.
     const ov = override(c.name);
-    const desired = ov === 'run' ? 'running' : ov === 'off' ? 'off' : decided.desired;
+    const desired = ov === 'run' ? 'running' : ov === 'off' ? 'off' : gatedOff ? 'off' : decided.desired;
     const self = decided.self.desired === desired ? decided.self : { ...decided.self, desired };
     states.set(c.name, self);
 

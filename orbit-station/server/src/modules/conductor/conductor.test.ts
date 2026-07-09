@@ -15,7 +15,7 @@ const T0 = 1_000_000;
 const baseWorld = (over: Partial<World> = {}): World => ({
   now: T0, present: false, lastPresenceMs: 0, identity: null,
   listening: false, turnActive: false, lastConversationMs: 0,
-  bodyHolder: null, bodyOnline: true, tasks: [], ...over,
+  bodyHolder: null, bodyOnline: true, phonePresent: true, tasks: [], ...over,
 });
 
 // ── faceFollow — the idle-window state machine ────────────────────────────────────────────
@@ -229,4 +229,39 @@ test('override run: forces wakeUp on even when disabled in config', () => {
   const fx = fake(); const states = new Map<string, ConductedState>();
   reconcile('d1', CONDUCTED, baseWorld(), states, cfgFor({ wakeUp: { enabled: false } }), fx, (b) => b === 'wakeUp' ? 'run' : undefined);
   assert.equal(fx.behaviourOn.get('wakeUp'), true, 'run override enables the wakeUp hook despite enabled:false');
+});
+
+// ── phone-presence gate (phone/face offline → stand the dock down) ────────────────────────────
+test('reconcile: phone OFFLINE stops the running body tasks (nobody to perform for)', () => {
+  const fx = fake(); const states = new Map<string, ConductedState>();
+  // idle-forever with the phone present → both body tasks start.
+  reconcile('d1', CONDUCTED, baseWorld({ lastConversationMs: 0 }), states, cfgFor(), fx);
+  assert.ok(fx.running.has('face-follow') && fx.running.has('idle-moods'));
+  // phone drops → the gate forces every non-bgTask conducted thing off, so both are stopped.
+  reconcile('d1', CONDUCTED, baseWorld({ lastConversationMs: 0, phonePresent: false }), states, cfgFor(), fx);
+  assert.ok(fx.stopped.includes('face-follow'), 'faceFollow stopped on phone-offline');
+  assert.ok(fx.stopped.includes('idle-moods'), 'idle-moods stopped on phone-offline');
+});
+
+test('reconcile: phone OFFLINE keeps it from ever starting a body task', () => {
+  const fx = fake(); const states = new Map<string, ConductedState>();
+  reconcile('d1', CONDUCTED, baseWorld({ lastConversationMs: 0, phonePresent: false }), states, cfgFor(), fx);
+  assert.ok(!fx.started.includes('face-follow'), 'no faceFollow with the phone gone');
+  assert.ok(!fx.started.includes('idle-moods'), 'no idle-moods with the phone gone');
+});
+
+test('reconcile: phone-offline gate does NOT disable the wakeUp behaviour (wake still armed)', () => {
+  // wakeUp is a hardcoded behaviour, not a body task — a present-less dock can still be woken.
+  // It has no bgTask flag today, so the gate DOES force it off; assert current intent explicitly
+  // so a future "wake survives offline" change is a deliberate, tested edit (mark wakeUp bgTask).
+  const fx = fake(); const states = new Map<string, ConductedState>();
+  reconcile('d1', CONDUCTED, baseWorld({ phonePresent: false }), states, cfgFor(), fx);
+  assert.equal(fx.behaviourOn.get('wakeUp'), false, 'wakeUp gated off with the phone gone (no bgTask)');
+});
+
+test('override run: beats the phone-offline gate (explicit human "Run now")', () => {
+  const fx = fake(); const states = new Map<string, ConductedState>();
+  reconcile('d1', CONDUCTED, baseWorld({ lastConversationMs: 0, phonePresent: false }), states, cfgFor(),
+    fx, (b) => b === 'faceFollow' ? 'run' : undefined);
+  assert.ok(fx.started.includes('face-follow'), 'a run override forces faceFollow on despite the gate');
 });

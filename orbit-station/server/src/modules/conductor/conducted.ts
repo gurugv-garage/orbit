@@ -35,6 +35,12 @@ export interface World {
   /** the servo component is online right now — a BODY task must not run without it
    *  (starting one anyway = a silent crash-restart churn loop, one spawn per tick). */
   bodyOnline: boolean;
+  /** the PHONE (face/perception/voice) component is WS-online right now. When it's gone the
+   *  dock has no one to perform for and no perception source, so every conducted thing stands
+   *  down and its task is killed — UNLESS the thing is flagged `bgTask` (runs regardless of a
+   *  present phone, re-attaching to whatever session is active later). Reconcile enforces this
+   *  gate uniformly; individual `decide`s don't need to re-check it. */
+  phonePresent: boolean;
   tasks: Array<{ name: string; instanceId: string; initiator: 'user' | 'brain' | 'self'; ageMs: number }>;
 }
 
@@ -63,6 +69,11 @@ export interface Conducted {
   /** for kind:'task' — the task definition name + lease priority it runs at. */
   taskName?: string;
   priority?: number;
+  /** BACKGROUND task: runs regardless of whether the phone (face) is present, and is NOT
+   *  killed when the phone goes offline — it just keeps running and re-attaches to whatever
+   *  session becomes active later. Default (false/undefined) = phone-gated: the conductor
+   *  forces it OFF and kills its task the moment the phone drops (no one to perform for). */
+  bgTask?: boolean;
   /** for kind:'behaviour' — a human note on WHERE in the code it's instrumented (shown in the
    *  console so the hardcoded reaction is discoverable). */
   instrumentedAt?: string;

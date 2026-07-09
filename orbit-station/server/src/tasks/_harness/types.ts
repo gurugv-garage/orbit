@@ -28,6 +28,11 @@ export interface TaskManifest {
    *  careful judgement wants a stronger one). Omitted = the dock's default brain
    *  model. The user changes it like any other task edit (just ask the brain). */
   model?: string;
+  /** BACKGROUND task: runs regardless of whether the phone (face) is present and is NOT killed
+   *  when the phone goes offline — it keeps running and re-attaches to whatever session becomes
+   *  active later. Default (omitted/false) = phone-gated: the conductor stands it down and kills
+   *  it the moment the phone drops. Set true only for a task that must survive an empty room. */
+  bgTask?: boolean;
 }
 
 /** Parse a duration string ("5s", "10m", "1h", "500ms") or a number (ms) to ms. */

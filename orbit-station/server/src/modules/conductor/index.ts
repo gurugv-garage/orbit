@@ -36,6 +36,10 @@ export interface ConductorWiring {
   bodyHolder: (dock: string) => { holder: string; priority: number } | null;
   /** is the dock's servo component online right now? (gates body-driving tasks). */
   bodyOnline?: (dock: string) => boolean;
+  /** is the dock's PHONE (face) component WS-online right now? Its absence stands the dock
+   *  down (non-bgTask conducted things forced off + their tasks killed). Unset → treated as
+   *  present, so a dock with no phone concept isn't perpetually gated off. */
+  phoneOnline?: (dock: string) => boolean;
   /** set/clear a dock's wakeUp config (the brain's WakeApi) — enacting the wakeUp BEHAVIOUR. */
   setWake: (dock: string, cfg: { enabled: boolean; phrase: string; prompt: string; aliases?: string[] } | null) => void;
   /** best-effort presence (someone in view) — optional; v1 conducted things don't require it. */
@@ -101,7 +105,8 @@ export function conductorModule(w: ConductorWiring): StationModule {
     return {
       now, present, lastPresenceMs: st.lastPresenceMs, identity: null,
       listening, turnActive, lastConversationMs: st.lastConversationMs,
-      bodyHolder: w.bodyHolder(dock), bodyOnline: w.bodyOnline?.(dock) ?? true, tasks,
+      bodyHolder: w.bodyHolder(dock), bodyOnline: w.bodyOnline?.(dock) ?? true,
+      phonePresent: w.phoneOnline?.(dock) ?? true, tasks,
     };
   };
 

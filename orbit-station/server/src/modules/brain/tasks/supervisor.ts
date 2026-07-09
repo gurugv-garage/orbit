@@ -42,6 +42,9 @@ export interface InstanceInfo {
   /** absolute path to this instance's task.ts source — so the brain can read_file/
    *  edit_file the actual code when the user asks how the task works. */
   filePath: string;
+  /** BACKGROUND task (manifest.bgTask): survives phone-offline — not killed when the dock's
+   *  phone goes away (a reminder still fires after you walk off). Default false = phone-gated. */
+  bgTask?: boolean;
 }
 
 /** A one-line human description of what an instance is about (for init.about,
@@ -64,6 +67,8 @@ export interface StartArgs {
   /** the model this task chose (manifest.model), injected as TASK_MODEL so the
    *  harness's this.ask / this.agent / vision run on it. Omit = dock default. */
   model?: string;
+  /** manifest.bgTask — survives phone-offline (see InstanceInfo.bgTask). Default false. */
+  bgTask?: boolean;
 }
 
 /** A frame from a task process (already unwrapped: kind + payload). */
@@ -160,7 +165,7 @@ export class TaskSupervisor {
       instanceId, dock: args.dock, name: args.name, params: args.params,
       parentSessionId: args.parentSessionId, state: 'running',
       startedAt: Date.now(), runCount: 0, spawnedAt: Date.now(),
-      filePath: args.filePath,
+      filePath: args.filePath, bgTask: args.bgTask,
     };
     const dir = this.#dir(args.dock, instanceId);
     mkdirSync(dir, { recursive: true });
@@ -382,6 +387,20 @@ export class TaskSupervisor {
           && !TERMINAL.has(e.info.state)) {
         this.stop(e.info.instanceId); ids.push(e.info.instanceId);
       }
+    }
+    return ids;
+  }
+
+  /** Stop every STILL-RUNNING instance on a dock — the phone-offline stand-down. By default
+   *  `bgTask` instances are EXEMPT (a reminder must still fire after you walk away); pass
+   *  `{ includeBg: true }` to stop those too. Already-terminal instances are left as-is.
+   *  Returns the ids it actually stopped. */
+  stopAllForDock(dock: string, opts: { includeBg?: boolean } = {}): string[] {
+    const ids: string[] = [];
+    for (const e of this.#byId.values()) {
+      if (e.info.dock !== dock || TERMINAL.has(e.info.state)) continue;
+      if (e.info.bgTask && !opts.includeBg) continue;
+      this.stop(e.info.instanceId); ids.push(e.info.instanceId);
     }
     return ids;
   }

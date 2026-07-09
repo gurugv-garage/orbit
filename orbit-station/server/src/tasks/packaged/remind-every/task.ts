@@ -16,6 +16,8 @@ export const manifest = {
     { name: 'message', type: 'string', required: true },
     { name: 'interval', type: 'duration', default: '5m' },
   ],
+  // a reminder must still fire after you walk away from the dock — survive phone-offline.
+  bgTask: true,
 } satisfies TaskManifest;
 
 class RemindEveryTask extends Task {

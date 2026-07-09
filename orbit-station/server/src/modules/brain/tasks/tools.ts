@@ -137,7 +137,7 @@ export function buildTaskTools(d: TaskToolDeps): AgentTool<any>[] {
       const def = await findTaskDef(roots, name); // throws if unknown
       const v = validateParams(def.manifest, args?.params ?? {});
       if (!v.ok) throw new Error(`bad params for "${name}": ${v.errors.join('; ')}`);
-      const instanceId = d.supervisor.start({ dock: d.dock, name, filePath: def.filePath, params: v.values, parentSessionId: parent, model: def.manifest.model });
+      const instanceId = d.supervisor.start({ dock: d.dock, name, filePath: def.filePath, params: v.values, parentSessionId: parent, model: def.manifest.model, bgTask: def.manifest.bgTask });
       return txt(`started task ${instanceId} (${name}). Watch it with list_tasks / get_task_status.`);
     });
 
@@ -289,7 +289,7 @@ export function buildTaskTools(d: TaskToolDeps): AgentTool<any>[] {
           throw new Error(`too many tasks already running (max ${max}); stop one first`);
         }
       }
-      const instanceId = d.supervisor.start({ dock: d.dock, name: FACE_FOLLOW, filePath: def.filePath, params: v.values, parentSessionId: parent, model: def.manifest.model });
+      const instanceId = d.supervisor.start({ dock: d.dock, name: FACE_FOLLOW, filePath: def.filePath, params: v.values, parentSessionId: parent, model: def.manifest.model, bgTask: def.manifest.bgTask });
       return txt(`${retargeted ? 're-pointed' : 'started'} face-follow at ${name} (${instanceId}). I'll look around and keep my eye on them.`);
     });
 

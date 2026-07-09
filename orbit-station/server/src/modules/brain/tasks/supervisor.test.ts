@@ -213,6 +213,35 @@ test('stopForParent is scoped to the parent session', () => {
   assert.equal(st(sup, b), 'running', 'other session untouched');
 });
 
+test('stopAllForDock stops running tasks but EXEMPTS bgTask (a reminder survives phone-offline)', () => {
+  const { sup } = rig();
+  const body = sup.start({ dock: DOCK, name: 'idle-moods', filePath: '/f', params: {}, parentSessionId: 'sess-1' });
+  const reminder = sup.start({ dock: DOCK, name: 'remind-after', filePath: '/f', params: {}, parentSessionId: 'sess-1', bgTask: true });
+  const stopped = sup.stopAllForDock(DOCK);
+  assert.deepEqual(stopped, [body], 'only the non-bgTask body task stopped');
+  assert.equal(st(sup, body), 'stopped');
+  assert.equal(st(sup, reminder), 'running', 'bgTask reminder still running after the stand-down');
+});
+
+test('stopAllForDock({includeBg:true}) stops bgTask tasks too', () => {
+  const { sup } = rig();
+  const reminder = sup.start({ dock: DOCK, name: 'remind-after', filePath: '/f', params: {}, parentSessionId: 'sess-1', bgTask: true });
+  sup.stopAllForDock(DOCK, { includeBg: true });
+  assert.equal(st(sup, reminder), 'stopped', 'bgTask stopped when explicitly included');
+});
+
+test('stopAllForDock is scoped to the dock + leaves terminal tasks alone', () => {
+  const { sup } = rig();
+  const here = start(sup);
+  const finished = start(sup);
+  frame(sup, finished, 'finish');
+  const other = sup.start({ dock: 'other-dock', name: 'x', filePath: '/f', params: {}, parentSessionId: 'sess-1' });
+  sup.stopAllForDock(DOCK);
+  assert.equal(st(sup, here), 'stopped');
+  assert.equal(st(sup, finished), 'done', 'finished task NOT relabelled');
+  assert.equal(st(sup, other), 'running', 'other dock untouched');
+});
+
 // ── counts ───────────────────────────────────────────────────────────────────
 
 test('countRunning reflects running+stuck only; terminal drops out', () => {

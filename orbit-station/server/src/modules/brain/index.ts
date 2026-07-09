@@ -260,7 +260,7 @@ export function brainModule(w: BrainWiring): StationModule {
   ];
   // Task defs the CONDUCTOR may start (resolved in init so ConductorAccess.startTask is
   // synchronous). v1: just face-follow.
-  const condTaskDefs = new Map<string, { name: string; filePath: string; manifest: { model?: string } }>();
+  const condTaskDefs = new Map<string, { name: string; filePath: string; manifest: { model?: string; bgTask?: boolean } }>();
   let bus: Bus;
   let rpc: RpcBroker;
 
@@ -495,7 +495,7 @@ export function brainModule(w: BrainWiring): StationModule {
       }
       const def = condTaskDefs.get(taskName);
       if (!def) return null;
-      return supervisor.start({ dock, name: def.name, filePath: def.filePath, params: params ?? {}, parentSessionId: parent, model: def.manifest.model });
+      return supervisor.start({ dock, name: def.name, filePath: def.filePath, params: params ?? {}, parentSessionId: parent, model: def.manifest.model, bgTask: def.manifest.bgTask });
     },
     stopTask: (_dock, instanceId) => { supervisor.stop(instanceId); },
   };
@@ -854,6 +854,16 @@ export function brainModule(w: BrainWiring): StationModule {
           // loss kills the turn itself (the conversation has no mouth).
           rpc.rejectAllForDock(p.dock, 'dock component went offline');
           s.onDockOffline();
+          // PHONE (face) offline → STAND DOWN: kill every running task on the dock except
+          // bgTask ones (reminders survive so they still fire after you walk away). Without
+          // this the body kept moving with the phone gone — a conductor task (idle-moods /
+          // face-follow) animating an empty room, since the body stayed online and nothing
+          // tore the tasks down. Conductor tasks ALSO get force-off via reconcile's
+          // phone-presence gate; this catches brain/user-launched ones too, immediately.
+          if (p.component === 'phone') {
+            const killed = supervisor.stopAllForDock(p.dock);
+            if (killed.length) console.log(`[brain] ${p.dock}: phone offline → stopped ${killed.length} task(s): ${killed.join(', ')}`);
+          }
         }
       });
 

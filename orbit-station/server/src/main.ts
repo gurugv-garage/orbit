@@ -208,6 +208,14 @@ async function main() {
     stopTask: (dock, instanceId) => { getConductorAccess()?.stopTask(dock, instanceId); },
     bodyHolder: (dock) => motion.bodyHolder(dock) ?? null,
     bodyOnline: (dock) => motion.isOnline(dock),
+    // phone (face) WS-online → gates body-driving conducted things. Its absence stands the
+    // dock down: non-bgTask things go off + their tasks are killed (nobody to perform for,
+    // no perception source). A dock that has no phone slot at all reads as present (no gate).
+    phoneOnline: (dock) => {
+      const d = directory.docks().find((x) => x.name === dock);
+      const phone = d?.components.find((c) => c.component === 'phone');
+      return phone ? phone.online : true;
+    },
     setWake: (dock, cfg) => { getWakeApi()?.setWakeConfig(dock, cfg); },
     // someone visible RIGHT NOW: the on-device MLKit perceive stream (~1 Hz), fresh within
     // 5 s. Drives faceFollow's presence gate (attention-director v1) — a stale frame or no
