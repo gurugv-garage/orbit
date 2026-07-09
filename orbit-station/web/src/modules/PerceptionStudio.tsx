@@ -11,6 +11,7 @@
  *   • shows the merged snapshot feed (vision + speech, ordered by start, with IST
  *     from–to + duration).
  */
+import React from 'react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useStationClient, useStationEvents } from '../lib/useStation';
 import { api } from '../lib/station';
@@ -42,8 +43,15 @@ interface Snapshot {
     audioKind?: string; salience?: string; summary?: string; trigger?: string;
     // vision: the model's structured "what changed vs the previous window" field.
     change?: string;
-    // audio: dock-directed intent observed in the clip.
+    // audio: dock-directed intent observed in the clip + the model's self-reported
+    // confidences (a vibe, not a probability — but shown so nothing is hidden).
     addressedToRobot?: boolean; directive?: string;
+    audioKindConf?: number; salienceConf?: number; addressConf?: number;
+    bgTranscript?: string; gatedProbes?: number; confTier?: string;
+    // summary pulses: exact lineage (the stitched input the summarizer digested).
+    inputs?: string; inputCount?: number;
+    // vision: why this analysis ran (scene-change / local-change / sense-wake / heartbeat).
+    gateTrigger?: string;
     // the RAW STT transcript, preserved when the interpreter upgrades `text` — so the
     // 🎙 STT row shows what the live engine heard and the 🔊 audio row shows the
     // upgraded read. Absent on un-upgraded records (then the STT row uses `text`).
@@ -1048,16 +1056,27 @@ export function PerceptionStudio() {
                 vision, identity, emotion, bodymotion, + any future kind). */}
             {presentKinds.map((k) => {
               const km = kindMeta(k);
+              const on = !hiddenKinds.has(k);
               return (
-                <label key={k} style={{ display: 'flex', alignItems: 'center', gap: 5, cursor: 'pointer', color: km.color }}>
-                  <input type="checkbox" checked={!hiddenKinds.has(k)}
-                    onChange={(e) => setHiddenKinds((prev) => {
-                      const n = new Set(prev); e.target.checked ? n.delete(k) : n.add(k); return n;
-                    })} />
-                  {km.icon} {km.label}
-                </label>
+                <span key={k} style={{ display: 'inline-flex', alignItems: 'center', border: `1px solid ${on ? km.color : '#333'}`, borderRadius: 6, overflow: 'hidden', opacity: on ? 1 : 0.45 }}>
+                  {/* the chip toggles this kind on/off */}
+                  <button onClick={() => setHiddenKinds((prev) => { const n = new Set(prev); on ? n.add(k) : n.delete(k); return n; })}
+                    style={{ background: 'none', border: 'none', color: km.color, cursor: 'pointer', padding: '2px 7px', fontSize: 12 }}
+                    title={on ? `hide ${km.label}` : `show ${km.label}`}>
+                    {km.icon} {km.label}
+                  </button>
+                  {/* explicit ONLY — one click to solo this kind */}
+                  <button onClick={() => setHiddenKinds(new Set(presentKinds.filter((x) => x !== k)))}
+                    style={{ background: '#1c2634', border: 'none', borderLeft: '1px solid #333', color: '#8fa8c8', cursor: 'pointer', padding: '2px 6px', fontSize: 10 }}
+                    title={`show ONLY ${km.label}`}>only</button>
+                </span>
               );
             })}
+            {hiddenKinds.size > 0 && (
+              <button onClick={() => setHiddenKinds(new Set())}
+                style={{ background: '#1c2634', border: '1px solid #333', borderRadius: 6, color: '#b8c8dc', cursor: 'pointer', padding: '2px 8px', fontSize: 11 }}
+                title="show every kind">show all</button>
+            )}
             <label style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}
               title={win ? `Pinned to the window the last Summarize used: ${win.from.slice(11,19)}–${win.to.slice(11,19)} IST` : 'Show ONLY records inside the selected Summarize window — exactly what goes to the LLM'}>
               <input type="checkbox" checked={limitToWindow} onChange={(e) => setLimitToWindow(e.target.checked)} />
@@ -1138,6 +1157,42 @@ export function PerceptionStudio() {
                           ? <span style={{ opacity: 0.6, fontStyle: 'italic' }}>{p.summary || '(same words)'}</span>
                           : p.text)
                       : sttText}
+                    {/* HUMAN-READABLE full output: every field the producer emitted,
+                        as plain-English fragments — not JSON. Only fields that exist. */}
+                    {(() => {
+                      const pct = (v: unknown) => (typeof v === 'number' ? `${Math.round(v * 100)}%` : '');
+                      const bits: string[] = [];
+                      if (viewKind === 'audio' || viewKind === 'sound') {
+                        if (p.audioKind) bits.push(`heard: ${p.audioKind}${p.audioKindConf != null ? ` (${pct(p.audioKindConf)} sure)` : ''}`);
+                        if (p.salience) bits.push(`salience: ${p.salience}${p.salienceConf != null ? ` (${pct(p.salienceConf)})` : ''}`);
+                        if (p.addressedToRobot) bits.push(`spoke TO orbit${p.directive ? ` — ${p.directive}` : ''}${p.addressConf != null ? ` (${pct(p.addressConf)})` : ''}`);
+                        if (p.summary && p.summary !== p.text) bits.push(`in short: ${p.summary}`);
+                        if (p.trigger) bits.push(`woken by: ${p.trigger}`);
+                        if (p.bgTranscript && p.bgTranscript !== p.text) bits.push(`alt hearing: “${p.bgTranscript}”`);
+                      } else if (viewKind === 'vision') {
+                        if (p.gateTrigger) bits.push(`looked because: ${String(p.gateTrigger).replace('local-change', 'something moved locally').replace('scene-change', 'the scene changed').replace('sense-wake', 'it heard something').replace('first-look', 'first look').replace('heartbeat', 'periodic re-check')}`);
+                        if (p.gatedProbes) bits.push(`${p.gatedProbes} quiet checks before this`);
+                        if (p.inferMs) bits.push(`took ${(Number(p.inferMs) / 1000).toFixed(1)}s`);
+                      } else if (viewKind === 'summary') {
+                        if (p.inputCount != null) bits.push(`fused ${p.inputCount} records into this`);
+                      } else if (viewKind === 'stt') {
+                        if (p.confTier && p.confTier !== 'good') bits.push(`engine unsure (${p.confTier})`);
+                        if (p.inferMs) bits.push(`transcribed in ${(Number(p.inferMs) / 1000).toFixed(1)}s`);
+                      }
+                      return bits.length ? (
+                        <div style={{ fontSize: 10.5, color: '#7a8ca8', marginTop: 2, lineHeight: 1.5 }}>{bits.join('  ·  ')}</div>
+                      ) : null;
+                    })()}
+                    {/* summary pulse: collapsible EXACT lineage — the stitched input the
+                        summarizer digested (how this coherence line was built). */}
+                    {viewKind === 'summary' && p.inputs && (
+                      <details style={{ marginTop: 4 }}>
+                        <summary style={{ cursor: 'pointer', fontSize: 10, color: '#8fa8c8' }}>
+                          ⛓ digested {p.inputCount ?? '?'} records — show exact input
+                        </summary>
+                        <pre style={{ fontSize: 10, whiteSpace: 'pre-wrap', color: '#9ab', margin: '4px 0 0', maxHeight: 220, overflow: 'auto', background: '#0d1420', padding: 6, borderRadius: 4 }}>{p.inputs}</pre>
+                      </details>
+                    )}
                     {/* vision: the structured what-changed field — a distinct Δ pill. */}
                     {viewKind === 'vision' && p.change && (
                       <span title="what changed vs the previous window"
@@ -1158,6 +1213,7 @@ export function PerceptionStudio() {
                     {conf && <span title="match/expression confidence">◷ {conf}</span>}
                     {!isAudio && p.inferMs != null && <span title="inference latency (sidecar/in-process compute)">⚡{fmtMs(p.inferMs)}</span>}
                     {viewKind === 'vision' && p.frames != null && <span title="frames sampled this window">🎞{p.frames}</span>}
+                    {viewKind === 'vision' && p.gateTrigger && <span title="why this analysis ran (the change gate's trigger)" style={{ fontSize: 10, color: '#8fa8c8' }}>⚑{p.gateTrigger}</span>}
                     {isStt && p.noSpeechProb != null && (
                       <span title="STT metrics — avg_logprob / no_speech_prob / compression_ratio">
                         lp{p.avgLogprob?.toFixed(2)} ns{p.noSpeechProb.toFixed(2)} cr{p.compressionRatio?.toFixed(1)}
