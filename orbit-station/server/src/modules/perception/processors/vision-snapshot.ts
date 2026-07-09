@@ -230,7 +230,12 @@ export function visionSnapshotProcessor(store: SnapshotStore, getFrame: GetFrame
       // gatedProbes = how many cheap change-checks concluded "nothing moved" since the
       // previous analysis (Studio observability for the GPU savings). `change` = the
       // model's own account of what differs vs the previous window (structured field).
-      payload: { text, ...(change ? { change } : {}), frames: frames.length, latencyMs: to.getTime() - from.getTime(), inferMs, gatedProbes: s.skippedProbes, gateTrigger: s.lastTrigger ?? 'on-demand' },
+      // inputImage + inputPrompt = the EXACT frame + prompt qwen saw, attached for
+      // leak-hunting in the Studio ("did it hallucinate, or was it in the frame?"). The
+      // frame is the last of the window (the one committed as the keyframe); ~20-30KB in
+      // a bounded ring — a deliberate debug cost, not free.
+      payload: { text, ...(change ? { change } : {}), frames: frames.length, latencyMs: to.getTime() - from.getTime(), inferMs, gatedProbes: s.skippedProbes, gateTrigger: s.lastTrigger ?? 'on-demand',
+        inputImage: frames[frames.length - 1]!, inputPrompt: prompt },
     }));
     store.addKeyframe({ ts: isoIst(to), from: isoIst(from), jpegB64: frames[frames.length - 1]! });
     s.ctx.emit({ kind: 'scene', source: 'vision-snapshot', payload: { description: text, ...(change ? { change } : {}) }, confidence: 0.7 });

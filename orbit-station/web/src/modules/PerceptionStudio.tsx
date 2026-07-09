@@ -52,6 +52,8 @@ interface Snapshot {
     inputs?: string; inputCount?: number;
     // vision: why this analysis ran (scene-change / local-change / sense-wake / heartbeat).
     gateTrigger?: string;
+    // vision leak-hunt: the exact frame qwen saw + the prompt it received.
+    inputImage?: string; inputPrompt?: string;
     // the RAW STT transcript, preserved when the interpreter upgrades `text` — so the
     // 🎙 STT row shows what the live engine heard and the 🔊 audio row shows the
     // upgraded read. Absent on un-upgraded records (then the STT row uses `text`).
@@ -1199,6 +1201,23 @@ export function PerceptionStudio() {
                         style={{ marginLeft: 8, fontSize: 10, color: '#ffd9a0', border: '1px solid #5a4a20', borderRadius: 4, padding: '1px 6px', whiteSpace: 'nowrap' }}>
                         Δ {p.change}
                       </span>
+                    )}
+                    {/* vision LEAK-HUNT: the EXACT frame qwen saw + the prompt it got, so a
+                        hallucinated description is diagnosable ("was it in the image?"). */}
+                    {viewKind === 'vision' && (p.inputImage || p.inputPrompt) && (
+                      <details style={{ marginTop: 4 }}>
+                        <summary style={{ cursor: 'pointer', fontSize: 10, color: '#7a8ca8' }}>🖼 what qwen saw + prompt</summary>
+                        <div style={{ display: 'flex', gap: 10, marginTop: 4, alignItems: 'flex-start', flexWrap: 'wrap' }}>
+                          {p.inputImage && (
+                            <img src={`data:image/jpeg;base64,${p.inputImage}`} alt="qwen input frame"
+                              style={{ width: 240, maxWidth: '100%', borderRadius: 6, border: '1px solid #223' }} />
+                          )}
+                          {p.inputPrompt && (
+                            <pre style={{ flex: 1, minWidth: 240, fontSize: 10, whiteSpace: 'pre-wrap', color: '#9ab',
+                              margin: 0, maxHeight: 220, overflow: 'auto', background: '#0d1420', padding: 8, borderRadius: 4 }}>{p.inputPrompt}</pre>
+                          )}
+                        </div>
+                      </details>
                     )}
                     {/* low-confidence is an STT (Whisper/parakeet) tell — only on the STT row. */}
                     {isStt && p.lowConfidence && (
