@@ -31,8 +31,7 @@ import {
  * Which `client`-topic messages become fact channels. The dock publishes client
  * facts on the `client` topic (kind = the fact name); we expose them as channel
  * `client.<kind>`. Other processors' outputs are delivered directly (not via the
- * bus) for latency, so this map is just the external (WS) → channel bridge. Only
- * the `client` topic is bridged here — hence the name, not `…ForBusMsg`.
+ * bus) for latency, so this map is just the external (WS) → channel bridge.
  */
 const CLIENT_TOPIC = 'client' as const;
 const channelForClientMsg = (m: BusMessage): string | null =>

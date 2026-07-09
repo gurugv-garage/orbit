@@ -48,8 +48,8 @@
       <p>WebRTC is <em>negotiated over</em> the WS — the SDP offer/answer and ICE candidates ride as <code class="inl">media</code>-topic frames through the <code class="inl">WebSocketGateway</code>. But once negotiated, the media itself flows as RTP into the <code class="inl">Sfu</code>, not through the gateway. Signaling = control plane; payload = media plane.</p>
     </div>
     <div class="note">
-      <span class="tag">say "topic," not "bus"</span>
-      <p>There is exactly <strong>one</strong> <code class="inl">Bus</code> (a generic <code class="inl">Map&lt;topic, handler&gt;</code> in <code class="inl">core/bus.ts</code>) and <strong>15 topics</strong> on it (<a class="file" href="../modules/bus-topics.md">full registry</a>). "The dock's facts go on the bus" and "perception results go on the bus" are both literally true — but they're different <em>topics</em> (<code class="inl">client</code> vs <code class="inl">perception</code>), opposite directions. The bus is the pipe; the <strong>topic</strong> is the traffic type. Below, we always name the topic.</p>
+      <span class="tag">one bus, many topics</span>
+      <p>There is one <code class="inl">Bus</code> (a generic <code class="inl">Map&lt;topic, handler&gt;</code> in <code class="inl">core/bus.ts</code>) and <strong>15 topics</strong> on it (<a class="file" href="../modules/bus-topics.md">full registry</a>). The dock's facts and perception results are different <em>topics</em> (<code class="inl">client</code> vs <code class="inl">perception</code>), opposite directions — not "the bus." The bus is the pipe; the <strong>topic</strong> is the traffic type. Below, each is named.</p>
     </div>
   </div>
 </section>
@@ -126,7 +126,7 @@ perceptionProcessingHub = <span class="k">new</span> PerceptionProcessingHub(
   <div class="wrap">
     <h2>Media plane · fan-out</h2>
     <p class="step-title"><span class="step-n">M3</span>Fuse RTP + client-topic facts, source-filtered, to processors</p>
-    <p>The hub merges its two inputs — <strong>RTP</strong> from the SFU and <strong><code class="inl">client</code>-topic facts</strong> (the dock's on-device VAD/battery/face, arriving over WS) — per source. Its handler for those facts is named for the topic it listens to: <code class="inl">#onClientFact</code>, wired only to <code class="inl">bus.on('client', …)</code> — not "bus facts" in general. Each processor declares <code class="inl">sources</code> / <code class="inl">mediaKinds</code> / <code class="inl">channels</code>; the hub delivers only matching items, each wrapped in try/catch so a processor can never kill the SFU.</p>
+    <p>The hub merges its two inputs — <strong>RTP</strong> from the SFU and <strong><code class="inl">client</code>-topic facts</strong> (the dock's on-device VAD/battery/face, arriving over WS) — per source, via <code class="inl">#onClientFact</code> on <code class="inl">bus.on('client', …)</code>. Each processor declares <code class="inl">sources</code> / <code class="inl">mediaKinds</code> / <code class="inl">channels</code>; the hub delivers only matching items, each wrapped in try/catch so a processor can never kill the SFU.</p>
     <div class="diagram">
 <pre>   <span class="hlw">client topic (client.*)</span>          <span class="hl">SFU onTrack(rtp)</span>
    via WebSocketGateway ─┐         via Sfu tap ─┐
