@@ -229,6 +229,14 @@ export function PerceptionStudio() {
   }, [zoomImg]);
   const [autoScroll, setAutoScroll] = useState(true);
   const [limitToWindow, setLimitToWindow] = useState(false);
+  // Collapse the top VIDEO + NOW block to reclaim vertical space for the snapshot timeline
+  // (which then fills the remaining viewport). Persisted so the choice sticks across reloads.
+  const [collapseTop, setCollapseTop] = useState<boolean>(() => localStorage.getItem('perc.collapseTop') === '1');
+  useEffect(() => { localStorage.setItem('perc.collapseTop', collapseTop ? '1' : '0'); }, [collapseTop]);
+  // Timeline order: newest-first (top) by default so the latest is visible without scrolling.
+  // Toggle to chronological (oldest→newest). Persisted. Auto-scroll follows the "new" end.
+  const [newestFirst, setNewestFirst] = useState<boolean>(() => localStorage.getItem('perc.newestFirst') !== '0');
+  useEffect(() => { localStorage.setItem('perc.newestFirst', newestFirst ? '1' : '0'); }, [newestFirst]);
   const [enrollName, setEnrollName] = useState('');
   const [enrollMsg, setEnrollMsg] = useState('');
   // Frozen-take A/B replay: saved bundles + which one is loaded (null = live).
@@ -441,14 +449,17 @@ export function PerceptionStudio() {
   }, []);
 
   useEffect(() => {
-    if (autoScroll && feedRef.current) feedRef.current.scrollTop = feedRef.current.scrollHeight;
-  }, [snaps, autoScroll, hiddenKinds]);
+    // follow the "new" end: newest-first → the top (scrollTop 0); chronological → the bottom.
+    if (autoScroll && feedRef.current) feedRef.current.scrollTop = newestFirst ? 0 : feedRef.current.scrollHeight;
+  }, [snaps, autoScroll, hiddenKinds, newestFirst]);
 
   const onFeedScroll = useCallback(() => {
     const el = feedRef.current;
     if (!el) return;
-    setAutoScroll(el.scrollHeight - el.scrollTop - el.clientHeight < 24);
-  }, []);
+    // "at the new end?" — near the top when newest-first, near the bottom when chronological.
+    const atNewEnd = newestFirst ? el.scrollTop < 24 : el.scrollHeight - el.scrollTop - el.clientHeight < 24;
+    setAutoScroll(atNewEnd);
+  }, [newestFirst]);
 
   // Live mic VU meter — confirms the mic is actually capturing.
   const startMicMeter = useCallback((media: MediaStream) => {
@@ -701,6 +712,8 @@ export function PerceptionStudio() {
       filtered.push(r);
     }
   }
+  // Reverse AFTER collapsing (collapse needs chronological adjacency) so newest is on top.
+  if (newestFirst) filtered.reverse();
   const latestVision = [...ordered].reverse().find((s) => s.source.kind === 'vision');
   const istTime = (iso: string) => iso.slice(11, 19);
   const secs = (ms: number) => `${(ms / 1000).toFixed(1)}s`;
@@ -1042,7 +1055,9 @@ export function PerceptionStudio() {
       )}
 
       {/* VIDEO + ● NOW side by side — the live tile (selected dock, or this browser's
-          own publish preview) on the left; the live per-stream read on the right. */}
+          own publish preview) on the left; the live per-stream read on the right.
+          Collapsible via the ⛶ toggle in the Snapshots header (zero extra vertical space). */}
+      {!collapseTop && (
       <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', alignItems: 'flex-start' }}>
         {source === STREAM_ID ? (
           // this browser: the local cam/mic preview + publish controls
@@ -1091,12 +1106,24 @@ export function PerceptionStudio() {
           {perceive?.payload && <PerceiveGlance frame={perceive} />}
         </div>
       </div>
-      {/* OUTPUT: the single snapshot timeline (vision + speech, by start, IST) */}
+      )}
+      {/* OUTPUT: the single snapshot timeline (vision + speech, by start, IST). */}
       <div>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8, flexWrap: 'wrap', gap: 8 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
             <div className="side-section-label">
-              Snapshots ({filtered.length}) · by start · IST
+              {/* Collapse the top stream+NOW block from HERE — inline, so the control adds no
+                  vertical space of its own (the earlier standalone button defeated its purpose). */}
+              <button onClick={() => setCollapseTop((v) => !v)}
+                title={collapseTop ? 'Show stream + live read' : 'Hide stream + live read (more room for the timeline)'}
+                style={{ background: 'none', border: 'none', color: 'inherit', font: 'inherit', cursor: 'pointer', padding: 0, marginRight: 6 }}>
+                {collapseTop ? '⤢' : '⤡'}
+              </button>
+              Snapshots ({filtered.length}) ·{' '}
+              <button onClick={() => setNewestFirst((v) => !v)} title="toggle timeline order"
+                style={{ background: 'none', border: 'none', color: 'inherit', font: 'inherit', cursor: 'pointer', textDecoration: 'underline dotted', padding: 0 }}>
+                {newestFirst ? 'newest first ▲' : 'oldest first ▼'}
+              </button> · IST
               {source && <span style={{ opacity: 0.6 }}> · {source === STREAM_ID ? '🖥 this browser' : `📱 ${source}`}</span>}
             </div>
           </div>
@@ -1145,7 +1172,10 @@ export function PerceptionStudio() {
           </div>
         </div>
         <div ref={feedRef} onScroll={onFeedScroll}
-          style={{ maxHeight: 380, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 4,
+          style={{ // fill the remaining viewport height so the timeline uses the bottom space;
+            // taller when the top block is collapsed. The list scrolls inside this box.
+            height: collapseTop ? 'calc(100vh - 160px)' : 'calc(100vh - 440px)',
+            minHeight: 240, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 4,
             background: '#0b0e16', borderRadius: 10, padding: 10, fontSize: 13, lineHeight: 1.5 }}>
           {filtered.length === 0
             ? <div className="empty">No snapshots yet. Start the stream — vision runs latency-bound, speech per utterance.</div>
