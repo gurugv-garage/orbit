@@ -15,6 +15,7 @@ import * as tf from '@tensorflow/tfjs-node';
 import type { StreamContext, StreamProcessor } from '../processor.js';
 import { makeSnapshot, isoIst, type SnapshotStore } from '../snapshots.js';
 import { visionInstruction } from '../vision-instruction.js';
+import { embedFrame, embedDistance, embedderReady, embedGateStatus } from '../embed.js';
 
 const TEMPORAL_URL = process.env.TEMPORAL_SIDECAR_URL ?? 'http://127.0.0.1:8080';
 /** Frames per analysis window, spread over the capture span for temporal signal. */
@@ -36,11 +37,13 @@ interface StreamState {
    *  and only spends the ~4.5 s GPU inference when pixels actually moved past the
    *  threshold — a static scene was previously re-described 8×/min (2026-07-05). */
   lastSig?: Float32Array;
+  /** the last ANALYZED frame's DINOv2 embedding — the SEMANTIC change-gate anchor. When
+   *  the embedder is available this replaces the pixel signature: cosine distance to it
+   *  decides whether the scene changed, robust to the lighting/compression jitter that
+   *  false-fired the pixel gate. Pixels stay as fallback when the model is unavailable. */
+  lastEmb?: Float32Array;
   lastAnalyzedAt: number;
   skippedProbes: number; // gated probes since the last analysis (surfaced in the payload)
-  /** the previous window's description — fed back into the prompt so the model reports
-   *  WHAT CHANGED as a separate structured field (not just a fresh description). */
-  lastText?: string;
   /** WHY the last analysis ran (scene-change / local-change / sense-wake / heartbeat /
    *  first-look) — committed onto the payload so gating is debuggable from the Studio. */
   lastTrigger?: string;
@@ -76,6 +79,21 @@ const NOISE_K = 5;   // headroom over a flickery edge cell's learned jitter (3 t
 /** at most one sense-wake look per this window (continuous audio ≠ visual change). */
 const SENSE_WAKE_COOLDOWN_MS = Number(process.env.VISION_SENSE_WAKE_COOLDOWN_MS ?? 120_000);
 const REFRESH_MS = Number(process.env.VISION_REFRESH_MS ?? 300_000);
+/** SEMANTIC gate: cosine distance between L2-normalized DINOv2 embeddings above which the
+ *  scene is "meaningfully changed" (0=identical). Tuned on the real dock: static-scene
+ *  probe-to-probe distance sits ~0.00-0.02 (lighting/compression), a person/object change
+ *  is >=0.1. 0.06 sits in the clean gap. Env-tunable while dialing in. */
+const EMBED_THRESHOLD = Number(process.env.VISION_EMBED_THRESHOLD ?? 0.06);
+/** VISION_EMBED_DEBUG=1 → log every probe's embedding distance (bring-up/tuning). Verified
+ *  live 2026-07-09: static dim scene ~0.006-0.02, a person walking in 0.25-0.53 — a huge
+ *  clean gap, so 0.06 is well-separated and not a knife-edge. */
+const EMBED_DEBUG = process.env.VISION_EMBED_DEBUG === '1';
+/** Defer a change-trigger while the head is panning (the view slid because WE moved, not
+ *  the world) — a deferral, not a cache (no stale-description risk; the settled next probe
+ *  re-checks). DEFAULT ON, validated live 2026-07-09: ~45% of would-be VLM calls during
+ *  head motion suppressed, and confirmed a real change still fires the moment the head
+ *  settles. VISION_SELFMOTION_SUPPRESS=0 disables it. */
+const SELFMOTION_SUPPRESS = process.env.VISION_SELFMOTION_SUPPRESS !== '0';
 
 /** 16×16 grayscale ZERO-MEAN signature of a JPEG (null on decode failure). Subtracting
  *  the frame's own mean makes the gate exposure-invariant: a night camera's auto-exposure
@@ -90,19 +108,6 @@ function frameSignature(jpeg: Buffer): Float32Array | null {
       return small.sub(small.mean()).dataSync() as Float32Array;
     });
   } catch { return null; }
-}
-
-/** Signature difference: MEAN |Δ| (whole-scene change) AND MAX cell |Δ| (localized
- *  change). The mean alone DILUTES a person who is small in frame — 2-3 moving cells
- *  out of 256 barely lift the average (seen live 2026-07-06: a minute of real activity
- *  read as "unchanged") — so a strong single-cell delta must also open the gate. */
-function signatureDelta(a: Float32Array, b: Float32Array): { mean: number; max: number } {
-  let sum = 0; let max = 0;
-  for (let i = 0; i < a.length; i++) {
-    const d = Math.abs(a[i]! - b[i]!);
-    sum += d; if (d > max) max = d;
-  }
-  return { mean: sum / a.length, max };
 }
 
 /** Run one inference; return the text + the sidecar round-trip latency (inferMs). */
@@ -124,7 +129,15 @@ async function analyze(frames: string[], prompt: string): Promise<{ text: string
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-export function visionSnapshotProcessor(store: SnapshotStore, getFrame: GetFrame): StreamProcessor & {
+export function visionSnapshotProcessor(
+  store: SnapshotStore,
+  getFrame: GetFrame,
+  /** Is the dock's camera moving (its head panned within the settle window)? Tagged onto
+   *  each record (camMoving) to tell "the WORLD changed" from "I panned my own head" — a
+   *  change-gate trigger while moving is likely self-motion, same scene. Sourced from the
+   *  MotionExecutor's lastMotionAt (faceFollow's pans never reach the bodymotion stream). */
+  cameraMoving?: (dockId: string) => boolean,
+): StreamProcessor & {
   /** Capture + analyze the CURRENT frames right now and commit, awaiting the
    *  result. Used by the Summarize flush so the freshest visual moment is in the
    *  store before we summarize (the continuous loop's in-flight cycle hasn't
@@ -154,69 +167,38 @@ export function visionSnapshotProcessor(store: SnapshotStore, getFrame: GetFrame
 
   async function doCapture(s: StreamState, n: number, gapMs: number): Promise<boolean> {
     const from = new Date();
+    // Sample the head-moving state HERE (frame-capture time), not at commit ~5s later —
+    // the tag must reflect when the FRAMES were taken, else a head that settled during the
+    // VLM's latency mislabels a still-frame window as "moving" (self-diagnosis bug, fixed
+    // 2026-07-09). OR across the window: moving at any point means motion blur may be present.
+    let capturedMoving = cameraMoving?.(s.ctx.dockId) ?? false;
     const frames: string[] = [];
     for (let i = 0; i < n; i++) {
       const jpeg = getFrame(s.ctx.streamId);
       if (jpeg) frames.push(jpeg.toString('base64'));
+      if (cameraMoving?.(s.ctx.dockId)) capturedMoving = true;
       if (i < n - 1) await sleep(gapMs);
     }
     if (frames.length < 2) return false; // stream not live yet
     // STRUCTURED output: the description PLUS an explicit "what changed" field, judged
     // against the PREVIOUS window's description (fed back as reference). The change is
-    // the signal downstream actually wants — the description alone hides it.
-    // LINE-BASED output, not JSON (root fix, 2026-07-08): a 4-bit 3B model asked for
-    // strict JSON WILL corrupt it when it rambles into the token cap — the corruption
-    // was created by the format request, not by parsing. Two labeled lines cannot fail
-    // the same way: DESCRIPTION completes before CHANGE starts, so truncation only
-    // ever costs the tail of the delta. This record is a SOURCE for the summarizer,
-    // the curator, and spoken grounding — it must be clean text at birth.
-    const prompt = `${visionInstruction()}\n\n`
-      + 'Reply in EXACTLY this two-line format (plain text, no JSON, no markdown):\n'
-      + 'DESCRIPTION: <the one-sentence description>\n'
-      + 'CHANGE: <what significantly changed vs the previous description, UNDER 12 words — or the single word NONE>'
-      + (s.lastText ? `\nPREVIOUS description (from a few seconds ago): "${s.lastText}"` : '\nThere is no previous description (first look) — CHANGE is NONE.');
+    // SIMPLE PROMPT (root fix, 2026-07-09): the elaborate two-line DESCRIPTION/CHANGE
+    // format + a fed-back PREVIOUS description was POISONING a 3B model — it echoed the
+    // stale "None visible" anchor into DESCRIPTION while correctly putting the person in
+    // CHANGE, and we surfaced only DESCRIPTION → a plainly-visible person reported as
+    // "None visible", repeated verbatim for minutes (verified live: the SAME frames +
+    // this simple prompt caught "a person ascending a staircase" 3/3, the complex prompt
+    // failed). A small model needs a small ask. No CHANGE field, no previous-anchor.
+    const prompt = visionInstruction();
     const res = await analyze(frames, prompt);
     const to = new Date();
     if (!res) return false;
     const { inferMs } = res;
-    // Extract description + change. The 3B model is unreliable about the format — it
-    // may use the labels, repeat the sentence across lines with NO labels, or emit a
-    // JSON stray. Whatever it does, the DESCRIPTION is ALWAYS a single sentence, so we
-    // reduce to the first sentence on every path (the doubling was an unlabelled repeat
-    // falling through to the raw reply — seen live 2026-07-08).
-    let text = res.text; let change = '';
-    const stripped = res.text.replace(/^```(?:json)?\s*|\s*```\s*$/g, '').trim();
-    const dLabel = stripped.match(/DESCRIPTION:\s*([\s\S]*?)(?=\s*CHANGE:|$)/i);
-    const cLabel = stripped.match(/CHANGE:\s*([\s\S]*)$/i);
-    if (dLabel) {
-      text = dLabel[1]!.trim();
-      change = (cLabel?.[1] ?? '').trim();
-    } else {
-      // no labels — try a JSON stray, else the reply itself is the description.
-      try {
-        const parsed = JSON.parse(stripped) as { description?: string; change?: string };
-        text = parsed.description?.trim() || stripped;
-        change = (parsed.change ?? '').trim();
-      } catch {
-        const dm = stripped.match(/"description"\s*:\s*"((?:[^"\\]|\\.)*)"/);
-        text = dm ? dm[1]!.replace(/\\"/g, '"').trim() : stripped;
-      }
-    }
-    // FIRST SENTENCE ONLY — the description is one sentence by contract; any repeat /
-    // extra line / trailing ramble is noise, whatever produced it.
-    text = (text.split(/\n/)[0]!.match(/^.*?[.!?](?=\s|$)/)?.[0] ?? text.split(/\n/)[0]!).trim();
-    change = change.split(/\n/)[0]!.trim();
-    if (/^none\.?$/i.test(change)) change = '';
-    // clamp a rambling change — it must be a short delta, never a paragraph.
-    const cw = change.split(/\s+/);
-    if (cw.length > 18) change = `${cw.slice(0, 18).join(' ')}…`;
-    // change is only meaningful AGAINST a previous description; and a model that echoes
-    // the whole description into `change` (seen on the first look) or writes "the scene
-    // remains unchanged" (seen live) is saying nothing — normalize those to empty.
-    if (!s.lastText || change.toLowerCase() === text.toLowerCase()
-        || /remains? (the same|unchanged)|no (significant )?changes?\b|nothing (significant(ly)? )?(has )?changed/i.test(change)) {
-      change = '';
-    }
+    // First non-empty line, first sentence — strip any stray markdown/label the model adds.
+    let text = res.text.replace(/^```(?:json)?\s*|\s*```\s*$/g, '').replace(/^(DESCRIPTION|SCENE):\s*/i, '').trim();
+    text = (text.split(/\n/).find((l) => l.trim())?.trim() ?? text);
+    text = (text.match(/^.*?[.!?](?=\s|$)/)?.[0] ?? text).trim();
+    const change = ''; // change-field retired with the two-line format (it was the poison).
     // Vision describes WHAT (no identity). WHO is the separate identity stream
     // (face-api, with boxes); a later LLM merge fuses them. No string-replace.
     // latencyMs = whole window (sampling + inference); inferMs = sidecar compute only.
@@ -228,14 +210,22 @@ export function visionSnapshotProcessor(store: SnapshotStore, getFrame: GetFrame
       // gatedProbes = how many cheap change-checks concluded "nothing moved" since the
       // previous analysis (Studio observability for the GPU savings). `change` = the
       // model's own account of what differs vs the previous window (structured field).
-      payload: { text, ...(change ? { change } : {}), frames: frames.length, latencyMs: to.getTime() - from.getTime(), inferMs, gatedProbes: s.skippedProbes, gateTrigger: s.lastTrigger ?? 'on-demand' },
+      // inputImages + inputPrompt = the EXACT frames + prompt qwen saw, attached for
+      // leak-hunting in the Studio ("did it hallucinate, or was it in the frames?"). qwen
+      // reasons over ALL `frames` in the window (a mini filmstrip, per the prompt), so we
+      // store ALL of them — showing only the last would misrepresent the input (the very
+      // leak this panel exists to catch). ~16-30KB each in a bounded ring — a debug cost.
+      payload: { text, frames: frames.length, latencyMs: to.getTime() - from.getTime(), inferMs, gatedProbes: s.skippedProbes, gateTrigger: s.lastTrigger ?? 'on-demand',
+        camMoving: capturedMoving,   // head moving DURING frame capture (not at commit ~5s later)
+        inputImages: frames, inputPrompt: prompt },
     }));
     store.addKeyframe({ ts: isoIst(to), from: isoIst(from), jpegB64: frames[frames.length - 1]! });
-    s.ctx.emit({ kind: 'scene', source: 'vision-snapshot', payload: { description: text, ...(change ? { change } : {}) }, confidence: 0.7 });
-    s.lastText = text;
+    s.ctx.emit({ kind: 'scene', source: 'vision-snapshot', payload: { description: text }, confidence: 0.7 });
     // change-gate bookkeeping: remember what the ANALYZED scene looked like, so the
     // cheap probe can tell whether anything has moved since.
-    s.lastSig = frameSignature(Buffer.from(frames[frames.length - 1]!, 'base64')) ?? s.lastSig;
+    const lastJpeg = Buffer.from(frames[frames.length - 1]!, 'base64');
+    s.lastSig = frameSignature(lastJpeg) ?? s.lastSig;
+    s.lastEmb = (await embedFrame(lastJpeg)) ?? s.lastEmb;   // semantic anchor (null → pixel path)
     s.lastAnalyzedAt = Date.now();
     s.skippedProbes = 0;
     return true;
@@ -261,45 +251,82 @@ export function visionSnapshotProcessor(store: SnapshotStore, getFrame: GetFrame
     });
   }
 
+  /** SEMANTIC change probe: cosine distance of this frame's DINOv2 embedding to the last
+   *  ANALYZED frame's. Returns a trigger string if changed, false if not, null if the frame
+   *  couldn't be probed (fail open). Updates s.lastEmb? no — the anchor is only reset on a
+   *  real analysis (doCapture), so drift accumulates against a stable reference. */
+  async function embedChanged(s: StreamState, jpeg: Buffer | null): Promise<string | false | null> {
+    const emb = jpeg ? await embedFrame(jpeg) : null;
+    if (!emb) return null;
+    const d = embedDistance(emb, s.lastEmb!);
+    if (EMBED_DEBUG) console.log(`[embed-probe] ${s.ctx.dockId} d=${d.toFixed(3)} ${d >= EMBED_THRESHOLD ? 'FIRE' : 'skip'} (thr ${EMBED_THRESHOLD})`);
+    return d >= EMBED_THRESHOLD ? `scene-change emb=${d.toFixed(3)}` : false;
+  }
+
+  /** PIXEL change probe (fallback only): 16×16 signature vs the anchor, measured as EXCESS
+   *  over each cell's learned probe-to-probe jitter (a flickery edge earns a high floor; a
+   *  person exceeds the floor of the quiet cells they cover). Same return contract. */
+  function pixelChanged(s: StreamState, jpeg: Buffer | null): string | false | null {
+    const sig = jpeg ? frameSignature(jpeg) : null;
+    if (!sig || !s.lastSig) return null;
+    if (!s.noiseFloor) s.noiseFloor = new Float32Array(sig.length).fill(0.02);
+    if (s.prevProbeSig) {
+      for (let i = 0; i < sig.length; i++) {
+        s.noiseFloor[i] = s.noiseFloor[i]! * (1 - NOISE_EMA) + Math.abs(sig[i]! - s.prevProbeSig[i]!) * NOISE_EMA;
+      }
+    }
+    s.prevProbeSig = sig;
+    let excessSum = 0; let excessMax = 0;
+    for (let i = 0; i < sig.length; i++) {
+      const excess = Math.max(0, Math.abs(sig[i]! - s.lastSig[i]!) - NOISE_K * s.noiseFloor[i]!);
+      excessSum += excess; if (excess > excessMax) excessMax = excess;
+    }
+    const excessMean = excessSum / sig.length;
+    if (excessMean >= DIFF_THRESHOLD) return `scene-change mean=${excessMean.toFixed(3)}`;
+    if (excessMax >= CELL_THRESHOLD) return `local-change max=${excessMax.toFixed(2)}`;
+    return false;
+  }
+
   async function loop(streamId: string) {
     const s = streams.get(streamId);
     if (!s || s.running) return;
     s.running = true;
+    // announce which gate is driving this stream, so it's never a mystery which path ran.
+    void embedderReady().then((ok) => {
+      const st = embedGateStatus();
+      if (!st.enabled) console.log(`[vision] ${s.ctx.dockId}: change-gate = PIXEL (VISION_EMBED_GATE=0)`);
+      else if (ok) console.log(`[vision] ${s.ctx.dockId}: change-gate = SEMANTIC (DINOv2 embedding)`);
+      else console.error(`[vision] ${s.ctx.dockId}: change-gate = PIXEL (DEGRADED — embed model unavailable)`);
+    });
     while (streams.has(streamId)) {
       let trigger: string | null = 'first-look';
-      if (s.lastSig && !s.busy) {
-        trigger = null;
+      if ((s.lastEmb || s.lastSig) && !s.busy) {
         const jpeg = getFrame(s.ctx.streamId);
-        const sig = jpeg ? frameSignature(jpeg) : null;
-        if (!sig) {
-          trigger = 'no-probe-frame';    // can't verify "unchanged" → look (fail open)
-        } else {
-          // learn each cell's normal probe-to-probe jitter (EMA), then measure change
-          // vs the anchor as EXCESS over NOISE_K× that floor — a flickery edge cell
-          // earns a high floor and stops re-triggering; a person entering exceeds the
-          // floor of whatever quiet cells they cover.
-          if (!s.noiseFloor) { s.noiseFloor = new Float32Array(sig.length).fill(0.02); }
-          if (s.prevProbeSig) {
-            for (let i = 0; i < sig.length; i++) {
-              const j = Math.abs(sig[i]! - s.prevProbeSig[i]!);
-              s.noiseFloor[i] = s.noiseFloor[i]! * (1 - NOISE_EMA) + j * NOISE_EMA;
-            }
-          }
-          s.prevProbeSig = sig;
-          let excessSum = 0; let excessMax = 0;
-          for (let i = 0; i < sig.length; i++) {
-            const excess = Math.max(0, Math.abs(sig[i]! - s.lastSig[i]!) - NOISE_K * s.noiseFloor[i]!);
-            excessSum += excess; if (excess > excessMax) excessMax = excess;
-          }
-          const excessMean = excessSum / sig.length;
-          if (excessMean >= DIFF_THRESHOLD) trigger = `scene-change mean=${excessMean.toFixed(3)}`;
-          else if (excessMax >= CELL_THRESHOLD) trigger = `local-change max=${excessMax.toFixed(2)}`;
-          else if (Date.now() - (s.lastSenseWakeAt ?? 0) >= SENSE_WAKE_COOLDOWN_MS && senseWake(s)) {
-            trigger = 'sense-wake';
-            s.lastSenseWakeAt = Date.now();
-          }
-          else if (Date.now() - s.lastAnalyzedAt >= REFRESH_MS) trigger = 'heartbeat';
+        // Ask the active gate whether the CONTENT changed since the last analyzed frame.
+        // Preferred: the SEMANTIC gate (embedding distance) — robust to the lighting/
+        // compression flicker that false-fired pixels; verified static ~0.006-0.02 vs a
+        // person entering 0.25-0.53. Fallback: the pixel signature + learned noise floor,
+        // used only when the embedder is unavailable (VISION_EMBED_GATE=0 / model missing).
+        const changed = s.lastEmb ? await embedChanged(s, jpeg) : pixelChanged(s, jpeg);
+        // SELF-MOTION SUPPRESSION (VISION_SELFMOTION_SUPPRESS=1, opt-in until measured): a
+        // change-trigger WHILE THE HEAD IS PANNING is most likely the view sliding because
+        // WE moved, not the world changing — so DEFER (don't wake the VLM), let the head
+        // settle, and re-probe next tick against a stable view. This is a deferral, not a
+        // cache: no stale description risk. captureNow/first-look bypass (not gated here).
+        if (SELFMOTION_SUPPRESS && changed && cameraMoving?.(s.ctx.dockId)) {
+          if (EMBED_DEBUG) console.log(`[vision] ${s.ctx.dockId} defer: ${changed} but head is moving (self-motion)`);
+          s.skippedProbes++; await sleep(PROBE_MS); continue;
         }
+        // changed === null → couldn't probe (no frame) → fail OPEN (look).
+        if (changed === null) trigger = 'no-probe-frame';
+        else if (changed) trigger = changed;
+        // Nothing changed — but audio near the blind spot, or the slow-drift heartbeat,
+        // can still warrant a look. Shared across both gates so the policy lives once.
+        else if (Date.now() - (s.lastSenseWakeAt ?? 0) >= SENSE_WAKE_COOLDOWN_MS && senseWake(s)) {
+          trigger = 'sense-wake'; s.lastSenseWakeAt = Date.now();
+        } else if (Date.now() - s.lastAnalyzedAt >= REFRESH_MS) trigger = 'heartbeat';
+        else trigger = null;
+        if (!trigger) { s.skippedProbes++; await sleep(PROBE_MS); continue; }
       }
       if (trigger) {
         s.lastTrigger = trigger;

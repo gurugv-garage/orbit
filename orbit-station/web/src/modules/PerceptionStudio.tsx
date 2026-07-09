@@ -52,6 +52,8 @@ interface Snapshot {
     inputs?: string; inputCount?: number;
     // vision: why this analysis ran (scene-change / local-change / sense-wake / heartbeat).
     gateTrigger?: string;
+    // vision leak-hunt: the exact frame qwen saw + the prompt it received.
+    inputImages?: string[]; inputPrompt?: string;
     // the RAW STT transcript, preserved when the interpreter upgrades `text` — so the
     // 🎙 STT row shows what the live engine heard and the 🔊 audio row shows the
     // upgraded read. Absent on un-upgraded records (then the STT row uses `text`).
@@ -1199,6 +1201,33 @@ export function PerceptionStudio() {
                         style={{ marginLeft: 8, fontSize: 10, color: '#ffd9a0', border: '1px solid #5a4a20', borderRadius: 4, padding: '1px 6px', whiteSpace: 'nowrap' }}>
                         Δ {p.change}
                       </span>
+                    )}
+                    {/* vision LEAK-HUNT: the EXACT frame qwen saw + the prompt it got, so a
+                        hallucinated description is diagnosable ("was it in the image?"). */}
+                    {viewKind === 'vision' && ((p.inputImages && p.inputImages.length) || p.inputPrompt) && (
+                      <details style={{ marginTop: 4 }}>
+                        <summary style={{ cursor: 'pointer', fontSize: 10, color: '#7a8ca8' }}>
+                          🖼 what qwen saw{p.inputImages?.length ? ` (${p.inputImages.length} frames)` : ''} + prompt
+                        </summary>
+                        <div style={{ marginTop: 4 }}>
+                          {/* the actual filmstrip qwen reasoned over — ALL window frames, in order. */}
+                          {p.inputImages && p.inputImages.length > 0 && (
+                            <div style={{ display: 'flex', gap: 4, overflowX: 'auto', paddingBottom: 4 }}>
+                              {p.inputImages.map((img, i) => (
+                                <div key={i} style={{ position: 'relative', flexShrink: 0 }}>
+                                  <img src={`data:image/jpeg;base64,${img}`} alt={`qwen frame ${i + 1}`}
+                                    style={{ width: 150, borderRadius: 5, border: '1px solid #223' }} />
+                                  <span style={{ position: 'absolute', top: 2, left: 2, fontSize: 9, background: '#000a', color: '#9ab', borderRadius: 3, padding: '0 4px' }}>{i + 1}/{p.inputImages!.length}</span>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                          {p.inputPrompt && (
+                            <pre style={{ fontSize: 10, whiteSpace: 'pre-wrap', color: '#9ab', margin: '6px 0 0',
+                              maxHeight: 220, overflow: 'auto', background: '#0d1420', padding: 8, borderRadius: 4 }}>{p.inputPrompt}</pre>
+                          )}
+                        </div>
+                      </details>
                     )}
                     {/* low-confidence is an STT (Whisper/parakeet) tell — only on the STT row. */}
                     {isStt && p.lowConfidence && (

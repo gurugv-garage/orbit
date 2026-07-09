@@ -364,6 +364,12 @@ export function getPerceiveStore(): PerceiveStore | undefined {
 }
 
 
+/** The camera-moving signal, set by main.ts from the MotionExecutor. Perception stays
+ *  decoupled from bodylink (clean layering) — main wires the two together. Returns true
+ *  if the dock's head panned within the settle window (self-motion, not world change). */
+const cameraMovingRef: { current?: (dockId: string) => boolean } = {};
+export function setCameraMoving(fn: (dockId: string) => boolean): void { cameraMovingRef.current = fn; }
+
 export function perceptionModule(getHub: () => PerceptionProcessingHub): StationModule {
   let state: PerceptionState;
   const snapshots = new SnapshotStore(); // WebRTC vision+speech snapshot records
@@ -501,9 +507,13 @@ export function perceptionModule(getHub: () => PerceptionProcessingHub): Station
     (e) => interimHandler?.(e),
     (dockId) => listeningResolver?.(dockId) ?? false,
   ); // 🎙 speech (exposes flushAll)
-  // Vision reuses the face processor's decoded frame (ONE ffmpeg per dock, not two).
-  const vision = visionSnapshotProcessor(snapshots, (sid) => face.currentFrame(sid)); // 👁 vision (captureNow)
   const bodymotion = bodyMotionWatchProcessor(snapshots); // 🤖 ego-motion (setMotion seam)
+  // Vision reuses the face processor's decoded frame (ONE ffmpeg per dock, not two). The
+  // camera-moving signal comes from the MotionExecutor (set by main via setCameraMoving) —
+  // faceFollow's pans never reach the bodymotion stream, so bodymotion.current() is useless
+  // here; the executor's lastMotionAt is the real "my head just moved" signal.
+  const vision = visionSnapshotProcessor(snapshots, (sid) => face.currentFrame(sid),
+    (dockId) => cameraMovingRef.current?.(dockId) ?? false); // 👁 vision + self-motion tag
 
   /** Publish a result directed to its dock + an undirected copy (state/console). */
   function fanResult(r: PerceptionResult): void {

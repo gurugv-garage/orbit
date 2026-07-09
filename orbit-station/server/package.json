@@ -27,6 +27,7 @@
     "@tensorflow/tfjs-node": "^4.22.0",
     "@vladmandic/face-api": "^1.7.15",
     "better-sqlite3": "^11.10.0",
+    "onnxruntime-node": "^1.27.0",
     "opusscript": "^0.1.1",
     "werift": "^0.23.0",
     "ws": "^8.18.0",
