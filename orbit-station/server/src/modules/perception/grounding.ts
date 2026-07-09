@@ -78,16 +78,23 @@ export interface GroundingInput {
 }
 
 /** Is a record a genuine HAPPENING worth a self-thought's attention? Keeps: confident
- *  speech (good tier), non-low-salience sound events, vision windows that report a
- *  CHANGE, and the compact STATE streams (identity/bodymotion). Drops: shaky/garbage
- *  speech (far-field mush), static vision re-descriptions, low-salience ambience —
- *  the raw noise that made idle remarks incoherent (coherence-layer.md §1). */
+ *  speech (good tier), non-low-salience sound events, vision windows (a committed record
+ *  IS a scene change), and the compact STATE streams (identity/bodymotion). Drops:
+ *  shaky/garbage speech (far-field mush), low-salience ambience — the raw noise that made
+ *  idle remarks incoherent (coherence-layer.md §1).
+ *
+ *  Vision salience used to key off a structured `change` field, but that field was retired
+ *  with the SIMPLE vision prompt (2026-07-09, commit 0d7b0cf) — it's gone from the payload.
+ *  The DINOv2 change-gate now decides WHETHER vision runs at all, so every committed vision
+ *  record already represents a real scene change; salience is just "has meaningful text".
+ *  Keying off the dead `change` field made vision permanently non-salient — a person walking
+ *  in never woke a reactive bit or reached the coherent grounding tail (fixed 2026-07-09). */
 export function isSalient(r: SnapshotRecord): boolean {
-  const p = r.payload as { confTier?: string; salience?: string; change?: string };
+  const p = r.payload as { confTier?: string; salience?: string; text?: string };
   switch (r.source.kind) {
     case 'speech': return (p.confTier ?? 'good') === 'good';
     case 'sound': return p.salience === 'notable' || p.salience === 'startling';
-    case 'vision': return !!p.change?.trim();
+    case 'vision': return !!p.text?.trim();   // change-gated → a committed record is a change
     case 'identity':
     case 'bodymotion': return true;   // STATE streams: compact, real transitions
     default: return false;            // unknown kinds (incl. future 'summary') stay out
