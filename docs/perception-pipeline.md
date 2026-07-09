@@ -44,6 +44,7 @@ Key REST routes (all under `/api/perception`): `GET /snapshots`, `POST /snapshot
 - [1. The shape: one stream in, four parallel "snapshot" streams out](#1-the-shape-one-stream-in-four-parallel-snapshot-streams-out)
   - [1a. Multiple docks / streams at once — how N streams are sensed in parallel](#1a-multiple-docks--streams-at-once--how-n-streams-are-sensed-in-parallel)
 - [2. 👁 Vision — Qwen2.5-VL-3B (MLX 4-bit), latency-bound windows](#2--vision--qwen25-vl-3b-mlx-4-bit-latency-bound-windows)
+  - [2a. The change-gate — DINOv2 embedding distance (don't re-describe a static scene)](#2a-the-change-gate--dinov2-embedding-distance-dont-re-describe-a-static-scene)
 - [3. 🎙 Speech — Parakeet-TDT (MLX), VAD-endpointed, optional Gemini background upgrade](#3--speech--parakeet-tdt-mlx-vad-endpointed-optional-gemini-background-upgrade)
 - [4. 👤 Identity — face-api (TF.js), enroll-then-match, debounced](#4--identity--face-api-tfjs-enroll-then-match-debounced)
 - [5. 😮 Emotion — face-api expression, **hedged** (descriptive, not forced)](#5--emotion--face-api-expression-hedged-descriptive-not-forced)
@@ -181,6 +182,42 @@ wasn't even being sent to the sidecar, so all tuning was a no-op — fixed).
 **Tradeoffs accepted:** ~5 s latency per window (it's a 3B VLM on a laptop), and it
 **still fabricates** on thin/ambiguous frames — which is why the summarizer is told
 to be skeptical, and why **resolution is pinned at 512**.
+
+### 2a. The change-gate — DINOv2 embedding distance (don't re-describe a static scene)
+
+The 5 s VLM is too expensive to run on every frame, so a cheap **change-gate** decides
+when to wake it: probe one frame every ~1.5 s, and only run the VLM when the scene has
+**meaningfully changed** since the last analysis. History (both dead ends kept as a warning):
+a hand-tuned **16×16 pixel signature + per-cell learned noise floor** fought a losing battle
+with a flickering light-edge (false-fired every ~40 s on a static scene; endless
+`NOISE_K` tuning). It's now the *fallback only*.
+
+The gate is a **DINOv2 embedding distance** (semantic, not pixels):
+
+| | value |
+|---|---|
+| **Model** | **DINOv2 ViT-S/14** (`facebookresearch/dinov2` → `dinov2_vits14`) — Meta's self-supervised vision transformer, 21M params, **384-d** CLS-token embedding |
+| **Runtime** | **ONNX via `onnxruntime-node`, IN-PROCESS** (no sidecar, no Python at runtime). ~100 MB resident, ~25 ms/frame CPU — negligible at the 1.5 s cadence |
+| **Model file** | `server/models/embed/dinov2_vits14.onnx` (88 MB, opset 17, input `img` 1×3×224×224 → `emb` 384-d). **Gitignored**; auto-exported once on boot from torch (`scripts/export-dino.py`) if missing |
+| **Decision** | cosine distance of the probe frame's embedding to the last **analyzed** frame's; `>= VISION_EMBED_THRESHOLD` (0.06) → wake the VLM |
+| **Code** | `modules/perception/embed.ts` (the embedder) + `vision-snapshot.ts` `embedChanged()` |
+
+**Why it works where pixels didn't** (verified live 2026-07-09, dim room, head held static):
+a static scene's frame-to-frame embedding distance sits at **~0.006–0.02** (embeddings are
+robust to lighting/compression jitter), while a **person walking in jumps to 0.25–0.53** — a
+30–70× gap, so 0.06 sits in clean air, not on a knife-edge. (The earlier "it fires constantly"
+scare was faceFollow/idle-moods panning the head — the gate was *correctly* seeing the view
+change; with the movers stopped it goes silent.)
+
+**Failsafe, not silent:** default on (`VISION_EMBED_GATE=0` forces the pixel fallback). If the
+model is missing/unloadable it logs a loud `⚠️ DEGRADED` error and the loop announces
+`change-gate = PIXEL (DEGRADED)` — a failure is visible, never a mystery quality regression.
+`VISION_EMBED_DEBUG=1` prints every probe's distance. sense-wake (audio) + heartbeat still
+force a look independent of the gate.
+
+> **DINOv2 is a general-purpose embedder** — this same in-process model can serve place/thing
+> recognition, near-duplicate detection, and richer change signals with near-zero added
+> overhead. Feasibility + ranked verdict: [research/perceptual-memory.md](research/perceptual-memory.md).
 
 ---
 

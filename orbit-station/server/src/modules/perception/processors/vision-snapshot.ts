@@ -87,6 +87,10 @@ const REFRESH_MS = Number(process.env.VISION_REFRESH_MS ?? 300_000);
  *  probe-to-probe distance sits ~0.00-0.02 (lighting/compression), a person/object change
  *  is >=0.1. 0.06 sits in the clean gap. Env-tunable while dialing in. */
 const EMBED_THRESHOLD = Number(process.env.VISION_EMBED_THRESHOLD ?? 0.06);
+/** VISION_EMBED_DEBUG=1 → log every probe's embedding distance (bring-up/tuning). Verified
+ *  live 2026-07-09: static dim scene ~0.006-0.02, a person walking in 0.25-0.53 — a huge
+ *  clean gap, so 0.06 is well-separated and not a knife-edge. */
+const EMBED_DEBUG = process.env.VISION_EMBED_DEBUG === '1';
 
 /** 16×16 grayscale ZERO-MEAN signature of a JPEG (null on decode failure). Subtracting
  *  the frame's own mean makes the gate exposure-invariant: a night camera's auto-exposure
@@ -101,19 +105,6 @@ function frameSignature(jpeg: Buffer): Float32Array | null {
       return small.sub(small.mean()).dataSync() as Float32Array;
     });
   } catch { return null; }
-}
-
-/** Signature difference: MEAN |Δ| (whole-scene change) AND MAX cell |Δ| (localized
- *  change). The mean alone DILUTES a person who is small in frame — 2-3 moving cells
- *  out of 256 barely lift the average (seen live 2026-07-06: a minute of real activity
- *  read as "unchanged") — so a strong single-cell delta must also open the gate. */
-function signatureDelta(a: Float32Array, b: Float32Array): { mean: number; max: number } {
-  let sum = 0; let max = 0;
-  for (let i = 0; i < a.length; i++) {
-    const d = Math.abs(a[i]! - b[i]!);
-    sum += d; if (d > max) max = d;
-  }
-  return { mean: sum / a.length, max };
 }
 
 /** Run one inference; return the text + the sidecar round-trip latency (inferMs). */
@@ -274,6 +265,42 @@ export function visionSnapshotProcessor(store: SnapshotStore, getFrame: GetFrame
     });
   }
 
+  /** SEMANTIC change probe: cosine distance of this frame's DINOv2 embedding to the last
+   *  ANALYZED frame's. Returns a trigger string if changed, false if not, null if the frame
+   *  couldn't be probed (fail open). Updates s.lastEmb? no — the anchor is only reset on a
+   *  real analysis (doCapture), so drift accumulates against a stable reference. */
+  async function embedChanged(s: StreamState, jpeg: Buffer | null): Promise<string | false | null> {
+    const emb = jpeg ? await embedFrame(jpeg) : null;
+    if (!emb) return null;
+    const d = embedDistance(emb, s.lastEmb!);
+    if (EMBED_DEBUG) console.log(`[embed-probe] ${s.ctx.dockId} d=${d.toFixed(3)} ${d >= EMBED_THRESHOLD ? 'FIRE' : 'skip'} (thr ${EMBED_THRESHOLD})`);
+    return d >= EMBED_THRESHOLD ? `scene-change emb=${d.toFixed(3)}` : false;
+  }
+
+  /** PIXEL change probe (fallback only): 16×16 signature vs the anchor, measured as EXCESS
+   *  over each cell's learned probe-to-probe jitter (a flickery edge earns a high floor; a
+   *  person exceeds the floor of the quiet cells they cover). Same return contract. */
+  function pixelChanged(s: StreamState, jpeg: Buffer | null): string | false | null {
+    const sig = jpeg ? frameSignature(jpeg) : null;
+    if (!sig || !s.lastSig) return null;
+    if (!s.noiseFloor) s.noiseFloor = new Float32Array(sig.length).fill(0.02);
+    if (s.prevProbeSig) {
+      for (let i = 0; i < sig.length; i++) {
+        s.noiseFloor[i] = s.noiseFloor[i]! * (1 - NOISE_EMA) + Math.abs(sig[i]! - s.prevProbeSig[i]!) * NOISE_EMA;
+      }
+    }
+    s.prevProbeSig = sig;
+    let excessSum = 0; let excessMax = 0;
+    for (let i = 0; i < sig.length; i++) {
+      const excess = Math.max(0, Math.abs(sig[i]! - s.lastSig[i]!) - NOISE_K * s.noiseFloor[i]!);
+      excessSum += excess; if (excess > excessMax) excessMax = excess;
+    }
+    const excessMean = excessSum / sig.length;
+    if (excessMean >= DIFF_THRESHOLD) return `scene-change mean=${excessMean.toFixed(3)}`;
+    if (excessMax >= CELL_THRESHOLD) return `local-change max=${excessMax.toFixed(2)}`;
+    return false;
+  }
+
   async function loop(streamId: string) {
     const s = streams.get(streamId);
     if (!s || s.running) return;
@@ -281,64 +308,30 @@ export function visionSnapshotProcessor(store: SnapshotStore, getFrame: GetFrame
     // announce which gate is driving this stream, so it's never a mystery which path ran.
     void embedderReady().then((ok) => {
       const st = embedGateStatus();
-      if (!st.enabled) console.log(`[vision] ${s.ctx.dockId}: change-gate = PIXEL (embed gate off; set VISION_EMBED_GATE=1 to enable)`);
+      if (!st.enabled) console.log(`[vision] ${s.ctx.dockId}: change-gate = PIXEL (VISION_EMBED_GATE=0)`);
       else if (ok) console.log(`[vision] ${s.ctx.dockId}: change-gate = SEMANTIC (DINOv2 embedding)`);
-      else console.error(`[vision] ${s.ctx.dockId}: change-gate = PIXEL (DEGRADED — embed gate enabled but model unavailable)`);
+      else console.error(`[vision] ${s.ctx.dockId}: change-gate = PIXEL (DEGRADED — embed model unavailable)`);
     });
     while (streams.has(streamId)) {
       let trigger: string | null = 'first-look';
       if ((s.lastEmb || s.lastSig) && !s.busy) {
-        trigger = null;
         const jpeg = getFrame(s.ctx.streamId);
-        // ── SEMANTIC gate (preferred): cosine distance of this frame's embedding to the
-        //    last analyzed frame's. Robust to lighting/compression flicker that false-fired
-        //    the pixel gate; fires on real content change. Falls through to pixels only when
-        //    the embedder is unavailable (no ONNX model / load failure). ──
-        if (s.lastEmb) {
-          const emb = jpeg ? await embedFrame(jpeg) : null;
-          if (!emb) trigger = 'no-probe-frame';
-          else {
-            const d = embedDistance(emb, s.lastEmb);
-            if (d >= EMBED_THRESHOLD) trigger = `scene-change emb=${d.toFixed(3)}`;
-            else if (Date.now() - (s.lastSenseWakeAt ?? 0) >= SENSE_WAKE_COOLDOWN_MS && senseWake(s)) {
-              trigger = 'sense-wake'; s.lastSenseWakeAt = Date.now();
-            } else if (Date.now() - s.lastAnalyzedAt >= REFRESH_MS) trigger = 'heartbeat';
-          }
-          if (trigger) { s.lastTrigger = trigger; }
-          if (trigger) { /* fall through to the analyze block below */ }
-          else { s.skippedProbes++; await sleep(PROBE_MS); continue; }
-        } else {
-        const sig = jpeg ? frameSignature(jpeg) : null;
-        if (!sig) {
-          trigger = 'no-probe-frame';    // can't verify "unchanged" → look (fail open)
-        } else {
-          // learn each cell's normal probe-to-probe jitter (EMA), then measure change
-          // vs the anchor as EXCESS over NOISE_K× that floor — a flickery edge cell
-          // earns a high floor and stops re-triggering; a person entering exceeds the
-          // floor of whatever quiet cells they cover.
-          if (!s.noiseFloor) { s.noiseFloor = new Float32Array(sig.length).fill(0.02); }
-          if (s.prevProbeSig) {
-            for (let i = 0; i < sig.length; i++) {
-              const j = Math.abs(sig[i]! - s.prevProbeSig[i]!);
-              s.noiseFloor[i] = s.noiseFloor[i]! * (1 - NOISE_EMA) + j * NOISE_EMA;
-            }
-          }
-          s.prevProbeSig = sig;
-          let excessSum = 0; let excessMax = 0;
-          for (let i = 0; i < sig.length; i++) {
-            const excess = Math.max(0, Math.abs(sig[i]! - s.lastSig![i]!) - NOISE_K * s.noiseFloor[i]!);
-            excessSum += excess; if (excess > excessMax) excessMax = excess;
-          }
-          const excessMean = excessSum / sig.length;
-          if (excessMean >= DIFF_THRESHOLD) trigger = `scene-change mean=${excessMean.toFixed(3)}`;
-          else if (excessMax >= CELL_THRESHOLD) trigger = `local-change max=${excessMax.toFixed(2)}`;
-          else if (Date.now() - (s.lastSenseWakeAt ?? 0) >= SENSE_WAKE_COOLDOWN_MS && senseWake(s)) {
-            trigger = 'sense-wake';
-            s.lastSenseWakeAt = Date.now();
-          }
-          else if (Date.now() - s.lastAnalyzedAt >= REFRESH_MS) trigger = 'heartbeat';
-        }
-        } // end pixel-fallback branch
+        // Ask the active gate whether the CONTENT changed since the last analyzed frame.
+        // Preferred: the SEMANTIC gate (embedding distance) — robust to the lighting/
+        // compression flicker that false-fired pixels; verified static ~0.006-0.02 vs a
+        // person entering 0.25-0.53. Fallback: the pixel signature + learned noise floor,
+        // used only when the embedder is unavailable (VISION_EMBED_GATE=0 / model missing).
+        const changed = s.lastEmb ? await embedChanged(s, jpeg) : pixelChanged(s, jpeg);
+        // changed === null → couldn't probe (no frame) → fail OPEN (look).
+        if (changed === null) trigger = 'no-probe-frame';
+        else if (changed) trigger = changed;
+        // Nothing changed — but audio near the blind spot, or the slow-drift heartbeat,
+        // can still warrant a look. Shared across both gates so the policy lives once.
+        else if (Date.now() - (s.lastSenseWakeAt ?? 0) >= SENSE_WAKE_COOLDOWN_MS && senseWake(s)) {
+          trigger = 'sense-wake'; s.lastSenseWakeAt = Date.now();
+        } else if (Date.now() - s.lastAnalyzedAt >= REFRESH_MS) trigger = 'heartbeat';
+        else trigger = null;
+        if (!trigger) { s.skippedProbes++; await sleep(PROBE_MS); continue; }
       }
       if (trigger) {
         s.lastTrigger = trigger;

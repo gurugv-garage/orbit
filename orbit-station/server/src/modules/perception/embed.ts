@@ -23,11 +23,13 @@ const MODEL_PATH = fileURLToPath(new URL('../../../models/embed/dinov2_vits14.on
 const MEAN = [0.485, 0.456, 0.406];
 const STD = [0.229, 0.224, 0.225];
 
-/** The semantic (embedding) change-gate is OPT-IN until stabilized: set VISION_EMBED_GATE=1
- *  to enable. Default off → the proven pixel gate runs, no ONNX loaded. This is deliberate —
- *  a silent embedding failure would masquerade as a vision-quality regression with no clue
- *  where it came from, so we don't run it by default and we make its state LOUD (below). */
-export const EMBED_GATE_ENABLED = process.env.VISION_EMBED_GATE === '1';
+/** The semantic (embedding) change-gate is now the DEFAULT (verified live 2026-07-09: static
+ *  dim scene ~0.006-0.02, a person entering 0.25-0.53 — a clean 30-70× gap the pixel gate
+ *  never achieved). Set VISION_EMBED_GATE=0 to force the legacy pixel gate. A failure is NOT
+ *  silent: getSession() logs a loud ERROR and the loop announces the DEGRADED state, so a
+ *  missing/unloadable model reads as an explicit "degraded to pixels", never a mystery
+ *  vision-quality regression (that visibility was the whole point of the opt-in phase). */
+export const EMBED_GATE_ENABLED = process.env.VISION_EMBED_GATE !== '0';
 
 let session: ort.InferenceSession | null = null;
 let loadState: 'unloaded' | 'ok' | 'failed' = 'unloaded';
@@ -44,14 +46,25 @@ export function embedGateStatus(): { enabled: boolean; state: 'unloaded' | 'ok' 
  *  LOUDLY + repeatedly-suppressed-to-once, because "enabled but failed" is a degraded
  *  state the operator must know about (not a silent fallback). */
 async function getSession(): Promise<ort.InferenceSession | null> {
-  if (!EMBED_GATE_ENABLED) return null;               // opt-in: default pixel gate
+  if (!EMBED_GATE_ENABLED) return null;               // VISION_EMBED_GATE=0 forces pixel gate
   if (session || loadState === 'failed') return session;
   if (!existsSync(MODEL_PATH)) {
-    console.error(`[embed] ⚠️  VISION_EMBED_GATE=1 but DINOv2 ONNX missing at ${MODEL_PATH} — `
-      + 'gate is DEGRADED to the pixel path. Run scripts/export-dino.py or unset the flag.');
-    loadState = 'failed';
-    return null;
+    // Auto-export on first run (the 84MB ONNX is gitignored — deterministic from torch.hub,
+    // so a fresh clone regenerates it once rather than bloating the repo). Best-effort: if
+    // torch/onnx aren't installed the export fails and we degrade LOUDLY to pixels.
+    console.log('[embed] DINOv2 ONNX not found — exporting once (scripts/export-dino.py)…');
+    try {
+      const { execFileSync } = await import('node:child_process');
+      const script = fileURLToPath(new URL('../../../scripts/export-dino.py', import.meta.url));
+      execFileSync(process.env.PERCEPTION_PYTHON ?? 'python3', [script], { stdio: 'inherit', timeout: 180_000 });
+    } catch (err) {
+      console.error(`[embed] ⚠️  auto-export FAILED (${String(err)}) — vision change-gate DEGRADED `
+        + 'to the pixel path. Install torch+onnx and run scripts/export-dino.py, or set VISION_EMBED_GATE=0.');
+      loadState = 'failed';
+      return null;
+    }
   }
+  if (!existsSync(MODEL_PATH)) { loadState = 'failed'; return null; }
   try {
     session = await ort.InferenceSession.create(MODEL_PATH);
     loadState = 'ok';
