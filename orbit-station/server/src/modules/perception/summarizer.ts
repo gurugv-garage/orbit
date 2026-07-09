@@ -49,7 +49,12 @@ const SYSTEM = [
   'right now, and what (if anything) is worth its attention.',
   '',
   'The feed is time-stamped streams (all times IST):',
-  '  • VISION  — what a person is doing/holding (from a video model; no identity).',
+  '  • VISION  — what a person is doing/holding (from a SMALL video model; no identity).',
+  '    It is capable but INCONSISTENT and can mislabel objects (e.g. straps/bags on a hook',
+  '    read as "a person on a pull-up bar"). Treat a single VISION line as a GUESS, not fact.',
+  '    When keyframe IMAGES are provided below, THEY are the ground truth: look at them and',
+  '    prefer what you SEE over the VISION text — correct or drop a VISION claim the image',
+  '    contradicts. Do not assert a person is present/acting on one unverified VISION line alone.',
   '  • SPEECH  — transcribed utterances. A "Sn:" prefix (S0/S1/…) is real DIARIZATION',
   '    (distinct speakers separated by the STT) — different numbers are different people;',
   '    map a speaker to a NAME when an IDENTITY overlaps in time. Some also carry',
@@ -61,6 +66,11 @@ const SYSTEM = [
   '    fact. Use it only if it agrees with speech/action; otherwise downplay or omit it.',
   '  • BODYMOTION — the ROBOT\'s own camera/body movement (the camera is mounted on a',
   '    robot that can pan and drive). "stationary" or "camera moving".',
+  '',
+  'STALE ENTERING STATE: an IDENTITY or CAMERA line tagged "[as of HH:MM:SS, Nm before',
+  'window]" is the state the window OPENED with, carried from before it — not a fresh',
+  'reading. The older it is, the less you should trust it as current; if it is minutes old,',
+  'treat presence/absence as unknown at window start rather than asserting "no one is here".',
   '',
   'EGOCENTRIC AWARENESS — critical: the camera MOVES. When BODYMOTION says the camera',
   'was moving, a person leaving the frame or a new face/scene appearing is most likely',
@@ -126,40 +136,62 @@ function activeSpeaker(all: SnapshotRecord[], speech: SnapshotRecord): string | 
  *  Identity flickers every ~2 s; we COLLAPSE consecutive identical identity labels
  *  into one line ("12:02:19–12:02:47 Guru @center") so the model sees presence
  *  spans, not jitter — the single biggest cleanup for readable summaries. */
-export function stitch(records: SnapshotRecord[]): string {
+export function stitch(records: SnapshotRecord[], windowFromIso?: string): string {
   const sorted = [...records].sort((a, b) =>
     a.interval.from < b.interval.from ? -1 : a.interval.from > b.interval.from ? 1 : 0);
   const lines: string[] = [];
   // Collapse consecutive identical IDENTITY and BODYMOTION readings into spans
   // (both are state streams that repeat) so the model sees presence/motion spans,
-  // not jitter. Each has its own run accumulator.
-  let idRun: { label: string; from: string; to: string } | null = null;
-  let bmRun: { label: string; from: string; to: string } | null = null;
+  // not jitter. Each has its own run accumulator. `iso` = the run's FIRST full ISO
+  // start, kept so we can flag CARRIED-IN state (started before the window) with its age.
+  let idRun: { label: string; from: string; to: string; iso: string } | null = null;
+  let bmRun: { label: string; from: string; to: string; iso: string } | null = null;
+
+  // A carried-in state record starts before the window. Presenting 21-min-stale "no one
+  // present / camera stationary" as if current misleads the model — tag it with age so it
+  // reads the state as ENTERING context, not a fresh reading. Only when a window is given.
+  const staleTag = (iso: string): string => {
+    if (!windowFromIso || iso >= windowFromIso) return '';
+    const ageMs = new Date(windowFromIso).getTime() - new Date(iso).getTime();
+    if (!(ageMs > 0)) return '';
+    const s = Math.round(ageMs / 1000);
+    const ago = s < 90 ? `${s}s` : `${Math.round(s / 60)}m`;
+    return ` [as of ${iso.slice(11, 19)}, ${ago} before window]`;
+  };
 
   const flushId = () => {
     if (!idRun) return;
     const span = idRun.from === idRun.to ? idRun.from : `${idRun.from}–${idRun.to}`;
-    lines.push(`${span} IDENTITY ${idRun.label}`);
+    lines.push(`${span} IDENTITY ${idRun.label}${staleTag(idRun.iso)}`);
     idRun = null;
   };
   const flushBm = () => {
     if (!bmRun) return;
     const span = bmRun.from === bmRun.to ? bmRun.from : `${bmRun.from}–${bmRun.to}`;
-    lines.push(`${span} CAMERA  ${bmRun.label}`);
+    lines.push(`${span} CAMERA  ${bmRun.label}${staleTag(bmRun.iso)}`);
     bmRun = null;
   };
-  const flushRuns = () => { flushId(); flushBm(); };
+  // Flush both pending state runs in TIMESTAMP order (earlier `from` first). A fixed
+  // flushId-then-flushBm order mis-ordered co-pending state lines (e.g. an IDENTITY at
+  // :46 printed before a CAMERA at :44) — each line carries its own timestamp so it was
+  // recoverable, but the transcript read out of order. Compare the run starts.
+  const flushRuns = () => {
+    if (idRun && bmRun) {
+      if (idRun.from <= bmRun.from) { flushId(); flushBm(); }
+      else { flushBm(); flushId(); }
+    } else { flushId(); flushBm(); }
+  };
 
   for (const r of sorted) {
     const t = r.interval.from.slice(11, 19); // HH:MM:SS IST
     if (r.source.kind === 'bodymotion') {
       const label = r.payload.text;
       if (bmRun && bmRun.label === label) bmRun.to = t;
-      else { flushBm(); bmRun = { label, from: t, to: t }; }
+      else { flushBm(); bmRun = { label, from: t, to: t, iso: r.interval.from }; }
     } else if (r.source.kind === 'identity') {
       const label = identityLabel(r);
-      if (idRun && idRun.label === label) idRun.to = t;       // extend the run
-      else { flushId(); idRun = { label, from: t, to: t }; }  // new run
+      if (idRun && idRun.label === label) idRun.to = t;                          // extend the run
+      else { flushId(); idRun = { label, from: t, to: t, iso: r.interval.from }; }  // new run
     } else if (r.source.kind === 'speech') {
       flushRuns();
       // ACTIVE-SPEAKER (cheap diarization): who had their mouth most open during
@@ -210,7 +242,7 @@ export interface SummaryResult {
  */
 export async function summarize(
   records: SnapshotRecord[],
-  opts: { keyframes?: string[]; model?: string } = {},
+  opts: { keyframes?: string[]; model?: string; windowFromIso?: string } = {},
 ): Promise<SummaryResult> {
   const key = geminiKey();
   const model = opts.model || MODEL;
@@ -220,7 +252,7 @@ export async function summarize(
     emotion: tally('emotion'), bodymotion: tally('bodymotion'),
     keyframes: opts.keyframes?.length ?? 0,
   };
-  const transcript = stitch(records);
+  const transcript = stitch(records, opts.windowFromIso);
   const result: SummaryResult = {
     summary: '', model, withKeyframes: counts.keyframes > 0, counts,
     prompt: { system: SYSTEM, transcript },

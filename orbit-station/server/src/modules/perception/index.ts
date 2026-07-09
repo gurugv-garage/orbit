@@ -576,7 +576,16 @@ export function perceptionModule(getHub: () => PerceptionProcessingHub): Station
         // exclude prior SUMMARY records: a summary must digest the streams, not itself.
         const recs = snapshots.inWindowWithState(fromIso, toIso)
           .filter((r) => r.dockId === dockId && r.source.kind !== 'summary');
-        const result = await summarize(recs);
+        // KEYFRAMES as the tie-breaker: the small VLM (qwen-3B) is inconsistent and, on a
+        // sparse window, a single wrong sentence ("a person on a pull-up bar" for straps on a
+        // hook) becomes the headline with nothing to check it. Send the actual keyframes so
+        // Gemini SEES the scene and can override the VLM's text. Default-on for the background
+        // path; PERCEPTION_SUMMARY_KEYFRAMES=0 disables. maxKeyframes bounds the image cost.
+        const wantKf = process.env.PERCEPTION_SUMMARY_KEYFRAMES !== '0';
+        const keyframes = wantKf
+          ? snapshots.keyframesInWindow(fromIso, toIso, Number(process.env.PERCEPTION_SUMMARY_MAX_KEYFRAMES ?? 4))
+          : undefined;
+        const result = await summarize(recs, { windowFromIso: fromIso, keyframes });
         // Only update the BACKGROUND grounding (lastSummary) when this is a background-
         // scope summary. A tight "right now" read (force_get_current, ~6s window) must
         // NOT overwrite the 60s background sense — it's a momentary answer, not the
@@ -598,7 +607,7 @@ export function perceptionModule(getHub: () => PerceptionProcessingHub): Station
             // LINEAGE: the EXACT stitched input the summarizer digested (truncated) +
             // the record count — the Studio shows it collapsible per pulse, so how each
             // coherence layer line was built is inspectable, not inferred.
-            payload: { text: result.summary, inputCount: recs.length, inputs: stitch(recs).slice(0, 4_000) },
+            payload: { text: result.summary, inputCount: recs.length, inputs: stitch(recs, fromIso).slice(0, 4_000) },
           }));
         }
         return { summary: result.summary, error: result.error, window: { from: fromIso, to: toIso } };
@@ -1222,11 +1231,15 @@ export function perceptionModule(getHub: () => PerceptionProcessingHub): Station
         // window, so the summary knows the camera/presence state it ENTERED with
         // (a pan or a person that last changed before the window isn't lost).
         // ?dock scopes the summary to one source (the console selector); else all.
+        // Exclude prior SUMMARY records: a summary must digest the raw streams, not itself
+        // (the comment below promised this; the filter was missing → summaries fed on their
+        // own past output, drifting). Matches the auto/background path.
         const recs = snapshots.inWindowWithState(fromIso, toIso)
+          .filter((r) => r.source.kind !== 'summary')
           .filter((r) => !body.dock || body.dock === 'all' || r.dockId === body.dock);
         const keyframes = body.withKeyframes
           ? snapshots.keyframesInWindow(fromIso, toIso, body.maxKeyframes ?? 6) : undefined;
-        const result = await summarize(recs, { keyframes, model: body.model });
+        const result = await summarize(recs, { keyframes, model: body.model, windowFromIso: fromIso });
         // Cache it as the head of grounding (3.1) for whichever dock this window is
         // about — the dominant dockId in the summarized records. A real (non-empty,
         // non-error) summary only; an error/empty leaves the prior summary in place.
@@ -1248,7 +1261,7 @@ export function perceptionModule(getHub: () => PerceptionProcessingHub): Station
             // LINEAGE: the EXACT stitched input the summarizer digested (truncated) +
             // the record count — the Studio shows it collapsible per pulse, so how each
             // coherence layer line was built is inspectable, not inferred.
-            payload: { text: result.summary, inputCount: recs.length, inputs: stitch(recs).slice(0, 4_000) },
+            payload: { text: result.summary, inputCount: recs.length, inputs: stitch(recs, fromIso).slice(0, 4_000) },
           }));
         }
         // Echo the exact window used so the console can pin its log to it.
