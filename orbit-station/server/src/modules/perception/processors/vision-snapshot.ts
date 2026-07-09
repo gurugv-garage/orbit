@@ -101,12 +101,14 @@ const SELFMOTION_SUPPRESS = process.env.VISION_SELFMOTION_SUPPRESS !== '0';
 /** RECENT-ANALYSIS CACHE (VISION_REUSE_CACHE=1, opt-in until proven): while panning, the
  *  dock sweeps the same few views repeatedly — reuse a fresh, near-identical view's
  *  description instead of re-calling the VLM. Guards (all deliberately tight): reuse only
- *  if embedding distance < REUSE_DIST (well under the change threshold = "basically the same
- *  view"), the cached entry is younger than REUSE_TTL_MS, and we never hold more than
+ *  if embedding distance < REUSE_DIST (0.12: measured on the real dock — a physical
+ *  return-to-same-view lands ~0.10 with servo/framing tolerance, while real scene changes
+ *  fire at 0.4+, so 0.12 sits in the safe gap), the cached entry is younger than REUSE_TTL_MS,
+ *  and we never hold more than
  *  REUSE_MAX entries. Short TTL is the safety: a person can't appear+vanish inside it
  *  without the embedding being far enough to MISS the cache. */
 const REUSE_CACHE = process.env.VISION_REUSE_CACHE !== '0';
-const REUSE_DIST = Number(process.env.VISION_REUSE_DIST ?? 0.04);
+const REUSE_DIST = Number(process.env.VISION_REUSE_DIST ?? 0.12);
 const REUSE_TTL_MS = Number(process.env.VISION_REUSE_TTL_MS ?? 20_000);
 const REUSE_MAX = Number(process.env.VISION_REUSE_MAX ?? 8);
 
@@ -371,6 +373,10 @@ export function visionSnapshotProcessor(
         // distance + short TTL), and strictly better than deferring when we already know the view.
         if (changed && probeEmb) {
           const hit = reuseFromCache(s, probeEmb);
+          if (EMBED_DEBUG) {
+            const dists = (s.recent ?? []).map((e) => embedDistance(probeEmb, e.emb).toFixed(3)).join(',');
+            console.log(`[vision] ${s.ctx.dockId} cache-check: ${s.recent?.length ?? 0} entries [d=${dists}] thr=${REUSE_DIST} → ${hit ? 'HIT' : 'miss'}`);
+          }
           if (hit) {
             if (EMBED_DEBUG) console.log(`[vision] ${s.ctx.dockId} REUSE (d=${hit.dist.toFixed(3)}): ${hit.text.slice(0, 50)}`);
             commitReused(s, hit.text, probeEmb);
