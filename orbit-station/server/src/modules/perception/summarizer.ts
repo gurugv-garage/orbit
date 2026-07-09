@@ -184,10 +184,10 @@ export function stitch(records: SnapshotRecord[]): string {
       }
     } else {
       flushRuns();
-      // vision windows may carry a structured CHANGE field (what differs vs the previous
-      // window) — the signal the summarizer actually wants; render it distinctly.
-      const change = (r.payload as { change?: string }).change;
-      lines.push(`${t} ${r.source.kind.toUpperCase().padEnd(8)} ${r.payload.text}${change ? ` [changed: ${change}]` : ''}`);
+      // Vision windows are change-gated at capture (DINOv2), so each record already IS a
+      // scene change — the text is the signal. (A structured `change` field existed until
+      // 2026-07-09; it was retired with the SIMPLE prompt and no longer set.)
+      lines.push(`${t} ${r.source.kind.toUpperCase().padEnd(8)} ${r.payload.text}`);
     }
   }
   flushRuns();

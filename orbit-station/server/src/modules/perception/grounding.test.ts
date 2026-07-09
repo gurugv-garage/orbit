@@ -165,14 +165,16 @@ function srec(kind: string, from: string, payload: Record<string, unknown>): Sna
   };
 }
 
-test('isSalient: keeps good speech, salient sound, changed vision, state streams', () => {
+test('isSalient: keeps good speech, salient sound, vision-with-text, state streams', () => {
   assert.equal(isSalient(srec('speech', '2026-07-06T10:00:01.000+05:30', { confTier: 'good' })), true);
   assert.equal(isSalient(srec('speech', '2026-07-06T10:00:02.000+05:30', { confTier: 'shaky' })), false);
   assert.equal(isSalient(srec('speech', '2026-07-06T10:00:03.000+05:30', { confTier: 'garbage' })), false);
   assert.equal(isSalient(srec('sound', '2026-07-06T10:00:04.000+05:30', { salience: 'notable' })), true);
   assert.equal(isSalient(srec('sound', '2026-07-06T10:00:05.000+05:30', { salience: 'low' })), false);
-  assert.equal(isSalient(srec('vision', '2026-07-06T10:00:06.000+05:30', { change: 'light turned on' })), true);
-  assert.equal(isSalient(srec('vision', '2026-07-06T10:00:07.000+05:30', {})), false);
+  // Vision is change-gated at capture, so any committed record with meaningful text IS a
+  // scene change (the retired `change` field is no longer the signal — 2026-07-09).
+  assert.equal(isSalient(srec('vision', '2026-07-06T10:00:06.000+05:30', { text: 'a person entered' })), true);
+  assert.equal(isSalient(srec('vision', '2026-07-06T10:00:07.000+05:30', { text: '   ' })), false);
   assert.equal(isSalient(srec('identity', '2026-07-06T10:00:08.000+05:30', {})), true);
   assert.equal(isSalient(srec('bodymotion', '2026-07-06T10:00:09.000+05:30', {})), true);
 });
@@ -181,13 +183,15 @@ test('coherent mode: tail keeps only salient records; head summary unchanged', (
   const last = { dockId: 'd1', text: 'A calm evening.', window: { from: '2026-07-06T10:00:00.000+05:30', to: '2026-07-06T10:01:00.000+05:30' }, computedAt: 1_000_000 };
   const recent = [
     srec('speech', '2026-07-06T10:01:10.000+05:30', { confTier: 'shaky', text: 'mush mush' }),
-    srec('vision', '2026-07-06T10:01:20.000+05:30', { text: 'static room' }),
+    srec('sound', '2026-07-06T10:01:15.000+05:30', { salience: 'low', text: 'faint hum' }),
+    srec('vision', '2026-07-06T10:01:20.000+05:30', { text: 'a person appeared' }),
     srec('sound', '2026-07-06T10:01:30.000+05:30', { salience: 'startling', text: 'a loud crash', audioKind: 'impact' }),
   ];
   const coherent = buildGrounding({ last, recent, now: 1_060_000, nowIso: '2026-07-06T10:02:00.000+05:30', coherent: true })!;
   assert.ok(coherent.includes('a loud crash'), 'salient sound kept');
+  assert.ok(coherent.includes('a person appeared'), 'change-gated vision kept');
   assert.ok(!coherent.includes('mush mush'), 'garbage speech dropped');
-  assert.ok(!coherent.includes('static room'), 'changeless vision dropped');
+  assert.ok(!coherent.includes('faint hum'), 'low-salience sound dropped');
   assert.ok(coherent.includes('salient events since'), 'coherent tail label');
   const raw = buildGrounding({ last, recent, now: 1_060_000, nowIso: '2026-07-06T10:02:00.000+05:30' })!;
   assert.ok(raw.includes('mush mush'), 'raw mode keeps everything');
