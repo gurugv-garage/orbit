@@ -60,6 +60,12 @@ interface Snapshot {
     // window-dedup: sampledFrames = frames grabbed; frames = distinct frames actually sent to
     // qwen after collapsing consecutive near-identical ones. singleFrame = collapsed to one.
     sampledFrames?: number; singleFrame?: boolean;
+    // frame accounting: frameTimes[] = ms epoch of each SENT frame (parallels inputImages);
+    // frameFrom/frameTo = the sampled window's true bounds. gap=true marks a COLLAPSED span row
+    // (frames the VLM did NOT run): gapKind = 'no-change' (dinov2 gated) | 'self-motion'
+    // (deferred while panning); gapProbes = how many probes the span covered.
+    frameTimes?: number[]; frameFrom?: number; frameTo?: number;
+    gap?: boolean; gapKind?: 'no-change' | 'self-motion'; gapProbes?: number;
     // the RAW STT transcript, preserved when the interpreter upgrades `text` — so the
     // 🎙 STT row shows what the live engine heard and the 🔊 audio row shows the
     // upgraded read. Absent on un-upgraded records (then the STT row uses `text`).
@@ -668,6 +674,8 @@ export function PerceptionStudio() {
   const latestVision = [...ordered].reverse().find((s) => s.source.kind === 'vision');
   const istTime = (iso: string) => iso.slice(11, 19);
   const secs = (ms: number) => `${(ms / 1000).toFixed(1)}s`;
+  // epoch ms → HH:MM:SS.mmm in IST (for the per-frame capture times on a vision window).
+  const istClockMs = (ms: number) => new Date(ms + 5.5 * 3600_000).toISOString().slice(11, 23);
   const visionModel = latestVision?.model.name ?? snaps.find((s) => s.source.kind === 'vision')?.model.name ?? 'qwen2.5-vl';
 
   return (
@@ -1122,6 +1130,28 @@ export function PerceptionStudio() {
               // SUMMARY instead of repeating them.
               const sttText = p.sttText ?? p.text;
               const audioSameWords = isAudio && p.text.trim() === sttText.trim();
+              // FRAME-ACCOUNTING GAP ROW: a collapsed span of frames the VLM did NOT run
+              // (dinov2 no-change gating, or self-motion deferral). Rendered compact + dimmed
+              // as a "nothing was sent here, and here's why" strip — one thumbnail + the time
+              // range + probe count — so the timeline accounts for EVERY frame, no silent drops.
+              if (viewKind === 'vision' && p.gap) {
+                const label = p.gapKind === 'self-motion' ? 'self-motion (panning)' : 'no change (gated)';
+                const thumb = p.inputImages?.[0];
+                return (
+                  <div key={i} style={{ display: 'flex', gap: 8, alignItems: 'center', opacity: 0.5,
+                    color: '#7a8ca8', fontStyle: 'italic', paddingLeft: 2 }}>
+                    <span style={{ fontVariantNumeric: 'tabular-nums', width: 138, fontSize: 12 }}>
+                      {istTime(s.interval.from)}–{istTime(s.interval.to)}<span style={{ opacity: 0.6 }}> ({secs(s.interval.durationMs)})</span>
+                    </span>
+                    <span style={{ width: 18 }} title="frames not sent to the VLM (accounted-for gap)">⋯</span>
+                    {thumb && <img src={`data:image/jpeg;base64,${thumb}`} alt="gap sample"
+                      style={{ width: 40, height: 30, objectFit: 'cover', borderRadius: 3, border: '1px dashed #2a3550', opacity: 0.8 }} />}
+                    <span style={{ flex: 1, fontSize: 12 }}>
+                      {label}{p.gapProbes ? ` — ${p.gapProbes} probes, no inference` : ''}
+                    </span>
+                  </div>
+                );
+              }
               return (
                 <div key={i} style={{ display: 'flex', gap: 8, color: m.color, alignItems: 'baseline',
                   // the audio row is a CHILD of its STT row — indent + dim so the pair
@@ -1253,7 +1283,18 @@ export function PerceptionStudio() {
                           )}
                         </summary>
                         <div style={{ marginTop: 4 }}>
-                          {/* the actual filmstrip qwen reasoned over — ALL window frames, in order. */}
+                          {/* PER-INFERENCE TIMELINE: window start–end, run time. So each row shows
+                              exactly when the frames were grabbed and how long the VLM took. */}
+                          {(p.frameFrom != null || p.inferMs != null) && (
+                            <div style={{ fontSize: 10, color: '#7a8ca8', fontVariantNumeric: 'tabular-nums', marginBottom: 4 }}>
+                              {p.frameFrom != null && p.frameTo != null
+                                ? <>frames {istClockMs(p.frameFrom)} → {istClockMs(p.frameTo)} <span style={{ opacity: 0.6 }}>({secs(p.frameTo - p.frameFrom)} span)</span></>
+                                : null}
+                              {p.inferMs != null && <span style={{ marginLeft: p.frameFrom != null ? 8 : 0 }}>· run {secs(Number(p.inferMs))}</span>}
+                            </div>
+                          )}
+                          {/* the actual filmstrip qwen reasoned over — ALL window frames, in order,
+                              each stamped with its own capture time (real spacing, not nominal). */}
                           {p.inputImages && p.inputImages.length > 0 && (
                             <div style={{ display: 'flex', gap: 4, overflowX: 'auto', paddingBottom: 4 }}>
                               {p.inputImages.map((img, i) => (
@@ -1261,6 +1302,9 @@ export function PerceptionStudio() {
                                   <img src={`data:image/jpeg;base64,${img}`} alt={`qwen frame ${i + 1}`}
                                     style={{ width: 150, borderRadius: 5, border: '1px solid #223' }} />
                                   <span style={{ position: 'absolute', top: 2, left: 2, fontSize: 9, background: '#000a', color: '#9ab', borderRadius: 3, padding: '0 4px' }}>{i + 1}/{p.inputImages!.length}</span>
+                                  {p.frameTimes?.[i] != null && (
+                                    <span style={{ position: 'absolute', bottom: 2, left: 2, right: 2, fontSize: 9, background: '#000b', color: '#9ab', borderRadius: 3, padding: '0 4px', textAlign: 'center', fontVariantNumeric: 'tabular-nums' }}>{istClockMs(p.frameTimes[i]!).slice(3)}</span>
+                                  )}
                                 </div>
                               ))}
                             </div>

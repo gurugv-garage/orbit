@@ -746,6 +746,7 @@ export function perceptionModule(getHub: () => PerceptionProcessingHub): Station
           const m = new Map<string, number>();
           for (const r of snapshots.list()) {
             if (r.source.kind === 'summary') continue; // the pulse must not feed its own trigger
+            if ((r.payload as { gap?: boolean }).gap) continue; // frame-accounting gaps aren't new CONTENT — don't trigger a summary of "nothing happened"
             m.set(r.dockId, (m.get(r.dockId) ?? 0) + 1);
           }
           countCache = { at: now, map: m };

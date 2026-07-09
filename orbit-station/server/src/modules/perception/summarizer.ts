@@ -183,6 +183,10 @@ export function stitch(records: SnapshotRecord[], windowFromIso?: string): strin
   };
 
   for (const r of sorted) {
+    // Skip frame-accounting GAP records (kind vision, gap:true, empty text) — they are a
+    // Studio-only "these frames were not analyzed" marker, not perceived content. Feeding
+    // their empty text as a VISION line would be noise the summarizer must not narrate.
+    if ((r.payload as { gap?: boolean }).gap) continue;
     const t = r.interval.from.slice(11, 19); // HH:MM:SS IST
     if (r.source.kind === 'bodymotion') {
       const label = r.payload.text;

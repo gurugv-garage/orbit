@@ -62,6 +62,12 @@ interface StreamState {
    *  back to a just-seen view (staircase → gym → staircase) REUSES the description instead
    *  of re-calling the 5 s VLM. Bounded + expiring — a recent memory, not a database. */
   recent?: Array<{ emb: Float32Array; text: string; at: number; frameB64: string }>;
+  /** OPEN GAP: a run of probes that did NOT run an inference, accumulated so the Studio can
+   *  account for EVERY frame the camera produced — nothing silently dropped. One span record is
+   *  emitted when the gap ENDS (the next inference/reuse). `kind` is why the probes were held:
+   *  'no-change' (dinov2 gated), 'self-motion' (deferred while panning). We keep ONE
+   *  representative frame + the [from,to] span + the probe count — a collapsed span, not N rows. */
+  gap?: { kind: 'no-change' | 'self-motion'; from: number; to: number; count: number; sampleB64?: string };
 }
 
 /** Change-gate knobs. delta is mean |Δ| on a 16×16 grayscale [0..1]: sensor noise on a
@@ -127,6 +133,15 @@ const DEDUP_DIST = Number(process.env.VISION_DEDUP_DIST ?? 0.03);
  *  pre-inference anchor; if it moved past EMBED_THRESHOLD, re-fire next tick instead of
  *  sleeping. Catches the "walked through while I was thinking" gap. VISION_REPROBE=0 disables. */
 const REPROBE_AFTER_INFERENCE = process.env.VISION_REPROBE !== '0';
+/** FRAME ACCOUNTING: emit collapsed "gap" span records for the stretches the VLM did NOT run —
+ *  dinov2 no-change gating and self-motion deferral — so the Studio timeline attributes EVERY
+ *  frame the camera produced (nothing silently dropped). One row per span (a thumbnail + time
+ *  range + probe count), not per skipped probe. Studio-observability only; VISION_FRAME_ACCOUNTING=0
+ *  disables. (BLIND stretches during inference are shown by the Studio from the window bounds.) */
+const FRAME_ACCOUNTING = process.env.VISION_FRAME_ACCOUNTING !== '0';
+/** Flush an open gap span at least this often, so a long static stretch shows periodic span
+ *  rows instead of one invisible accumulation that only surfaces at the 5-min heartbeat. */
+const GAP_MAX_MS = Number(process.env.VISION_GAP_MAX_MS ?? 30_000);
 
 /** 16×16 grayscale ZERO-MEAN signature of a JPEG (null on decode failure). Subtracting
  *  the frame's own mean makes the gate exposure-invariant: a night camera's auto-exposure
@@ -205,10 +220,12 @@ export function visionSnapshotProcessor(
     // VLM's latency mislabels a still-frame window as "moving" (self-diagnosis bug, fixed
     // 2026-07-09). OR across the window: moving at any point means motion blur may be present.
     let capturedMoving = cameraMoving?.(s.ctx.dockId) ?? false;
-    const sampled: Array<{ b64: string; emb: Float32Array | null }> = [];
+    // `at` = the wall-clock (ms) each frame was grabbed, so the Studio can show the REAL
+    // per-frame spacing (not the nominal FRAME_GAP_MS) and the exact window start/end.
+    const sampled: Array<{ b64: string; emb: Float32Array | null; at: number }> = [];
     for (let i = 0; i < n; i++) {
       const jpeg = getFrame(s.ctx.streamId);
-      if (jpeg) sampled.push({ b64: jpeg.toString('base64'), emb: WINDOW_DEDUP ? await embedFrame(jpeg) : null });
+      if (jpeg) sampled.push({ b64: jpeg.toString('base64'), emb: WINDOW_DEDUP ? await embedFrame(jpeg) : null, at: Date.now() });
       if (cameraMoving?.(s.ctx.dockId)) capturedMoving = true;
       if (i < n - 1) await sleep(gapMs);
     }
@@ -231,6 +248,7 @@ export function visionSnapshotProcessor(
       }
     }
     const frames: string[] = kept.map((f) => f.b64);   // the (deduped) frames qwen actually sees
+    const frameTimes: number[] = kept.map((f) => f.at); // ms epoch of each SENT frame (parallels inputImages)
     const lastKept = kept[kept.length - 1]!;            // newest kept frame = the anchor/cache view
     const singleFrame = frames.length === 1;
     // STRUCTURED output: the description PLUS an explicit "what changed" field, judged
@@ -276,6 +294,10 @@ export function visionSnapshotProcessor(
         // sampledFrames = frames grabbed; frames = distinct frames sent after consecutive-dedup.
         // sampledFrames > frames means the window had static runs collapsed (fewer visual tokens).
         sampledFrames: sampled.length, singleFrame,
+        // frameTimes = ms epoch of each SENT frame (parallels inputImages) → the Studio shows
+        // the real per-frame spacing + exact window start/end. frameFrom/frameTo = the sampled
+        // window's true bounds (first sampled → last), independent of commit time.
+        frameTimes, frameFrom: sampled[0]?.at, frameTo: sampled[sampled.length - 1]?.at,
         inputImages: frames, inputPrompt: prompt },
     }));
     store.addKeyframe({ ts: isoIst(to), from: isoIst(from), jpegB64: lastKept.b64 });
@@ -321,6 +343,48 @@ export function visionSnapshotProcessor(
     s.lastEmb = emb;               // anchor to the reused view (don't re-fire on it)
     s.lastAnalyzedAt = Date.now();
     s.skippedProbes = 0;
+  }
+
+  /** FRAME ACCOUNTING: accumulate a run of probes that did NOT trigger an inference, so the
+   *  Studio can attribute EVERY frame the camera produced (nothing silently dropped). Extends
+   *  the open gap of the same kind, or flushes a different-kind gap and starts a new one. Keeps
+   *  ONE representative frame (the first of the run) + a live [from,to] span + a probe count. */
+  function accumulateGap(s: StreamState, kind: 'no-change' | 'self-motion', jpeg: Buffer | null): void {
+    if (!FRAME_ACCOUNTING) return;
+    const now = Date.now();
+    if (s.gap && s.gap.kind === kind) {
+      s.gap.to = now; s.gap.count++;
+      // A long static stretch would otherwise stay invisible until the next inference (up to
+      // the 5-min heartbeat). Flush periodically so the timeline gets a span row every
+      // GAP_MAX_MS, then start a fresh span — the gap is accounted for as it happens.
+      if (now - s.gap.from >= GAP_MAX_MS) { flushGap(s); s.gap = { kind, from: now, to: now, count: 1, sampleB64: jpeg?.toString('base64') }; }
+      return;
+    }
+    if (s.gap) flushGap(s);           // kind changed → close the prior span
+    s.gap = { kind, from: now, to: now, count: 1, sampleB64: jpeg?.toString('base64') };
+  }
+
+  /** Emit the accumulated gap as ONE collapsed span record (kind 'vision', gapKind set), then
+   *  clear it. Called when the gap ends (an inference/reuse is about to commit, or the kind
+   *  flips). A short single-probe blip isn't worth a row — only spans of >=2 probes are emitted. */
+  function flushGap(s: StreamState): void {
+    const g = s.gap;
+    s.gap = undefined;
+    if (!g || !FRAME_ACCOUNTING || g.count < 2) return;
+    store.add(makeSnapshot({
+      dockId: s.ctx.dockId,
+      source: { id: s.ctx.streamId, kind: 'vision', device: 'dock-webrtc', host: 'station' },
+      model: { name: MODEL_NAME, endpoint: `${TEMPORAL_URL}/temporal` },
+      from: new Date(g.from), to: new Date(g.to),
+      // gapKind = why the camera's frames in [from,to] were NOT sent to the VLM. The Studio
+      // renders this as a collapsed span row (one thumbnail + the time range + probe count),
+      // so a static/self-moving stretch is visibly ACCOUNTED FOR, not an unexplained silence.
+      payload: {
+        text: '', frames: 0, latencyMs: g.to - g.from, inferMs: 0,
+        gap: true, gapKind: g.kind, gapProbes: g.count,
+        inputImages: g.sampleB64 ? [g.sampleB64] : undefined,
+      },
+    }));
   }
 
   /** Cache lookup: does the probe embedding match a FRESH recently-analyzed view closely
@@ -429,6 +493,7 @@ export function visionSnapshotProcessor(
           }
           if (hit) {
             if (EMBED_DEBUG) console.log(`[vision] ${s.ctx.dockId} REUSE (d=${hit.dist.toFixed(3)}): ${hit.text.slice(0, 50)}`);
+            flushGap(s);   // close any open no-change/self-motion span before this reuse row
             commitReused(s, hit, probeEmb, jpeg!.toString('base64'));  // probeEmb set ⇒ jpeg was non-null
             s.skippedProbes++; await sleep(PROBE_MS); continue;
           }
@@ -439,6 +504,7 @@ export function visionSnapshotProcessor(
         // known-view case above; this only catches genuinely-new views mid-motion.)
         if (SELFMOTION_SUPPRESS && changed && cameraMoving?.(s.ctx.dockId)) {
           if (EMBED_DEBUG) console.log(`[vision] ${s.ctx.dockId} defer: ${changed} but head is moving (self-motion)`);
+          accumulateGap(s, 'self-motion', jpeg);
           s.skippedProbes++; await sleep(PROBE_MS); continue;
         }
         // changed === null → couldn't probe (no frame) → fail OPEN (look).
@@ -450,10 +516,11 @@ export function visionSnapshotProcessor(
           trigger = 'sense-wake'; s.lastSenseWakeAt = Date.now();
         } else if (Date.now() - s.lastAnalyzedAt >= REFRESH_MS) trigger = 'heartbeat';
         else trigger = null;
-        if (!trigger) { s.skippedProbes++; await sleep(PROBE_MS); continue; }
+        if (!trigger) { accumulateGap(s, 'no-change', jpeg); s.skippedProbes++; await sleep(PROBE_MS); continue; }
       }
       if (trigger) {
         s.lastTrigger = trigger;
+        flushGap(s);   // close any open gap span before this inference row
         const committed = await captureOnce(s, WINDOW_FRAMES, FRAME_GAP_MS);
         if (!committed) { await sleep(500); continue; } // stream not live yet / inference failed
         // POST-INFERENCE RE-PROBE: the loop was BLIND for the ~5s inference (busy-gated). A
