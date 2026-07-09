@@ -1193,8 +1193,13 @@ export function PerceptionStudio() {
             background: '#0b0e16', borderRadius: 10, padding: 10, fontSize: 13, lineHeight: 1.5 }}>
           {filtered.length === 0
             ? <div className="empty">No snapshots yet. Start the stream — vision runs latency-bound, speech per utterance.</div>
-            : filtered.map(({ snap: s, viewKind }, i) => {
+            : filtered.map(({ snap: s, viewKind }) => {
               const p = s.payload;
+              // STABLE key from the snapshot's own identity (start + stream + kind), NOT the
+              // array index. With newest-first, a new row is inserted at index 0, which shifts
+              // every index → index keys made React re-render the whole list ("refills
+              // everything"). A stable key means only the new row mounts; the rest stay put.
+              const rowKey = `${s.interval.from}|${s.interval.to}|${s.source.id}|${viewKind}|${(p as { gap?: boolean }).gap ? 'gap' : ''}`;
               const m = kindMeta(viewKind);
               const isAudio = viewKind === 'audio';
               const isStt = viewKind === 'stt';
@@ -1215,7 +1220,7 @@ export function PerceptionStudio() {
                 const label = p.gapKind === 'self-motion' ? 'self-motion (panning)' : 'no change (gated)';
                 const thumb = p.inputImages?.[0];
                 return (
-                  <div key={i} style={{ display: 'flex', gap: 8, alignItems: 'center', opacity: 0.5,
+                  <div key={rowKey} style={{ display: 'flex', gap: 8, alignItems: 'center', opacity: 0.5,
                     color: '#7a8ca8', fontStyle: 'italic', paddingLeft: 2 }}>
                     <span style={{ fontVariantNumeric: 'tabular-nums', width: 138, fontSize: 12 }}>
                       {istTime(s.interval.from)}–{istTime(s.interval.to)}<span style={{ opacity: 0.6 }}> ({secs(s.interval.durationMs)})</span>
@@ -1231,7 +1236,7 @@ export function PerceptionStudio() {
                 );
               }
               return (
-                <div key={i} style={{ display: 'flex', gap: 8, color: m.color, alignItems: 'baseline',
+                <div key={rowKey} style={{ display: 'flex', gap: 8, color: m.color, alignItems: 'baseline',
                   // the audio row is a CHILD of its STT row — indent + dim so the pair
                   // reads as "utterance → interpreted acoustically", not two equals.
                   ...(isAudio ? { opacity: 0.82, paddingLeft: 14 } : {}) }}>
