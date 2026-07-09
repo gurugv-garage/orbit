@@ -167,10 +167,16 @@ export function visionSnapshotProcessor(
 
   async function doCapture(s: StreamState, n: number, gapMs: number): Promise<boolean> {
     const from = new Date();
+    // Sample the head-moving state HERE (frame-capture time), not at commit ~5s later —
+    // the tag must reflect when the FRAMES were taken, else a head that settled during the
+    // VLM's latency mislabels a still-frame window as "moving" (self-diagnosis bug, fixed
+    // 2026-07-09). OR across the window: moving at any point means motion blur may be present.
+    let capturedMoving = cameraMoving?.(s.ctx.dockId) ?? false;
     const frames: string[] = [];
     for (let i = 0; i < n; i++) {
       const jpeg = getFrame(s.ctx.streamId);
       if (jpeg) frames.push(jpeg.toString('base64'));
+      if (cameraMoving?.(s.ctx.dockId)) capturedMoving = true;
       if (i < n - 1) await sleep(gapMs);
     }
     if (frames.length < 2) return false; // stream not live yet
@@ -210,7 +216,7 @@ export function visionSnapshotProcessor(
       // store ALL of them — showing only the last would misrepresent the input (the very
       // leak this panel exists to catch). ~16-30KB each in a bounded ring — a debug cost.
       payload: { text, frames: frames.length, latencyMs: to.getTime() - from.getTime(), inferMs, gatedProbes: s.skippedProbes, gateTrigger: s.lastTrigger ?? 'on-demand',
-        camMoving: cameraMoving?.(s.ctx.dockId) ?? false,   // self-motion tag (dock's head moving at fire time)
+        camMoving: capturedMoving,   // head moving DURING frame capture (not at commit ~5s later)
         inputImages: frames, inputPrompt: prompt },
     }));
     store.addKeyframe({ ts: isoIst(to), from: isoIst(from), jpegB64: frames[frames.length - 1]! });
