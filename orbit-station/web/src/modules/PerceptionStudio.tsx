@@ -448,17 +448,26 @@ export function PerceptionStudio() {
     }
   }, []);
 
+  // The list no longer has its own scroll — the page (<main>) scrolls. Auto-scroll follows the
+  // "new" end by scrolling main: newest-first → to the top of the list; chronological → bottom.
+  const scroller = () => feedRef.current?.closest('main') ?? null;
   useEffect(() => {
-    // follow the "new" end: newest-first → the top (scrollTop 0); chronological → the bottom.
-    if (autoScroll && feedRef.current) feedRef.current.scrollTop = newestFirst ? 0 : feedRef.current.scrollHeight;
-  }, [snaps, autoScroll, hiddenKinds, newestFirst]);
+    if (!autoScroll) return;
+    const m = scroller(); const list = feedRef.current;
+    if (!m || !list) return;
+    m.scrollTop = newestFirst ? 0 : m.scrollHeight;
+  }, [snaps, autoScroll, hiddenKinds, newestFirst, collapseTop]);
 
-  const onFeedScroll = useCallback(() => {
-    const el = feedRef.current;
-    if (!el) return;
-    // "at the new end?" — near the top when newest-first, near the bottom when chronological.
-    const atNewEnd = newestFirst ? el.scrollTop < 24 : el.scrollHeight - el.scrollTop - el.clientHeight < 24;
-    setAutoScroll(atNewEnd);
+  useEffect(() => {
+    const m = scroller();
+    if (!m) return;
+    const onScroll = () => {
+      // "at the new end?" — near the top when newest-first, near the bottom when chronological.
+      const atNewEnd = newestFirst ? m.scrollTop < 40 : m.scrollHeight - m.scrollTop - m.clientHeight < 40;
+      setAutoScroll(atNewEnd);
+    };
+    m.addEventListener('scroll', onScroll, { passive: true });
+    return () => m.removeEventListener('scroll', onScroll);
   }, [newestFirst]);
 
   // Live mic VU meter — confirms the mic is actually capturing.
@@ -1109,7 +1118,13 @@ export function PerceptionStudio() {
       )}
       {/* OUTPUT: the single snapshot timeline (vision + speech, by start, IST). */}
       <div>
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8, flexWrap: 'wrap', gap: 8 }}>
+        {/* The header + filter bar STICKS to the top of the page scroll (main is the scroller)
+            so the controls stay visible while the list scrolls — one scrollbar, not two.
+            Negative margins + padding bleed the sticky bar over main's 22/26px padding so it
+            covers the full width and there's no see-through gap above it. */}
+        <div style={{ position: 'sticky', top: -22, zIndex: 5, background: 'var(--bg, #0a0e1c)',
+          margin: '0 -26px', padding: '10px 26px 8px',
+          display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
             <div className="side-section-label">
               {/* Collapse the top stream+NOW block from HERE — inline, so the control adds no
@@ -1171,11 +1186,10 @@ export function PerceptionStudio() {
             </button>
           </div>
         </div>
-        <div ref={feedRef} onScroll={onFeedScroll}
-          style={{ // fill the remaining viewport height so the timeline uses the bottom space;
-            // taller when the top block is collapsed. The list scrolls inside this box.
-            height: collapseTop ? 'calc(100vh - 160px)' : 'calc(100vh - 440px)',
-            minHeight: 240, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 4,
+        {/* NO inner scroll — the list grows naturally and the PAGE (main) scrolls it, so there's
+            a single scrollbar. The sticky header above keeps the controls in view. */}
+        <div ref={feedRef}
+          style={{ display: 'flex', flexDirection: 'column', gap: 4,
             background: '#0b0e16', borderRadius: 10, padding: 10, fontSize: 13, lineHeight: 1.5 }}>
           {filtered.length === 0
             ? <div className="empty">No snapshots yet. Start the stream — vision runs latency-bound, speech per utterance.</div>
