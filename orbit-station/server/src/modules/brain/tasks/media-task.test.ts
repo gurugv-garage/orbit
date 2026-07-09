@@ -64,7 +64,8 @@ test('a task pulls a REAL decoded camera frame (committed VP8 file â†’ grabber â
   const getFaces = () => ({ frame: (id: string) => face.currentFrame(id)?.toString('base64') } as never);
   const registry = buildCapabilityRegistry({
     directory, motion: {} as never, getFaces, getPerceive: () => undefined,
-    getGestures: () => ({}), enqueueThought: () => {},
+    getGestures: () => ({}),
+    msSinceSalient: () => null, enqueueThought: () => {},
   });
   const broker = new CapabilityBroker(registry, sendToTask);
 

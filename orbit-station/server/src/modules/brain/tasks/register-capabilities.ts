@@ -30,6 +30,10 @@ export interface CapabilityDeps {
   /** the live per-dock on-device face-track store (the `perceive` stream) — the FAST
    *  face source the faceFollow `face-track` capability reads. */
   getPerceive: () => PerceiveStore | undefined;
+  /** ms since the last SALIENT perception event for a dock (confident speech, notable
+   *  sound, vision change, identity/motion transition), or null when unknown — the
+   *  boredom-on-coherence pulse (coherence-layer.md step 5). */
+  msSinceSalient: (dock: string) => number | null;
   /** the live faceGestures choreography table (config-backed) — the `gesture` capability. */
   getGestures: () => Record<string, MoveStep[]>;
   /** enqueue a self-thought autonomous turn on the dock's brain session (the `think`
@@ -98,6 +102,15 @@ export function buildCapabilityRegistry(d: CapabilityDeps): CapabilityRegistry {
       d.motion.runSteps(ctx.dock, steps, `task:${ctx.instanceId}`);
       return { ok: true };
     },
+  });
+
+  reg.register({
+    op: 'perception-pulse', requires: 'face',
+    describe: 'await this.request("perception-pulse") → { msSinceSalient } — how long since the '
+      + 'dock last perceived a genuine HAPPENING (confident speech, a notable sound, a visual '
+      + 'change). null = unknown (perception cold)',
+    when: 'to gate reactive spoken bits on whether anything actually happened recently',
+    handler: (ctx) => ({ msSinceSalient: d.msSinceSalient(ctx.dock) }),
   });
 
   reg.register({

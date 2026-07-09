@@ -29,7 +29,7 @@ import type { RouteContext, StationModule } from '../../core/module.js';
 import type { Directory } from '../docks/directory.js';
 import type { MotionExecutor } from '../bodylink/motion.js';
 import { gesturesFromConfig } from '../bodylink/motion.js';
-import { getFaceTools, getPerceptionGrounding, getMemoryApi, getGateApi, getTranscriptApi, getPerceiveStore, getBgAddressedApi } from '../perception/index.js';
+import { getFaceTools, getPerceptionGrounding, getMemoryApi, getGateApi, getTranscriptApi, getPerceiveStore, getBgAddressedApi, noteSelfRemark, lastSalientAt } from '../perception/index.js';
 import { isRecording } from '../capture/index.js';
 import { getObsAccess } from '../observability/index.js';
 import type { VideoRecorderApi } from '../perception/record/recorder.js';
@@ -219,7 +219,6 @@ const GREET_ABSENCE_MS = Number(process.env.CONV_GREET_ABSENCE_MS ?? 60 * 60_000
 export interface BrainWiring {
   directory: Directory;
   motion: MotionExecutor;
-  getHub: () => Hub;
   getHub: () => WebSocketGateway;
   /** effective config value by key (the shared ConfigStore). */
   config: (key: string) => unknown;
@@ -378,6 +377,10 @@ export function brainModule(w: BrainWiring): StationModule {
   const capabilities = buildCapabilityRegistry({
     directory: w.directory, motion: w.motion, getFaces: getFaceTools,
     getPerceive: getPerceiveStore,
+    msSinceSalient: (dock) => {
+      const at = lastSalientAt(dock);
+      return at == null ? null : Date.now() - at;
+    },
     getGestures: () => gesturesFromConfig(w.config('faceGestures')),
     // task `think` → the same self-thought lane as the attention gate (recording-guarded).
     enqueueThought: (dock, text, coalesceKey, via) => raiseSelfThought(dock, text, { key: coalesceKey, via }),
@@ -413,6 +416,7 @@ export function brainModule(w: BrainWiring): StationModule {
         getMemory: getMemoryApi,
         recordVideo: w.recordVideo, config: w.config,
         enrichSession: w.enrichSession,
+      onSelfRemark: (dock, text) => noteSelfRemark(dock, text),
         feedbackCapture: w.feedbackCapture,
         obs: w.obs,
         log: (line) => console.log(line),

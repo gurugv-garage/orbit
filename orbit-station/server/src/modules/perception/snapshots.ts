@@ -33,7 +33,7 @@ export interface SnapshotSource {
   // 'sound' = an interpreted NON-SPEECH acoustic event from the background audio
   // processor (laughter, music, a crash — bg-audio-summarizer.md): an EVENT stream;
   // payload carries { text: summary, audioKind, salience, … }.
-  kind: 'vision' | 'speech' | 'identity' | 'emotion' | 'bodymotion' | 'sound';
+  kind: 'vision' | 'speech' | 'identity' | 'emotion' | 'bodymotion' | 'sound' | 'summary';
   device: string;
   host: string;
 }

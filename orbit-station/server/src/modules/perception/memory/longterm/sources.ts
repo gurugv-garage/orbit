@@ -52,7 +52,13 @@ export interface SourceContext {
  */
 /** The snapshot kinds the curator consolidates from: spoken words AND interpreted
  *  acoustic events (bg-audio 'sound' records — laughter, a crash, music). */
-const OBSERVABLE_KINDS = new Set(['speech', 'sound']);
+// THE COHERENCE DIET (coherence-layer.md §3): the curator consolidates from rolling
+// SUMMARY pulses — already-digested, noise-filtered coherence — never from raw
+// per-utterance speech. The raw diet is what produced 81% "speaker 0" beliefs at
+// 0.48 avg confidence (825 junk subjects migrated 2026-07-05). Raw speech/sound
+// still reach memory THROUGH the summarizer: every notable event is in the next
+// pulse. Feedback pairs (source.id 'feedback-pair') ride the same kind.
+const OBSERVABLE_KINDS = new Set(['summary']);
 
 export function observationsIn(
   ctx: SourceContext, dockId: string, fromIso: string, toIso: string, kind: SourceKind = 'diarized-speech',
@@ -104,37 +110,20 @@ export function pendingStats(
   return { count, oldestIso, newestIso };
 }
 
-/** A speech/sound snapshot → an Observation. Speech: refined text preferred, raw kept,
- *  identity attached as-of the utterance start. WORDLESS records survive when they carry
- *  an interpreted acoustic event of at least `notable` salience (laughter, a crash —
- *  bg-audio doc §4.1 landmine 1: these used to be silently dropped, so "the baby cried
- *  for 20 minutes" could never become a memory). Low-salience wordless noise stays out. */
+/** A SUMMARY pulse (or feedback pair) → an Observation. The pulse text is already
+ *  coherent — the summarizer fused vision/speech/sound/identity over its window and
+ *  filtered the noise — so the observation is the text verbatim, with who-was-present
+ *  attached as-of the window start. (The former raw speech/sound ingestion — including
+ *  the wordless-notable-event branch — is retired: those events reach memory through
+ *  the pulse that digests them.) */
 function toObservation(r: SnapshotRecord, ctx: SourceContext): Observation | null {
-  const p = r.payload as {
-    text?: string; sttText?: string; speaker?: number;
-    audioKind?: string; salience?: string; summary?: string;
-  };
   const atIso = r.interval.from;
-  const text = (p.text ?? '').trim();
-  const wordless = !text || text.replace(/[^a-z0-9]/gi, '').length < 2;
-  if (wordless) {
-    // admit an acoustic EVENT (non-speech kind, notable+) as an observation of what was
-    // HEARD — the curator decides whether it's memory-worthy, same as chit-chat.
-    if (p.audioKind && p.audioKind !== 'speech' && (p.salience === 'notable' || p.salience === 'startling')) {
-      return {
-        lineageId: `${r.source.kind}@${atIso}`, atIso,
-        text: `[heard: ${p.audioKind}${p.salience === 'startling' ? ', startling' : ''}] ${(p.summary ?? '').trim()}`.trim(),
-        presentAt: ctx.presentAt(atIso),
-      };
-    }
-    return null; // no words, no notable event
-  }
+  const text = ((r.payload as { text?: string }).text ?? '').trim();
+  if (!text || text.replace(/[^a-z0-9]/gi, '').length < 2) return null; // empty pulse
   return {
-    lineageId: `${r.source.kind}@${atIso}`,
+    lineageId: `${r.source.kind}:${r.source.id}@${atIso}`,
     atIso,
-    text,
-    raw: p.sttText && p.sttText.trim() && p.sttText.trim() !== text ? p.sttText.trim() : undefined,
-    speaker: p.speaker,
+    text: r.source.id === 'feedback-pair' ? text : `[period summary] ${text}`,
     presentAt: ctx.presentAt(atIso),
   };
 }

@@ -32,6 +32,7 @@ export const manifest = {
     { name: 'quietStartHour', type: 'number', required: false, default: 22 },
     { name: 'quietEndHour', type: 'number', required: false, default: 7 },
     { name: 'attentionAfterMs', type: 'number', required: false, default: 180_000 },
+    { name: 'freshEventMaxMs', type: 'number', required: false, default: 180_000 }, // reactive bits need a happening this recent
     { name: 'activateAfterMs', type: 'number', required: false, default: 300_000 }, // the conductor's idle gate (for the conversation-distance floor)
     { name: 'wBored', type: 'number', required: false, default: 1 },
     { name: 'wCurious', type: 'number', required: false, default: 1 },
@@ -55,6 +56,7 @@ class IdleMoodsTask extends Task {
       quietStartHour: n('quietStartHour', 22), quietEndHour: n('quietEndHour', 7),
       attentionAfterMs: n('attentionAfterMs', 180_000),
       speakMinGapMs: n('speakMinGapMs', 3_600_000), speakIdleMinMs: n('speakIdleMinMs', 600_000),
+      freshEventMaxMs: n('freshEventMaxMs', 180_000),
       weights: {
         bored: n('wBored', 1), curious: n('wCurious', 1), attention: n('wAttention', 0.5),
         sleepy: n('wSleepy', 1), flavor: n('wFlavor', 0.08),
@@ -87,6 +89,9 @@ class IdleMoodsTask extends Task {
       await this.sleep(Math.round(quietNow ? gap * 3 : gap));
 
       const faces = await this.faces();
+      // boredom-on-coherence: how long since the world offered a genuine happening?
+      const pulse = await this.request<{ msSinceSalient: number | null }>('perception-pulse')
+        .catch(() => ({ msSinceSalient: null }));
       const now = Date.now();
       if (faces > 0) { if (presentSince === 0) presentSince = now; lastSeenAt = now; }
       else if (presentSince !== 0 && now - lastSeenAt > PRESENCE_GRACE_MS) {
@@ -100,6 +105,7 @@ class IdleMoodsTask extends Task {
         msPresentContinuous: presentSince === 0 ? 0 : now - presentSince,
         msSinceConversation: activateAfterMs + (now - startedAt),
         msSinceLastSpoke: lastSpokeAt === 0 ? Number.MAX_SAFE_INTEGER : now - lastSpokeAt,
+        msSinceSalient: pulse?.msSinceSalient ?? null,
         lastBitId, attentionSpent,
         rand: Math.random,
       }, cfg, BITS);

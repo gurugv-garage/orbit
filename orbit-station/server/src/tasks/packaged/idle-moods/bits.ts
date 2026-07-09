@@ -34,6 +34,12 @@ export interface Bit {
   gesture?: string;           // a faceGestures name ('curious', 'sleepy', …) → `gesture` cap
   steps?: BitStep[];          // OR an explicit script
   thought?: string;           // a self-thought scenario → `think` cap (brain authors the line)
+  /** a REACTIVE bit: its spoken line is a reaction to a HAPPENING — the picker requires
+   *  a salient perception event within freshEventMaxMs, else the bit is ineligible
+   *  (boredom-on-coherence: spontaneous self-talk is event-triggered, never scheduled —
+   *  docs/research/idle-cognition.md principle 2, made MECHANICAL). Social bids
+   *  (seek/lonely/attention) are presence-driven, not event-driven — they stay un-gated. */
+  reactive?: boolean;
   /** a SEEK bit: the steps are a search sweep — after it, the task re-checks the camera.
    *  Found someone → a delighted gesture instead of the thought (the payoff writes itself);
    *  still nobody → the thought fires (subject to the speak gate), e.g. calling out. */
@@ -90,7 +96,7 @@ export const BITS: Bit[] = [
     ],
   },
   {
-    id: 'bored.muse', mood: 'bored', weight: 1,
+    id: 'bored.muse', mood: 'bored', weight: 1, reactive: true,
     // boredom research (docs/research/idle-cognition.md §5): boredom is a PUSH to engage,
     // not a state to narrate — the line must be it FINDING something, or nothing at all.
     thought: 'You are bored — which is really an itch to find something engaging. Look at what you can '
@@ -134,7 +140,7 @@ export const BITS: Bit[] = [
     ],
   },
   {
-    id: 'curious.wonder', mood: 'curious', weight: 1,
+    id: 'curious.wonder', mood: 'curious', weight: 1, reactive: true,
     // SEE or HEAR: the camera view is often static (the head parks somewhere), but the mic
     // hears everything — the room's sounds are where the variety lives. Activities in
     // plain view/earshot (a game, dancing, laughter, music) are fair game; appearance,

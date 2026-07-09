@@ -142,48 +142,51 @@ function speechRec(dockId: string, from: string, text: string, extra: Record<str
   } as SnapshotRecord;
 }
 
-test('observationsIn: prefers diarized text, keeps raw, attaches present-at', () => {
-  const recs = [speechRec('d1', '2026-01-01T10:00:00+05:30', 'diarized hi', { sttText: 'raw hi', speaker: 2 })];
+/** A rolling-summary PULSE record — the curator's (only) diet since the coherence
+ *  re-base. `sourceId` 'feedback-pair' marks a spoken-remark+reaction observation. */
+function pulseRec(dockId: string, from: string, text: string, sourceId = 'rolling-summary'): SnapshotRecord {
+  return {
+    ts: from, tz: 'IST', dockId,
+    source: { id: sourceId, kind: 'summary', device: 'station', host: 'station' },
+    model: { name: 'gemini-summarizer', endpoint: 'in-process' },
+    interval: { from, to: from, durationMs: 0 },
+    payload: { text },
+  } as SnapshotRecord;
+}
+
+test('observationsIn: a summary pulse becomes an observation with present-at + lineage', () => {
+  const recs = [pulseRec('d1', '2026-01-01T10:00:00+05:30', 'Guru played cricket with the kids; music in the background.')];
   const store = { inWindow: () => recs } as unknown as SnapshotStore;
   const ctx: SourceContext = { store, presentAt: (iso) => iso.includes('10:00') ? 'guru' : undefined };
   const obs = observationsIn(ctx, 'd1', 'a', 'z');
   assert.equal(obs.length, 1);
-  assert.equal(obs[0]!.text, 'diarized hi');
-  assert.equal(obs[0]!.raw, 'raw hi');
-  assert.equal(obs[0]!.speaker, 2);
+  assert.equal(obs[0]!.text, '[period summary] Guru played cricket with the kids; music in the background.');
   assert.equal(obs[0]!.presentAt, 'guru');
-  assert.equal(obs[0]!.lineageId, 'speech@2026-01-01T10:00:00+05:30');
+  assert.equal(obs[0]!.lineageId, 'summary:rolling-summary@2026-01-01T10:00:00+05:30');
 });
 
-test('observationsIn: drops word-less utterances, filters to the dock + speech', () => {
+test('observationsIn: RAW speech/sound are NOT consumed (the coherence diet) — pulses are', () => {
   const recs = [
-    speechRec('d1', 't1', '!!'),                 // no words → dropped
-    speechRec('d2', 't2', 'other dock'),         // wrong dock → filtered
-    speechRec('d1', 't3', 'real words here'),
+    speechRec('d1', 't1', 'raw words the curator must not eat'),
+    pulseRec('d2', 't2', 'other dock pulse'),          // wrong dock → filtered
+    pulseRec('d1', 't3', 'the digested picture'),
   ];
   const store = { inWindow: () => recs } as unknown as SnapshotStore;
   const obs = observationsIn({ store, presentAt: () => undefined }, 'd1', 'a', 'z');
-  assert.deepEqual(obs.map((o) => o.text), ['real words here']);
+  assert.deepEqual(obs.map((o) => o.text), ['[period summary] the digested picture']);
 });
 
-test('landmine 1: a WORDLESS acoustic event of notable+ salience becomes an observation', () => {
-  const recs = [
-    speechRec('d1', 't1', '', { audioKind: 'crying', salience: 'notable', summary: 'a child crying nearby' }),
-    speechRec('d1', 't2', '', { audioKind: 'ambient', salience: 'low', summary: 'room hum' }),   // low → dropped
-    speechRec('d1', 't3', '', { audioKind: 'impact', salience: 'startling', summary: 'a loud crash' }),
-  ];
+test('feedback pairs keep their text verbatim (no [period summary] prefix)', () => {
+  const recs = [pulseRec('d1', 't1', 'orbit said: "quiet evening" → reaction: someone laughed.', 'feedback-pair')];
   const store = { inWindow: () => recs } as unknown as SnapshotStore;
   const obs = observationsIn({ store, presentAt: () => undefined }, 'd1', 'a', 'z');
-  assert.deepEqual(obs.map((o) => o.text), [
-    '[heard: crying] a child crying nearby',
-    '[heard: impact, startling] a loud crash',
-  ]);
+  assert.deepEqual(obs.map((o) => o.text), ['orbit said: "quiet evening" → reaction: someone laughed.']);
 });
 
-test('landmine 2: an all-filtered batch still reports scannedThroughIso (no watermark stall)', () => {
+test('landmine 2 (still guarded): an all-empty batch reports scannedThroughIso (no watermark stall)', () => {
   const recs = [
-    speechRec('d1', '2026-01-01T10:00:00+05:30', '!!'),   // no words → filtered
-    speechRec('d1', '2026-01-01T10:01:00+05:30', 'm.'),   // <2 alnum → filtered
+    pulseRec('d1', '2026-01-01T10:00:00+05:30', ''),      // empty pulse → filtered
+    pulseRec('d1', '2026-01-01T10:01:00+05:30', 'm.'),    // <2 alnum → filtered
   ];
   const store = { list: () => recs } as unknown as SnapshotStore;
   const pend = pendingObservations({ store, presentAt: () => undefined }, 'd1', '', 10);
@@ -193,9 +196,9 @@ test('landmine 2: an all-filtered batch still reports scannedThroughIso (no wate
 
 test('pendingStats + pendingObservations: post-watermark, oldest-first, capped', () => {
   const recs = [
-    speechRec('d1', '2026-01-01T10:00:00+05:30', 'one'),
-    speechRec('d1', '2026-01-01T10:01:00+05:30', 'two'),
-    speechRec('d1', '2026-01-01T10:02:00+05:30', 'three'),
+    pulseRec('d1', '2026-01-01T10:00:00+05:30', 'one thing happened'),
+    pulseRec('d1', '2026-01-01T10:01:00+05:30', 'two things happened'),
+    pulseRec('d1', '2026-01-01T10:02:00+05:30', 'three things happened'),
   ];
   const store = { list: () => recs } as unknown as SnapshotStore;
   const ctx: SourceContext = { store, presentAt: () => undefined };
@@ -209,7 +212,7 @@ test('pendingStats + pendingObservations: post-watermark, oldest-first, capped',
   assert.equal(after1.oldestIso, '2026-01-01T10:01:00+05:30');
   // capped + oldest-first
   const pend = pendingObservations(ctx, 'd1', '', 2);
-  assert.deepEqual(pend.obs.map((o) => o.text), ['one', 'two']);
+  assert.deepEqual(pend.obs.map((o) => o.text.includes('one') ? 'one' : 'two'), ['one', 'two']);
   assert.equal(pend.scannedThroughIso, '2026-01-01T10:01:00+05:30', 'scanned through the last record in the batch');
 });
 

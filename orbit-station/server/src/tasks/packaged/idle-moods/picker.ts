@@ -24,6 +24,9 @@
 import type { Bit, MoodName } from './bits.js';
 
 export interface MoodCfg {
+  /** a REACTIVE bit needs a salient perception event within this window (ms) to be
+   *  eligible — the mechanical form of "self-talk reacts to happenings". */
+  freshEventMaxMs: number;
   quietStartHour: number;      // local hour [0..23]; start === end → quiet hours disabled
   quietEndHour: number;
   attentionAfterMs: number;    // continuous presence before attention bits are eligible
@@ -33,6 +36,9 @@ export interface MoodCfg {
 }
 
 export interface PickInput {
+  /** ms since the dock last perceived a salient HAPPENING; null = perception cold
+   *  (treat as no recent event — reactive bits stay ineligible). */
+  msSinceSalient: number | null;
   hourLocal: number;
   facesPresent: boolean;
   msPresentContinuous: number; // 0 when nobody is visible
@@ -68,6 +74,10 @@ export function pickBit(inp: PickInput, cfg: MoodCfg, bits: Bit[]): { bit: Bit; 
       && !(inp.facesPresent && inp.msPresentContinuous >= cfg.attentionAfterMs && !inp.attentionSpent)) return false;
     // a thought-ONLY bit has nothing to perform while the speak gate is closed.
     if (!canSpeak && b.thought && !b.gesture && !b.steps?.length) return false;
+    // REACTIVE bits need a recent salient HAPPENING (event-triggered self-talk,
+    // idle-cognition.md principle 2): no event in the window (or perception cold)
+    // → the observational bits sit out; the world simply hasn't offered anything.
+    if (b.reactive && (inp.msSinceSalient == null || inp.msSinceSalient > cfg.freshEventMaxMs)) return false;
     return w(b) > 0;
   });
   // anti-repeat: drop the last-performed bit unless that would empty the pool.

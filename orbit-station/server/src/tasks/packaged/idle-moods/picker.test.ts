@@ -11,6 +11,7 @@ import { inQuietHours, pickBit, type MoodCfg, type PickInput } from './picker.js
 import { BITS, type Bit } from './bits.js';
 
 const CFG: MoodCfg = {
+  freshEventMaxMs: 180_000,
   quietStartHour: 22, quietEndHour: 7,
   attentionAfterMs: 180_000,
   speakMinGapMs: 1_200_000, speakIdleMinMs: 600_000,
@@ -22,7 +23,8 @@ const seq = (...vals: number[]) => { let i = 0; return () => vals[Math.min(i++, 
 
 const INP: PickInput = {
   hourLocal: 14, facesPresent: false, msPresentContinuous: 0,
-  msSinceConversation: 3_600_000, msSinceLastSpoke: 3_600_000, rand: seq(0),
+  msSinceConversation: 3_600_000, msSinceLastSpoke: 3_600_000,
+  msSinceSalient: 0, rand: seq(0),  // fresh happening by default; reactive-gate tests vary it
 };
 
 // ── quiet hours ────────────────────────────────────────────────────────────────
@@ -135,4 +137,21 @@ test('weighted pick is deterministic under a seeded rand and spans the pool', ()
   assert.ok(first.bit.id !== last.bit.id, 'different rolls reach different bits');
   assert.deepEqual(pickBit({ ...INP, rand: seq(0.5) }, CFG, BITS),
     pickBit({ ...INP, rand: seq(0.5) }, CFG, BITS), 'same roll → same pick');
+});
+
+// ── boredom-on-coherence: the reactive event gate (coherence-layer.md step 5) ────
+test('reactive bits need a recent salient happening; social bids do not', () => {
+  const bits: Bit[] = [
+    { id: 'r.wonder', mood: 'curious', weight: 1, reactive: true, thought: 'react to it' },
+    { id: 's.lonely', mood: 'flavor', weight: 1, needsNoFace: true, thought: 'wistful' },
+  ];
+  // stale world (no event for 10 min) → reactive ineligible, social bid still eligible
+  const stale = pickBit({ ...INP, msSinceSalient: 600_000, rand: seq(0) }, CFG, bits);
+  assert.equal(stale!.bit.id, 's.lonely');
+  // fresh happening → reactive back in the pool
+  const fresh = pickBit({ ...INP, msSinceSalient: 30_000, rand: seq(0) }, CFG, bits);
+  assert.equal(fresh!.bit.id, 'r.wonder');
+  // perception cold (null) → treat as stale
+  const cold = pickBit({ ...INP, msSinceSalient: null, rand: seq(0) }, CFG, bits);
+  assert.equal(cold!.bit.id, 's.lonely');
 });

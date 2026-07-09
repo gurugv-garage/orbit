@@ -166,7 +166,7 @@ export const moods: Conducted = {
     // at most hourly (2026-07-05 lived-with critique: 45–120 s read as a scanner).
     bitMinMs: 180_000, bitMaxMs: 480_000,
     speakMinGapMs: 3_600_000, speakIdleMinMs: 600_000,
-    quietStartHour: 22, quietEndHour: 7, attentionAfterMs: 180_000,
+    quietStartHour: 22, quietEndHour: 7, attentionAfterMs: 180_000, freshEventMaxMs: 180_000,
     wBored: 1, wCurious: 1, wAttention: 0.5, wSleepy: 1, wFlavor: 0.08,
   },
   decide(t, world, self) {

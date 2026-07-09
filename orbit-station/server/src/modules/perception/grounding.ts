@@ -71,6 +71,27 @@ export interface GroundingInput {
   now: number;
   /** decision-time IST ISO (= isoIst(new Date(now))) — injected for tests. */
   nowIso: string;
+  /** COHERENT mode (coherence-layer.md step 1): the raw tail is filtered to SALIENT
+   *  events only — self-thoughts must act on the coherent layer (summary + beliefs +
+   *  genuine happenings), never on raw mush. Conversations keep the full tail. */
+  coherent?: boolean;
+}
+
+/** Is a record a genuine HAPPENING worth a self-thought's attention? Keeps: confident
+ *  speech (good tier), non-low-salience sound events, vision windows that report a
+ *  CHANGE, and the compact STATE streams (identity/bodymotion). Drops: shaky/garbage
+ *  speech (far-field mush), static vision re-descriptions, low-salience ambience —
+ *  the raw noise that made idle remarks incoherent (coherence-layer.md §1). */
+export function isSalient(r: SnapshotRecord): boolean {
+  const p = r.payload as { confTier?: string; salience?: string; change?: string };
+  switch (r.source.kind) {
+    case 'speech': return (p.confTier ?? 'good') === 'good';
+    case 'sound': return p.salience === 'notable' || p.salience === 'startling';
+    case 'vision': return !!p.change?.trim();
+    case 'identity':
+    case 'bodymotion': return true;   // STATE streams: compact, real transitions
+    default: return false;            // unknown kinds (incl. future 'summary') stay out
+  }
 }
 
 /**
@@ -80,24 +101,28 @@ export interface GroundingInput {
 export function buildGrounding(input: GroundingInput): string | null {
   const { last, recent, now, nowIso } = input;
 
+  const { coherent } = input;
+  const sift = (rs: SnapshotRecord[]) => (coherent ? rs.filter(isSalient) : rs);
+
   if (last) {
     const age = staleness(now - last.computedAt);
     const head = `Perception — last summary (${age}, covering ${clock(last.window.from)}–${clock(last.window.to)} IST): ${last.text.trim()}`;
     // raw records that START after the summary's window closed = "what's happened since".
-    const since = recent.filter((r) => r.interval.from > last.window.to);
+    const since = sift(recent.filter((r) => r.interval.from > last.window.to));
     if (since.length === 0) return head;
     const tail = tailLines(stitch(since), MAX_RAW_LINES);
     const sinceFrom = clock(since[0]!.interval.from);
-    return `${head}\n\nSince then (${sinceFrom}–${clock(nowIso)} IST, raw — not yet summarized):\n${tail}`;
+    const label = coherent ? 'salient events since' : 'Since then';
+    return `${head}\n\n${label} (${sinceFrom}–${clock(nowIso)} IST${coherent ? '' : ', raw — not yet summarized'}):\n${tail}`;
   }
 
   // No summary yet: ground on the recent raw window alone.
   const cutoff = isoIst(new Date(now - RAW_FALLBACK_MS));
-  const window = recent.filter((r) => r.interval.from >= cutoff);
-  if (window.length === 0) return null; // cold dock — nothing perceived
+  const window = sift(recent.filter((r) => r.interval.from >= cutoff));
+  if (window.length === 0) return null; // cold dock — nothing perceived (or nothing salient)
   const tail = tailLines(stitch(window), MAX_RAW_LINES);
   const from = clock(window[0]!.interval.from);
-  return `Perception — recent (${from}–${clock(nowIso)} IST, raw — no summary yet):\n${tail}`;
+  return `Perception — recent (${from}–${clock(nowIso)} IST${coherent ? ', salient events' : ', raw — no summary yet'}):\n${tail}`;
 }
 
 // --------------------------------------------------------------------------- //

@@ -127,6 +127,9 @@ export interface SessionDeps {
    *  the observability session record. Called on each turn end so EVERY session
    *  is instrumented (observability is the source of truth). Undefined → skip. */
   enrichSession?: (dock: string, sessionId: string, span?: { from: number; to: number }) => Promise<void> | void;
+  /** called when a SELF-thought turn actually SPOKE (dock, the spoken text) — the
+   *  coherence feedback loop pairs it with the next minute's perceived reaction. */
+  onSelfRemark?: (dock: string, text: string) => void;
   /** feedback capture entrypoint (record_feedback tool). Undefined → tool off. */
   feedbackCapture?: import('./tools.js').FeedbackCaptureFn;
   /** observability read access (inspect_observability tool). Undefined → tool off. */
@@ -189,6 +192,8 @@ export class DockBrainSession {
   #activeTurnId?: string;
   #triggerText = '';
   #triggerKind = 'user';
+  /** the sentences actually SPOKEN this turn (for the self-remark feedback loop). */
+  #spokenSentences: string[] = [];
   #triggerVia: string | undefined; // the raising source (mood bit / gate key / …) — obs only
   // A1.2: a station-originated user turn (an addressed always-on-mic utterance) —
   // the phone must adopt it even though its trigger.kind is 'user'.
@@ -754,6 +759,7 @@ export class DockBrainSession {
     this.#cancelled = false;
     this.#timedOut = false;
     this.#spokeThisTurn = false;
+    this.#spokenSentences = [];
     this.#toolRanThisTurn = false;
     this.#streamer = new SentenceStreamer();
     this.#speakSeq = 0;
@@ -818,7 +824,11 @@ export class DockBrainSession {
     // reasons over what's been happening, not just the instant. Best-effort: a cold
     // dock / unwired perception → undefined, and the turn grounds as before.
     let grounding: string | undefined;
-    try { grounding = this.#d.getGrounding?.()?.forDock(this.dock); }
+    // SELF-thoughts ground on the COHERENT layer (summary + beliefs + salient events
+    // only — coherence-layer.md step 1): idle remarks authored from raw mush were the
+    // out-of-place-line generator. User turns keep the full raw tail (a conversation
+    // may reference anything just heard, including the shaky bits).
+    try { grounding = this.#d.getGrounding?.()?.forDock(this.dock, { coherent: this.#triggerKind === 'self' }); }
     catch (err) { this.#d.log?.(`[brain] ${this.dock}: grounding failed (ignored): ${String(err)}`); }
     agent.state.systemPrompt = buildSystemPrompt({
       persona: str(this.#d.config('brainPersona')),
@@ -979,6 +989,15 @@ export class DockBrainSession {
 
       if (this.#meta) this.#d.store.turnEnded(this.dock, this.#meta.sessionId, agent.state.messages);
       this.#shipObs('TurnEnd');
+
+      // FEEDBACK LOOP (coherence-layer.md §4 step 4): an UNPROMPTED spoken remark
+      // (a self-thought that actually spoke) is an action in the world — hand it to
+      // perception so the following minute's reaction is paired with it and the pair
+      // becomes curator evidence. Best-effort; never affects the turn.
+      if (completedNormally && this.#triggerKind === 'self' && this.#spokenSentences.length > 0) {
+        try { this.#d.onSelfRemark?.(this.dock, this.#spokenSentences.join(' ')); }
+        catch { /* observation only */ }
+      }
 
       // INSTRUMENT: snapshot the session's station-side context (provenance,
       // config, models, perception window, …) onto the obs record. Best-effort,
@@ -1269,6 +1288,7 @@ export class DockBrainSession {
   /** One spoken sentence → directed speak frame to the voice component. */
   #speak(sentence: string): void {
     this.#spokeThisTurn = true;
+    this.#spokenSentences.push(sentence);
     const seq = this.#speakSeq++;
     this.#sendToVoice('speak', { turnId: this.#activeTurnId, seq, text: sentence });
     this.#debug('speak', { seq, text: sentence });

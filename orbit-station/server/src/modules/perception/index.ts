@@ -13,6 +13,8 @@
  * the browser console subscribes (undirected `state`) and renders a panel.
  */
 
+import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
+import { dirname } from 'node:path';
 import type { Bus } from '../../core/bus.js';
 import { json } from '../../core/http.js';
 import type { IncomingMessage } from 'node:http';
@@ -27,11 +29,11 @@ import { identitySnapshotProcessor } from './processors/identity-snapshot.js';
 import { sttWatchProcessor } from './processors/stt-watch.js';
 import { interpretAudio } from './processors/background-audio.js';
 import { bodyMotionWatchProcessor, type MotionCommand } from './processors/bodymotion-watch.js';
-import { SnapshotStore, isoIst, sampleEvenly, type SnapshotRecord } from './snapshots.js';
+import { SnapshotStore, isoIst, sampleEvenly, makeSnapshot, type SnapshotRecord } from './snapshots.js';
 import { PerceiveStore, type PerceivePayload } from './perceive.js';
 import { TakeStore } from './takes.js';
-import { summarize, geminiText } from './summarizer.js';
-import { buildGrounding, memoryGroundingSlice, type LastSummary } from './grounding.js';
+import { summarize, geminiText, stitch } from './summarizer.js';
+import { buildGrounding, memoryGroundingSlice, type LastSummary, isSalient } from './grounding.js';
 import { SidecarSupervisor } from './sidecars.js';
 import { MemoryStore, type MemoryRow, type MemoryType, type RecallFilter, type LineageEdge } from './memory/store.js';
 import { geminiEmbedder } from './memory/embedder.js';
@@ -181,7 +183,9 @@ export function getFaceTools(): FaceToolsApi | undefined {
  */
 export interface PerceptionGroundingApi {
   /** the grounding block for `dockId` right now, or undefined if there's nothing. */
-  forDock(dockId: string): string | undefined;
+  /** `coherent` (coherence-layer.md step 1): salient-events-only tail — the
+   *  self-thought variant. Conversations omit it and get the full raw tail. */
+  forDock(dockId: string, opts?: { coherent?: boolean }): string | undefined;
   /**
    * FORCE a fresh summary of the live moment NOW (docs/perception-to-brain.md 3.2
    * `force_get_current`): flush the in-flight tail (open utterance + a one-shot
@@ -194,6 +198,22 @@ export interface PerceptionGroundingApi {
 }
 
 const groundingRef: { current?: PerceptionGroundingApi } = {};
+
+/** FEEDBACK LOOP (coherence-layer.md §4): the brain reports an unprompted SPOKEN
+ *  remark; a minute later we pair it with the salient perception that followed and
+ *  add the pair as a 'summary'-kind ring record (source.id 'feedback-pair') — curator
+ *  evidence that a remark landed well, oddly, or into a void. */
+const selfRemarkRef: { current?: (dockId: string, text: string) => void } = {};
+
+/** BOREDOM-ON-COHERENCE pulse (coherence-layer.md step 5): epoch ms of the last
+ *  SALIENT record for a dock, or null when perception is cold/unwired. */
+const salientPulseRef: { current?: (dockId: string) => number | null } = {};
+export function lastSalientAt(dockId: string): number | null {
+  return salientPulseRef.current?.(dockId) ?? null;
+}
+export function noteSelfRemark(dockId: string, text: string): void {
+  selfRemarkRef.current?.(dockId, text);
+}
 /** The live PerceptionGroundingApi (set when the perception module inits). */
 export function getPerceptionGrounding(): PerceptionGroundingApi | undefined {
   return groundingRef.current;
@@ -358,7 +378,23 @@ export function perceptionModule(getHub: () => PerceptionProcessingHub): Station
   perceiveRef.current = perceive;
   // Latest produced summary PER DOCK — the head of perception grounding (3.1). Set
   // on each successful /snapshots/summarize; read synchronously by the brain facade.
+  // PERSISTED to .data (coherence-layer.md §6): the rolling picture is the coherence
+  // engine's short-horizon state — a station restart used to amnesia-wipe the day
+  // (grounding + the curator's diet both start from it). Loaded at construction;
+  // written on each set (summaries are ≥60 s apart, a write per set is nothing).
+  const LAST_SUMMARY_FILE = '.data/perception/last-summary.json';
   const lastSummary = new Map<string, LastSummary>();
+  try {
+    const raw = JSON.parse(readFileSync(LAST_SUMMARY_FILE, 'utf8')) as Record<string, LastSummary>;
+    for (const [dock, v] of Object.entries(raw)) if (v?.text && v.window?.from) lastSummary.set(dock, v);
+    if (lastSummary.size) console.log(`[perception] restored ${lastSummary.size} rolling summar${lastSummary.size === 1 ? 'y' : 'ies'} from disk`);
+  } catch { /* first boot / no file — fine */ }
+  const persistLastSummaries = () => {
+    try {
+      mkdirSync(dirname(LAST_SUMMARY_FILE), { recursive: true });
+      writeFileSync(LAST_SUMMARY_FILE, JSON.stringify(Object.fromEntries(lastSummary), null, 2));
+    } catch (err) { console.warn(`[perception] last-summary persist failed: ${String(err)}`); }
+  };
   // The unified per-dock MEMORY store (Decision 4) — durable sqlite, gemini-embedded
   // for semantic recall. Backs the recall_memory/inspect/remember/update/forget tools.
   const memory = new MemoryStore(orbitDb(), geminiEmbedder());
@@ -527,7 +563,9 @@ export function perceptionModule(getHub: () => PerceptionProcessingHub): Station
         // fresh consensus reads are included even if inference ran long.
         const windowMs = Math.max(opts?.windowMs ?? 60_000, Date.now() - startedAt + 1_000);
         const fromIso = isoIst(new Date(Date.now() - windowMs));
-        const recs = snapshots.inWindowWithState(fromIso, toIso).filter((r) => r.dockId === dockId);
+        // exclude prior SUMMARY records: a summary must digest the streams, not itself.
+        const recs = snapshots.inWindowWithState(fromIso, toIso)
+          .filter((r) => r.dockId === dockId && r.source.kind !== 'summary');
         const result = await summarize(recs);
         // Only update the BACKGROUND grounding (lastSummary) when this is a background-
         // scope summary. A tight "right now" read (force_get_current, ~6s window) must
@@ -538,6 +576,20 @@ export function perceptionModule(getHub: () => PerceptionProcessingHub): Station
             dockId, text: result.summary,
             window: { from: fromIso, to: toIso }, computedAt: Date.now(),
           });
+          persistLastSummaries();
+          // The summary is also a RING RECORD (kind 'summary') — the coherence pulse.
+          // The curator consolidates from THESE (never raw utterances; coherence-layer.md
+          // §3), the Studio shows them, and the summarize input above excludes them.
+          snapshots.add(makeSnapshot({
+            dockId,
+            source: { id: 'rolling-summary', kind: 'summary', device: 'station', host: 'station' },
+            model: { name: 'gemini-summarizer', endpoint: 'in-process' },
+            from: new Date(fromIso), to: new Date(toIso),
+            // LINEAGE: the EXACT stitched input the summarizer digested (truncated) +
+            // the record count — the Studio shows it collapsible per pulse, so how each
+            // coherence layer line was built is inspectable, not inferred.
+            payload: { text: result.summary, inputCount: recs.length, inputs: stitch(recs).slice(0, 4_000) },
+          }));
         }
         return { summary: result.summary, error: result.error, window: { from: fromIso, to: toIso } };
       };
@@ -546,15 +598,16 @@ export function perceptionModule(getHub: () => PerceptionProcessingHub): Station
       // per-turn context block for a dock — last summary (with staleness) + the raw
       // stream since it, from this dock's records. No network; the brain injects it.
       groundingRef.current = {
-        forDock(dockId: string): string | undefined {
+        forDock(dockId: string, opts?: { coherent?: boolean }): string | undefined {
           const now = Date.now();
           // this dock's recent records (the store mixes docks; records are tagged).
-          const recent = snapshots.list().filter((r) => r.dockId === dockId);
+          const recent = snapshots.list().filter((r) => r.dockId === dockId && r.source.kind !== 'summary');
           const block = buildGrounding({
             last: lastSummary.get(dockId) ?? null,
             recent,
             now,
             nowIso: isoIst(new Date(now)),
+            coherent: opts?.coherent === true,
           });
           // PASSIVE long-term memory: append a small, confidence-ranked slice of durable
           // beliefs about WHO IS PRESENT (so the agent knows what it knows without calling
@@ -587,6 +640,42 @@ export function perceptionModule(getHub: () => PerceptionProcessingHub): Station
             streamId, windowMs, flush: true, cache: false, captures: FORCE_GET_CAPTURES,
           });
         },
+      };
+
+      salientPulseRef.current = (dockId: string) => {
+        let latest: string | null = null;
+        for (const r of snapshots.list()) {
+          if (r.dockId !== dockId || r.source.kind === 'summary' || !isSalient(r)) continue;
+          if (r.source.kind === 'bodymotion') continue; // the robot's own motion is not a world event
+          if (!latest || r.interval.to > latest) latest = r.interval.to;
+        }
+        return latest ? new Date(latest).getTime() : null;
+      };
+
+      // FEEDBACK PAIRS: remark → wait one minute → pair with the salient reaction.
+      const REACTION_WINDOW_MS = 60_000;
+      selfRemarkRef.current = (dockId: string, text: string) => {
+        const saidAtIso = isoIst(new Date());
+        const t = setTimeout(() => {
+          try {
+            const reactions = snapshots.list()
+              .filter((r) => r.dockId === dockId && r.interval.from > saidAtIso && r.source.kind !== 'summary')
+              .filter(isSalient)
+              .slice(-4)
+              .map((r) => `${r.source.kind}: ${(r.payload.text ?? '').toString().trim()}`)
+              .filter((l) => l.length > 8);
+            const reaction = reactions.length ? reactions.join(' · ') : 'no visible reaction';
+            snapshots.add(makeSnapshot({
+              dockId,
+              source: { id: 'feedback-pair', kind: 'summary', device: 'station', host: 'station' },
+              model: { name: 'feedback-loop', endpoint: 'in-process' },
+              from: new Date(Date.now() - REACTION_WINDOW_MS), to: new Date(),
+              payload: { text: `orbit remarked unprompted: "${text}". Reaction in the following minute: ${reaction}.` },
+            }));
+            console.log(`[coherence] feedback pair recorded for ${dockId} (${reactions.length} reaction records)`);
+          } catch (err) { console.warn(`[coherence] feedback pair failed: ${String(err)}`); }
+        }, REACTION_WINDOW_MS);
+        t.unref?.();
       };
 
       // MEMORY facade (Decision 4) — the brain's discover/recall/inspect/mutate
@@ -636,7 +725,10 @@ export function perceptionModule(getHub: () => PerceptionProcessingHub): Station
           const now = Date.now();
           if (countCache && now - countCache.at < 1_000) return countCache.map;
           const m = new Map<string, number>();
-          for (const r of snapshots.list()) m.set(r.dockId, (m.get(r.dockId) ?? 0) + 1);
+          for (const r of snapshots.list()) {
+            if (r.source.kind === 'summary') continue; // the pulse must not feed its own trigger
+            m.set(r.dockId, (m.get(r.dockId) ?? 0) + 1);
+          }
           countCache = { at: now, map: m };
           return m;
         };
@@ -1134,6 +1226,20 @@ export function perceptionModule(getHub: () => PerceptionProcessingHub): Station
             dockId, text: result.summary,
             window: { from: fromIso, to: toIso }, computedAt: Date.now(),
           });
+          persistLastSummaries();
+          // The summary is also a RING RECORD (kind 'summary') — the coherence pulse.
+          // The curator consolidates from THESE (never raw utterances; coherence-layer.md
+          // §3), the Studio shows them, and the summarize input above excludes them.
+          snapshots.add(makeSnapshot({
+            dockId,
+            source: { id: 'rolling-summary', kind: 'summary', device: 'station', host: 'station' },
+            model: { name: 'gemini-summarizer', endpoint: 'in-process' },
+            from: new Date(fromIso), to: new Date(toIso),
+            // LINEAGE: the EXACT stitched input the summarizer digested (truncated) +
+            // the record count — the Studio shows it collapsible per pulse, so how each
+            // coherence layer line was built is inspectable, not inferred.
+            payload: { text: result.summary, inputCount: recs.length, inputs: stitch(recs).slice(0, 4_000) },
+          }));
         }
         // Echo the exact window used so the console can pin its log to it.
         json(res, 200, { ...result, window: { from: fromIso, to: toIso } });
