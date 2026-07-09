@@ -134,8 +134,12 @@ async function main() {
   modules.push(perceptionModule(() => perceptionProcessingHub!));
   // Feed the body's "my head just moved" signal into perception (self-motion vs world
   // change) — the executor's lastMotionAt is the real signal; faceFollow's pans never
-  // reach the bodymotion snapshot stream. Keeps perception decoupled from bodylink.
-  setCameraMoving((dock) => motion.recentlyMoved(dock));
+  // reach the bodymotion snapshot stream. Keeps perception decoupled from bodylink. The
+  // window (VISION_SELFMOTION_WINDOW_MS, default 2500) spans a pan (~1.4s) PLUS the VLM's
+  // own latency, so a call that STARTED while moving is still recognised as self-motion —
+  // measured 2026-07-09: at 1200ms most probes landed post-settle (pans finish fast).
+  const selfMotionWindow = Number(process.env.VISION_SELFMOTION_WINDOW_MS ?? 2500);
+  setCameraMoving((dock) => motion.recentlyMoved(dock, selfMotionWindow));
   modules.push(docksModule(directory, () => hub, bindings));
   modules.push(bodylinkModule({ directory, motion, getHub: () => hub }));
 
