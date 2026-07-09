@@ -30,6 +30,15 @@ const BASE =
   'age, or name). If truly no person is present, briefly describe the scene. Name objects ' +
   'as what they actually are; if unsure, say "an object". Describe only what is clearly ' +
   'visible — do not invent people, actions, or details.';
+// SINGLE-frame variant: the window-dedup collapsed a static window to one frame (nothing
+// moved), so asking "what is happening ACROSS these frames" about one still image is an odd
+// ask. Same anti-hallucination rules, phrased for a single image. (2026-07-10)
+const BASE_SINGLE =
+  'In one short sentence, describe this single frame. If a person is visible, describe what ' +
+  'they are doing (use "they"/"the person"; do not guess gender, age, or name). If truly no ' +
+  'person is present, briefly describe the scene. Name objects as what they actually are; if ' +
+  'unsure, say "an object". Describe only what is clearly visible — do not invent people, ' +
+  'actions, or details.';
 // NOTE: the examples ("typing on a laptop"…) were removed deliberately. qwen2.5-VL is
 // small and ANCHORS on the first in-prompt example when a 320×240 frame is ambiguous —
 // it was reading a held-up mug/cup as "typing on a laptop" (the seeded example) because
@@ -46,8 +55,9 @@ let extra = '';
  *  into the open describe request as a focus hint, which keeps moondream answering
  *  while biasing its description toward what you care about. The downstream code can
  *  then match the steer terms against the prose. */
-export function visionInstruction(): string {
-  if (!extra) return BASE;
+export function visionInstruction(mode: 'window' | 'single' = 'window'): string {
+  const base = mode === 'single' ? BASE_SINGLE : BASE;
+  if (!extra) return base;
   // Weave the steer into the describe request as an "including …" clause — tested
   // to keep moondream answering where "Pay attention to: <steer>" makes it emit
   // empty. Strip a leading "tell me / watch for / flag" so "tell me when he holds a

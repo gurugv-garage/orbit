@@ -409,8 +409,11 @@ def make_handler(stt: Stt, vision_holder: dict, temporal_holder: dict):
             # Temporal: N ordered frames → an action description (qwen2.5-VL video).
             if self.path == "/temporal":
                 frames = req.get("frames") or []
-                if len(frames) < 2:
-                    self._send(400, {"error": "need >=2 frames"})
+                # 1 frame is allowed: the station's window-dedup collapses a static window to a
+                # single still frame (nothing moved), sending it with a still-image prompt. qwen
+                # handles a single image on the same path (num_images=1). 0 frames is the error.
+                if len(frames) < 1:
+                    self._send(400, {"error": "need >=1 frame"})
                     return
                 t0 = time.perf_counter()
                 try:

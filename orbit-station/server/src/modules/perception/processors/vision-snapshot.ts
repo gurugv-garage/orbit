@@ -111,6 +111,22 @@ const REUSE_CACHE = process.env.VISION_REUSE_CACHE !== '0';
 const REUSE_DIST = Number(process.env.VISION_REUSE_DIST ?? 0.12);
 const REUSE_TTL_MS = Number(process.env.VISION_REUSE_TTL_MS ?? 20_000);
 const REUSE_MAX = Number(process.env.VISION_REUSE_MAX ?? 8);
+/** WINDOW DEDUP: the 5-frame window exists to capture MOTION ("what is happening across
+ *  these frames"). On a static scene the 5 frames are near-identical, so we pay 5× the
+ *  visual-token prefill to tell qwen "nothing moved" five times. Collapse consecutive
+ *  frames whose embedding distance < DEDUP_DIST (tight — only true duplicates) down to the
+ *  distinct ones; if the whole window collapses to ONE frame, send that single frame with a
+ *  still-image prompt. Same embedder as the gate/cache — one extra embed per window frame
+ *  (~25ms each), cheap against a ~5s inference it can shorten. VISION_WINDOW_DEDUP=0 disables. */
+const WINDOW_DEDUP = process.env.VISION_WINDOW_DEDUP !== '0';
+const DEDUP_DIST = Number(process.env.VISION_DEDUP_DIST ?? 0.03);
+/** POST-INFERENCE RE-PROBE: the loop is blind while busy (~5s inference). A visual-only
+ *  event that starts AND ends inside that window (someone silently crosses the frame) is
+ *  missed — the next probe compares the settled post-event scene against the pre-event
+ *  anchor and sees no change. After each inference, compare a FRESH frame against the
+ *  pre-inference anchor; if it moved past EMBED_THRESHOLD, re-fire next tick instead of
+ *  sleeping. Catches the "walked through while I was thinking" gap. VISION_REPROBE=0 disables. */
+const REPROBE_AFTER_INFERENCE = process.env.VISION_REPROBE !== '0';
 
 /** 16×16 grayscale ZERO-MEAN signature of a JPEG (null on decode failure). Subtracting
  *  the frame's own mean makes the gate exposure-invariant: a night camera's auto-exposure
@@ -189,14 +205,34 @@ export function visionSnapshotProcessor(
     // VLM's latency mislabels a still-frame window as "moving" (self-diagnosis bug, fixed
     // 2026-07-09). OR across the window: moving at any point means motion blur may be present.
     let capturedMoving = cameraMoving?.(s.ctx.dockId) ?? false;
-    const frames: string[] = [];
+    const sampled: Array<{ b64: string; emb: Float32Array | null }> = [];
     for (let i = 0; i < n; i++) {
       const jpeg = getFrame(s.ctx.streamId);
-      if (jpeg) frames.push(jpeg.toString('base64'));
+      if (jpeg) sampled.push({ b64: jpeg.toString('base64'), emb: WINDOW_DEDUP ? await embedFrame(jpeg) : null });
       if (cameraMoving?.(s.ctx.dockId)) capturedMoving = true;
       if (i < n - 1) await sleep(gapMs);
     }
-    if (frames.length < 2) return false; // stream not live yet
+    if (sampled.length < 2) return false; // stream not live yet
+    // WINDOW DEDUP — CONSECUTIVE-ONLY. The window is a TIME SEQUENCE, so a frame is a
+    // duplicate only of its immediate predecessor, never of a non-adjacent one: with
+    // [static, static, person, person-gone, static] frame 5 ≈ frame 1 by embedding but they
+    // are DIFFERENT moments (scene returned to rest AFTER an event) — collapsing across the
+    // gap would erase that. So we keep a frame iff it differs from the LAST KEPT frame by
+    // >= DEDUP_DIST. Order preserved; only true runs of near-identical frames collapse. When
+    // the whole window collapses to ONE, nothing moved the entire time → a single still frame.
+    let kept = sampled;
+    if (WINDOW_DEDUP && sampled.every((f) => f.emb)) {
+      kept = [sampled[0]!];
+      for (let i = 1; i < sampled.length; i++) {
+        if (embedDistance(kept[kept.length - 1]!.emb!, sampled[i]!.emb!) >= DEDUP_DIST) kept.push(sampled[i]!);
+      }
+      if (EMBED_DEBUG && kept.length < sampled.length) {
+        console.log(`[vision] ${s.ctx.dockId} window-dedup: ${sampled.length} → ${kept.length} distinct frame(s)`);
+      }
+    }
+    const frames: string[] = kept.map((f) => f.b64);   // the (deduped) frames qwen actually sees
+    const lastKept = kept[kept.length - 1]!;            // newest kept frame = the anchor/cache view
+    const singleFrame = frames.length === 1;
     // STRUCTURED output: the description PLUS an explicit "what changed" field, judged
     // against the PREVIOUS window's description (fed back as reference). The change is
     // SIMPLE PROMPT (root fix, 2026-07-09): the elaborate two-line DESCRIPTION/CHANGE
@@ -206,7 +242,10 @@ export function visionSnapshotProcessor(
     // "None visible", repeated verbatim for minutes (verified live: the SAME frames +
     // this simple prompt caught "a person ascending a staircase" 3/3, the complex prompt
     // failed). A small model needs a small ask. No CHANGE field, no previous-anchor.
-    const prompt = visionInstruction();
+    // When the window collapsed to a single still frame (nothing moved), ask the still-image
+    // question — a "what is happening ACROSS these frames" prompt about one frame is an odd
+    // ask for the model. The steer (if any) still rides along via visionInstruction().
+    const prompt = singleFrame ? visionInstruction('single') : visionInstruction();
     const res = await analyze(frames, prompt);
     const to = new Date();
     if (!res) return false;
@@ -234,15 +273,20 @@ export function visionSnapshotProcessor(
       // leak this panel exists to catch). ~16-30KB each in a bounded ring — a debug cost.
       payload: { text, frames: frames.length, latencyMs: to.getTime() - from.getTime(), inferMs, gatedProbes: s.skippedProbes, gateTrigger: s.lastTrigger ?? 'on-demand',
         camMoving: capturedMoving,   // head moving DURING frame capture (not at commit ~5s later)
+        // sampledFrames = frames grabbed; frames = distinct frames sent after consecutive-dedup.
+        // sampledFrames > frames means the window had static runs collapsed (fewer visual tokens).
+        sampledFrames: sampled.length, singleFrame,
         inputImages: frames, inputPrompt: prompt },
     }));
-    store.addKeyframe({ ts: isoIst(to), from: isoIst(from), jpegB64: frames[frames.length - 1]! });
+    store.addKeyframe({ ts: isoIst(to), from: isoIst(from), jpegB64: lastKept.b64 });
     s.ctx.emit({ kind: 'scene', source: 'vision-snapshot', payload: { description: text }, confidence: 0.7 });
     // change-gate bookkeeping: remember what the ANALYZED scene looked like, so the
     // cheap probe can tell whether anything has moved since.
-    const lastJpeg = Buffer.from(frames[frames.length - 1]!, 'base64');
+    const lastJpeg = Buffer.from(lastKept.b64, 'base64');
     s.lastSig = frameSignature(lastJpeg) ?? s.lastSig;
-    const analyzedEmb = (await embedFrame(lastJpeg)) ?? undefined;
+    // Reuse the newest kept frame's embedding (already computed for dedup) as the anchor — no
+    // re-embed. Falls back to a fresh embed if dedup was off/failed (emb null).
+    const analyzedEmb = lastKept.emb ?? (await embedFrame(lastJpeg)) ?? undefined;
     s.lastEmb = analyzedEmb ?? s.lastEmb;                    // semantic anchor (null → pixel path)
     s.lastAnalyzedAt = Date.now();
     s.skippedProbes = 0;
@@ -251,7 +295,7 @@ export function visionSnapshotProcessor(
     if (REUSE_CACHE && analyzedEmb && text.trim()) {
       // keep the analyzed frame too, so a reuse can show the ORIGINAL view it's reusing
       // alongside the current probe frame (verify the match by eye in the Studio).
-      s.recent = [{ emb: analyzedEmb, text, at: Date.now(), frameB64: frames[frames.length - 1]! }, ...(s.recent ?? [])].slice(0, REUSE_MAX);
+      s.recent = [{ emb: analyzedEmb, text, at: Date.now(), frameB64: lastKept.b64 }, ...(s.recent ?? [])].slice(0, REUSE_MAX);
     }
     return true;
   }
@@ -412,6 +456,23 @@ export function visionSnapshotProcessor(
         s.lastTrigger = trigger;
         const committed = await captureOnce(s, WINDOW_FRAMES, FRAME_GAP_MS);
         if (!committed) { await sleep(500); continue; } // stream not live yet / inference failed
+        // POST-INFERENCE RE-PROBE: the loop was BLIND for the ~5s inference (busy-gated). A
+        // visual-only event that started AND ended inside that window is missed by the next
+        // ordinary probe (it compares the settled scene against the now-updated anchor). So
+        // right after committing, compare a FRESH frame against the just-set anchor: if it
+        // already moved past threshold, something happened during/just-after the inference —
+        // loop IMMEDIATELY (skip the PROBE_MS nap) so it's analyzed now, not PROBE_MS later.
+        if (REPROBE_AFTER_INFERENCE && s.lastEmb) {
+          const jpeg = getFrame(s.ctx.streamId);
+          const emb = jpeg ? await embedFrame(jpeg) : null;
+          if (emb) {
+            const d = embedDistance(emb, s.lastEmb);
+            if (d >= EMBED_THRESHOLD) {
+              if (EMBED_DEBUG) console.log(`[vision] ${s.ctx.dockId} post-inference reprobe: d=${d.toFixed(3)} ≥ ${EMBED_THRESHOLD} → re-fire now`);
+              continue;                    // don't sleep — re-enter the loop, gate will trigger
+            }
+          }
+        }
       } else {
         s.skippedProbes++;               // scene unchanged → no GPU this round
       }

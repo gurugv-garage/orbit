@@ -57,6 +57,9 @@ interface Snapshot {
     // reused row: inputImages = [current probe frame, original analyzed frame]; reusedFromB64
     // names the original; reusedDist is the embedding match distance that triggered the reuse.
     reusedFromB64?: string; reusedDist?: number;
+    // window-dedup: sampledFrames = frames grabbed; frames = distinct frames actually sent to
+    // qwen after collapsing consecutive near-identical ones. singleFrame = collapsed to one.
+    sampledFrames?: number; singleFrame?: boolean;
     // the RAW STT transcript, preserved when the interpreter upgrades `text` — so the
     // 🎙 STT row shows what the live engine heard and the 🔊 audio row shows the
     // upgraded read. Absent on un-upgraded records (then the STT row uses `text`).
@@ -1241,7 +1244,13 @@ export function PerceptionStudio() {
                     {viewKind === 'vision' && !p.reused && ((p.inputImages && p.inputImages.length) || p.inputPrompt) && (
                       <details style={{ marginTop: 4 }}>
                         <summary style={{ cursor: 'pointer', fontSize: 10, color: '#7a8ca8' }}>
-                          🖼 what qwen saw{p.inputImages?.length ? ` (${p.inputImages.length} frames)` : ''} + prompt
+                          🖼 what qwen saw{p.inputImages?.length ? ` (${p.inputImages.length} frame${p.inputImages.length === 1 ? '' : 's'})` : ''} + prompt
+                          {p.sampledFrames != null && p.sampledFrames > (p.inputImages?.length ?? p.sampledFrames) && (
+                            <span title={`window dedup: sampled ${p.sampledFrames} frames, sent ${p.inputImages?.length} distinct (consecutive near-identical frames collapsed → fewer visual tokens)`}
+                              style={{ marginLeft: 6, color: '#7ee0a0' }}>
+                              ✂ {p.sampledFrames}→{p.inputImages?.length}{p.singleFrame ? ' (still)' : ''}
+                            </span>
+                          )}
                         </summary>
                         <div style={{ marginTop: 4 }}>
                           {/* the actual filmstrip qwen reasoned over — ALL window frames, in order. */}
