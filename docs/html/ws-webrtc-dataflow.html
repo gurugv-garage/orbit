@@ -112,14 +112,21 @@
       </tbody>
     </table>
     <p>The one thing it hands each processor is a <code class="inl">StreamContext</code> — the processor's whole outward surface: <code class="inl">ctx.emit()</code> (a result → the <code class="inl">perception</code> topic) and <code class="inl">ctx.publish()</code> (a fact → <em>other</em> processors, which is how the graph edges from M3 exist).</p>
+    <p><strong>One output format, always.</strong> Every processor — vision, STT, face, all of them — emits the <em>same</em> envelope, <code class="inl">PerceptionResult</code>. One <code class="inl">perception</code> topic carries them all, discriminated by <code class="inl">kind</code>; adding a processor adds a <code class="inl">kind</code>, never a new shape or topic. The hub stamps the common fields (it knows the identity); the processor fills only <code class="inl">kind</code> + <code class="inl">payload</code>:</p>
     <div class="code">
-      <div class="bar"><span class="fname">perception/perception-processing-hub.ts</span><span>the StreamContext it gives each processor</span></div>
-<pre><span class="k">const</span> ctx: StreamContext = {
-  streamId, dockId,                       <span class="c">// identity, resolved once</span>
-  emit: (r) => <span class="k">this</span>.#publishResult(makeResult({ ...r, streamId, dockId })),
-  publish: (channel, payload) => { <span class="c">/* fan to OTHER processors → edges */</span> },
-};
-<span class="k">this</span>.#safe(() => reg.p.onStreamStart(ctx));  <span class="c">// try/catch — a processor can't kill the SFU</span></pre>
+      <div class="bar"><span class="fname">perception/result.ts</span><span>PerceptionResult — the single envelope</span></div>
+<pre><span class="k">interface</span> PerceptionResult {
+  kind:    <span class="s">'identity'</span>|<span class="s">'presence'</span>|<span class="s">'scene'</span>|<span class="s">'transcript'</span>|…  <span class="c">// discriminator</span>
+  payload: unknown          <span class="c">// kind-specific body — the ONLY part that varies (M3)</span>
+  <span class="c">// ── stamped by the hub, identical for every kind ──</span>
+  dockId:  string           <span class="c">// who it's ABOUT (routing + console grouping)</span>
+  streamId:string           <span class="c">// producer peer id (provenance)</span>
+  source:  string           <span class="c">// which processor ('face-recognition', …)</span>
+  ts:      number
+  confidence?: number
+}
+<span class="c">// ctx.emit takes only { kind, payload, source, confidence? };</span>
+<span class="c">// the hub adds dockId/streamId/ts via makeResult, then publishes ×2.</span></pre>
     </div>
     <div class="note wire">
       <span class="tag">decoupled</span>
@@ -134,41 +141,47 @@
     <p class="step-title"><span class="step-n">M3</span>Not a flat fan-out — a graph, and every node has two outputs</p>
     <p>The hub delivers each processor only what it declared it wants (<code class="inl">mediaKinds</code> for RTP, <code class="inl">channels</code> for <code class="inl">client</code> facts), each callback try/catch-wrapped so one can't kill the SFU. But the processors aren't independent — <strong>some read others' work</strong>, and <strong>each writes to two places</strong>: the live <code class="inl">perception</code> topic <em>and</em> the durable SnapshotStore ring.</p>
     <div class="diagram">
-<pre>       RTP (Sfu tap)                          client facts (WS)
-       │        │                                    │
-   <span class="dim">audio</span>    <span class="dim">video</span>                                  │
-       ▼        ▼                                    ▼
-  <span class="hl">🎙 stt-watch</span>  <span class="hl">👤 face-recognition</span>  ◀── owns VP8→JPEG   <span class="hl">🫥 presence</span>
-   opus→PCM      decode + face-api            frame grabber   (facts only)
-   →VAD          │        │                                   │
-   →:8078 STT    │        └──frame──┐  └──recognitions──┐      │
-       │         │                 ▼                    ▼      │
-       │         │          <span class="hl">👁 vision</span>          <span class="hl">😮 identity</span>          │
-       │         │        reads face's frame     reads face + body    │
-       │         │        →:8080 VLM         (ego-aware debounce)      │
-       │         │              │                    │                 │
-   ┌───┴─────────┴──────────────┴────────────────────┴─────────────────┘
-   │   <span class="hl">🤖 bodymotion</span> (station feeds body commands → proprioception)
-   │        │
-   ▼        ▼   each node emits TWICE:
-  ① <span class="hl">store.add(snapshot)</span> ──▶ SnapshotStore ring  (durable; the memory arm)
-  ② <span class="hl">ctx.emit(result)</span>   ──▶ bus [<span class="hlw">perception</span>] ×2  (live; dock + console)</pre>
+<pre>  <span class="dim">──edges labelled with the DATA that crosses them──</span>
+
+  <span class="hlw">RtpPacket</span>{audio}   <span class="hlw">RtpPacket</span>{video}          <span class="hlw">ChannelItem</span>{client.*}
+       │                │                             │
+       ▼                ▼                             ▼
+  <span class="hl">🎙 stt-watch</span>     <span class="hl">👤 face-recognition</span>              <span class="hl">🫥 presence</span>
+   PCM→VAD→:8078     decode VP8→<span class="hlw">JPEG</span> + face-api        (facts only)
+       │                │        │                    │
+       │       <span class="hlw">JPEG frame</span>│        │<span class="hlw">DetectedFace[]</span>          │
+       │                ▼        ▼                     │
+       │           <span class="hl">👁 vision</span>    <span class="hl">😮 identity</span>               │
+       │           :8080 VLM   fuse + debounce         │
+       │                │        │                     │
+       └────────────────┴────────┴─────────────────────┘
+                        │  every node calls ctx.emit(…)
+      ┌─────────────────┴──────────────────┐
+      ▼ ①                                  ▼ ②
+  <span class="hl">store.add(</span><span class="hlw">SnapshotRecord</span><span class="hl">)</span>              <span class="hl">ctx.emit(</span><span class="hlw">PerceptionResult</span><span class="hl">)</span>
+  {interval, source,               {kind, payload, +hub stamps
+   payload:{text,…}}                dockId/streamId/ts}
+      │                                  │
+      ▼  durable                         ▼  live, ×2
+  SnapshotStore ring               bus [<span class="hlw">perception</span>] → dock + console
+  (→ the memory arm)</pre>
     </div>
     <p><strong>The edges are the point.</strong> Only <code class="inl">face-recognition</code> decodes video (one ffmpeg per dock); <code class="inl">vision</code> and <code class="inl">identity</code> read <em>its</em> decoded frame and recognitions rather than decoding again. That coupling is safe because everything is keyed to the same <code class="inl">streamId</code>.</p>
+    <p>The envelope (M2) is identical for all; here is the part that <strong>differs per processor — the <code class="inl">kind</code> and the <code class="inl">payload</code></strong> it fills in:</p>
     <table class="cmp">
-      <thead><tr><th>Processor</th><th>Consumes</th><th>Emits</th></tr></thead>
+      <thead><tr><th>Processor</th><th>Consumes (input shape)</th><th><code class="inl">kind</code> → <code class="inl">payload</code> shape</th></tr></thead>
       <tbody>
-        <tr><td class="rtcc">🎙 stt-watch</td><td>audio RTP → PCM → VAD utterances → STT sidecar :8078</td><td><code class="inl">speech</code> / <code class="inl">sound</code> snapshot + <code class="inl">onFinal</code> transcript</td></tr>
-        <tr><td class="rtcc">👤 face-recognition</td><td>video RTP → decodes VP8→JPEG (owns the grabber) → face-api</td><td>the decoded frame + recognitions (read by others)</td></tr>
-        <tr><td class="rtcc">👁 vision-snapshot</td><td><em>face's</em> frame (no own decode) → qwen2.5-VL :8080</td><td><code class="inl">vision</code> / <code class="inl">scene</code> snapshot</td></tr>
-        <tr><td class="rtcc">😮 identity-snapshot</td><td><em>face's</em> recognitions + <em>bodymotion's</em> ego-motion</td><td><code class="inl">identity</code> / <code class="inl">emotion</code> snapshot + who's-present</td></tr>
-        <tr><td class="rtcc">🫥 presence</td><td><code class="inl">client.*</code> facts (WS) — no media</td><td>presence state</td></tr>
-        <tr><td class="rtcc">🤖 bodymotion</td><td>the body's own motion commands (station-fed)</td><td><code class="inl">bodymotion</code> proprioception snapshot</td></tr>
+        <tr><td class="rtcc">🎙 stt-watch</td><td><code class="inl">RtpPacket</code> (audio) → PCM → VAD utterance → STT :8078</td><td><code class="inl">transcript</code> → <code class="inl">{ text, isFinal }</code></td></tr>
+        <tr><td class="rtcc">👤 face-recognition</td><td><code class="inl">RtpPacket</code> (video) → decodes VP8→JPEG (owns grabber)</td><td>the decoded frame + recognitions (read by others; not a result)</td></tr>
+        <tr><td class="rtcc">👁 vision-snapshot</td><td><em>face's</em> JPEG frame → qwen2.5-VL :8080</td><td><code class="inl">scene</code> → <code class="inl">{ description, change? }</code></td></tr>
+        <tr><td class="rtcc">😮 identity-snapshot</td><td><em>face's</em> recognitions + <em>bodymotion's</em> ego-motion</td><td><code class="inl">identity</code> → <code class="inl">{ name }</code>; <code class="inl">emotion</code> → <code class="inl">{ kind, confidence }</code></td></tr>
+        <tr><td class="rtcc">🫥 presence</td><td><code class="inl">ChannelItem</code> (<code class="inl">client.*</code> fact) — no media</td><td><code class="inl">presence</code> → <code class="inl">{ present }</code></td></tr>
+        <tr><td class="rtcc">🤖 bodymotion</td><td>the body's motion commands (station-fed)</td><td><code class="inl">bodymotion</code> → <code class="inl">{ text, … }</code></td></tr>
       </tbody>
     </table>
     <div class="note">
-      <span class="tag">two sinks, remember</span>
-      <p>Output ① (the ring) and ② (the topic) serve different masters. ② is the <em>live</em> reaction — reaches the dock + console this instant. ① is the <em>record</em> — it accumulates into the memory arm below. A single snapshot does both.</p>
+      <span class="tag">two sinks, two shapes</span>
+      <p>The live result (② → <code class="inl">perception</code> topic) is a <code class="inl">PerceptionResult</code>. The durable record (① → the ring) is a <code class="inl">SnapshotRecord</code> — a different shared shape: <code class="inl">{ dockId, source, interval:{from,to,durationMs}, payload:{ text, …extra } }</code>, IST-stamped. One is for reacting now; the other is the memory arm's raw feed. A processor writes both.</p>
     </div>
   </div>
 </section>
