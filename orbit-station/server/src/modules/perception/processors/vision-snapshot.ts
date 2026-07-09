@@ -104,19 +104,22 @@ const EMBED_DEBUG = process.env.VISION_EMBED_DEBUG === '1';
  *  head motion suppressed, and confirmed a real change still fires the moment the head
  *  settles. VISION_SELFMOTION_SUPPRESS=0 disables it. */
 const SELFMOTION_SUPPRESS = process.env.VISION_SELFMOTION_SUPPRESS !== '0';
-/** RECENT-ANALYSIS CACHE (VISION_REUSE_CACHE=1, opt-in until proven): while panning, the
- *  dock sweeps the same few views repeatedly — reuse a fresh, near-identical view's
- *  description instead of re-calling the VLM. Guards (all deliberately tight): reuse only
- *  if embedding distance < REUSE_DIST (0.12: measured on the real dock — a physical
- *  return-to-same-view lands ~0.10 with servo/framing tolerance, while real scene changes
- *  fire at 0.4+, so 0.12 sits in the safe gap), the cached entry is younger than REUSE_TTL_MS,
- *  and we never hold more than
- *  REUSE_MAX entries. Short TTL is the safety: a person can't appear+vanish inside it
- *  without the embedding being far enough to MISS the cache. */
+/** RECENT-ANALYSIS CACHE: the dock is stationary in a mostly-static room and sweeps its head
+ *  across the same few views for minutes — reuse a near-identical view's description instead
+ *  of re-calling the VLM. Tuned 2026-07-10 after live data showed the cache was starved: with
+ *  a 20 s TTL it held 0–1 entries (the room map evicted before the head swept back), and 9 of
+ *  17 misses sat at d=0.12–0.20 — the SAME view slightly re-framed, just over the old 0.12 bar.
+ *   • REUSE_DIST 0.18 — captures the same-view-reframed band. Still safe: a person entering
+ *     moves the embedding 0.25–0.53 (measured), far past 0.18, so they can never match a cached
+ *     empty-room view. Genuine scene changes fire at 0.4+ — a wide gap remains.
+ *   • REUSE_TTL_MS 120 s — the room is static for minutes; a 20 s memory threw the map away
+ *     constantly. TTL is NOT the safety (the distance gate is): a transient person can't match a
+ *     cached empty view regardless of TTL, so a longer memory is safe and hugely more effective.
+ *   • REUSE_MAX 16 — hold the full set of views a sweep visits, not just the last one or two. */
 const REUSE_CACHE = process.env.VISION_REUSE_CACHE !== '0';
-const REUSE_DIST = Number(process.env.VISION_REUSE_DIST ?? 0.12);
-const REUSE_TTL_MS = Number(process.env.VISION_REUSE_TTL_MS ?? 20_000);
-const REUSE_MAX = Number(process.env.VISION_REUSE_MAX ?? 8);
+const REUSE_DIST = Number(process.env.VISION_REUSE_DIST ?? 0.18);
+const REUSE_TTL_MS = Number(process.env.VISION_REUSE_TTL_MS ?? 120_000);
+const REUSE_MAX = Number(process.env.VISION_REUSE_MAX ?? 16);
 /** WINDOW DEDUP: the 5-frame window exists to capture MOTION ("what is happening across
  *  these frames"). On a static scene the 5 frames are near-identical, so we pay 5× the
  *  visual-token prefill to tell qwen "nothing moved" five times. Collapse consecutive
