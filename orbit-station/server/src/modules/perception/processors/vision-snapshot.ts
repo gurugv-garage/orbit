@@ -520,6 +520,22 @@ export function visionSnapshotProcessor(
         } else if (Date.now() - s.lastAnalyzedAt >= REFRESH_MS) trigger = 'heartbeat';
         else trigger = null;
         if (!trigger) { accumulateGap(s, 'no-change', jpeg); s.skippedProbes++; await sleep(PROBE_MS); continue; }
+        // A sense-wake / heartbeat fires on an UNCHANGED view (changed===false). The visual
+        // cache check above only ran for changed views — so without this, waking on audio (or
+        // the slow heartbeat) re-runs the VLM on a view we already described, reproducing the
+        // same text (or re-rolling a hallucination). If this still-static view matches a cached
+        // one, REUSE it. sense-wake keeps its value where it matters: an unknown/new view isn't
+        // cached, so it still gets a genuine look. (embedChanged returned probeEmb even when the
+        // gate said "no change", so we have the embedding here.)
+        if (probeEmb) {
+          const hit = reuseFromCache(s, probeEmb);
+          if (EMBED_DEBUG) console.log(`[vision] ${s.ctx.dockId} ${trigger} cache-check: ${s.recent?.length ?? 0} entries → ${hit ? `HIT (d=${hit.dist.toFixed(3)})` : 'miss'}`);
+          if (hit) {
+            flushGap(s);
+            commitReused(s, hit, probeEmb, jpeg!.toString('base64'));
+            s.skippedProbes++; await sleep(PROBE_MS); continue;
+          }
+        }
       }
       if (trigger) {
         s.lastTrigger = trigger;
