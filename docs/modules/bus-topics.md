@@ -1,11 +1,17 @@
 # Bus topics
 
-The station's spine is one in-process **`Bus`** ([`core/bus.ts`](../../orbit-station/server/src/core/bus.ts)) — a generic
-`Map<topic, Set<handler>>` with `on(topic, fn)` and `publish(msg)`, nothing more.
-Everything that happens — a peer connecting, a config change, a body command, a
-perception result — is a `BusMessage` on a **topic**. The
-[`WebSocketGateway`](websocket-gateway.md) bridges the bus to/from sockets;
-modules subscribe to react.
+The station's spine is one **in-memory** `Bus` ([`core/bus.ts`](../../orbit-station/server/src/core/bus.ts)) —
+a generic `Map<topic, Set<handler>>` with `on(topic, fn)` and `publish(msg)`,
+nothing more. It is primarily how the station's **modules talk to each other**:
+one module publishes a `BusMessage` on a **topic**, other modules subscribed to
+that topic react — all synchronous, same process, no serialization, no network.
+
+Some of that traffic also needs to reach a device or browser. That's the
+[`WebSocketGateway`](websocket-gateway.md)'s job: it is the one bridge between
+the in-memory bus and the WebSocket wire (see
+[In-memory vs the wire](#in-memory-vs-the-wire)). Modules never touch a socket —
+they publish to a topic, and the gateway carries it out to any peer that
+subscribed.
 
 > There is one bus and **15 topics** on it. "The dock's facts" and "perception
 > results" are different *topics* (`client` vs `perception`), opposite
@@ -19,7 +25,8 @@ modules subscribe to react.
 - [The registry](#the-registry)
 - [Three patterns make it legible](#three-patterns-make-it-legible)
 - [Producer split = direction](#producer-split--direction)
-- [The bridge](#the-bridge)
+- [In-memory vs the wire](#in-memory-vs-the-wire)
+- [The bridge, mechanically](#the-bridge-mechanically)
 - [Directed delivery (`to` / `toAddr`)](#directed-delivery-to--toaddr)
 - [Adding a topic](#adding-a-topic)
 - [Related](#related)
@@ -48,7 +55,7 @@ publishes, the gateway sends it out as an `event` frame), **↔** both, **intern
 | **`conductor`** | — | conductor module | — (REST surface only, for now) | per-dock behaviour + task governance |
 | **`slack`** | ↑ | slack module | Slack (Socket Mode) peer | inbound `message` / `mention` / `dm` (ingest only) |
 | **`feedback`** | ↑ | feedback module | app peer | session-feedback flag → full debugging dump (MD) |
-| **`*`** | — | **`WebSocketGateway` only** | — | the one wildcard subscription — see [The bridge](#the-bridge) |
+| **`*`** | — | **`WebSocketGateway` only** | — | the one wildcard subscription — see [In-memory vs the wire](#in-memory-vs-the-wire) |
 
 Kinds are the ones observed in the tree at time of writing; a topic isn't a
 closed set — a producer can send a new `kind` and consumers ignore what they
@@ -81,15 +88,46 @@ You can't see direction from the topic name alone; it comes from *who produces*:
 A peer-produced message is stamped `source: peer.id` by the gateway; a
 station-produced one is `source: 'station'`.
 
-## The bridge
+## In-memory vs the wire
 
-The gateway's single `bus.on('*')` turns **every** bus message into an outbound
-`event` frame, delivered only to peers **subscribed to that message's topic**
-([`websocket-gateway.ts`](../../orbit-station/server/src/core/websocket-gateway.ts)).
-This is why a module never touches a socket: it publishes to a topic, and any
-peer that `subscribe`d to that topic receives it. The reverse — a peer's inbound
-`publish` frame — is landed on the bus by the same gateway, stamped with the
-peer's id as `source`.
+The bus is **entirely in-memory**. `publish()` synchronously invokes handler
+functions in the same process; a `BusMessage` is a live JS object passed by
+reference. It never serializes, never opens a socket. So the bus is *never* "over
+the wire" — it is module↔module comms, in-process.
+
+Traffic reaches the wire only because the [`WebSocketGateway`](websocket-gateway.md)
+bridges it — and it is the **only** thing that does. Every other module talks to
+the bus and nothing else. Whether a given message *also* leaves the process is
+purely the gateway's per-subscriber fan-out decision:
+
+- **In-memory only** — no peer subscribed to the topic. E.g. `obs` (observability
+  ingest — consumed by a module, never by a device), and station-internal
+  announcements consumed only by other modules.
+- **In-memory + wire** — a peer subscribed to the topic, so the gateway also
+  serializes and sends it. E.g. `agent` / `perception` / `bodylink` → the dock;
+  `config` / `ota` → a device.
+
+The message did the same in-memory thing in both cases; only the gateway's
+delivery differs.
+
+> **Mental model.** The bus is a room where modules talk in person. The gateway
+> is the one door: it carries what's said in the room out to peers on the
+> network, and brings peers' messages in. Nothing crosses the wire except through
+> that door — which is why one class owns the socket (`WebSocketGateway`) and the
+> other is just the room (`Bus`).
+
+## The bridge, mechanically
+
+Two directions, both in the gateway
+([`websocket-gateway.ts`](../../orbit-station/server/src/core/websocket-gateway.ts)):
+
+- **Out:** a single `bus.on('*')` subscription. Every bus message becomes an
+  outbound `event` frame, sent only to peers subscribed to that message's topic
+  (and, if `to`/`toAddr` is set, only the addressed one).
+- **In:** a peer's `publish` frame is landed on the bus via `bus.publish(...)`,
+  stamped `source: <peer id>`.
+
+That `*` subscription is the only reason bus traffic reaches a socket at all.
 
 ## Directed delivery (`to` / `toAddr`)
 
