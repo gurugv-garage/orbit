@@ -88,11 +88,12 @@ const EMBED_THRESHOLD = Number(process.env.VISION_EMBED_THRESHOLD ?? 0.06);
  *  live 2026-07-09: static dim scene ~0.006-0.02, a person walking in 0.25-0.53 — a huge
  *  clean gap, so 0.06 is well-separated and not a knife-edge. */
 const EMBED_DEBUG = process.env.VISION_EMBED_DEBUG === '1';
-/** VISION_SELFMOTION_SUPPRESS=1 → defer a change-trigger while the head is panning (the
- *  view slid because WE moved, not the world) — a deferral, not a cache. Opt-in until the
- *  self-motion fraction is measured on a live body (2026-07-09 finding: faceFollow pans
- *  never reached the bodymotion stream, so this signal now comes from motion.recentlyMoved).*/
-const SELFMOTION_SUPPRESS = process.env.VISION_SELFMOTION_SUPPRESS === '1';
+/** Defer a change-trigger while the head is panning (the view slid because WE moved, not
+ *  the world) — a deferral, not a cache (no stale-description risk; the settled next probe
+ *  re-checks). DEFAULT ON, validated live 2026-07-09: ~45% of would-be VLM calls during
+ *  head motion suppressed, and confirmed a real change still fires the moment the head
+ *  settles. VISION_SELFMOTION_SUPPRESS=0 disables it. */
+const SELFMOTION_SUPPRESS = process.env.VISION_SELFMOTION_SUPPRESS !== '0';
 
 /** 16×16 grayscale ZERO-MEAN signature of a JPEG (null on decode failure). Subtracting
  *  the frame's own mean makes the gate exposure-invariant: a night camera's auto-exposure
