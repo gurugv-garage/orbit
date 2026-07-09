@@ -58,6 +58,10 @@ interface StreamState {
    *  utterance (continuous conversation re-woke vision every ~20 s to re-describe an
    *  unchanged scene — seen live 2026-07-08). Pixels still trigger instantly. */
   lastSenseWakeAt?: number;
+  /** RECENT-ANALYSIS CACHE: the last few views we actually described, so a pan that sweeps
+   *  back to a just-seen view (staircase → gym → staircase) REUSES the description instead
+   *  of re-calling the 5 s VLM. Bounded + expiring — a recent memory, not a database. */
+  recent?: Array<{ emb: Float32Array; text: string; at: number }>;
 }
 
 /** Change-gate knobs. delta is mean |Δ| on a 16×16 grayscale [0..1]: sensor noise on a
@@ -94,6 +98,17 @@ const EMBED_DEBUG = process.env.VISION_EMBED_DEBUG === '1';
  *  head motion suppressed, and confirmed a real change still fires the moment the head
  *  settles. VISION_SELFMOTION_SUPPRESS=0 disables it. */
 const SELFMOTION_SUPPRESS = process.env.VISION_SELFMOTION_SUPPRESS !== '0';
+/** RECENT-ANALYSIS CACHE (VISION_REUSE_CACHE=1, opt-in until proven): while panning, the
+ *  dock sweeps the same few views repeatedly — reuse a fresh, near-identical view's
+ *  description instead of re-calling the VLM. Guards (all deliberately tight): reuse only
+ *  if embedding distance < REUSE_DIST (well under the change threshold = "basically the same
+ *  view"), the cached entry is younger than REUSE_TTL_MS, and we never hold more than
+ *  REUSE_MAX entries. Short TTL is the safety: a person can't appear+vanish inside it
+ *  without the embedding being far enough to MISS the cache. */
+const REUSE_CACHE = process.env.VISION_REUSE_CACHE === '1';
+const REUSE_DIST = Number(process.env.VISION_REUSE_DIST ?? 0.04);
+const REUSE_TTL_MS = Number(process.env.VISION_REUSE_TTL_MS ?? 20_000);
+const REUSE_MAX = Number(process.env.VISION_REUSE_MAX ?? 8);
 
 /** 16×16 grayscale ZERO-MEAN signature of a JPEG (null on decode failure). Subtracting
  *  the frame's own mean makes the gate exposure-invariant: a night camera's auto-exposure
@@ -225,10 +240,49 @@ export function visionSnapshotProcessor(
     // cheap probe can tell whether anything has moved since.
     const lastJpeg = Buffer.from(frames[frames.length - 1]!, 'base64');
     s.lastSig = frameSignature(lastJpeg) ?? s.lastSig;
-    s.lastEmb = (await embedFrame(lastJpeg)) ?? s.lastEmb;   // semantic anchor (null → pixel path)
+    const analyzedEmb = (await embedFrame(lastJpeg)) ?? undefined;
+    s.lastEmb = analyzedEmb ?? s.lastEmb;                    // semantic anchor (null → pixel path)
     s.lastAnalyzedAt = Date.now();
     s.skippedProbes = 0;
+    // RECENT-ANALYSIS CACHE: remember this view's description so a pan sweeping back to it
+    // reuses it instead of re-calling the VLM. Only cache real (non-empty) descriptions.
+    if (REUSE_CACHE && analyzedEmb && text.trim()) {
+      s.recent = [{ emb: analyzedEmb, text, at: Date.now() }, ...(s.recent ?? [])].slice(0, REUSE_MAX);
+    }
     return true;
+  }
+
+  /** Commit a vision record with a REUSED description (cache hit — no VLM call). Advances
+   *  the change-gate anchor to this frame's embedding so the loop doesn't immediately
+   *  re-fire on the same view; tags reused:true so the Studio shows it wasn't a fresh look. */
+  function commitReused(s: StreamState, text: string, emb: Float32Array): void {
+    const now = new Date();
+    store.add(makeSnapshot({
+      dockId: s.ctx.dockId,
+      source: { id: s.ctx.streamId, kind: 'vision', device: 'dock-webrtc', host: 'station' },
+      model: { name: MODEL_NAME, endpoint: `${TEMPORAL_URL}/temporal` },
+      from: now, to: now,
+      payload: { text, frames: 0, latencyMs: 0, inferMs: 0, gatedProbes: s.skippedProbes,
+        gateTrigger: 'reused', reused: true, camMoving: cameraMoving?.(s.ctx.dockId) ?? false },
+    }));
+    s.ctx.emit({ kind: 'scene', source: 'vision-snapshot', payload: { description: text }, confidence: 0.7 });
+    s.lastEmb = emb;               // anchor to the reused view (don't re-fire on it)
+    s.lastAnalyzedAt = Date.now();
+    s.skippedProbes = 0;
+  }
+
+  /** Cache lookup: does the probe embedding match a FRESH recently-analyzed view closely
+   *  enough to reuse its description (skip the VLM)? Returns the reused text or null. */
+  function reuseFromCache(s: StreamState, emb: Float32Array): { text: string; dist: number } | null {
+    if (!REUSE_CACHE || !s.recent?.length) return null;
+    const now = Date.now();
+    s.recent = s.recent.filter((e) => now - e.at < REUSE_TTL_MS);   // expire stale entries
+    let best: { text: string; dist: number } | null = null;
+    for (const e of s.recent) {
+      const d = embedDistance(emb, e.emb);
+      if (d < REUSE_DIST && (!best || d < best.dist)) best = { text: e.text, dist: d };
+    }
+    return best;
   }
 
   /** The CHANGE-GATED loop: every PROBE_MS grab ONE frame and compare its 16×16
@@ -255,12 +309,12 @@ export function visionSnapshotProcessor(
    *  ANALYZED frame's. Returns a trigger string if changed, false if not, null if the frame
    *  couldn't be probed (fail open). Updates s.lastEmb? no — the anchor is only reset on a
    *  real analysis (doCapture), so drift accumulates against a stable reference. */
-  async function embedChanged(s: StreamState, jpeg: Buffer | null): Promise<string | false | null> {
+  async function embedChanged(s: StreamState, jpeg: Buffer | null): Promise<{ trigger: string | false; emb: Float32Array } | null> {
     const emb = jpeg ? await embedFrame(jpeg) : null;
     if (!emb) return null;
     const d = embedDistance(emb, s.lastEmb!);
     if (EMBED_DEBUG) console.log(`[embed-probe] ${s.ctx.dockId} d=${d.toFixed(3)} ${d >= EMBED_THRESHOLD ? 'FIRE' : 'skip'} (thr ${EMBED_THRESHOLD})`);
-    return d >= EMBED_THRESHOLD ? `scene-change emb=${d.toFixed(3)}` : false;
+    return { trigger: d >= EMBED_THRESHOLD ? `scene-change emb=${d.toFixed(3)}` : false, emb };
   }
 
   /** PIXEL change probe (fallback only): 16×16 signature vs the anchor, measured as EXCESS
@@ -307,15 +361,26 @@ export function visionSnapshotProcessor(
         // compression flicker that false-fired pixels; verified static ~0.006-0.02 vs a
         // person entering 0.25-0.53. Fallback: the pixel signature + learned noise floor,
         // used only when the embedder is unavailable (VISION_EMBED_GATE=0 / model missing).
-        const changed = s.lastEmb ? await embedChanged(s, jpeg) : pixelChanged(s, jpeg);
-        // SELF-MOTION SUPPRESSION (VISION_SELFMOTION_SUPPRESS=1, opt-in until measured): a
-        // change-trigger WHILE THE HEAD IS PANNING is most likely the view sliding because
-        // WE moved, not the world changing — so DEFER (don't wake the VLM), let the head
-        // settle, and re-probe next tick against a stable view. This is a deferral, not a
-        // cache: no stale description risk. captureNow/first-look bypass (not gated here).
+        const probe = s.lastEmb ? await embedChanged(s, jpeg) : null;
+        const changed = probe ? probe.trigger : (s.lastEmb ? null : pixelChanged(s, jpeg));
+        const probeEmb = probe?.emb ?? null;
+        // SELF-MOTION SUPPRESSION: a change-trigger WHILE THE HEAD IS PANNING is most likely
+        // the view sliding because WE moved, not the world changing — DEFER (don't wake the
+        // VLM), let the head settle, re-probe next tick. A deferral, not a cache.
         if (SELFMOTION_SUPPRESS && changed && cameraMoving?.(s.ctx.dockId)) {
           if (EMBED_DEBUG) console.log(`[vision] ${s.ctx.dockId} defer: ${changed} but head is moving (self-motion)`);
           s.skippedProbes++; await sleep(PROBE_MS); continue;
+        }
+        // RECENT-ANALYSIS CACHE: the view changed, but is it a view we JUST described (a pan
+        // sweeping back to the staircase we saw 8 s ago)? Reuse that description — commit a
+        // record with it, skip the 5 s VLM. Tight distance + short TTL keep it safe.
+        if (changed && probeEmb) {
+          const hit = reuseFromCache(s, probeEmb);
+          if (hit) {
+            if (EMBED_DEBUG) console.log(`[vision] ${s.ctx.dockId} REUSE (d=${hit.dist.toFixed(3)}): ${hit.text.slice(0, 50)}`);
+            commitReused(s, hit.text, probeEmb);
+            s.skippedProbes++; await sleep(PROBE_MS); continue;
+          }
         }
         // changed === null → couldn't probe (no frame) → fail OPEN (look).
         if (changed === null) trigger = 'no-probe-frame';

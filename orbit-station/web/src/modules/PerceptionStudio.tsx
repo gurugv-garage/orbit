@@ -53,7 +53,7 @@ interface Snapshot {
     // vision: why this analysis ran (scene-change / local-change / sense-wake / heartbeat).
     gateTrigger?: string;
     // vision leak-hunt: the exact frame qwen saw + the prompt it received.
-    inputImages?: string[]; inputPrompt?: string;
+    inputImages?: string[]; inputPrompt?: string; reused?: boolean;
     // the RAW STT transcript, preserved when the interpreter upgrades `text` — so the
     // 🎙 STT row shows what the live engine heard and the 🔊 audio row shows the
     // upgraded read. Absent on un-upgraded records (then the STT row uses `text`).
@@ -1242,7 +1242,8 @@ export function PerceptionStudio() {
                     {conf && <span title="match/expression confidence">◷ {conf}</span>}
                     {!isAudio && p.inferMs != null && <span title="inference latency (sidecar/in-process compute)">⚡{fmtMs(p.inferMs)}</span>}
                     {viewKind === 'vision' && p.frames != null && <span title="frames sampled this window">🎞{p.frames}</span>}
-                    {viewKind === 'vision' && p.gateTrigger && <span title="why this analysis ran (the change gate's trigger)" style={{ fontSize: 10, color: '#8fa8c8' }}>⚑{p.gateTrigger}</span>}
+                    {viewKind === 'vision' && p.reused && <span title="reused a recently-analyzed near-identical view (no VLM call)" style={{ fontSize: 10, color: '#7ee0a0', border: '1px solid #2c6f4a', borderRadius: 4, padding: '0 5px' }}>♻ reused</span>}
+                    {viewKind === 'vision' && p.gateTrigger && !p.reused && <span title="why this analysis ran (the change gate's trigger)" style={{ fontSize: 10, color: '#8fa8c8' }}>⚑{p.gateTrigger}</span>}
                     {isStt && p.noSpeechProb != null && (
                       <span title="STT metrics — avg_logprob / no_speech_prob / compression_ratio">
                         lp{p.avgLogprob?.toFixed(2)} ns{p.noSpeechProb.toFixed(2)} cr{p.compressionRatio?.toFixed(1)}
