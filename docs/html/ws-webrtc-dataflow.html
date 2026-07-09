@@ -111,30 +111,10 @@
         <tr><td colspan="2" style="color:var(--ink)">a processor's <code class="inl">ctx.emit(result)</code></td><td>stamped via <code class="inl">makeResult</code> → <code class="inl">perception</code> topic ×2</td></tr>
       </tbody>
     </table>
-    <p>The one thing it hands each processor is a <code class="inl">StreamContext</code> — the processor's whole outward surface: <code class="inl">ctx.emit()</code> (a result → the <code class="inl">perception</code> topic) and <code class="inl">ctx.publish()</code> (a fact → <em>other</em> processors, which is how the graph edges from M3 exist).</p>
+    <p>It hands each processor a <code class="inl">StreamContext</code> — the processor's whole outward surface: <code class="inl">ctx.emit(result)</code> (→ the <code class="inl">perception</code> topic) and <code class="inl">ctx.publish(channel, …)</code> (a fact → <em>other</em> processors — the graph edges in M3). The hub's <code class="inl">emit</code> takes the finished result, stamps routing fields onto it (<code class="inl">makeResult({...r, streamId, dockId, ts})</code>), and publishes ×2.</p>
     <div class="note warn">
-      <span class="tag">the hub does NOT create meaning</span>
-      <p>Key point: at this stage the hub has only audio, video, and facts — it has <em>no idea</em> what "presence" or "identity" is. It never builds a <code class="inl">PerceptionResult</code>. The <strong>processor</strong> does: it runs the model (VAD / face-api / the VLM sidecar), decides "this is <code class="inl">presence</code>, <code class="inl">{present:true}</code>", and calls <code class="inl">ctx.emit(that)</code>. The hub's <code class="inl">emit</code> only <em>stamps</em> routing fields onto the already-built result (<code class="inl">makeResult({...r, streamId, dockId})</code>) and forwards it. Meaning is 100% the processor's; the hub is a dumb pipe that enforces the envelope shape.</p>
-    </div>
-    <p><strong>One output format, always.</strong> Every processor — vision, STT, face, all of them — emits the <em>same</em> envelope, <code class="inl">PerceptionResult</code>. One <code class="inl">perception</code> topic carries them all, discriminated by <code class="inl">kind</code>; adding a processor adds a <code class="inl">kind</code>, never a new shape or topic. The processor fills <code class="inl">kind</code> + <code class="inl">payload</code> (the meaning); the hub only stamps the common routing fields:</p>
-    <div class="code">
-      <div class="bar"><span class="fname">perception/result.ts</span><span>PerceptionResult — the single envelope</span></div>
-<pre><span class="k">interface</span> PerceptionResult {
-  kind:    <span class="s">'identity'</span>|<span class="s">'presence'</span>|<span class="s">'scene'</span>|<span class="s">'transcript'</span>|…  <span class="c">// discriminator</span>
-  payload: unknown          <span class="c">// kind-specific body — the ONLY part that varies (M3)</span>
-  <span class="c">// ── stamped by the hub, identical for every kind ──</span>
-  dockId:  string           <span class="c">// who it's ABOUT (routing + console grouping)</span>
-  streamId:string           <span class="c">// producer peer id (provenance)</span>
-  source:  string           <span class="c">// which processor ('face-recognition', …)</span>
-  ts:      number
-  confidence?: number
-}
-<span class="c">// ctx.emit takes only { kind, payload, source, confidence? };</span>
-<span class="c">// the hub adds dockId/streamId/ts via makeResult, then publishes ×2.</span></pre>
-    </div>
-    <div class="note">
-      <span class="tag">kind is producer-owned, not consumer-demand</span>
-      <p>This is push, not pull — <strong>no consumer asks for anything.</strong> A processor emits whatever it computed; <code class="inl">kind</code> is the <em>producer's</em> self-declaration of <em>what kind of fact this is</em> (<code class="inl">stt-watch</code> always emits <code class="inl">transcript</code>; <code class="inl">face</code> always <code class="inl">identity</code> — a fixed 1:1). Consumers then <em>dispatch</em> on it (<code class="inl">switch(kind)</code>) to know how to read <code class="inl">payload</code>. So <code class="inl">kind</code> serves both sides but is <strong>authored by the producer</strong> — it's a tagged-union tag, not a request. (Compare a <code class="inl">tool-call</code>, which <em>is</em> demand: the model asks, the phone answers. Perception is the opposite — unsolicited broadcast.)</p>
+      <span class="tag">the hub creates no meaning</span>
+      <p>At this stage there is only audio, video, and facts — the hub has <em>no idea</em> what "presence" or "identity" is, and never builds a result. It runs models on nothing. The <strong>processor</strong> turns raw input into a <code class="inl">PerceptionResult</code> (next section); the hub only stamps identity onto it and forwards. It's a router, not an interpreter.</p>
     </div>
     <div class="note wire">
       <span class="tag">decoupled</span>
@@ -147,7 +127,8 @@
   <div class="wrap">
     <h2>Media plane · the processor graph</h2>
     <p class="step-title"><span class="step-n">M3</span>Not a flat fan-out — a graph, and every node has two outputs</p>
-    <p>The hub delivers each processor only what it declared it wants (<code class="inl">mediaKinds</code> for RTP, <code class="inl">channels</code> for <code class="inl">client</code> facts), each callback try/catch-wrapped so one can't kill the SFU. But the processors aren't independent — <strong>some read others' work</strong>, and <strong>each writes to two places</strong>: the live <code class="inl">perception</code> topic <em>and</em> the durable SnapshotStore ring.</p>
+    <p>Every processor implements one interface — <code class="inl">StreamProcessor</code> (<code class="inl">perception/processor.ts</code>): it declares <code class="inl">mediaKinds</code> / <code class="inl">channels</code> / <code class="inl">sources</code>, and gets <code class="inl">onStreamStart(ctx)</code>, <code class="inl">onRtp?</code>, <code class="inl">onChannelItem?</code>, <code class="inl">onStreamEnd</code>. That uniformity is <em>why</em> the hub's registry can treat them all the same. Each is a factory returning <code class="inl">StreamProcessor</code> (a few return <code class="inl">StreamProcessor &amp; {…}</code> to expose an extra method like <code class="inl">captureNow</code>).</p>
+    <p>The hub delivers each only what it declared, try/catch-wrapped so one can't kill the SFU. But they aren't independent — <strong>some read others' work</strong> — and <strong>each writes to two places</strong>: the live <code class="inl">perception</code> topic <em>and</em> the durable SnapshotStore ring.</p>
     <div class="diagram">
 <pre>  <span class="dim">──edges labelled with the DATA that crosses them──</span>
 
@@ -175,18 +156,34 @@
   (→ the memory arm)</pre>
     </div>
     <p><strong>The edges are the point.</strong> Only <code class="inl">face-recognition</code> decodes video (one ffmpeg per dock); <code class="inl">vision</code> and <code class="inl">identity</code> read <em>its</em> decoded frame and recognitions rather than decoding again. That coupling is safe because everything is keyed to the same <code class="inl">streamId</code>.</p>
-    <p>The envelope (M2) is identical for all; here is the part that <strong>differs per processor — the <code class="inl">kind</code> and the <code class="inl">payload</code></strong> it fills in:</p>
+    <p>Every processor emits the <em>same</em> envelope — <code class="inl">PerceptionResult</code>. One <code class="inl">perception</code> topic carries all of them, discriminated by <code class="inl">kind</code>; a new processor adds a <code class="inl">kind</code>, never a new shape or topic. The processor authors <code class="inl">kind</code> + <code class="inl">payload</code> (the meaning it just computed); the hub stamped the rest:</p>
+    <div class="code">
+      <div class="bar"><span class="fname">perception/result.ts</span><span>PerceptionResult — the one envelope every processor emits</span></div>
+<pre><span class="k">interface</span> PerceptionResult {
+  <span class="c">// ── the processor authors these two (its computed fact) ──</span>
+  kind:    <span class="s">'identity'</span>|<span class="s">'presence'</span>|<span class="s">'scene'</span>|<span class="s">'transcript'</span>|…  <span class="c">// what it asserts</span>
+  payload: unknown          <span class="c">// kind-specific body — see the table below</span>
+  confidence?: number
+  <span class="c">// ── the hub stamps these (M2), identical for every kind ──</span>
+  dockId:  string           <span class="c">// who it's ABOUT (routing + console grouping)</span>
+  streamId:string           <span class="c">// producer peer id (provenance)</span>
+  source:  string           <span class="c">// which processor</span>
+  ts:      number
+}</pre>
+    </div>
+    <p><code class="inl">kind</code> is producer-owned: each processor emits a fixed one (stt-watch → <code class="inl">transcript</code>, face → <code class="inl">identity</code>) — it's a self-declaration, push not pull. Consumers <code class="inl">switch(kind)</code> to know how to read <code class="inl">payload</code>. Here is that <code class="inl">kind → payload</code> map:</p>
     <table class="cmp">
-      <thead><tr><th>Processor</th><th>Consumes (input shape)</th><th><code class="inl">kind</code> → <code class="inl">payload</code> shape</th></tr></thead>
+      <thead><tr><th>Processor · code</th><th>Consumes (input shape)</th><th><code class="inl">kind</code> → <code class="inl">payload</code> shape</th></tr></thead>
       <tbody>
-        <tr><td class="rtcc">🎙 stt-watch</td><td><code class="inl">RtpPacket</code> (audio) → PCM → VAD utterance → STT :8078</td><td><code class="inl">transcript</code> → <code class="inl">{ text, isFinal }</code></td></tr>
-        <tr><td class="rtcc">👤 face-recognition</td><td><code class="inl">RtpPacket</code> (video) → decodes VP8→JPEG (owns grabber)</td><td>the decoded frame + recognitions (read by others; not a result)</td></tr>
-        <tr><td class="rtcc">👁 vision-snapshot</td><td><em>face's</em> JPEG frame → qwen2.5-VL :8080</td><td><code class="inl">scene</code> → <code class="inl">{ description, change? }</code></td></tr>
-        <tr><td class="rtcc">😮 identity-snapshot</td><td><em>face's</em> recognitions + <em>bodymotion's</em> ego-motion</td><td><code class="inl">identity</code> → <code class="inl">{ name }</code>; <code class="inl">emotion</code> → <code class="inl">{ kind, confidence }</code></td></tr>
-        <tr><td class="rtcc">🫥 presence</td><td><code class="inl">ChannelItem</code> (<code class="inl">client.*</code> fact) — no media</td><td><code class="inl">presence</code> → <code class="inl">{ present }</code></td></tr>
-        <tr><td class="rtcc">🤖 bodymotion</td><td>the body's motion commands (station-fed)</td><td><code class="inl">bodymotion</code> → <code class="inl">{ text, … }</code></td></tr>
+        <tr><td class="rtcc">🎙 stt-watch<br><span style="color:var(--ink-3);font-size:11px">processors/stt-watch.ts · sttWatchProcessor()</span></td><td><code class="inl">RtpPacket</code> (audio) → PCM → VAD utterance → STT :8078</td><td><code class="inl">transcript</code> → <code class="inl">{ text, isFinal }</code></td></tr>
+        <tr><td class="rtcc">👤 face-recognition<br><span style="color:var(--ink-3);font-size:11px">processors/face-recognition.ts · faceRecognitionProcessor()</span></td><td><code class="inl">RtpPacket</code> (video) → decodes VP8→JPEG (owns grabber)</td><td>the decoded frame + recognitions (read by others; not a result)</td></tr>
+        <tr><td class="rtcc">👁 vision-snapshot<br><span style="color:var(--ink-3);font-size:11px">processors/vision-snapshot.ts · visionSnapshotProcessor()</span></td><td><em>face's</em> JPEG frame → qwen2.5-VL :8080</td><td><code class="inl">scene</code> → <code class="inl">{ description, change? }</code></td></tr>
+        <tr><td class="rtcc">😮 identity-snapshot<br><span style="color:var(--ink-3);font-size:11px">processors/identity-snapshot.ts · identitySnapshotProcessor()</span></td><td><em>face's</em> recognitions + <em>bodymotion's</em> ego-motion</td><td><code class="inl">identity</code> → <code class="inl">{ name }</code>; <code class="inl">emotion</code> → <code class="inl">{ kind, confidence }</code></td></tr>
+        <tr><td class="rtcc">🫥 presence<br><span style="color:var(--ink-3);font-size:11px">processors/presence.ts · presenceProcessor()</span></td><td><code class="inl">ChannelItem</code> (<code class="inl">client.*</code> fact) — no media</td><td><code class="inl">presence</code> → <code class="inl">{ present }</code></td></tr>
+        <tr><td class="rtcc">🤖 bodymotion<br><span style="color:var(--ink-3);font-size:11px">processors/bodymotion-watch.ts · bodyMotionWatchProcessor()</span></td><td>the body's motion commands (station-fed)</td><td><code class="inl">bodymotion</code> → <code class="inl">{ text, … }</code></td></tr>
       </tbody>
     </table>
+    <p>All six are registered onto the hub in <a class="file" href="../../orbit-station/server/src/modules/perception/index.ts">perception/index.ts</a> (<code class="inl">hub.register(…)</code>), where the inter-processor edges are also wired (vision is handed <code class="inl">face.currentFrame</code>; identity is handed <code class="inl">face.recognizeAllCurrent</code> + <code class="inl">bodymotion.current</code>).</p>
     <div class="note">
       <span class="tag">two sinks, two shapes</span>
       <p>The live result (② → <code class="inl">perception</code> topic) is a <code class="inl">PerceptionResult</code>. The durable record (① → the ring) is a <code class="inl">SnapshotRecord</code> — a different shared shape: <code class="inl">{ dockId, source, interval:{from,to,durationMs}, payload:{ text, …extra } }</code>, IST-stamped. One is for reacting now; the other is the memory arm's raw feed. A processor writes both.</p>
