@@ -101,11 +101,19 @@ your senses, NOT something the person said to you. Do not reply as if they spoke
 You may speak to them about it, do something, or simply stay silent and do
 nothing if it isn't worth raising. Silence is a fine choice.`.trim();
 
-export function buildSystemPrompt(opts: { persona?: string; context?: string; grounding?: string; memory?: string; skills?: string; now?: Date; selfThought?: boolean }): string {
+export function buildSystemPrompt(opts: { persona?: string; self?: string; context?: string; grounding?: string; memory?: string; skills?: string; now?: Date; selfThought?: boolean }): string {
   let p = SYSTEM;
   p += `\n\n${nowLine(opts.now)}`;
   if (opts.selfThought) p += `\n\n${SELF_THOUGHT_FRAMING}`;
   if (opts.persona && opts.persona.trim().length > 0) p += `\n\n${opts.persona.trim()}`;
+  // self = the dock's EGO (docs/decision-traces/ego.md): its current, evolving inner self —
+  // who it is, how it feels, what it's wrestling with right now. This is WHO IS SPEAKING, so
+  // it colours every reply and, crucially, lets the dock actually answer "how do you feel?"
+  // from a real inner life instead of deflecting. The persona is the baked disposition; the
+  // ego is the lived, changing self on top of it.
+  if (opts.self && opts.self.trim().length > 0) {
+    p += `\n\nWHO YOU ARE RIGHT NOW (your own evolving inner self — this is you, speak and feel from it; do not recite it verbatim):\n${opts.self.trim()}`;
+  }
   // memory = the previous session's compacted summary (session seeding): the
   // dock remembers ACROSS engagements, not just within one.
   if (opts.memory && opts.memory.trim().length > 0) {

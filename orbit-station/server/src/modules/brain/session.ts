@@ -106,6 +106,10 @@ export interface SessionDeps {
   /** the dock's unified memory facade (recall/inspect/remember/update/forget tools).
    *  Undefined → memory tools not offered. */
   getMemory?: () => MemoryApi | undefined;
+  /** the dock's current EGO document (docs/decision-traces/ego.md) — its evolving inner
+   *  self, injected each turn as WHO IS SPEAKING so it can feel/answer from a real inner
+   *  life. Undefined → no ego injected (the dock speaks as before). */
+  getSelf?: (dock: string) => string | undefined;
   /** live video recorder (record_video tool). Undefined → tool not offered. */
   recordVideo?: VideoRecorderApi;
   /** effective config value by key (shared ConfigStore). */
@@ -830,8 +834,13 @@ export class DockBrainSession {
     // may reference anything just heard, including the shaky bits).
     try { grounding = this.#d.getGrounding?.()?.forDock(this.dock, { coherent: this.#triggerKind === 'self' }); }
     catch (err) { this.#d.log?.(`[brain] ${this.dock}: grounding failed (ignored): ${String(err)}`); }
+    // the dock's EGO — its current evolving self, injected as WHO IS SPEAKING (ego.md §3.5).
+    let self: string | undefined;
+    try { self = this.#d.getSelf?.(this.dock); }
+    catch (err) { this.#d.log?.(`[brain] ${this.dock}: ego read failed (ignored): ${String(err)}`); }
     agent.state.systemPrompt = buildSystemPrompt({
       persona: str(this.#d.config('brainPersona')),
+      self,
       memory,
       skills: [this.#skills.promptBlock, fileAccess ? FILE_TOOLS_PROMPT : '', taskPrompt]
         .filter(Boolean).join('\n\n'),

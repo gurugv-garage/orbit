@@ -40,6 +40,13 @@ export function introspectDock(dock: string, trigger: string) {
   return introspect(dock, recentExperience(dock), { trigger });
 }
 
+/** The dock's current ego document (or undefined if it's still the bare template — nothing
+ *  worth injecting yet). The brain reads this each turn as WHO IS SPEAKING (ego.md §3.5). */
+export function getSelf(dock: string): string | undefined {
+  const { text, fresh } = loadEgo(dock);
+  return fresh ? undefined : text; // don't inject the un-introspected template as "who you are"
+}
+
 export function egoModule(): StationModule {
   return {
     name: 'ego',

@@ -30,6 +30,7 @@ import type { Directory } from '../docks/directory.js';
 import type { MotionExecutor } from '../bodylink/motion.js';
 import { gesturesFromConfig } from '../bodylink/motion.js';
 import { getFaceTools, getPerceptionGrounding, getMemoryApi, getGateApi, getTranscriptApi, getPerceiveStore, getBgAddressedApi, noteSelfRemark, lastSalientAt } from '../perception/index.js';
+import { getSelf } from '../ego/index.js';
 import { isRecording } from '../capture/index.js';
 import { getObsAccess } from '../observability/index.js';
 import type { VideoRecorderApi } from '../perception/record/recorder.js';
@@ -413,7 +414,7 @@ export function brainModule(w: BrainWiring): StationModule {
       s = new DockBrainSession(dock, {
         bus, directory: w.directory, rpc, motion: w.motion, store,
         getFaces: getFaceTools, getGrounding: getPerceptionGrounding,
-        getMemory: getMemoryApi,
+        getMemory: getMemoryApi, getSelf,
         recordVideo: w.recordVideo, config: w.config,
         enrichSession: w.enrichSession,
       onSelfRemark: (dock, text) => noteSelfRemark(dock, text),
