@@ -17,12 +17,20 @@ import { CONDUCTED, type ConductedState, type World, type Tunings } from './cond
 import { reconcile, type Effects } from './reconcile.js';
 
 const TICK_MS = 1000;
-/** IDLE INTROSPECTION cadence (ego.md §3.2). The dock introspects when it's been idle at
- *  least INTROSPECT_IDLE_MS, and at most once every INTROSPECT_MIN_GAP_MS. Coarse by design —
- *  introspection is a slow, reflective LLM call, not a per-tick thing. The ego module's own
- *  10-min trace cooldown decides whether each introspection also snapshots the trace. */
-const INTROSPECT_IDLE_MS = Number(process.env.EGO_INTROSPECT_IDLE_MS ?? 600_000);   // idle ≥ 10 min
-const INTROSPECT_MIN_GAP_MS = Number(process.env.EGO_INTROSPECT_GAP_MS ?? 1_800_000); // ≤ once / 30 min
+/** IDLE INTROSPECTION cadence (ego.md §3.2). The dock introspects when it's been idle at least
+ *  INTROSPECT_IDLE_MS, and at most once every INTROSPECT_MIN_GAP_MS. Coarse by design — the ego
+ *  evolves on the SAME ~hourly rhythm as the perception self-compression (span-summaries), so it
+ *  reflects when a fresh hour of memory has consolidated, not every few minutes (avoids a "moody",
+ *  churning self). A strong EVENT can still trigger an earlier introspection out-of-band (recovery
+ *  / de-settle must not wait up to an hour); per-turn responses are always live regardless. Traces
+ *  from the past hour are all retained (ego-store), so event-driven extra introspections are
+ *  visible to the next one as churn, not silently overwritten. */
+const INTROSPECT_IDLE_MS = Number(process.env.EGO_INTROSPECT_IDLE_MS ?? 900_000);    // idle ≥ 15 min
+const INTROSPECT_MIN_GAP_MS = Number(process.env.EGO_INTROSPECT_GAP_MS ?? 3_600_000); // ≤ once / hour
+/** Anti-spam floor for EVENT-triggered introspections: even a strong event can't re-introspect
+ *  more often than this (a burst of events shouldn't churn the self). Well under the hourly idle
+ *  gap — the point of an event trigger is to react sooner than an hour, not every minute. */
+const EVENT_INTROSPECT_FLOOR_MS = Number(process.env.EGO_INTROSPECT_EVENT_FLOOR_MS ?? 5 * 60_000); // ≥ 5 min apart
 const INTROSPECT_ENABLED = process.env.EGO_INTROSPECT !== '0';
 
 export interface ConductorWiring {
@@ -75,7 +83,17 @@ interface DockState {
   lastIntrospectMs: number;
   /** true while an async introspection is in flight (don't overlap — it's an LLM call). */
   introspecting: boolean;
+  /** was someone present on the PREVIOUS tick — to detect a departure (present→absent) as a
+   *  strong event that can trigger an early introspection. undefined until the first tick. */
+  wasPresent?: boolean;
+  /** epoch someone first became continuously present (reset on each absence) — so a departure only
+   *  counts as a "strong event" after a SUSTAINED presence spell, not a detection flicker. */
+  presentSinceMs?: number;
 }
+
+/** A departure counts as a "strong event" only after REAL, sustained presence (someone was around
+ *  a while), not a momentary flicker — so a face-detection blip doesn't trigger introspection. */
+const DEPARTURE_MIN_PRESENCE_MS = 60_000; // present ≥ 1 min continuously before a departure is "real"
 
 const HISTORY_MAX = 30;
 /** Coalesce key: digits stripped, so "searching (pan 72°)" → "searching (pan #°)" and a
@@ -161,18 +179,44 @@ export function conductorModule(w: ConductorWiring): StationModule {
    *  reconcile: introspection is background cognition, not a start/stop lifecycle thing. Fire
    *  one when the dock has been idle ≥ INTROSPECT_IDLE_MS and it's been ≥ INTROSPECT_MIN_GAP_MS
    *  since the last one. Fire-and-forget (async LLM); `introspecting` guards against overlap. */
+  /** Fire an introspection now (shared by the idle heartbeat and the event-trigger). Respects the
+   *  hard guards — never mid-conversation, never overlapping — but the CALLER decides the cadence
+   *  gate (`idle` obeys the hourly gap; a strong `trigger` bypasses it). */
+  const runIntrospect = (dock: string, st: DockState, now: number, trigger: string) => {
+    st.introspecting = true; st.lastIntrospectMs = now;
+    pushEvent(st, 'introspect', now, `introspecting (${trigger})…`);
+    void Promise.resolve(w.introspect!(dock, trigger))
+      .then(() => pushEvent(dockState(dock), 'introspect', Date.now(), 'introspected'))
+      .catch((e) => pushEvent(dockState(dock), 'introspect', Date.now(), `introspect failed: ${String(e).slice(0, 80)}`))
+      .finally(() => { dockState(dock).introspecting = false; });
+  };
+
   const maybeIntrospect = (dock: string, st: DockState, now: number, world: World) => {
     if (!INTROSPECT_ENABLED || !w.introspect || st.introspecting) return;
     if (world.turnActive || world.listening) return;                 // never mid-conversation
     const idleFor = st.lastConversationMs === 0 ? Infinity : now - st.lastConversationMs;
     if (idleFor < INTROSPECT_IDLE_MS) return;                         // not idle long enough
-    if (now - st.lastIntrospectMs < INTROSPECT_MIN_GAP_MS) return;    // too soon since last
-    st.introspecting = true; st.lastIntrospectMs = now;
-    pushEvent(st, 'introspect', now, 'introspecting (idle)…');
-    void Promise.resolve(w.introspect(dock, 'idle'))
-      .then(() => pushEvent(dockState(dock), 'introspect', Date.now(), 'introspected'))
-      .catch((e) => pushEvent(dockState(dock), 'introspect', Date.now(), `introspect failed: ${String(e).slice(0, 80)}`))
-      .finally(() => { dockState(dock).introspecting = false; });
+    if (now - st.lastIntrospectMs < INTROSPECT_MIN_GAP_MS) return;    // too soon since last (hourly)
+    runIntrospect(dock, st, now, 'idle');
+  };
+
+  /** EVENT-TRIGGERED introspection (ego.md §3.2): a strong event (a departure after real presence,
+   *  a sharp conflict, a big change) can introspect EARLIER than the hourly idle gap — recovery /
+   *  de-settle must not wait up to an hour. Still respects the hard guards (not mid-conversation,
+   *  not overlapping) and a short floor so a burst of events can't spam. The past-hour traces are
+   *  all retained (ego-store), so an event introspection is visible to the next as churn. Returns
+   *  whether it fired. (The classifier that DECIDES an event is strong enough is a caller concern —
+   *  this is the seam it calls.) */
+  const triggerIntrospect = (dock: string, trigger: string): boolean => {
+    if (!INTROSPECT_ENABLED || !w.introspect) return false;
+    const st = dockState(dock);
+    const now = Date.now();
+    if (st.introspecting) return false;
+    const world = assembleWorld(dock, st, now, w.tasks(dock));
+    if (world.turnActive || world.listening) return false;           // never mid-conversation
+    if (now - st.lastIntrospectMs < EVENT_INTROSPECT_FLOOR_MS) return false; // anti-spam floor
+    runIntrospect(dock, st, now, trigger);
+    return true;
   };
 
   const tick = () => {
@@ -184,6 +228,17 @@ export function conductorModule(w: ConductorWiring): StationModule {
         const world = assembleWorld(dock, st, now, taskList);
         reconcile(dock, CONDUCTED, world, st.conducted, tunFor(dock),
           fx(dock, taskList), (name) => st.override.get(name));
+        // EVENT: a departure (present→absent after SUSTAINED presence) is a strong event →
+        // introspect early (bypasses the hourly idle gap; still floor-limited + not mid-
+        // conversation). Track a continuous-presence clock so a flicker doesn't count.
+        if (world.present) {
+          if (!st.wasPresent) st.presentSinceMs = now;        // presence began
+        } else if (st.wasPresent) {                            // departure edge
+          const spell = now - (st.presentSinceMs ?? now);
+          if (spell >= DEPARTURE_MIN_PRESENCE_MS) triggerIntrospect(dock, 'departure');
+          st.presentSinceMs = undefined;
+        }
+        st.wasPresent = world.present;
         maybeIntrospect(dock, st, now, world);
         // ACTIVITY LOG: fold each running conducted task's status line into its history
         // (digit-coalesced, so a per-tick angle refresh updates in place, not floods).

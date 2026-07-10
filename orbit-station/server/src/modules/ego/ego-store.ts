@@ -8,7 +8,7 @@
  * the PRIOR ego into the trace before overwriting. No interpretation here — that's
  * introspection's job (introspect.ts). Mirrors how perception persists last-summary.json.
  */
-import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
 
 const ROOT = '.data/ego';
@@ -54,38 +54,54 @@ export function loadTrace(dock: string, limit = 8): { name: string; text: string
   return files.slice(-limit).map((n) => ({ name: n.replace(/\.md$/, ''), text: readFileSync(join(td, n), 'utf8') }));
 }
 
-/** Newest trace snapshot's mtime (ms), or 0 if none. */
-function lastSnapshotMs(dock: string): number {
-  const snaps = loadTrace(dock, 1);
-  if (!snaps.length) return 0;
-  // filename is an ISO-ish timestamp with ':'/'.' → '-'; parse it back
-  const iso = snaps[0]!.name.replace(/-(\d{2})-(\d{2})-(\d{3})Z$/, ':$1:$2.$3Z').replace(/T(\d{2})-/, 'T$1:');
-  const t = Date.parse(iso);
-  return Number.isNaN(t) ? 0 : t;
+/** How long every introspection is kept as its own trace snapshot. Within this window we retain
+ *  ALL snapshots (even several in an hour, if events triggered extra introspections) — so the next
+ *  introspection can SEE its own recent churn (the rationalization/thrash signal the trace exists
+ *  for), rather than silently overwriting it. Beyond this, the fine-grained snapshots are thinned
+ *  to one-per-window (the checkpoint survives; the churn detail is dropped). Matches the ~hourly
+ *  ego/perception rhythm. */
+const TRACE_KEEP_ALL_MS = Number(process.env.EGO_TRACE_KEEP_ALL_MS ?? 3_600_000); // last hour: keep every snapshot
+
+/** Thin trace snapshots older than `keepAllMs`: within the recent window keep every snapshot;
+ *  beyond it, keep only the FIRST snapshot of each `keepAllMs`-sized bucket (the checkpoint),
+ *  dropping the intra-bucket churn detail. Keeps the trace bounded without losing the arc. */
+function thinTrace(dock: string, nowMs: number, keepAllMs: number): void {
+  const td = traceDir(dock);
+  if (!existsSync(td)) return;
+  const files = readdirSync(td).filter((n) => n.endsWith('.md')).sort();
+  const parseMs = (n: string) => {
+    const iso = n.replace(/\.md$/, '').replace(/-(\d{2})-(\d{2})-(\d{3})Z$/, ':$1:$2.$3Z').replace(/T(\d{2})-/, 'T$1:');
+    const t = Date.parse(iso); return Number.isNaN(t) ? 0 : t;
+  };
+  const seenBucket = new Set<number>();
+  for (const n of files) {
+    const ms = parseMs(n);
+    if (!ms || nowMs - ms <= keepAllMs) continue;   // recent window: keep every snapshot
+    const bucket = Math.floor(ms / keepAllMs);       // older: one per bucket
+    if (seenBucket.has(bucket)) { try { unlinkSync(join(td, n)); } catch { /* */ } }
+    else seenBucket.add(bucket);
+  }
 }
 
-/** Commit a new ego: write it, and — only if the last trace snapshot is older than
- *  `traceGapMs` — first snapshot the PRIOR ego into the trace.
- *
- *  The gap is the "recently done → just override" rule (product design): every
- *  introspection updates ego.md, but button-mashing within the cooldown overrides in place
- *  instead of spamming the history. The trace records checkpoints, not every save.
- *  `stampMs` is passed in (the caller stamps; Date.now() is avoided in some contexts). */
+/** Commit a new ego: snapshot the PRIOR ego into the trace, then write the new one. EVERY
+ *  introspection is snapshotted (so nothing in the recent window — including event-triggered
+ *  extra introspections — is lost); `thinTrace` then consolidates snapshots older than
+ *  TRACE_KEEP_ALL_MS to one-per-window so history stays bounded. `stampMs` is passed in (the
+ *  caller stamps; Date.now() is avoided in some contexts). */
 export function saveEgo(
-  dock: string, newText: string, stampMs: number, traceGapMs = 600_000,
+  dock: string, newText: string, stampMs: number, keepAllMs = TRACE_KEEP_ALL_MS,
 ): { tracePath: string | null; snapshotted: boolean } {
   mkdirSync(dir(dock), { recursive: true });
   mkdirSync(traceDir(dock), { recursive: true });
   let tracePath: string | null = null;
   const prior = egoFile(dock);
-  const priorExists = existsSync(prior);
-  const dueForSnapshot = stampMs - lastSnapshotMs(dock) >= traceGapMs;
-  if (priorExists && dueForSnapshot) {
+  if (existsSync(prior)) {
     const ts = new Date(stampMs).toISOString().replace(/[:.]/g, '-');
     tracePath = join(traceDir(dock), `${ts}.md`);
     writeFileSync(tracePath, readFileSync(prior, 'utf8'));
   }
   writeFileSync(egoFile(dock), newText.endsWith('\n') ? newText : newText + '\n');
+  thinTrace(dock, stampMs, keepAllMs);
   return { tracePath, snapshotted: tracePath != null };
 }
 

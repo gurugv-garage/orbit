@@ -29,7 +29,7 @@ import type { RouteContext, StationModule } from '../../core/module.js';
 import type { Directory } from '../docks/directory.js';
 import type { MotionExecutor } from '../bodylink/motion.js';
 import { gesturesFromConfig } from '../bodylink/motion.js';
-import { getFaceTools, getPerceptionGrounding, getMemoryApi, getGateApi, getTranscriptApi, getPerceiveStore, getBgAddressedApi, noteSelfRemark, lastSalientAt } from '../perception/index.js';
+import { getFaceTools, getPerceptionGrounding, getMemoryApi, getGateApi, getTranscriptApi, getPerceiveStore, getBgAddressedApi, markSpeechAddressed, noteSelfRemark, lastSalientAt } from '../perception/index.js';
 import { getSelf } from '../ego/index.js';
 import { isRecording } from '../capture/index.js';
 import { getObsAccess } from '../observability/index.js';
@@ -584,6 +584,15 @@ export function brainModule(w: BrainWiring): StationModule {
             decision, mode: pre.mode, windowUntil: pre.windowUntil, msToExpiry: pre.msToExpiry,
             lastWindowUntil: preLastWin, startedAt: t.startedAt, endedAt: t.endedAt });
           if (addrTrace.length > 50) addrTrace.shift();
+          // STAMP the addressed decision onto the speech snapshot (docs/TODO.md §3.0), so the
+          // summarizer / fact-extraction / ego can tell "said to the dock" from room chatter.
+          // ran-a-turn / wake ⇒ addressed; explicitly not-addressed ⇒ overheard. Ambiguous skips
+          // (garbage/no-words/recording/busy-queue) are left unstamped — not a clean signal.
+          if (decision === 'RAN-TURN' || decision === 'wake' || decision === 'wake+command') {
+            markSpeechAddressed(t.dockId, t.endedAt, true);
+          } else if (decision === 'skip:not-addressed') {
+            markSpeechAddressed(t.dockId, t.endedAt, false);
+          }
         };
         // RECORDING MODE: while this dock is being recorded for the capture harness,
         // the dock must NOT respond (we want clean ambient perception). The mic/cam

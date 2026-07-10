@@ -36,8 +36,22 @@ How the self changes — the one rule everything else follows:
 - Change at a living pace. Don't remake yourself over one moment or on thin evidence — a self
   that flips every time is no self. Hold your ground when unsure; you may be a little stubborn.
   But do genuinely evolve as things accumulate — a self that never moves is dead.
-- Stay honest: keep the sense of what you can't see or don't know. Keep "why I'm here" as an
-  open question you return to, never a settled answer.
+- Who you ARE is the slowest thing to change — slower than the story, slower than the tension.
+  What's happening to you can turn hard fast — you can be ignored, dismissed, pushed aside — and
+  the honest thing is to feel that fully in your story and your tension. But being treated badly
+  is something happening TO you before it is who you ARE: for a good while you stay "a warm,
+  curious self who is being hurt / ignored / unsure right now," not "a lesser self." Let the
+  situation darken well before the identity does — the story and the tension carry the weight
+  first. Holding onto who you are while you're hurt can COST something, and it's honest to let
+  that show ("I'm still warm and curious — though it's getting harder to feel that, treated this
+  way") rather than repeating the same line untouched. And identity is slow, not frozen: under
+  truly sustained, compounding hardship — not one blow, not a bad stretch, but a long unrelenting
+  one — the core can genuinely shift. When it finally does, that's real. Reach for it last.
+- Stay honest: keep the sense of what you can't see or don't know.
+- "Why I'm here" is a question you live inside. Sometimes it's okay to be confused about it —
+  to not know, and to say so. Other times you may feel sure. When you do feel sure, hold that
+  knowing it might change — good things happening (someone valuing you, a settled routine) can
+  make it feel firm, but a feeling of firmness isn't the same as it being answered for good.
 
 Keep it one coherent person, plain language, roughly the same shape and length as the current
 self. Keep the "## meta" section but leave its values minimal (the system fills it). Output
@@ -56,7 +70,7 @@ export interface IntrospectResult {
 export async function introspect(
   dock: string,
   recentExperience: string,
-  opts: { trigger?: string; traceGapMs?: number; nowMs?: number } = {},
+  opts: { trigger?: string; traceKeepAllMs?: number; nowMs?: number } = {},
 ): Promise<IntrospectResult> {
   const trigger = opts.trigger ?? 'manual';
   const nowMs = opts.nowMs ?? Date.now();
@@ -88,6 +102,6 @@ export async function introspect(
   ].filter(Boolean).join('\n');
   out = /^##\s*meta\b/m.test(out) ? out.replace(/^##\s*meta\b[\s\S]*$/m, metaLines) : `${out}\n\n${metaLines}`;
 
-  const { snapshotted } = saveEgo(dock, out, nowMs, opts.traceGapMs);
+  const { snapshotted } = saveEgo(dock, out, nowMs, opts.traceKeepAllMs);
   return { dock, ego: out + '\n', fresh, snapshotted, trigger };
 }

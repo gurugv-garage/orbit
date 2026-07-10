@@ -51,15 +51,26 @@ const SYSTEM = [
   'The feed is time-stamped streams (all times IST):',
   '  • VISION  — what a person is doing/holding (from a SMALL video model; no identity).',
   '    It is capable but INCONSISTENT and can mislabel objects (e.g. straps/bags on a hook',
-  '    read as "a person on a pull-up bar"). Treat a single VISION line as a GUESS, not fact.',
-  '    When keyframe IMAGES are provided below, THEY are the ground truth: look at them and',
-  '    prefer what you SEE over the VISION text — correct or drop a VISION claim the image',
+  '    read as "a pull-up bar / gymnastic rings", a shadow read as a person). Treat a VISION line',
+  '    as a GUESS, not fact — INCLUDING its OBJECTS/SCENERY, not just its people. A guess that',
+  '    REPEATS across lines is the same unreliable model repeating itself, NOT corroboration —',
+  '    do not promote a repeated object claim to an established fact. When you must mention such an',
+  '    object, hedge it ("what looks like gym equipment"), never assert it as a known feature of',
+  '    the room. When keyframe IMAGES are provided below, THEY are the ground truth: look at them',
+  '    and prefer what you SEE over the VISION text — correct or drop a VISION claim the image',
   '    contradicts. Do not assert a person is present/acting on one unverified VISION line alone.',
   '  • SPEECH  — transcribed utterances. A "Sn:" prefix (S0/S1/…) is real DIARIZATION',
   '    (distinct speakers separated by the STT) — different numbers are different people;',
   '    map a speaker to a NAME when an IDENTITY overlaps in time. Some also carry',
   '    "[likely <name>]" (a softer active-speaker guess) and/or "[low-confidence]"',
   '    (possibly garbled/noise — judge whether it is signal or junk to ignore).',
+  '    ADDRESSED TAGS are critical: "[→ TO YOU]" means the robot was actually being spoken to',
+  '    (this is a real interaction — treat it as such). "[overheard — not to you]" means the',
+  '    robot merely OVERHEARD it — people talking to each other, a phone call, a workout video,',
+  '    music — it was NOT directed at the robot. Do NOT narrate overheard speech as if the robot',
+  '    was part of the conversation or being addressed; it is ambient context about the room, not',
+  '    an interaction the robot is in. Untagged speech is of unknown direction — lean toward',
+  '    ambient unless it clearly reads as directed.',
   '  • IDENTITY — which enrolled people are recognized in frame, with positions.',
   '  • EMOTION  — a best-effort facial-expression read (e.g. "seemed a little happy").',
   '    It is approximate and can be wrong; treat it as a soft hint, never assert it as',
@@ -212,11 +223,17 @@ export function stitch(records: SnapshotRecord[], windowFromIso?: string): strin
         lines.push(`${t} SPEECH  [unclear speech${secs ? `, ~${secs}s` : ''}]${tag}`);
       } else {
         const conf = tier === 'shaky' ? ' [low-confidence]' : '';
-        // dock-directed intent OBSERVED by the audio interpreter (the brain's addressed
-        // latch stays the authority) — surfaced so the summary knows it was spoken TO.
-        const pr = r.payload as { addressedToRobot?: boolean; directive?: string };
-        const toRobot = pr.addressedToRobot ? ` [→ robot${pr.directive ? `: ${pr.directive}` : ''}]` : '';
-        lines.push(`${t} SPEECH  ${r.payload.text}${tag}${conf}${toRobot}`);
+        // ADDRESSED vs OVERHEARD. `addressed` (boolean) is the BRAIN's authoritative decision
+        // (tap/wake/conversation-window latch), stamped on the record — it wins. When it's absent,
+        // fall back to the audio-interpreter's softer `addressedToRobot` guess. A line the brain
+        // marked NOT addressed is room chatter / a video / another conversation — render it so the
+        // summarizer (and the ego reading the summary) treat it as ambient, not spoken to the dock.
+        const pr = r.payload as { addressed?: boolean; addressedToRobot?: boolean; directive?: string };
+        let addr = '';
+        if (pr.addressed === true) addr = ' [→ TO YOU]';
+        else if (pr.addressed === false) addr = ' [overheard — not to you]';
+        else if (pr.addressedToRobot) addr = ` [→ robot${pr.directive ? `: ${pr.directive}` : ''}]`;
+        lines.push(`${t} SPEECH  ${r.payload.text}${tag}${conf}${addr}`);
       }
     } else {
       flushRuns();

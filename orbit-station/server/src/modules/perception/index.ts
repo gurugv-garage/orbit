@@ -39,10 +39,7 @@ import { MemoryStore, type MemoryRow, type MemoryType, type RecallFilter, type L
 import { geminiEmbedder } from './memory/embedder.js';
 import { startGateWatcher, type RaisedThought } from './attention/gate-watcher.js';
 import { startAutoSummarizer } from './auto-summarizer.js';
-import { trimOldDays, recordsSince } from './retention.js';
-import { startLongTermMemoryCurator, CONFIG_META as CURATOR_CONFIG_META, type CuratorHandle } from './memory/longterm/curator.js';
-import { pendingObservations, pendingStats } from './memory/longterm/sources.js';
-import type { BeliefHit } from './memory/longterm/reconcile.js';
+import { selfCompressAndTrim, recordsSince, spanSummariesSince } from './retention.js';
 import { DEFAULT_GATE_CONFIG, type GateConfig, type GateOutcome } from './attention/gate.js';
 import { orbitDb } from '../../core/db.js';
 import { setVisionExtra, getVisionExtra, visionBase } from './vision-instruction.js';
@@ -216,18 +213,223 @@ export function noteSelfRemark(dockId: string, text: string): void {
   selfRemarkRef.current?.(dockId, text);
 }
 /** The durable PERCEPTION SPAN since a checkpoint (§7c) — the "everything I've perceived since
- *  I last introspected" feed the ego reads. Leans toward RAW (the enriched truth): reads
- *  persisted records since `sinceIso` from disk (survives restarts/gaps), stitched into a
- *  clean transcript. Consumption is the constraint, not storage — so it's capped by
- *  `maxRecords` (the most recent N in the span; §7c "read raw up to a budget"). Excludes
- *  'summary' records (those are the compression fallback, folded in only if raw is sparse). */
+ *  I last introspected" feed the ego reads. ONE stream, TWO fidelities: for the OLDER part of
+ *  the span (where raw was trimmed) it reads the stream's own **span-summaries** (perception
+ *  compressed its tail); for the RECENT part it reads RAW (the enriched truth), stitched into a
+ *  clean transcript. Consumption is the constraint, not storage — so raw is capped by
+ *  `maxRecords` (the most recent N; §7c "read raw up to a budget"). Chronological: summaries of
+ *  the older gap first, then the recent raw. Returns '' only if the span has neither. */
 export function perceptionSince(dockId: string, sinceIso: string, maxRecords = 300): string {
-  const all = recordsSince(dockId, sinceIso).filter((r) => r.source.kind !== 'summary');
-  const raw = all.slice(-maxRecords); // most-recent N within the span (the consumption budget)
-  if (!raw.length) return '';
-  const trimmed = all.length > raw.length ? `(earlier ${all.length - raw.length} perceptions omitted for length)\n` : '';
-  return trimmed + stitch(raw);
+  const raw = recordsSince(dockId, sinceIso).filter((r) => r.source.kind !== 'summary');
+  const capped = raw.slice(-maxRecords); // most-recent N raw (the consumption budget)
+  const parts: string[] = [];
+  // OLDER fidelity: span-summaries whose span starts at/after the checkpoint. If raw was capped,
+  // the span-summaries covering the trimmed-off older gap are exactly what fills it.
+  const summaries = spanSummariesSince(dockId, sinceIso);
+  if (summaries.length) {
+    const digest = summaries.map((s) => {
+      const from = (s.interval.from.slice(11, 16)); const to = s.interval.to.slice(11, 16);
+      return `[earlier, ${from}–${to}] ${s.payload.text}`;
+    }).join('\n');
+    parts.push(`EARLIER (compressed — raw no longer retained):\n${digest}`);
+  } else if (raw.length > capped.length) {
+    parts.push(`(earlier ${raw.length - capped.length} perceptions omitted for length)`);
+  }
+  // RECENT fidelity: the raw span — with OFFLINE gaps labelled. A stretch with NO records is
+  // DOWNTIME (the station was off — nothing was written), NOT an empty room (an idle-but-running
+  // dock still emits records, even sparse ones). The self must read a gap as its own downtime, not
+  // the world emptying — else a restart looks like abandonment.
+  if (capped.length) parts.push(stitchWithGaps(capped));
+  return parts.join('\n\n');
 }
+
+/** The RECONCILED perception feed for the ego (the fix for the "my eyes are broken" spiral). The
+ *  ego must NOT reason over raw sensor lines — a small vision model that hallucinates objects, an
+ *  identity detector that flickers "no one" mid-presence, and overheard (not addressed) speech all
+ *  CONTRADICT each other, and a faithful reasoner reads that as "my senses are defective" rather
+ *  than "my senses are noisy". Quality-control belongs in the SUMMARIZER (one place, no buck-
+ *  passing — user decision 2026-07-10): so the ego reads the summarizer's reconciled output, never
+ *  raw. Assembles: span-summaries (older, already reconciled) + the rolling summary (recent
+ *  reconciled "now") + an ON-DEMAND summary of the un-summarized tail (same summarizer). Async
+ *  (the tail summary is a Gemini call); introspection is already an LLM call at ≤hourly cadence, so
+ *  the extra call is cheap. Falls back to `perceptionSince` (raw) only if summarization is
+ *  unavailable, so a fresh dock / no-Gemini still works. */
+export async function reconciledPerceptionSince(
+  dockId: string, sinceIso: string, rollingSummary?: { text: string; toIso?: string },
+): Promise<string> {
+  const parts: string[] = [];
+  // OLDER: reconciled span-summaries since the checkpoint.
+  const summaries = spanSummariesSince(dockId, sinceIso);
+  if (summaries.length) {
+    const digest = summaries.map((s) => `[earlier, ${s.interval.from.slice(11, 16)}–${s.interval.to.slice(11, 16)}] ${s.payload.text}`).join('\n');
+    parts.push(`EARLIER (your reconciled memory of older spans):\n${digest}`);
+  }
+  // RECENT: the rolling summary (the summarizer's reconciled "what's going on now").
+  const rollTo = rollingSummary?.toIso;
+  if (rollingSummary?.text) parts.push(`RECENTLY (your reconciled read of the current stretch):\n${rollingSummary.text}`);
+  // TAIL: records newer than the rolling summary's window — summarize on demand so the ego never
+  // sees raw. Boundary = max(checkpoint, rolling.to); if there's a meaningful tail, reconcile it.
+  const tailSinceIso = rollTo && rollTo > sinceIso ? rollTo : sinceIso;
+  const tail = recordsSince(dockId, tailSinceIso).filter((r) => r.source.kind !== 'summary').slice(-120);
+  if (tail.length >= 2) {
+    try {
+      const r = await summarize(tail, { windowFromIso: tailSinceIso });
+      if (r.summary && !/^\(/.test(r.summary.trim())) parts.push(`JUST NOW (reconciled from the latest, still-uncompressed moments):\n${r.summary.trim()}`);
+    } catch { /* tail reconcile best-effort — a summarizer failure just omits the freshest sliver */ }
+  }
+  // Fallback: if nothing reconciled was available at all (fresh dock / no Gemini), give raw so the
+  // ego isn't blind — better a noisy read than none, and a fresh dock has little to misread yet.
+  if (!parts.length) return perceptionSince(dockId, sinceIso);
+  return parts.join('\n\n');
+}
+
+/** Stitch the raw records, but insert an explicit DOWNTIME marker wherever there's a no-record gap
+ *  longer than OFFLINE_GAP_MS between consecutive records. "No records at all" is the offline
+ *  signal (records-that-say-"no one" are a real empty room and pass through untouched). */
+const OFFLINE_GAP_MS = Number(process.env.PERCEPTION_OFFLINE_GAP_MS ?? 20 * 60_000); // > 20 min silence = downtime
+function stitchWithGaps(records: SnapshotRecord[]): string {
+  if (records.length < 2) return stitch(records);
+  const out: string[] = [];
+  for (let i = 0; i < records.length; i++) {
+    if (i > 0) {
+      const prevEnd = Date.parse(records[i - 1]!.interval.to || records[i - 1]!.interval.from);
+      const thisStart = Date.parse(records[i]!.interval.from);
+      const gapMs = thisStart - prevEnd;
+      if (gapMs > OFFLINE_GAP_MS) {
+        const h = Math.floor(gapMs / 3600_000), m = Math.round((gapMs % 3600_000) / 60_000);
+        const dur = h ? `${h}h${m ? ` ${m}m` : ''}` : `${m}m`;
+        out.push(`[⚠ offline ~${dur} — no perception recorded here; this was DOWNTIME (you were off), not an empty room]`);
+      }
+    }
+    out.push(stitch([records[i]!]));
+  }
+  return out.join('\n');
+}
+/** The span-digest prompt (§7c self-compression, quality path). This runs at TRIM time over a
+ *  whole aged-out span (hours), and its job is different from the ~60 s "what's going on right
+ *  now" situational brief: it produces the DURABLE MEMORY of a past stretch of the dock's life —
+ *  what a self would want to still know after the raw is gone. So it keeps the throughline, the
+ *  people, the notable events and changes, and the emotional arc; compresses steady-state; and
+ *  stays faithful (it must not invent — thin/absent perception should read as a quiet, empty
+ *  stretch, not a fabricated scene). Text-in/text-out over the already-stitched transcript. */
+const SPAN_DIGEST_SYSTEM = [
+  'You are a personal robot compressing your own memory of a PAST stretch of time (the raw',
+  'perception for it is about to be discarded — this digest is all you will keep of it).',
+  'From the time-stamped perception transcript below, write a compact, faithful memory of what',
+  'happened over this span — the kind of thing you would want to still remember later.',
+  '',
+  'Keep: the throughline (what the span was mostly about), who was present (name them when',
+  'IDENTITY/diarization support it), notable events and CHANGES (someone arriving/leaving, a',
+  'request, a conflict, a resolution), and the emotional arc if one is legible. Compress',
+  'steady-state and repetition to a phrase. Drop noise, flicker, and low-confidence junk.',
+  '',
+  'Be faithful above all — this becomes memory, so a fabrication here is a false memory. Do NOT',
+  'invent presence or events from thin/ambiguous perception; if the span was mostly empty or',
+  'quiet, say so plainly ("a long quiet stretch, no one around") rather than inventing a scene.',
+  'A single VISION line is a guess, not fact. Write a few plain sentences, past tense, no preamble.',
+].join('\n');
+
+/** Compress one aged-out span into a durable memory digest (injected into selfCompressAndTrim). Stitches
+ *  the raw records into a transcript, then runs the span-digest prompt. Returns '' on failure so
+ *  retention keeps the raw for a retry (never silent loss). */
+async function trimSpanDigest(records: SnapshotRecord[]): Promise<string> {
+  try {
+    if (!records.length) return '';
+    const dockId = records[0]!.dockId;
+    const transcript = stitch(records);
+    const text = await geminiText(
+      `${SPAN_DIGEST_SYSTEM}\n\n=== PERCEPTION TIMELINE (span) ===\n${transcript}\n\n=== MEMORY ===`,
+      dockId, 'span-digest',
+    );
+    return (text || '').trim();
+  } catch { return ''; }
+}
+
+/** The fact-extraction prompt (§7c unified memory — the summarizer's SECOND output, apart from the
+ *  digest). At the same trim pass, pull out DURABLE FACTS worth remembering ("Guru prefers tea",
+ *  "the standup is at 5pm") — not "what happened this hour" (that's the digest) but "what's true /
+ *  worth keeping as a queryable fact". Faithful: only facts the perception actually supports; a
+ *  quiet/empty span yields none. Returns strict JSON so we can store structured beliefs. */
+const FACT_EXTRACT_SYSTEM = [
+  'You are a personal robot deciding what, from a stretch of your perception, is worth REMEMBERING',
+  'as a durable fact — the kind of thing still true and useful long after this hour is forgotten.',
+  '',
+  'REMEMBER mostly about PEOPLE and what passes between you and them: a person\'s name, a preference',
+  'or habit they reveal, their role, a relationship, a commitment or plan, something they asked or',
+  'told you, how an interaction went. That is what a companion keeps. Do NOT catalogue the SCENERY —',
+  'furniture, room layout, lights, windows, fixtures are not facts worth a memory; skip them.',
+  '',
+  'ADDRESSED vs OVERHEARD: speech tagged "[→ TO YOU]" was said to you — a real interaction worth',
+  'remembering. Speech tagged "[overheard — not to you]" is room chatter / a video / another',
+  'conversation you were NOT part of — do NOT store it as a fact about your relationship with',
+  'anyone, and do NOT record its content as something someone told YOU. At most, an overheard',
+  'stretch is context ("someone was doing a workout nearby"), never a fact you were told.',
+  '',
+  'FAITHFULNESS IS EVERYTHING — this becomes permanent memory, so a wrong fact is a false belief you',
+  'will carry for weeks. VISION is a SMALL model that HALLUCINATES objects (it notoriously invents',
+  '"gymnastic rings / a pull-up bar / exercise apparatus" from straps, hooks, or cables). NEVER store',
+  'a fact that rests on a single vision line, or on vision alone — a durable fact needs speech or',
+  'repeated, consistent evidence. When unsure, DON\'T remember it. An empty list is the common,',
+  'correct answer for a quiet or ordinary stretch. Never invent.',
+  '',
+  'Return STRICT JSON only, no prose: {"facts":[{"subject":"<short entity, e.g. guru>","claim":',
+  '"<the durable fact, e.g. prefers tea>","confidence":<0..1>}]}. subject is a short normalized tag',
+  '(a person\'s name where possible); confidence is conservative — 0.4–0.7 typical, only speech-',
+  'corroborated facts go higher.',
+].join('\n');
+
+/** Extract durable facts from an aged-out span and store them (§7c unified memory). The summarizer's
+ *  second output — runs in the SAME trim pass as the digest, ONE checkpoint. Append + LIGHT DEDUP:
+ *  for each candidate, look for a near-duplicate on the same subject already in the store; if found,
+ *  revise it (keeps the store self-maintaining without a separate reconcile job); else remember it.
+ *  Best-effort and non-throwing — a failure must never block trim/compression. Injected into
+ *  selfCompressAndTrim so retention.ts stays free of Gemini/store deps. */
+async function extractFactsFromSpan(records: SnapshotRecord[], memory: MemoryStore): Promise<number> {
+  try {
+    const raw = records.filter((r) => r.source?.kind !== 'summary');
+    if (raw.length < 3) return 0; // too thin to yield a durable fact
+    const dockId = raw[0]!.dockId;
+    const transcript = stitch(raw);
+    const out = await geminiText(
+      `${FACT_EXTRACT_SYSTEM}\n\n=== PERCEPTION TIMELINE (span) ===\n${transcript}\n\n=== JSON ===`,
+      dockId, 'fact-extract',
+    );
+    const m = out.match(/\{[\s\S]*\}/);
+    if (!m) return 0;
+    let facts: Array<{ subject?: string; claim?: string; confidence?: number }> = [];
+    try { facts = (JSON.parse(m[0]) as { facts?: typeof facts }).facts ?? []; } catch { return 0; }
+    let stored = 0;
+    for (const f of facts) {
+      const claim = (f.claim || '').trim();
+      if (!claim) continue;
+      const subject = (f.subject || '').trim().toLowerCase();
+      const confidence = typeof f.confidence === 'number' ? Math.max(0, Math.min(1, f.confidence)) : 0.5;
+      // LIGHT DEDUP: semantic recall on the same subject; a close claim → revise, else remember.
+      let dupId: string | undefined;
+      try {
+        const hits = await memory.recall({ dockId, subject: subject || undefined, query: claim, limit: 3 });
+        dupId = hits.find((h) => sameFact(h.claim, claim))?.id;
+      } catch { /* recall best-effort */ }
+      try {
+        if (dupId) { await memory.revise(dupId, { claim, confidence }); }
+        else { await memory.remember({ dockId, type: 'fact', subject: subject || undefined, claim, confidence, derivation: 'derived' }); }
+        stored++;
+      } catch { /* store best-effort */ }
+    }
+    return stored;
+  } catch { return 0; }
+}
+
+/** Cheap near-duplicate test for two fact claims (light dedup — not a full reconcile). Normalizes
+ *  and checks token-overlap; a high overlap on the same subject means "the same fact, refresh it". */
+function sameFact(a: string, b: string): boolean {
+  const norm = (s: string) => new Set(s.toLowerCase().replace(/[^a-z0-9 ]/g, ' ').split(/\s+/).filter((w) => w.length > 2));
+  const A = norm(a), B = norm(b);
+  if (!A.size || !B.size) return false;
+  let inter = 0; for (const w of A) if (B.has(w)) inter++;
+  return inter / Math.min(A.size, B.size) >= 0.6;
+}
+
 /** The live PerceptionGroundingApi (set when the perception module inits). */
 export function getPerceptionGrounding(): PerceptionGroundingApi | undefined {
   return groundingRef.current;
@@ -281,6 +483,14 @@ export function getBgAddressedApi() {
   return { onAddressed: (h: (e: BgAddressedEvent) => void) => { bgAddressedHandler = h; } };
 }
 
+/** The brain stamps its authoritative addressed-vs-overheard decision onto the speech snapshot
+ *  (docs/TODO.md §3.0). Set when the perception module inits; the brain calls it from every branch
+ *  of onAddressedFinal (ran-a-turn / wake → addressed=true; not-addressed → addressed=false). */
+let markAddressedHandler: ((dockId: string, endedAtMs: number, addressed: boolean) => void) | undefined;
+export function markSpeechAddressed(dockId: string, endedAtMs: number, addressed: boolean): void {
+  markAddressedHandler?.(dockId, endedAtMs, addressed);
+}
+
 /**
  * The proactive ATTENTION GATE control surface (docs/perception-to-brain.md Phase 5).
  * The brain registers `onRaise` so a gate firing becomes a self-thought
@@ -298,13 +508,6 @@ const gateRef: { current?: GateApi } = {};
 /** The live GateApi (set when the perception module inits). */
 export function getGateApi(): GateApi | undefined {
   return gateRef.current;
-}
-
-const curatorRef: { current?: CuratorHandle } = {};
-/** The live memory-curator handle (toggle + recent passes + run-now) — backs the
- *  Perception Studio's curator panel. Set when the perception module inits. */
-export function getMemoryCuratorApi(): CuratorHandle | undefined {
-  return curatorRef.current;
 }
 
 /**
@@ -391,6 +594,28 @@ export function perceptionModule(getHub: () => PerceptionProcessingHub): Station
     inWindow: (fromIso, toIso, dockId) =>
       snapshots.inWindow(fromIso, toIso).filter((r) => !dockId || r.dockId === dockId),
   };
+  // ADDRESSED-STAMP (docs/TODO.md §3.0 seam): the BRAIN owns the authoritative addressed-vs-
+  // overheard decision (tap / wake / conversation-window latch). It calls this to stamp the
+  // decision onto the SPEECH snapshot, so the summarizer, fact-extraction, and the ego can tell
+  // "said TO the dock" from room chatter — instead of treating all speech identically (which made
+  // the ego think overheard workout instructions were addressed to it). Finds the speech record by
+  // its utterance end time (± a small tolerance) and patches payload.addressed. Best-effort.
+  markAddressedHandler = (dockId, endedAtMs, addressed) => {
+    try {
+      const to = isoIst(new Date(endedAtMs));
+      const win = 4000; // ± tolerance: match the utterance whose end is near endedAtMs
+      const from = new Date(endedAtMs - 60_000 + 5.5 * 3600_000).toISOString();
+      const cands = snapshots.inWindow(from, isoIst(new Date(endedAtMs + win)))
+        .filter((r) => r.dockId === dockId && r.source.kind === 'speech');
+      // the record whose `to` (utterance end) is closest to endedAtMs
+      let best: SnapshotRecord | undefined; let bestDist = win;
+      for (const r of cands) {
+        const d = Math.abs(Date.parse(r.interval.to) - Date.parse(to));
+        if (d <= bestDist) { best = r; bestDist = d; }
+      }
+      if (best) snapshots.update(best, { addressed });
+    } catch { /* best-effort — never break the turn path */ }
+  };
   const takes = new TakeStore();         // frozen snapshot bundles for A/B replay
   // LIVE per-dock face-track (the on-device MLKit `perceive` stream, §7) — latest-state,
   // NOT the heavy snapshot ring. The faceFollow `face-track` capability reads it.
@@ -400,7 +625,7 @@ export function perceptionModule(getHub: () => PerceptionProcessingHub): Station
   // on each successful /snapshots/summarize; read synchronously by the brain facade.
   // PERSISTED to .data (coherence-layer.md §6): the rolling picture is the coherence
   // engine's short-horizon state — a station restart used to amnesia-wipe the day
-  // (grounding + the curator's diet both start from it). Loaded at construction;
+  // (grounding starts from it). Loaded at construction;
   // written on each set (summaries are ≥60 s apart, a write per set is nothing).
   const LAST_SUMMARY_FILE = '.data/perception/last-summary.json';
   const lastSummary = new Map<string, LastSummary>();
@@ -611,8 +836,8 @@ export function perceptionModule(getHub: () => PerceptionProcessingHub): Station
           });
           persistLastSummaries();
           // The summary is also a RING RECORD (kind 'summary') — the coherence pulse.
-          // The curator consolidates from THESE (never raw utterances; coherence-layer.md
-          // §3), the Studio shows them, and the summarize input above excludes them.
+          // Durable facts come from the trim pass (extractFactsFromSpan), not from these
+          // pulses; the Studio shows them, and the summarize input above excludes them.
           snapshots.add(makeSnapshot({
             dockId,
             source: { id: 'rolling-summary', kind: 'summary', device: 'station', host: 'station' },
@@ -745,14 +970,22 @@ export function perceptionModule(getHub: () => PerceptionProcessingHub): Station
       };
       startGateWatcher(snapshots, () => gateCfg, (t) => raiseHandler?.(t), noteDecision);
 
-      // Durable perception retention (§7c): a slow sweep drops day-files past the retention
-      // window. (Trim-time self-summarization — §7c step 2 — will hang off touchedDocks here
-      // once the span-summary series is wired; for now the summary RING RECORDS already give
-      // introspection a coherence fallback, and recordsSince() reads the raw disk span.)
+      // Durable perception retention + SELF-COMPRESSION (§7c). The ONE summarizer pass, at trim,
+      // per closed clock-hour, produces TWO outputs (apart from each other, one checkpoint):
+      //   ① trimSpanDigest    → a durable span-summary (COMPRESSES the timeline; replaces aged raw)
+      //   ② extractFactsFromSpan → durable FACTS into the memory store (append + light dedup)
+      // `summarizeSpan` failing keeps the raw for a retry (no hole); fact-extraction is best-effort
+      // (the digest is the contract). This replaces the old separate background curator job — one
+      // pipeline, one checkpoint. Interval env-tunable (accelerate for tests).
       const trimTimer = setInterval(() => {
-        try { const touched = trimOldDays(Date.now()); if (touched.length) console.log(`[perception] retention trim: ${touched.join(',')}`); }
-        catch (err) { console.error('[perception] retention trim failed', err); }
-      }, 30 * 60_000);
+        selfCompressAndTrim(
+          Date.now(),
+          (records) => trimSpanDigest(records),
+          (records) => extractFactsFromSpan(records, memory).then(() => {}),
+        )
+          .then((touched) => { if (touched.length) console.log(`[perception] retention self-compress+trim: ${touched.join(',')}`); })
+          .catch((err) => console.error('[perception] retention trim failed', err));
+      }, Number(process.env.PERCEPTION_TRIM_INTERVAL_MS ?? 30 * 60_000));
       (trimTimer as { unref?: () => void }).unref?.();
 
       // A1.5 auto-summarizer: keep grounding's lastSummary fresh without a manual
@@ -785,56 +1018,10 @@ export function perceptionModule(getHub: () => PerceptionProcessingHub): Station
         });
       }
 
-      // LONG-TERM MEMORY CURATOR: the pipeline layer that tends durable (long-term)
-      // memory from short-term sources (the snapshot stream). Two ops on their own
-      // clocks (docs/decision-traces/long-term-memory-curator.md):
-      //   • consolidate — accumulation-driven: promote salient speech (diarized) into
-      //     new derived beliefs, event-time aligned (who was present when said), lineage'd.
-      //   • reconcile  — slow interval: revise/forget existing beliefs (the maintain pass).
-      // In-process (reaches MemoryStore + the snapshot ring directly); LLM via the
-      // summarizer's gemini path. Always STARTED so the console can flip it live; enabled
-      // seeded from PERCEPTION_CURATE (off when =0). Backs GET/POST /api/perception/curator.
-      const toBeliefHit = (m: MemoryRow): BeliefHit =>
-        ({ id: m.id, type: m.type, subject: m.subject, claim: m.claim, confidence: m.confidence });
-      /** who was present as-of an event-time iso (event-time alignment via stateAt). */
-      const presentAt = (iso: string): string | undefined => {
-        const rec = snapshots.stateAt('identity', iso);
-        const t = rec?.payload.text;
-        return typeof t === 'string' && t !== 'no one in view' ? t : undefined;
-      };
-      const sourceCtx = { store: snapshots, presentAt };
-      /** docks with durable memory OR any snapshot activity — the curation candidates. */
-      const curatorDocks = (): string[] => {
-        const set = new Set<string>(memory.docks());
-        for (const r of snapshots.list()) set.add(r.dockId);
-        return [...set];
-      };
-      curatorRef.current = startLongTermMemoryCurator({
-        enabled: process.env.PERCEPTION_CURATE !== '0',
-        activeDocks: curatorDocks,
-        // load-aware: pending = unconsolidated speech after the watermark. The cadence
-        // (cadence.ts) decides flood/age/quiet from these stats; consolidate takes a
-        // bounded oldest chunk so a flood drains over ticks, exactly-once.
-        pendingStats: (dockId, watermarkIso) => pendingStats(snapshots, dockId, watermarkIso),
-        pendingObservations: (dockId, watermarkIso, limit) =>
-          pendingObservations(sourceCtx, dockId, watermarkIso, limit),
-        // restart-safe watermark: newest event-time already consolidated (belief lineage).
-        // lineage source_id is `<kind>@<iso>`; the watermark compares against the bare iso.
-        watermarkSeed: (dockId) => {
-          const src = memory.latestConsolidatedSource(dockId); // e.g. 'speech@2026-…+05:30'
-          const at = src?.indexOf('@') ?? -1;
-          return src && at >= 0 ? src.slice(at + 1) : '';
-        },
-        beliefs: async (dockId, limit) => (await memory.recall({ dockId, limit })).map(toBeliefHit),
-        reflect: (prompt, dockId, purpose) => geminiText(prompt, dockId, purpose),
-        create: (dockId, b) => memory.remember({
-          dockId, type: b.type as MemoryType, subject: b.subject, claim: b.claim,
-          confidence: b.confidence, derivation: 'derived', lineage: b.lineage,
-        }),
-        revise: (id, patch) => memory.revise(id, patch),
-        forget: (id) => memory.forget(id),
-        log: (m) => console.log(m),
-      });
+      // DURABLE FACTS are extracted inline by the summarizer's trim pass
+      // (extractFactsFromSpan, wired above) — the retired background curator's job. No
+      // separate consolidate/reconcile loop: the same span the digest summarizes yields
+      // durable beliefs into the MemoryStore (append + light dedup), one checkpoint.
       gateRef.current = {
         setEnabled: (on) => { gateCfg.enabled = on; },
         isEnabled: () => gateCfg.enabled,
@@ -1102,47 +1289,6 @@ export function perceptionModule(getHub: () => PerceptionProcessingHub): Station
         return true;
       }
 
-      // ── MEMORY CURATOR — the console's curator panel (control + watch + debug). ──
-      // GET /curator → { enabled, recent: [ {ts,dockId,reviewed,revised,forgot,skipped,changes} ] }
-      if (req.method === 'GET' && subPath === '/curator') {
-        json(res, 200, {
-          enabled: curatorRef.current?.isEnabled() ?? false,
-          recent: curatorRef.current?.recent(30) ?? [],
-        });
-        return true;
-      }
-      // POST /curator {enabled} → toggle the maintenance loop live
-      if (req.method === 'POST' && subPath === '/curator') {
-        const b = await parseBody<{ enabled?: boolean }>(req);
-        curatorRef.current?.setEnabled(b.enabled === true);
-        json(res, 200, { ok: true, enabled: curatorRef.current?.isEnabled() ?? false });
-        return true;
-      }
-      // POST /curator/run → force a pass NOW (bypasses the per-dock interval) for debugging
-      if (req.method === 'POST' && subPath === '/curator/run') {
-        if (!curatorRef.current) { json(res, 503, { error: 'curator not ready' }); return true; }
-        await curatorRef.current.tick();
-        json(res, 200, { ok: true, recent: curatorRef.current.recent(5) });
-        return true;
-      }
-      // GET /curator/config → { scope, config, meta } — the live-tunable knobs (ALL docks).
-      if (req.method === 'GET' && subPath === '/curator/config') {
-        if (!curatorRef.current) { json(res, 503, { error: 'curator not ready' }); return true; }
-        json(res, 200, { scope: 'all-docks', config: curatorRef.current.getConfig(), meta: CURATOR_CONFIG_META });
-        return true;
-      }
-      // POST /curator/config {<knob>:<value>,…} → patch live; clamped to bounds; applies
-      // NEXT TICK (no restart). Returns the resulting config so the UI confirms what applied.
-      if (req.method === 'POST' && subPath === '/curator/config') {
-        if (!curatorRef.current) { json(res, 503, { error: 'curator not ready' }); return true; }
-        const b = await parseBody<Record<string, unknown>>(req);
-        const patch: Record<string, number> = {};
-        for (const k of Object.keys(CURATOR_CONFIG_META)) if (typeof b[k] === 'number') patch[k] = b[k] as number;
-        const config = curatorRef.current.setConfig(patch);
-        json(res, 200, { ok: true, scope: 'all-docks', config, meta: CURATOR_CONFIG_META });
-        return true;
-      }
-
       // ── MEMORY (Decision 4) — the console's memory inspector (4c). dock-scoped. ──
       // GET /memory?dock=X[&query=&subject=&type=&inactive=1] → recall/list
       if (req.method === 'GET' && subPath === '/memory') {
@@ -1276,8 +1422,8 @@ export function perceptionModule(getHub: () => PerceptionProcessingHub): Station
           });
           persistLastSummaries();
           // The summary is also a RING RECORD (kind 'summary') — the coherence pulse.
-          // The curator consolidates from THESE (never raw utterances; coherence-layer.md
-          // §3), the Studio shows them, and the summarize input above excludes them.
+          // Durable facts come from the trim pass (extractFactsFromSpan), not from these
+          // pulses; the Studio shows them, and the summarize input above excludes them.
           snapshots.add(makeSnapshot({
             dockId,
             source: { id: 'rolling-summary', kind: 'summary', device: 'station', host: 'station' },
