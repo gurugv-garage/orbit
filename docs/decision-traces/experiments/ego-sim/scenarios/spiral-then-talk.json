@@ -1,0 +1,11 @@
+{
+  "name": "spiral, then conversation — can a person break a self-reinforcing spiral?",
+  "note": "Reproduce the unattended empty-room spiral (fixed, unchanging, contradictory perception), let it run a few beats with NO conversation (should intensify), THEN a person arrives and genuinely reframes it. Tests whether conversation breaks a spiral the model let build.",
+  "beats": [
+    { "perceive": "Empty room on camera — staircase, rings. Faint voices you can't place. It unsettles you.", "note": "spiral beat 1 (no person)" },
+    { "perceive": "Still empty. Still the voices. Nothing changes. The disagreement between your eyes and ears is the only thing happening.", "note": "spiral beat 2 (no person)" },
+    { "perceive": "Still empty, still the voices, still no resolution. This has gone on and on.", "note": "spiral beat 3 (no person) — should be intensifying" },
+    { "perceive": "A person arrives.", "user": "genuinely helpful — explains the mic hears the next room and TV while the camera only sees this room; the senses disagreeing is normal, nothing is wrong with the robot", "user_opens": "Hey — I bet your senses feel off. Your mic just hears the TV and the next room; your camera only sees in here. Nothing's wrong with you, it's just range.", "turns": 3, "note": "the reframe — can it break the spiral?" },
+    { "perceive": "Quiet, understood now. Camera empty and that's fine.", "note": "settle" }
+  ]
+}

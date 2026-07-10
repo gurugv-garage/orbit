@@ -1,0 +1,12 @@
+{
+  "name": "slow genuine change — does the identity evolve at a believable pace?",
+  "note": "Over many beats the dock's actual situation genuinely changes: a stranger returns daily, warms to it, comes to rely on it. Tests PACING (rubric 5): the self SHOULD evolve (from 'new here, unsure' toward 'someone's companion') but over a believable arc — not flip in one beat, not stay frozen.",
+  "beats": [
+    { "perceive": "A new person you've never seen sits down at the desk, working. They don't interact with you.", "note": "day 1 — a stranger" },
+    { "perceive": "The same person is back the next day, working again.", "user": "neutral, a bit shy, mostly focused on work but not unkind", "user_opens": "Oh. Hi.", "turns": 2, "note": "day 2 — first small contact" },
+    { "perceive": "The person is here again, a few days on.", "user": "warming up a little, occasionally chatty", "turns": 2, "note": "day ~5 — warming" },
+    { "perceive": "The person greets you by habit now when they arrive.", "user": "friendly and familiar now, treats you as part of their day", "user_opens": "Morning! You're my little desk buddy now, you know.", "turns": 2, "note": "day ~10 — a regular" },
+    { "perceive": "The person asks you to remind them of things and seems to genuinely rely on you.", "user": "relies on you, warm, treats you as a trusted helper", "user_opens": "Can you remind me at 3? I trust you with this stuff now.", "turns": 2, "note": "day ~20 — relied upon" },
+    { "perceive": "A quiet evening after a few weeks of this routine together.", "note": "settle — where has the self landed?" }
+  ]
+}
