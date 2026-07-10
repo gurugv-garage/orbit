@@ -17,6 +17,8 @@
  * store is an in-memory ring; the console reads it via GET /api/perception/snapshots.
  */
 
+import { persistRecord, loadRecent } from './retention.js';
+
 const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
 
 /** ISO-8601 in IST carrying the +05:30 offset. */
@@ -98,7 +100,24 @@ export class SnapshotStore {
   add(r: SnapshotRecord): void {
     this.#recs.push(r);
     if (this.#recs.length > CAP) this.#recs.splice(0, this.#recs.length - CAP);
+    persistRecord(r);   // durable perception (§7c) — best-effort, never breaks the live add
     for (const l of this.#listeners) { try { l(r); } catch { /* */ } }
+  }
+
+  /** Restore recent perception from disk into the ring on boot (§7c) — so a restart doesn't
+   *  amnesia-wipe the dock's recent history. De-dups against what's already present. */
+  hydrate(dock: string, nowMs: number): number {
+    const recent = loadRecent(dock, nowMs);
+    if (!recent.length) return 0;
+    const have = new Set(this.#recs.map((r) => `${r.interval.from}|${r.source.id}|${r.source.kind}`));
+    let added = 0;
+    for (const r of recent) {
+      const k = `${r.interval.from}|${r.source.id}|${r.source.kind}`;
+      if (!have.has(k)) { this.#recs.push(r); have.add(k); added++; }
+    }
+    if (this.#recs.length > CAP) this.#recs.splice(0, this.#recs.length - CAP);
+    this.#recs.sort((a, b) => (a.interval.from < b.interval.from ? -1 : a.interval.from > b.interval.from ? 1 : 0));
+    return added;
   }
 
   /** Patch a record's payload in place (e.g. the background STT upgrade replacing the

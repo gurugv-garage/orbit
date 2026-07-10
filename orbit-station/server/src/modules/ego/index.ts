@@ -12,32 +12,91 @@
 import { readFileSync, existsSync } from 'node:fs';
 import type { Bus } from '../../core/bus.js';
 import { json } from '../../core/http.js';
+import { readdirSync } from 'node:fs';
+import { join } from 'node:path';
 import type { RouteContext, StationModule } from '../../core/module.js';
 import { loadEgo, loadTrace } from './ego-store.js';
 import { introspect } from './introspect.js';
+import { perceptionSince } from '../perception/index.js';
 
 const LAST_SUMMARY_FILE = '.data/perception/last-summary.json';
 
-/** "Recent experience" for a dock = the perception rolling picture (what it's perceived
- *  lately). Read from the persisted file so the ego module stays decoupled from perception.
- *  (Slice 2 can enrich this with recent brain turns.) */
-function recentExperience(dock: string): string {
+/** The introspection CHECKPOINT (§7c): the ego's own `meta.updated` timestamp — "everything
+ *  since I last introspected". Falls back to a few hours if absent (fresh dock). Returns an
+ *  ISO string in IST (to match the snapshot record timeline). */
+function checkpointIso(egoText: string, nowMs: number): string {
+  const m = egoText.match(/^-\s*updated:\s*(\S+)/m);
+  const ms = m ? Date.parse(m[1]!) : NaN;
+  const from = Number.isNaN(ms) ? nowMs - 6 * 3600_000 : ms;
+  return new Date(from + 5.5 * 3600_000).toISOString(); // IST-ish, string-comparable to record.interval.from
+}
+
+/** Recent CONVERSATION turns for a dock — what was said to/by it since the checkpoint. This
+ *  is the recovery signal (a person can only talk the ego down if introspection reads it).
+ *  Filters the idle-moods prompt-scaffolding (long coaching/system injections) so the ego
+ *  reads real dialogue, not its own machinery. Best-effort. */
+function recentConversation(dock: string, sinceIso: string, maxTurns = 30): string {
   try {
-    if (!existsSync(LAST_SUMMARY_FILE)) return '';
-    const all = JSON.parse(readFileSync(LAST_SUMMARY_FILE, 'utf8')) as Record<string, { text?: string; window?: { from?: string; to?: string } }>;
-    const v = all[dock];
-    if (!v?.text) return '';
-    const w = v.window;
-    return `Latest perception${w?.from ? ` (${w.from.slice(11, 19)}–${(w.to ?? '').slice(11, 19)})` : ''}:\n${v.text}`;
+    const dir = `.data/brain/${dock}`;
+    if (!existsSync(dir)) return '';
+    const files = readdirSync(dir).filter((f) => /^s-.*\.json$/.test(f)).sort();
+    const turns: string[] = [];
+    for (const f of files.slice(-4)) {                       // newest few sessions
+      let items: unknown;
+      try { items = JSON.parse(readFileSync(join(dir, f), 'utf8')); } catch { continue; }
+      if (!Array.isArray(items)) continue;
+      for (const it of items as Array<{ role?: string; content?: unknown }>) {
+        const role = it.role;
+        let text = typeof it.content === 'string' ? it.content
+          : Array.isArray(it.content) ? (it.content as Array<{ text?: string }>).map((x) => (typeof x === 'string' ? x : x?.text ?? '')).join(' ')
+          : '';
+        text = text.replace(/\s+/g, ' ').trim();
+        if (!text) continue;
+        // drop prompt-scaffolding: long user-role coaching/system injections + bracketed directives
+        if (role === 'user' && (text.length > 220 || text.startsWith('['))) {
+          if (!/\b(failed|finished|update|came into view|wake)\b/i.test(text.slice(0, 80))) continue;
+          text = text.slice(0, 140);
+        }
+        const who = role === 'user' ? 'person' : role === 'assistant' ? 'me' : role ?? '?';
+        if (who === 'me' || who === 'person') turns.push(`${who}: ${text}`);
+      }
+    }
+    return turns.slice(-maxTurns).join('\n');
   } catch {
     return '';
   }
 }
 
+/** The rolling-summary fallback (used only if the durable raw span is empty — e.g. before the
+ *  first persisted records, or on a very long gap). The compression layer, per §7c. */
+function summaryFallback(dock: string): string {
+  try {
+    if (!existsSync(LAST_SUMMARY_FILE)) return '';
+    const all = JSON.parse(readFileSync(LAST_SUMMARY_FILE, 'utf8')) as Record<string, { text?: string }>;
+    return all[dock]?.text ? `Recent perception (summary):\n${all[dock]!.text}` : '';
+  } catch { return ''; }
+}
+
+/** "Recent experience" the ego introspects over (§7c): the durable PERCEPTION SPAN since the
+ *  ego's own checkpoint (raw, leaned-toward — the enriched truth) + the CONVERSATIONS in that
+ *  span (the recovery signal). Falls back to the rolling summary when raw is sparse. */
+function recentExperience(dock: string, nowMs: number): string {
+  const { text: ego } = loadEgo(dock);
+  const since = checkpointIso(ego, nowMs);
+  let perception = '';
+  try { perception = perceptionSince(dock, since); } catch { /* */ }
+  if (!perception) perception = summaryFallback(dock);
+  const convo = recentConversation(dock, since);
+  const parts: string[] = [];
+  if (perception) parts.push(`WHAT YOU SENSED (since you last reflected):\n${perception}`);
+  if (convo) parts.push(`A CONVERSATION YOU HAD:\n${convo}`);
+  return parts.join('\n\n');
+}
+
 /** Run one introspection for a dock, assembling its recent experience — the shared entry
  *  the REST handler and the conductor's idle heartbeat both call. */
 export function introspectDock(dock: string, trigger: string) {
-  return introspect(dock, recentExperience(dock), { trigger });
+  return introspect(dock, recentExperience(dock, Date.now()), { trigger });
 }
 
 /** The dock's current ego document (or undefined if it's still the bare template — nothing

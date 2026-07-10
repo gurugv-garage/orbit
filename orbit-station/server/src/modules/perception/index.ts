@@ -39,6 +39,7 @@ import { MemoryStore, type MemoryRow, type MemoryType, type RecallFilter, type L
 import { geminiEmbedder } from './memory/embedder.js';
 import { startGateWatcher, type RaisedThought } from './attention/gate-watcher.js';
 import { startAutoSummarizer } from './auto-summarizer.js';
+import { trimOldDays, recordsSince } from './retention.js';
 import { startLongTermMemoryCurator, CONFIG_META as CURATOR_CONFIG_META, type CuratorHandle } from './memory/longterm/curator.js';
 import { pendingObservations, pendingStats } from './memory/longterm/sources.js';
 import type { BeliefHit } from './memory/longterm/reconcile.js';
@@ -213,6 +214,19 @@ export function lastSalientAt(dockId: string): number | null {
 }
 export function noteSelfRemark(dockId: string, text: string): void {
   selfRemarkRef.current?.(dockId, text);
+}
+/** The durable PERCEPTION SPAN since a checkpoint (§7c) — the "everything I've perceived since
+ *  I last introspected" feed the ego reads. Leans toward RAW (the enriched truth): reads
+ *  persisted records since `sinceIso` from disk (survives restarts/gaps), stitched into a
+ *  clean transcript. Consumption is the constraint, not storage — so it's capped by
+ *  `maxRecords` (the most recent N in the span; §7c "read raw up to a budget"). Excludes
+ *  'summary' records (those are the compression fallback, folded in only if raw is sparse). */
+export function perceptionSince(dockId: string, sinceIso: string, maxRecords = 300): string {
+  const all = recordsSince(dockId, sinceIso).filter((r) => r.source.kind !== 'summary');
+  const raw = all.slice(-maxRecords); // most-recent N within the span (the consumption budget)
+  if (!raw.length) return '';
+  const trimmed = all.length > raw.length ? `(earlier ${all.length - raw.length} perceptions omitted for length)\n` : '';
+  return trimmed + stitch(raw);
 }
 /** The live PerceptionGroundingApi (set when the perception module inits). */
 export function getPerceptionGrounding(): PerceptionGroundingApi | undefined {
@@ -730,6 +744,16 @@ export function perceptionModule(getHub: () => PerceptionProcessingHub): Station
         if (decisions.length > 50) decisions.splice(0, decisions.length - 50);
       };
       startGateWatcher(snapshots, () => gateCfg, (t) => raiseHandler?.(t), noteDecision);
+
+      // Durable perception retention (§7c): a slow sweep drops day-files past the retention
+      // window. (Trim-time self-summarization — §7c step 2 — will hang off touchedDocks here
+      // once the span-summary series is wired; for now the summary RING RECORDS already give
+      // introspection a coherence fallback, and recordsSince() reads the raw disk span.)
+      const trimTimer = setInterval(() => {
+        try { const touched = trimOldDays(Date.now()); if (touched.length) console.log(`[perception] retention trim: ${touched.join(',')}`); }
+        catch (err) { console.error('[perception] retention trim failed', err); }
+      }, 30 * 60_000);
+      (trimTimer as { unref?: () => void }).unref?.();
 
       // A1.5 auto-summarizer: keep grounding's lastSummary fresh without a manual
       // /summarize. Per active dock (those with recent records), on a debounced
