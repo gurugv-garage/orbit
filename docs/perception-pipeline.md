@@ -12,6 +12,16 @@
 Code: `orbit-station/server/src/modules/perception/`. Console (the playground):
 `http://localhost:8099/#perception`.
 
+> **Where perception sits (the middle of three layers).** State is built in three
+> layers: **sensory inputs** (raw camera/audio signal — not "facts", just signal) →
+> **perception** (this) → **the ego** (the first-person self, [decision-traces/ego.md](decision-traces/ego.md)).
+> Perception's job is **signal → meaning, with as little noise as possible** — that
+> noise reduction (change-gate §2a, window-dedup, the reuse cache, the summarizer) is
+> *perception's* responsibility, not the ego's. The ego reads perception's cleaned-up
+> meaning, never raw sensors; it fills only the gaps perception *can't* (what's
+> off-camera, what a sound meant). So: perception owns signal → clean meaning; the ego
+> owns clean meaning → a coherent self.
+
 ### Code map — key files + entry points
 
 All paths under `orbit-station/server/src/modules/perception/`.
