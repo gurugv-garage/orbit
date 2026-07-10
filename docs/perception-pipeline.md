@@ -629,11 +629,17 @@ Planned changes, in dependency order:
 5. **Grounding switches to the same feed** (brain per-turn) — richest available, aligned with
    introspection. (Can lag; not required for the recovery test.)
 
-**Open decision — the curator vs. "no enrichment in cleanup."** The curator derives beliefs
-(enrichment). Under this model that either (a) moves *into* perception as a derivation topic,
-or (b) durable long-term memory is re-cast as a legitimately *separate* thing (semantic
-memory, days→weeks) rather than "cleanup," and stays. **Not decided; must not silently break
-the curator.** Resolve before touching it.
+**Curator — resolved (2026-07-10): it is a SEPARATE semantic-memory faculty, not cleanup.**
+The apparent collision ("the curator derives beliefs = enrichment, in the cleanup layer")
+dissolves once framed right: the curator was never *compression of perception*. Compression
+(the §7c span-summaries) keeps older **perception** cheaply. The curator distills **durable
+semantic facts** ("Guru prefers tea", days→weeks) that outlive any perception window — a
+**separate long-term-memory arm, parallel to perception, not above it**. So §7c's "no
+enrichment in the cleanup layer" simply **does not apply to it** — it isn't the cleanup
+layer. It stays as-is (real consumers: brain `recall_memory`, grounding's belief slice,
+tasks' `this.memory`); no code moves. The two arms:
+- **perception** — the enriched, durable *stream* (raw + self-summarized tail). Minutes→hours.
+- **semantic memory** (curator/beliefs) — durable distilled *facts*. Days→weeks. Separate.
 
 ---
 
