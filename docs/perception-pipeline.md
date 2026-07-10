@@ -540,6 +540,9 @@ across sessions, not just narrate the last minute.
   (in-process cosine over the dock's embedded memories — no vector DB at this scale).
 - The brain reaches it through a `MemoryApi` facade as tools (`recall_memory`,
   `inspect_memory`, `remember`, `update_memory`, `forget_memory`).
+- **Facts enter from two sources** (no background curator any more, §7c): (a) the
+  summarizer's **fact-extraction** at trim time, and (b) the LLM's explicit **`remember`**
+  tool. It's a generic fact primitive, not an autonomous consolidator.
 
 This lives in the perception module (it's derived from perception). Full
 implementation + integration reference (schema, store API, recall, the facade + the
@@ -582,6 +585,8 @@ not sense-making — and it is a property OF the perception stream, not a layer 
    │  recent:  RAW records, retained on disk, restart/gap-tolerant       │
    │  older:   the stream's OWN SPAN-SUMMARIES (it compressed its tail    │
    │           at trim time — a retained SERIES, not one overwritten doc) │
+   │  ALSO:    the SAME trim pass extracts durable FACTS → MemoryStore    │
+   │           (append + semantic dedup; not a separate curator loop)     │
    └────────────────────────────────────────────────────────────────────┘
                     ▲ consumers read ONE stream at whatever fidelity is available:
      INTROSPECTION (ego §3.2) — checkpointed by the ego's own meta.updated:
@@ -607,19 +612,23 @@ Current reality that must change (verified 2026-07-10):
   a restart **wipes all perception** (the amnesia-wipe coherence-layer §6 flagged).
 - The rolling summary is **overwritten** (`last-summary.json` = one current picture); each
   summary is also a `kind:'summary'` ring record, but in the same volatile ring.
-- The curator **derives beliefs** (consolidate) — that's *enrichment*, sitting in a layer this
-  model says must only compress. **Open collision (see below).**
+- Durable facts used to be derived by a **separate background curator** (consolidate/reconcile,
+  its own watermark) reading raw speech in parallel — now **removed**; fact-extraction is the
+  summarizer trim pass's second output (see the curator note below).
 
 Planned changes, in dependency order:
 1. **Durable, time-windowed perception store.** Persist snapshot records to disk, retained by
    **time** (config; generous — storage is cheap), surviving restarts, tolerating gaps (a
    hole in the timeline is fine). Replaces / backs the in-memory ring (`snapshots.ts`); the
    ring can stay as a hot cache in front of it. `.data/perception/<dock>/…`.
-2. **Trim-time self-summarization → retained series.** When records age past the window, the
-   stream summarizes that trimmed span into a **span-summary** stored as a **retained series**
-   (reuse `summarizer.ts`; the summary is *perception compressing itself*, not a new layer).
-   Fixes the "overwritten summary" — replaces §6's single on-demand summary as the durable
-   record.
+2. **Trim-time self-summarization → retained series + facts (ONE pass, two outputs).** When
+   records age past the window (per closed clock-hour), the stream summarizes that trimmed span
+   into **① a span-summary** stored as a **retained series** (`span-summaries.jsonl`; reuse
+   `summarizer.ts`; the summary is *perception compressing itself*, not a new layer) AND **②
+   extracts durable facts** into the same `MemoryStore` (append + light semantic dedup). Fixes
+   the "overwritten summary" — replaces §6's single on-demand summary as the durable record —
+   and replaces the deleted background curator as the fact source. Retention is record-granular
+   by closed clock-hour (`selfCompressAndTrim` in `retention.ts`), not day-granular.
 3. **A "span since T" read API** on perception: given a checkpoint timestamp + a size/count
    budget, return raw-where-retained + span-summaries-for-the-older-gap. The single feed both
    introspection and grounding consume.
@@ -629,17 +638,28 @@ Planned changes, in dependency order:
 5. **Grounding switches to the same feed** (brain per-turn) — richest available, aligned with
    introspection. (Can lag; not required for the recovery test.)
 
-**Curator — resolved (2026-07-10): it is a SEPARATE semantic-memory faculty, not cleanup.**
-The apparent collision ("the curator derives beliefs = enrichment, in the cleanup layer")
-dissolves once framed right: the curator was never *compression of perception*. Compression
-(the §7c span-summaries) keeps older **perception** cheaply. The curator distills **durable
-semantic facts** ("Guru prefers tea", days→weeks) that outlive any perception window — a
-**separate long-term-memory arm, parallel to perception, not above it**. So §7c's "no
-enrichment in the cleanup layer" simply **does not apply to it** — it isn't the cleanup
-layer. It stays as-is (real consumers: brain `recall_memory`, grounding's belief slice,
-tasks' `this.memory`); no code moves. The two arms:
-- **perception** — the enriched, durable *stream* (raw + self-summarized tail). Minutes→hours.
-- **semantic memory** (curator/beliefs) — durable distilled *facts*. Days→weeks. Separate.
+**Curator — RESOLVED then REMOVED (2026-07-10): fact-extraction folded into the summarizer.**
+An earlier resolution kept the background curator as a "separate semantic-memory faculty,
+parallel to perception." That was **superseded and the curator job was deleted entirely**
+(`curator.ts`, `sources.ts`, the whole `memory/longterm/` folder; the `/api/perception/curator*`
+REST + its knobs `PERCEPTION_CURATE`/`PERCEPTION_RECONCILE_MS`/`maxBatch`/`confMax`/`reconcileMs`/
+`reconcileMin`; the console curator panel). There is no longer a parallel raw-reading
+consolidate/reconcile loop with its own watermark. Instead:
+
+- **One summarizer pass** at trim time (per closed clock-hour) produces **two outputs from the
+  same pass:** ① a **span-summary** (compress the aged raw perception into a durable hourly
+  digest → `span-summaries.jsonl`) and ② **fact extraction** — durable facts pulled into the
+  SAME `MemoryStore` (append + light semantic dedup; **no** separate checkpoint/watermark,
+  **no** reconcile job).
+- The **`MemoryStore` stays** as a generic fact primitive (semantic recall + subject/type/
+  confidence + revise-history), exposed as brain TOOLS (`recall_memory`/`remember`/`forget`/
+  `update`) and via the per-turn `memoryGroundingSlice`. Facts now enter it from **(a)** the
+  summarizer's fact-extraction and **(b)** the LLM's explicit `remember` tool — **not** a
+  background curator.
+- **Face memory** (`gallery.ts`, JSON) is separate and unaffected.
+
+So §7c's "one stream, two fidelities" still holds — durable facts are just the second output
+of the same self-compression pass, not a separate long-horizon arm above perception.
 
 ---
 

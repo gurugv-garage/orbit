@@ -1,3 +1,17 @@
+> **SUPERSEDED 2026-07-10 — the curator described here was REMOVED.** The background
+> curator job (this whole doc: `curator.ts`, `sources.ts`, `memory/longterm/`, the
+> consolidate + reconcile loop, its watermark/cadence, the `/api/perception/curator*` REST
+> + knobs `PERCEPTION_CURATE`/`PERCEPTION_RECONCILE_MS`/`maxBatch`/`confMax`/`reconcileMs`/
+> `reconcileMin`, and the console curator panel) was **deleted**. Memory is now unified into
+> the perception pipeline: durable fact-extraction is one output of the **perception
+> summarizer's per-clock-hour trim pass** (alongside the span-summary), writing into the same
+> `MemoryStore` (append + light semantic dedup, no separate watermark, no reconcile job).
+> Current design: [../perception-pipeline.md](../perception-pipeline.md) §7c;
+> as-built store: [../memory.md](../memory.md) §5a. **The body below is retained as the
+> historical decision record — it does not describe the running system.**
+>
+> ---
+>
 > **DECISION TRACE.** The long-term memory curator — what it is, why it's shaped this
 > way, and the reframings that got here. Companion to [memory.md](../memory.md) (the
 > store it tends) and [behaviour-conductor.md](behaviour-conductor.md) (the

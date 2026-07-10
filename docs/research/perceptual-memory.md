@@ -173,4 +173,13 @@ clears the bar.
 - 2026-07-08 — initial study. 10 research sub-agents (VPR, few-shot, open-vocab detection,
   VLM temporal/memory, semantic-SLAM, memory failure modes, correction generalization). All
   numbers are external benchmarks (ceilings). No POC run yet; POC-1/POC-2 are the next step.
+- 2026-07-10 — **code-pointer correction (recommendations unchanged).** Takeaways 1 and 9
+  point at `memory/longterm/` / "the existing curator" as the built text-correlation +
+  forgetting layer. That **background curator was removed** — its consolidate/reconcile loop
+  and `memory/longterm/` are gone; durable fact-extraction is now one output of the perception
+  summarizer's per-clock-hour trim pass into the same `MemoryStore`
+  ([../perception-pipeline.md](../perception-pipeline.md) §7c, [../memory.md](../memory.md)
+  §5a). The study's *architectural* verdicts (keep correlation in a text layer; a forgetting
+  policy is mandatory; confidence/decay is the right shape) still stand — read them as
+  properties of `MemoryStore` + the summarizer, not of the deleted curator loop.
 

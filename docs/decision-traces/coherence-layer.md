@@ -9,6 +9,20 @@
 > and a **property OF the perception stream**, not a "coherence layer" above it; enrichment
 > belongs in perception. That supersedes §4's framing here.
 >
+> **SUPERSEDED 2026-07-10 — the curator was REMOVED, not re-based.** This trace's §3 verdict
+> ("re-base the curator, don't kill it") and §4–§7's "curator as the long-horizon arm" no
+> longer describe the system. The background curator job was **deleted** (`curator.ts`,
+> `sources.ts`, the whole `memory/longterm/` folder; the `/api/perception/curator*` REST +
+> its `PERCEPTION_CURATE`/`PERCEPTION_RECONCILE_MS`/`maxBatch`/`confMax`/`reconcileMs`/
+> `reconcileMin` knobs; the console curator panel). Its consolidate/reconcile machinery is
+> gone. **Fact extraction was folded into the perception summarizer's trim pass** — one pass,
+> per closed clock-hour, emits both a span-summary and durable facts into the SAME
+> `MemoryStore` (append + light semantic dedup; no watermark, no reconcile). The `MemoryStore`
+> is **kept** as a generic fact primitive (brain tools + `memoryGroundingSlice`); facts now
+> enter from the summarizer's fact-extraction and the LLM's `remember` tool. The body below
+> is left as the historical record of what was thought at the time — read it as history, not
+> the current design ([../perception-pipeline.md](../perception-pipeline.md) §7c is current).
+>
 > Related: [../research/idle-cognition.md](../research/idle-cognition.md) (the
 > science this rests on), [long-term-memory-curator.md](long-term-memory-curator.md)
 > (the machinery being re-based), [bg-audio-summarizer.md](bg-audio-summarizer.md)

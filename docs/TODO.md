@@ -245,11 +245,13 @@ Legend: `[x]` done · `[~]` in progress · `[ ]` not started · `[?]` open quest
   Conductor tab ([idle-moods-live-test.md](operations/idle-moods-live-test.md))
 - [ ] **Addressed vs overheard speech tagging** (verified missing 2026-07-05): speech
   snapshots carry no addressed flag — the brain's addressed decision (`onAddressedFinal`)
-  never stamps the snapshot, so summaries/grounding/memory-curator treat "said to the dock"
+  never stamps the snapshot, so summaries/grounding/fact-extraction treat "said to the dock"
   and room chatter identically. Seam: back-patch `payload.addressed` via `SnapshotStore.update`
   from `onAddressedFinal` (incl. not-addressed branches) → render `SPEECH→dock` vs `SPEECH`
-  in `summarizer.ts stitch()` → `addressed` on the curator's `Observation`/consolidate prompt.
-  All future perception consumers must respect this distinction.
+  in `summarizer.ts stitch()` → the summarizer's fact-extraction respects it.
+  All future perception consumers must respect this distinction. (The background curator that
+  originally owned the consolidate prompt was removed 2026-07-10; fact extraction is now the
+  summarizer's trim pass — see memory.md §5a.)
 - [ ] HTTPS in real deployment; auth on the WS for non-LAN
 
 ### 3.1 Audio pipeline — ▸ SUPERSEDED by the built perception/media stack
