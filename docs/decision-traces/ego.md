@@ -128,28 +128,29 @@ not numbers — is the whole game. Behaviour flows from *every* resolution path 
 that reinterprets speaks differently than one that acts than one that reforms), so
 **tension → behaviour is many bridges, not one.**
 
-### 2.4 Build/use split (the key architectural commitment)
+### 2.4 Write/read split (the key architectural commitment)
 
-The ego's two jobs are **decoupled by a frozen artifact between them:**
+The one thing that **evolves** the ego and the many things that **read** it are
+**decoupled by a frozen artifact between them** — the ego document:
 
 ```
-BUILD ──writes──▶ [ the EGO DOCUMENT (§2.6) ] ──read──▶ USE
-(perception →      inspectable · injectable            (→ behaviour)
- sense-bound, slow) · HARDCODABLE for testing           (fast)
+WRITE ──────▶ [ the EGO DOCUMENT (§2.6) ] ──read──▶ READERS
+(introspection,  inspectable · injectable            (behaviours, brain turns,
+ idle, slow)     · HARDCODABLE for testing             the conductor — §3.5)
 ```
 
-- **BUILD (Job A, slow)** — turn clean perception into the story, reconcile it against
-  the identity, and over time let the identity itself reform. Bound to sense quality
-  (imperfect, improving forever). The hard, deferred half.
-- **USE (Job B, fast)** — turn an ego *of whatever quality* into behaviour. A separate
-  craft.
+- **WRITE** — only **introspection** (§3.2) changes the ego: idle, slow, reads memory +
+  the trace, updates the document. (There is no runtime "build from perception"; a fresh
+  dock starts from a template — §3.1.)
+- **READ** — everything else just **reads** the ego of whatever quality; it does not write
+  back. The ego is a read surface, not a driver (§3.5).
 
-Why non-negotiable: it lets each be tested and fixed **alone** — hardcode an ego,
-watch behaviour, mutate a line, watch the delta. Without
-it, bad behaviour could come from a bad ego *or* bad use-of-ego and you'd never know
-which. (Same discipline as the perception pipeline's `SnapshotRecord`, one level up.)
-The **test harness is a first-class requirement** — which forces the ego to be
-inspectable/injectable, not hidden LLM state.
+Why non-negotiable: it lets writing and reading be tested and fixed **alone** — hardcode
+an ego, have a reader act on it, mutate a line, watch the delta. Without it, bad behaviour
+could come from a bad ego *or* bad use-of-ego and you'd never know which. (Same discipline
+as the perception pipeline's `SnapshotRecord`, one level up.) The **test harness is a
+first-class requirement** — which forces the ego to be inspectable/injectable, not hidden
+LLM state.
 
 **Two modes, not a contradiction:** in **live mode** the loop is closed and the ego
 evolves; in **test mode** the loop is cut and the ego is pinned.
@@ -212,125 +213,149 @@ why-I'm-here, §2.2.)
 evidence that lives in the existing stores (snapshot ring, long-term memory) rather than
 containing it — keeping the document a thin, coherent *interpretation*, not a re-import
 of raw noise. But a detail can be **embedded inline** when it's currently load-bearing.
-**Periodic maintenance** then decides each embedded detail's fate:
+**Introspection** (§3.2) then decides each embedded detail's fate:
 
 - **graduate** into the story or the identity (it mattered enough to become part of
   what's-happening or who-I-am), or
 - **externalize** to long-term memory (settled/archival — becomes a reference), or
 - **drop** (it didn't matter).
 
-This is the ego *breathing*: detail enters embedded, maintenance promotes it inward
+This is the ego *breathing*: detail enters embedded, introspection promotes it inward
 (into identity/story) or exhales it outward (to memory). It keeps the document from
-bloating **and** is one concrete answer to "how experience durably individuates" (§3):
+bloating **and** is one concrete answer to "how experience durably individuates":
 graduation into the identity *is* accumulation. The externalize step reuses the
 coherence-layer's existing consolidate/curator machinery.
 
 ## 3. Implementation
 
-The pieces to fill in, each with *what's clear now* (drafted) and *open items* to iterate
-over. **Method:** define the document's structure first, keep everything in language,
-reach for numbers/hard rules only where demonstrably forced. Iterate:
-identity → story → tension → maintenance → back around.
+**The phase model (settled 2026-07-10).** Much simpler than a BUILD/USE/MAINTAIN split.
+At runtime only **one** process evolves the ego (**introspect**), one artifact records
+its history (**the trace**), and everything else just **reads** the ego. "Build from
+nothing" isn't a runtime phase at all.
+
+```
+OFFLINE:   templates ──seed──▶ a fresh dock's starting ego (different template = different starting self)
+
+RUNTIME:
+  INTROSPECT   idle (via the conductor) → reads current memory + the ego's own TRACE of
+               becoming → updates the ego document + writes a new trace snapshot.
+               The ONLY thing that evolves the ego. Rationalization is caught here — by
+               the ego seeing its own repeated moves across the trace ("I've said 'they're
+               busy' for 5 days → maybe I'm wrong"), not by a rule.
+
+  USE          NOT a phase. The ego is a READ SURFACE / a set of tools. Behaviours, brain
+               turns, the conductor pull whatever part they need ("here's your
+               personality / current tension / what you want"). The ego stack does not
+               drive behaviour; consumers decide how to use it.
+
+SLOW:      trace consolidation — yesterday's frequent snapshots → yesterday's final ego +
+           the key evolution; fine detail → long-term memory (reuses the curator).
+```
+
+Method: define the document's structure first, keep everything in language, reach for
+numbers/hard rules only where demonstrably forced.
 
 ### 3.1 The ego document
 
 *Clear now:* one file (`ego.md`-like) per dock, five peer sections (§2.6): **why I'm
-here** (purpose) · **who I am** (identity) · **what's going on** (story) · **where it
-doesn't add up** (tension) · **what I expect / want** (anticipation). First-person prose;
-lines may reference evidence in the existing stores or embed a detail inline.
-Inspectable/injectable/hardcodable by construction — this *is* the §2.4 artifact.
+here** · **who I am** · **what's going on** · **where it doesn't add up** · **what I
+expect / want**. First-person prose; lines reference evidence in the stores or embed a
+detail inline. A fresh dock starts from a **template** (there is no runtime "build from
+zero"); different templates = different starting selves. The sample in
+[ego-sample.md](ego-sample.md) fleshes this out.
 
-- [ ] **Section contents.** What a line in each section actually *is* — e.g. is an
-  identity line plain prose, or prose + an explicit stance-toward-tension clause? Any
-  minimal per-line metadata (a source ref, an observed/inferred/anticipated tag)?
-- [ ] **Purpose as a standing wonder.** Where a fresh dock's *first* tentative "why I'm
-  here" comes from, and — more importantly — how the ego is made to **keep returning to
-  the question** (idle reflection re-opening it) rather than settle. Its slow change-rate
-  is a disposition (§2.6), not a lock; the open item is how the constant re-wondering is
-  driven.
-- [ ] **File location + lifecycle on disk.** Where it lives, how it's persisted, how it
-  survives a restart (a restart must not wipe the accumulated self — §why).
-- [ ] **One-doc coherence in practice.** Confirm an LLM can reliably *maintain* internal
-  coherence of a growing document (the whole model leans on this).
+- [ ] **Section contents.** What a line actually *is* — plain prose vs. prose + a
+  stance-toward-tension clause; any per-line tag (source ref; observed/inferred/
+  anticipated/edge — kept only if the introspecting LLM uses it naturally). The
+  [sample](ego-sample.md) proposes tags on story/anticipation, none on identity/purpose.
+- [ ] **Templates.** What ships as the starting ego(s); how a new dock picks one.
+- [ ] **Persistence.** Where the file lives; it must survive a restart — a wipe erases
+  the accumulated self, and the *experience* that individuates the dock (§1).
 
-### 3.2 BUILD (Job A) — perception → the document
+### 3.2 Introspect (the only thing that evolves the ego)
 
-*Clear now:* the slow half. Turns perception's cleaned meaning (§4) into/against the
-document: writes the story from what's perceived, reconciles it with the identity, runs
-the tension repertoire, and over time lets the identity itself reform. Its ceiling is
-bound to how clean perception's meaning is.
+*Clear now:* runs in **idle behaviour, via the conductor** (existing machinery — the same
+place idle-moods runs). Enters an introspection mode: reads current memory **and its own
+trace of becoming**, then updates the ego — writes/revises the story from what's been
+perceived, runs the tension repertoire (§2.2) as this identity, and, rarely, reforms the
+identity or re-opens "why am I here". Cadence is coarse (order of ~hourly, evolving), not
+per-perception.
 
-- [ ] **Story update step.** How each perception tick edits the **what's going on**
-  section — append, revise a line, mark an edge. Cadence (per snapshot? debounced?).
-- [ ] **Reconcile step.** How a new story line is checked against the identity → detects
-  a tension (§3.4).
-- [ ] **Substrate reuse.** How much of this rides the existing rolling-summary /
-  auto-summarizer plumbing vs. new code (coherence-layer §4).
+- [ ] **Trigger + cadence.** Idle-gated by the conductor; how often (a slow tick, on
+  accumulated new perception, on idleness). Evolving — start coarse.
+- [ ] **The introspection prompt.** The core reasoning move: given current ego + recent
+  memory + the trace, produce the next ego. Likely the experiment we deferred (build an
+  ego from real/synthetic perception via a prompt, iterate, port to production).
+- [ ] **Reading the trace to catch drift.** How introspection uses the *sequence* of past
+  egos to notice a repeated rationalization ("5th time I've reinterpreted this") and let
+  that tip a repertoire move toward changing the identity. **This is the rationalization
+  guard** (§2.3) — self-awareness of one's own pattern, not a threshold.
+- [ ] **Identity / purpose revision.** The rare paths (repertoire move 5; re-opening
+  purpose). What tips them; how thrashing is avoided (disposition, §2.3).
 
-### 3.3 The maintenance pass (the "breathing")
+### 3.3 The trace (the ego's history of becoming)
 
-*Clear now (shape only):* periodically, embedded details are **graduated** (into story or
-identity), **externalized** (to long-term memory), or **dropped** (§2.6). This is where
-experience durably individuates — graduation into identity *is* accumulation.
+*Clear now:* a **separate artifact** alongside the ego doc (not inside it — keeps the doc
+coherent). Content = **timestamped snapshots of the ego document** (dumb by design: no
+stored "why" — each snapshot already carries its own tension section narrating the move,
+so the reasoning is recoverable by reading the sequence). Introspection reads it to see
+how the self evolved. This is what makes "how experience durably individuates" concrete.
 
-- [ ] **Trigger.** When it runs — idle-gated (conductor)? on a slow clock? on document
-  size?
-- [ ] **Fate policy.** How each embedded detail's graduate / externalize / drop is
-  decided — in language ("has this recurred / does it change who I am?"), not a number.
-- [ ] **Identity reform.** The rare path: when accumulated tension actually **rewrites an
-  identity line** (repertoire move 5). What triggers it; how it's kept from thrashing.
-- [ ] **Externalize = reuse the curator.** Confirm the "move to long-term memory" step is
-  the coherence-layer consolidate/curator machinery, not new plumbing.
+- [ ] **Format + location.** A log/dir of ego snapshots next to `ego.md`. When a snapshot
+  is written (each introspection).
+- [ ] **Consolidation (slow).** Yesterday's frequent snapshots → yesterday's final ego +
+  key evolution; fine detail → long-term memory. Reuses the curator machinery (§4). What
+  "key evolution" means (kept in language).
 
-### 3.4 Tension detection + the repertoire
+### 3.4 Tension (recorded, resolved in introspection)
 
-*Clear now:* tension is a contradiction *within the document* (a **story** line vs. a
-**who-I-am** line). Resolution runs the §2.2 repertoire **as this identity**, with the
-move chosen by the identity's own disposition (§2.3) — all in language.
+*Clear now:* tension is a contradiction *within the document* and **is recorded** in the
+"where it doesn't add up" section — which narrates *which repertoire move* (§2.2) the ego
+is reaching for, in the identity's disposition (§2.3). Detected/resolved during
+introspection (§3.2); consumers may also read it on the fly. Likely a **shared "does this
+cohere?" prompt**.
 
-- [ ] **Detecting a conflict.** How a story line and an identity line are recognized as
-  contradicting (LLM judgement over the one document — likely).
-- [ ] **Running the repertoire.** How the chosen move actually edits the document
-  (reinterpret → rewrite a story line; narrow → edit an identity line; change → §3.3
-  reform) — and how "act to repair" (move 4) emits a **behaviour** (§3.5).
-- [ ] **Rationalization guard.** The architecture rationalizes by design (§2.3); the
-  observed/inferred/anticipated typing is the intended guard — design + prove it.
+- [ ] **Detecting + resolving.** How a story line and an identity line are recognized as
+  contradicting, and how the chosen move edits the document.
+- [ ] **Momentary vs. recorded.** Which tensions get written vs. noticed-and-dropped —
+  deferrable; the section already exists.
 
-### 3.5 USE (Job B) — the document → behaviour
+### 3.5 USE — the ego as a read surface (tools, not a driver)
 
-*Clear now:* the fast half. Reads the ego (of whatever quality) and produces behaviour —
-including behaviour that flows from *every* resolution path, not only "act to repair"
-(§2.3). Testable against a hardcoded ego.
+*Clear now:* **not a phase.** The ego exposes itself (whole, or by part) as **tools** a
+consumer reads — "here's your personality," "here's your current tension," "here's what
+you want." Behaviours, brain turns, and the conductor pull the part they need and decide
+what to do; **the ego stack does not decide how it's used.** Testable against a hardcoded
+ego without any of the above being built.
 
-- [ ] **The read→act seam.** How behaviour is derived from the document — via the
-  existing self-thought lane (`enqueueAutonomousTurn`) + the attention gate + conductor
-  priorities. The ego *proposes*; existing gates *dispose* (a hallucinated tension must
-  not drive a real body action unbrokered).
-- [ ] **Idle vs. addressed.** How ego-driven behaviour interacts with addressed turns and
-  idle behaviours (conductor gating).
+- [ ] **The tools/read API.** What the ego exposes (whole doc? per-section getters?) and
+  how a consumer references it.
+- [ ] **First consumers.** Which existing paths read it first — the self-thought lane
+  (`enqueueAutonomousTurn`), the conductor's idle behaviours, a brain turn's grounding.
+  The ego *proposes*; existing gates (addressed-detection, attention gate, priorities)
+  *dispose* — a hallucinated tension must not drive a body action unbrokered.
 
 ### 3.6 Test harness
 
-*Clear now:* first-class requirement (§2.4). Hardcode an ego → observe behaviour → mutate
-a line → observe the delta. Two modes: live (loop closed, ego evolves) / test (loop cut,
-ego pinned).
+*Clear now:* first-class (§2.4). Hardcode an ego → have a consumer read it → observe
+behaviour → mutate a line → observe the delta. Because USE is just reading (§3.5), this
+needs *nothing else built* — inject a file, watch what a consumer does.
 
-- [ ] **Harness shape.** How an ego file is injected, behaviour captured, and the delta
-  inspected (likely a Perception-Studio-style surface).
-- [ ] **What "good behaviour" looks like** for a given hardcoded ego — the judgement, kept
-  qualitative.
+- [ ] **Harness shape.** How an ego file is injected + behaviour inspected (a
+  Perception-Studio-style surface, likely).
+- [ ] **Judging behaviour** for a given hardcoded ego — qualitative.
 
 ### Cross-cutting risks
 
-- **Job A may never get built.** §2.4 lets us ship a well-tested Job B on hand-authored
-  egos and never build the maintenance/reform that makes a dock *become* anyone. Guard:
-  treat §3.3 as core, not optional.
-- **Rationalization engine by design** (§2.3) — the guards (disposition + typing) are
-  unproven; see the §3.4 guard TODO.
-- **Externalizing may flatten** — a prose document is testable but may lose the implicit
-  richness of a real identity.
-- **Cost** — a stateful maintenance/build tick is an LLM call carrying the document;
-  idle-gated + activity-gated (the bg-audio cooldown pattern) is the likely shape.
+- **Introspection may never produce a real self.** Templates + a read surface let us ship
+  behaviour that never actually *evolves* (§3.2/§3.3 unbuilt) — a dock that behaves from a
+  fixed hand-authored ego but never *becomes* anyone. Guard: treat introspect + trace as
+  core, and run the generate-from-real-data experiment early to de-risk it.
+- **Rationalization engine by design** (§2.3) — the guard (introspection reading its own
+  trace) is unproven; see §3.2.
+- **Flattening** — a prose document is testable but may lose implicit richness.
+- **Cost** — an introspection tick is an LLM call carrying the ego + trace; idle-gated +
+  coarse cadence (the bg-audio cooldown pattern) is the shape.
 
 ## 4. The three layers, and the coherence layer
 
@@ -373,11 +398,11 @@ The ego is **not an increment on the summarizer** — it is the **first-person,
 identity-centered thing the coherence layer was reaching for and didn't reach.** The
 "rolling picture" is a *third-person summary*; the ego is a *self*. So:
 
-- The **summarizer becomes an input** to the ego — perception + rolling picture feed
-  BUILD (§3.2), which writes the first-person story. The ego may eventually *replace*
-  the third-person summary as the thing behaviour reads.
-- The **curator becomes the "externalize" step** of the maintenance pass (§3.3) — the
-  path by which a detail moves out to long-term memory.
+- The **summarizer becomes an input** to introspection (§3.2) — perception + the rolling
+  picture are what the ego reads when it updates its story. The ego may eventually
+  *replace* the third-person summary as the thing behaviour reads.
+- The **curator becomes the "externalize" step** of introspection / trace consolidation
+  (§3.2–§3.3) — the path by which a detail or an old trace moves out to long-term memory.
 - **"Boredom"** carries over, sharpened: not "no events" but **the story's edges have
   gone quiet** — the cue for idle reflection (the conductor's job).
 
