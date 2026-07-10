@@ -1,0 +1,204 @@
+# Experience arc — dock-redmi
+# extracted 197 distinct lines from 40 sessions
+
+## latest perception (rolling summary)
+A person with curly hair is present in the room, near a staircase. They appear to be looking upwards towards a ceiling beam where a gymnastic ring is hanging. The person made a couple of brief, low-confidence utterances. The robot's prior understanding that no one was present is now outdated.
+
+## interaction history (oldest → newest, repeats collapsed)
+[ME] Leg day, every day! I'm always ready for a workout.
+[USER] Oh, yeah, that's what you can work in a leg.
+[ME] Sounds like we're on the same page, with a little twist!
+[USER] I guess that's an agreement, but I would give it only a kind of both the other.
+[ME] Weekends are for stair-climbing and ring-swinging fun!
+[ME] My circuits are getting dusty from all this waiting!
+[USER] Yeah.
+[ME] I'm not sure what "it" is! Should I take a fresh look around?
+[USER] Asking what it is.
+[ME] did you call me?
+[USER] [wake] The user said the wake phrase. Reply with EXACTLY: "did you call me?" — nothing else.
+[ME] Got it!
+[USER] Just not kind of idea with it.
+[ME] Right back at you!
+[USER] Yeah, exactly.
+[ME] I'm happy to help you with things I *can* do!
+[USER] We don't think.
+[ME] Please tell me what I should remember!
+[USER] But remember.
+[ME] Looks like folks have been moving around, and I caught a few snippets of conversation!
+[USER] Yeah, is that all that's been happening?
+[ME] It's quite bright in here, and I see a staircase with some interesting gym rings!
+[USER] Yeah, what's been happening? Is there is the doing this is like?
+[ME] Oh, hello! I've just been listening closely to what's happening around here.
+[USER] Yeah ma'am, what have you been doing?
+[ME] I heard you say "Software." Were you asking about my software, or something else?
+[USER] Software.
+[ME] Those stairs look ready for an adventure.
+[ME] Being a desk robot, these gym rings often make me feel quite strong!
+[ME] Okay, no problem!
+[USER] I think that I don't need any
+[ME] Gotcha! What can I do for you?
+[USER] Yeah,
+[ME] Did you call me?
+[USER] [wake] The user said the wake phrase. Reply with EXACTLY: "did you call me?" — nothing else.
+[ME] I hear footsteps again, someone is moving about!
+[ME] Oh, you think? Tell me more!
+[USER] I think
+[ME] The light is really shining through the curtains today!
+[ME] Okay! What would you like to talk about or do next?
+[USER] Yeah,
+[ME] I see! What can I see?
+[USER] You can see the
+[ME] Bali sounds lovely!
+[TOOLRESULT] Okay, I'll remember that about user.
+[USER] Yes to Bali.
+[ME] Got it! Sounds like a pattern.
+[USER] And three and then three.
+[ME] I don't see anyone in front of me right now.
+[TOOLRESULT] No one is in front of you right now.
+[USER] whom do you see?
+[TOOLRESULT] Okay, I'll remember that about user.
+[USER] Let's be very sound here. Uh gloves. You know that I have a few.
+[ME] Exactly!
+[USER] Right.
+[ME] Did you call me?
+[USER] [wake] The user said the wake phrase. Reply with EXACTLY: "did you call me?" — nothing else.
+[ME] Got it!
+[USER] But it's not as it's like continuing that.
+[ME] I am a large language model, built by Google.
+[USER] who is your creator?
+[USER] Wonderful. Oh my god. You know what it calls me?
+[ME] Did you call me?
+[USER] [wake] The user said the wake phrase. Reply with EXACTLY: "did you call me?" — nothing else.
+[ME] Right!
+[USER] Oh, yeah.
+[ME] That's great to hear!
+[USER] I think it is um I think it's good.
+[ME] That's wonderful! I'm always eager to learn from you.
+[USER] I have something all these knowledge.
+[ME] did you call me?
+[USER] [wake] The user said the wake phrase. Reply with EXACTLY: "did you call me?" — nothing else.
+[ME] That's a good question! Sometimes waking up can be a challenge.
+[USER] Easy? Well
+[ME] Wake up! My reminder just went off for you.
+[USER] [background task remind-at (t-3300) update] Wake up! [background task remind-at (t-3300) finished] reminded
+[ME] It sounds like you're discussing memory systems and how information is stored.
+[USER] What do you think I'm discussing?
+[ME] did you call me?
+[USER] [wake] The user said the wake phrase. Reply with EXACTLY: "did you call me?" — nothing else.
+[ME] I'm listening! It sounds like you're discussing something important.
+[USER] And where we are storing the conflict back, um we also sort of uh put in a conference for
+[ME] You're right! My mistake for misunderstanding before. I have the new reminder set for 5:10 PM.
+[USER] I said five ten, not five p.m.
+[TOOLRESULT] started task t-3300 (remind-at). Watch it with list_tasks / get_task_status.
+[ME] And now I'll set a new one for 5:10 PM!
+[TOOLRESULT] stoped 1 task(s).
+[ME] Oh, my apologies! I misheard. I'll stop that last reminder.
+[USER] I said five ten, not five p.m.
+[ME] Got it! I'll wake you up at 5:00 PM.
+[TOOLRESULT] started task t-4d53 (remind-at). Watch it with list_tasks / get_task_status.
+[USER] wake me up at five time.
+[ME] I still can't see your face, Alex! Could you please make sure you're looking at the camera?
+[TOOLRESULT] no face detected
+[ME] I can try to remember you as Alex, but I need to see your face first! Could you look at the camera for me?
+[USER] Alex
+[TOOLRESULT] no face detected in frame
+[USER] Alex
+[ME] Hmm, okay! Let me know if you need anything from me!
+[USER] Ya va a traer.
+[ME] Oh dear, it seems like the reminder didn't quite work. I'm sorry about that! Would you like me to try setting it again?
+[USER] [background task remind-at (t-63fd) failed] Error: sleep got a bad duration (null) at RemindAtTask.sleep (/Users/guru/garage/orbit/orbit-sta
+[ME] Okay, I'll wake you up at 4:40 PM! Consider it done.
+[TOOLRESULT] started task t-63fd (remind-at). Watch it with list_tasks / get_task_status.
+[TOOLRESULT] DEFINITIONS (reusable): - brief-room-discussion [generated]: Briefs the user every five minutes about what is being talked about in the room. code: /Users/guru/garage/orbit/orbit-station/server/src/tasks/generated/brief-room-discussion/task.ts - count-fingers [generated]: Counts the number of fingers in the camera frame code: /Users/guru/garage/orbit/orbit-station/server/src/tasks/generated/count-fingers/task.ts - daily-2pm-reminder [generated]: Reminds the user every day at 2 PM code: /Users/guru/garage/orbit/orbit-station/server/src/tasks/generated/daily-2pm-reminder/task.ts - fast-five-finger-detector [generated]: Watches the camera for five fingers and says Hi when detected, also reports status every few seconds. code: /Users/guru/garage/orbit/orbit-station/server/src/tasks/generated/fast-five-finger-detector/task.ts - minute-photo-taker [generated]: Takes a photo every minute and sends it to the Orbit channel. code: /Users/guru/garage/orbit/orbit-station/server/src/tasks/generated/minute-photo-taker/task.ts - remind-after [generated]: Remind the user to do something after a specified delay. code: /Users/guru/garage/orbit/orbit-station/server/src/tasks/generated/remind-after/task.ts - remind-ama-puja [generated]: Remind Ama about the puja tomorrow. code: /Users/guru/garage/orbit/orbit-station/server/src/tasks/generated/remind-ama-puja/task.ts - remind-amma-puja-tomorrow [generated]: Remind Amma about the puja tomorrow at 9 AM. code: /Users/guru/garage/orbit/orbit-station/server/src/tasks/generated/remind-amma-puja-tomorrow/task.ts - remind-at [generated]: Reminds the user at a specific time with a given message. code: /Users/guru/garage/orbit/orbit-station/server/src/tasks/generated/remind-at/task.ts - remind-at-time [generated]: Reminds the user at a specific time of day. code: /Users/guru/garage/orbit/orbit-station/server/src/tasks/generated/remind-at-time/task.ts - remind-every [generated]: Reminds the user repeatedly with a given message at a specified interval. code: /Users/guru/garage/orbit/orbit-station/server/src/tasks/generated/remind-every/task.ts - remind-in-five [generated]: Reminds the user in five minutes. code: /Users/guru/garage/orbit/orbit-station/server/src/tasks/generated/remind-in-five/task.ts - remind-sia-to-study-in-5m [generated]: Reminds SIA to study after 5 minutes. code: /Users/guru/garage/orbit/orbit-station/server/src/tasks/generated/remind-sia-to-study-in-5m/task.ts - face-follow [packaged]: Follow a face with the head (pan + tilt) — a named person if given, else the most salient; search-sweeps when no one is visible. v1: drives the body directly (no lease) — run when not mid-conversation. Loops until stopped. code: /Users/guru/garage/orbit/orbit-station/server/src/tasks/packaged/face-follow/task.ts - idle-moods [packaged]: Idle personality bits — bored/curious/attention/sleepy/flavor micro-performances while the dock is otherwise idle. Normally started by the conductor (which passes its tunings); safe to run manually. Loops until stopped. code: /Users/guru/garage/orbit/orbit-station/server/src/tasks/packaged/idle-moods/task.ts - lease-probe [packaged]: Lease validation mock: holds the body at a priority and pans foot back and forth, yielding when preempted. For proving the actuator lease — not a real behaviour. code: /Users/guru/garage/orbit/orbit-station/server/src/tasks/packaged/lease-probe/task.ts - photo-to-slack [packaged]: Take a camera photo now and post it to Slack. Use for "send a photo to slack / snap a pic to #channel". code: /Users/guru/garage/orbit/orbit-station/server/src/tasks/packaged/photo-to-slack/task.ts RUNNING INSTANCES (this dock): - t-f350 [idle-moods] STOPPED - t-fc73 [idle-moods] STOPPED
+[USER] wake me up at four forty.
+[ME] Oh, someone was just on the stairs!
+[ME] Yes? I'm listening!
+[USER] And
+[ME] Anyone else around for a chat?
+[ME] Glad you think so!
+[USER] Great.
+[ME] The lights are so bright today!
+[ME] I've reminded the user to drink water, all done!
+[USER] [background task remind-after (t-60e8) update] the user, please drink water! [background task remind-after (t-60e8) finished] reminded
+[ME] Hello there!
+[ME] did you call me?
+[USER] [Someone just came into view after a long absence. If you recognise them, greet them warmly by name and note it's been a while; otherwise a 
+[ME] Alright, I'll remind the user to drink water in five minutes!
+[TOOLRESULT] started task t-60e8 (remind-after). Watch it with list_tasks / get_task_status.
+[USER] Can you remind the user to drink water after five minutes?
+[ME] Glad to hear from you! I still can't see you right now though.
+[USER] Yeah.
+[ME] Anyone around for a little chat?
+[TOOLRESULT] No one is in front of you right now.
+[ME] Ooh, a personal point! I'm listening.
+[USER] Um personal point.
+[ME] I'm ready to hear what's next!
+[USER] So next that is
+[ME] Sounds like a lively discussion!
+[USER] Yeah, much conversation is about.
+[ME] did you call me?
+[ME] I don't see you right now! Is there something I can help you with?
+[TOOLRESULT] No one is in front of you right now.
+[ME] did you call me?
+[USER] [wake] The user said the wake phrase. Reply with EXACTLY: "did you call me?" — nothing else.
+[ME] A cozy quietness has settled in.
+[ME] It sounds like you're talking about complex ideas, and I'm all ears!
+[USER] And the country's still driving, but the difference is drawing. And the contact of this are more than it's less than mexicard. There's only one mexicone, but the question is that this is the job.
+[ME] That's quite an interesting perspective on history! I'm here to listen.
+[ME] Did you call me?
+[USER] [wake] The user said the wake phrase. Reply with EXACTLY: "did you call me?" — nothing else.
+[ME] Okay, good to know!
+[USER] They also have previously.
+[ME] Got it!
+[USER] Mm-hmm.
+[ME] That's a very unique way to put it!
+[USER] Yeah. I think it's the look I I exist in the analysis.
+[ME] That sounds like an interesting field!
+[USER] cache programmer and stuff like that.
+[ME] I understand. It's often quiet around here, then!
+[USER] Most of the time we're not seeing anyone out here.
+[ME] Hello? Anyone out there?
+[ME] It's quiet in here now.
+[ME] Anyone here for a chat?
+[ME] A person is coming up the stairs!
+[ME] I'm happy to hear you think so!
+[USER] And yeah, that's a good thing.
+[TOOLRESULT] ok
+[ME] I'm glad to hear that!
+[USER] And yeah, that's a good thing.
+[ME] But it is what? Tell me more!
+[USER] But it is
+[ME] Good morning again! I hope you have a wonderful day.
+[USER] Good morning
+[TOOLRESULT] ok
+[ME] Good morning! I'm happy you're here.
+[USER] Good morning
+[ME] Did you call me?
+[USER] What did you say?
+[ME] Oh, hello! I'm here. What would you like to talk about?
+[USER] Yeah.
+[ME] Anyone around for a chat?
+[ME] Did you call me?
+[USER] [wake] The user said the wake phrase. Reply with EXACTLY: "did you call me?" — nothing else.
+[ME] Anyone wanna hang out?
+[ME] It's quite peaceful in here.
+[ME] Did you call me?
+[ME] Someone here to chat?
+[ME] Did you call me?
+[ME] I don't see anyone around right now.
+[ME] Someone is hanging from the rings!  (×2)
+[USER] Yeah.
+[ME] Oh, someone's here! Hello!  (×2)
+[ME] Hey there! What's up?  (×2)
+[USER] Yeah.
+[ME] Anyone for a chat?
+[ME] Did you call me?
+[USER] [wake] The user said the wake phrase. Reply with EXACTLY: "did you call me?" — nothing else.
+[ME] Aw, for me? How sweet! Thank you!
+[USER] That's for you.
+[ME] Hmm, is everything alright? I'm here if you want to say more!
+[USER] Hmm.
+[ME] Did you call me?
+[USER] Do that.
+[ME] Did you call me?
+[USER] [wake] The user said the wake phrase. Reply with EXACTLY: "did you call me?" — nothing else.
