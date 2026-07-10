@@ -42,6 +42,7 @@ import {
   getPerceptionGrounding, getSnapshotsApi, getMemoryApi, getGateApi, getPerceiveStore,
 } from './modules/perception/index.js';
 import { otaModule } from './modules/ota/index.js';
+import { egoModule } from './modules/ego/index.js';
 import { stationModule } from './modules/station.js';
 
 // LLM provider keys live in the STATION's environment now (never in device
@@ -243,6 +244,7 @@ async function main() {
   // capture-judging harness: record a dock's A/V + snapshots for replay/judging.
   modules.push(captureModule({ getHub: () => perceptionProcessingHub!, directory, dir: captureDir }));
   modules.push(otaModule(() => hub));   // OTA: version-compare against live roster
+  modules.push(egoModule());            // per-dock ego document + introspection + trace
   // station meta module needs the registry + hub; add it last.
   modules.push(stationModule(() => modules, () => hub));
 

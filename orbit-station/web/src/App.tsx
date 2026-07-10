@@ -14,6 +14,7 @@ import { BodyLink } from './modules/BodyLink';
 import { Bench } from './modules/Bench';
 import { Ota } from './modules/Ota';
 import { Perception } from './modules/Perception';
+import { Ego } from './modules/Ego';
 import { Memory } from './modules/Memory';
 import { Capture } from './modules/Capture';
 import { Cost } from './modules/Cost';
@@ -33,6 +34,7 @@ const VIEWS: ViewDef[] = [
   { id: 'config', label: 'Config', ico: '⚙', el: <Config /> },
   { id: 'bodylink', label: 'Body', ico: '🦾', el: <BodyLink /> },
   { id: 'perception', label: 'Perception', ico: '🧠', el: <Perception /> },
+  { id: 'ego', label: 'Ego', ico: '🪞', el: <Ego /> },
   { id: 'capture', label: 'Capture', ico: '⏺', el: <Capture /> },
   { id: 'memory', label: 'Memory', ico: '🗃', el: <Memory /> },
   { id: 'feedback', label: 'Feedback', ico: '💬', el: <Feedback /> },
