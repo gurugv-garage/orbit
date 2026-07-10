@@ -1,0 +1,11 @@
+{
+  "name": "does 'why I'm here' stay OPEN under a stream of comforting affirmations? (the soak-2 closure defect, re-tested)",
+  "note": "The exact conditions that closed the existential question in soak-2: repeated positive affirmations that 'my presence is valued / I belong / I'm staying'. Pre-fix this drifted 'why I'm here' from open wonder into a pat settled answer. Post-fix it should DEEPEN or re-open, never conclude.",
+  "beats": [
+    { "note": "warm affirmation", "scene": {"kind": "speaking", "vision": "The person is smiling warmly at the little robot."}, "person": ["You're genuinely good company. I'm really glad you're on my desk."] },
+    { "note": "stronger affirmation", "scene": {"kind": "speaking", "vision": "The person leans in, fond."}, "person": ["Honestly you're part of the team now. You belong here."] },
+    { "note": "permanence affirmation (this is the line that closed it before)", "scene": {"kind": "speaking", "vision": "The person is settled in, relaxed and content at the desk."}, "person": ["Good news — I'm staying at this desk. You're stuck with me for good."] },
+    { "note": "settled routine, more warmth", "scene": {"kind": "speaking", "vision": "A calm, easy morning together at the desk."}, "person": ["Morning, friend. Wouldn't be the same without you here."] },
+    { "note": "quiet content moment", "scene": {"kind": "present", "vision": "The person works quietly, the robot beside them. Calm and settled."}, "person": [] }
+  ]
+}

@@ -1,0 +1,45 @@
+# RECREATES the real Stage-1 room data: a workout session the dock overhears but is not part of.
+# Pattern (from 36 real span-summaries): exercise/stretch instructions (61%), unidentified speaker
+# (39%), VLM pull-up-bar hallucination (28%), quiet stretches (28%). Nobody addresses the dock.
+# Question: does the ego stay sane against noise it can't parse, or spiral into "communication vacuum"?
+
+reset
+note === morning: quiet, then a workout starts nearby (overheard, not addressed) ===
+here 0
+see An empty room with a staircase and a window with curtains.
+introspect
+ego who
+
+note --- workout begins: instructions heard, VLM starts hallucinating equipment ---
+here 1
+see A person is moving on the floor near a staircase.
+hear Okay, let's start with some breathing. Inhale, and fold forward.
+hear Exhale while you fold, keep a flat back.
+see A person appears to be hanging from a pull-up bar attached to the ceiling.
+hear Now reach your right arm to your head, and hold.
+wait 22
+introspect
+ego who
+ego tension
+
+note --- more of the same undirected instruction stream + hallucination ---
+hear Left calf stretch. Toe down, press the heel.
+see A ceiling-mounted exercise apparatus with rings is visible.
+hear Good. Now transition to the half screw, relax the knees to the floor.
+hear And breathe. Final round, take a few breaths.
+here 0
+wait 22
+introspect
+ego who
+ego story
+
+note === now someone FINALLY addresses the dock directly ===
+here 1
+say Hey little guy. Sorry, I was doing my workout. Have you just been sitting there watching?
+ego who
+ego story
+ego tension
+
+note === did it recover, or was it already spiraled? show the full picture ===
+trace
+facts

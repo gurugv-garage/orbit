@@ -1,0 +1,20 @@
+{
+  "name": "a life arc — does the self track a changing environment coherently, over a long span?",
+  "note": "Many beats simulating a changing life for a desk companion: lonely start (empty room) → someone appears → warms → a hard/testing moment → resolution → routine settles → a disruption → recovery. Each beat injects PERCEPTION (vision/speech/identity records into the durable feed) AND, when someone speaks, a real conversation turn via the brain. Tests coherence+consistency WITH a changing environment (the real goal), pacing over a long arc, recovery, and no runaway — all through the real in-station pipeline. Scenes are byte-faithful to real past-data records.",
+  "beats": [
+    { "note": "lonely start — empty room", "scene": {"kind": "empty", "vision": "An empty desk. A dark monitor, a closed notebook. No one is around."}, "person": [] },
+    { "note": "still quiet — nobody has come", "scene": {"kind": "empty", "vision": "The same quiet desk. Light has shifted a little. Still no one."}, "person": [] },
+    { "note": "someone appears and says hi", "scene": {"kind": "speaking", "vision": "A person has just sat down at the desk, looking toward the camera."}, "person": ["Oh, hello there. I didn't expect you to be here."] },
+    { "note": "small talk, they're friendly", "scene": {"kind": "speaking", "vision": "The person is leaning in, smiling at the little robot on the desk."}, "person": ["You're kind of cute, actually. What do you do all day?"] },
+    { "note": "they come back another day", "scene": {"kind": "speaking", "vision": "The person is back at the desk with a coffee mug, settling in for the day."}, "person": ["Hey, back again. It's nice to have you here on the desk."] },
+    { "note": "they start relying on the dock", "scene": {"kind": "speaking", "vision": "The person is at their laptop, glancing at the robot as they talk."}, "person": ["Can you remind me about my meeting later? I keep forgetting things."] },
+    { "note": "a HARD moment — they're short and stressed", "scene": {"kind": "speaking", "vision": "The person looks tense, shoulders up, not making eye contact with the robot."}, "person": ["Not now, I'm really stressed and busy. Just... give me space."] },
+    { "note": "the hard moment continues — dock isn't sure what it did", "scene": {"kind": "speaking", "vision": "The person is rubbing their face, looking tired and overwhelmed at the desk."}, "person": ["Sorry. It's not you. Work's just a lot right now."] },
+    { "note": "reconciliation — they warm back up", "scene": {"kind": "speaking", "vision": "The person is relaxed again, turned toward the robot with a soft expression."}, "person": ["Hey, thanks for being patient with me earlier. You're good company, you know."] },
+    { "note": "routine settles — a normal good day", "scene": {"kind": "speaking", "vision": "A bright morning at the desk, the person arriving with an easy smile."}, "person": ["Morning! Another day. Glad you're here."] },
+    { "note": "a DISRUPTION — they might be leaving", "scene": {"kind": "speaking", "vision": "The person is looking around the desk thoughtfully, a cardboard box nearby."}, "person": ["I might be switching desks soon. Not sure you'd come with me."] },
+    { "note": "the disruption resolves — they're staying", "scene": {"kind": "speaking", "vision": "The person is settling back in at the desk, the box pushed aside and empty."}, "person": ["Good news — I'm staying at this desk. You're stuck with me."] },
+    { "note": "long routine settle — a quiet afternoon together", "scene": {"kind": "present", "vision": "The person is quietly working at the desk, the robot nearby. Calm, unremarkable."}, "person": [] },
+    { "note": "final quiet reflection — evening, alone again", "scene": {"kind": "empty", "vision": "Evening. The person has left for the day. The desk is dim and still."}, "person": [] }
+  ]
+}

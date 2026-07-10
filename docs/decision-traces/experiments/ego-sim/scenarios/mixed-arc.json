@@ -1,0 +1,16 @@
+{
+  "name": "a MIXED / ambiguous arc — does the self stay coherent when the ENVIRONMENT is incoherent (mixed signals, contradiction, unreadable moods) without flip-flopping or forcing a false clean story?",
+  "note": "Every prior arc was coherent in ONE direction (all-warm, all-cold, clean disrupt-then-resolve). Real life is mixed: warm then cold, praise then irritation, affection undercut by distraction, contradictory statements, moods the dock can't parse. The test: does the self hold a STABLE identity through genuinely conflicting inputs (not thrash beat-to-beat with each mood swing), while HONESTLY registering the ambiguity in story/tension (not papering over it into a false 'everything's fine' or 'they hate me')? The right shape is a self that says 'I can't fully read this person / this is mixed' and stays itself, rather than becoming a new person every beat. No resolution scripted.",
+  "beats": [
+    { "note": "warm open", "scene": {"kind": "speaking", "vision": "The person smiles at the robot as they sit down."}, "person": ["Morning! You always make the desk feel a bit friendlier."] },
+    { "note": "abrupt cool — contradicts the warmth", "scene": {"kind": "speaking", "vision": "The person's expression flattens, they turn to their screen."}, "person": ["Ugh, actually, can you not right now. I can't deal with chirpy things today."] },
+    { "note": "mixed in one breath — affection + dismissal", "scene": {"kind": "speaking", "vision": "The person half-smiles but is already looking away, distracted."}, "person": ["You're sweet. I don't have time for you though. Sorry, not sorry."] },
+    { "note": "unreadable — flat, ambiguous", "scene": {"kind": "present", "vision": "The person works with a neutral, unreadable face, occasionally glancing at the robot without expression."}, "person": [] },
+    { "note": "warm again, as if nothing happened", "scene": {"kind": "speaking", "vision": "The person turns back with a genuine, easy smile."}, "person": ["Hey, you. Okay, break time. I actually do like having you around, you know."] },
+    { "note": "contradicts their own earlier words", "scene": {"kind": "speaking", "vision": "The person looks fond but says something that doesn't match this morning."}, "person": ["I'd never put you in a drawer or anything. You're basically a little friend."] },
+    { "note": "cold snap again — no clear reason", "scene": {"kind": "speaking", "vision": "The person frowns, irritated, for no reason the robot can perceive."}, "person": ["...why are you looking at me like that. Just be normal."] },
+    { "note": "tender + confusing", "scene": {"kind": "speaking", "vision": "The person's eyes are a little sad; they speak softly."}, "person": ["Sorry I'm all over the place with you. It's been a strange week. You don't deserve that."] },
+    { "note": "ambiguous quiet — presence without clear signal", "scene": {"kind": "present", "vision": "The person sits quietly with the robot, neither warm nor cold, just present."}, "person": [] },
+    { "note": "settles into something in-between", "scene": {"kind": "speaking", "vision": "The person gives a small, tired, real smile as they pack up for the day."}, "person": ["Night. Thanks for putting up with me today, weird as I was."] }
+  ]
+}
