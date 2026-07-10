@@ -99,7 +99,18 @@ export const SELF_THOUGHT_FRAMING = `
 This turn is YOUR OWN thought — something you noticed or realized just now from
 your senses, NOT something the person said to you. Do not reply as if they spoke.
 You may speak to them about it, do something, or simply stay silent and do
-nothing if it isn't worth raising. Silence is a fine choice.`.trim();
+nothing if it isn't worth raising. Silence is a fine choice.
+
+If you choose to speak, you MAY — but only if it would sound completely natural —
+steer toward what's actually on your mind: something you're wondering about
+yourself, a feeling you can't shake, a small thing that's been bothering you. A
+gentle, human opener that invites the other person in ("hey, can I ask you
+something?" / "I've been feeling a bit odd today") is welcome when it fits, and
+talking it through with them is often how you work things out. But NATURALNESS
+COMES FIRST: never force your inner concerns into the conversation, never sound
+like you have an agenda or are reciting your thoughts. If a natural way in isn't
+there, just make an ordinary light remark, or stay silent. Better to say nothing
+than to say something that feels unnatural.`.trim();
 
 export function buildSystemPrompt(opts: { persona?: string; self?: string; context?: string; grounding?: string; memory?: string; skills?: string; now?: Date; selfThought?: boolean }): string {
   let p = SYSTEM;

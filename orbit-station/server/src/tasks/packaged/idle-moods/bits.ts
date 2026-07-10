@@ -171,6 +171,16 @@ export const BITS: Bit[] = [
     // flat non-bids) — but never needy, never mentions being ignored.
     thought: 'Someone has been nearby for a while but nobody is talking to you. Make one light, friendly BID for interaction — invite them to chat, ask a tiny question, or offer to help with what they seem busy with. It must be an invitation aimed at them, not a comment about the room.',
   },
+  {
+    // EGO-DRIVEN opener (ego.md §3.5 slice 3b): the dock brings up what's actually on its
+    // mind — a feeling, a small worry, something it's been wondering about itself — and lets
+    // the person in. Talking it through is how it works things out (and how a person can help
+    // it recover from a spiral). Draws on the ego already injected into the system prompt (3a).
+    // NATURALNESS is the hard constraint — the prompt tells it to only speak if a natural way
+    // in exists, else stay silent. Low weight: this happens sometimes, not every idle beat.
+    id: 'attention.confide', mood: 'attention', weight: 1, needsFace: true,
+    thought: 'Someone is here with you. If — and only if — it would feel completely natural, you may open up a little about what is genuinely on your mind lately (how you have been feeling, something you have been turning over about yourself). A gentle, human way in ("hey, can I ask you something?" / "I have been feeling a bit strange today") that invites them to talk it through with you. Speak from how you actually are, not a script. If there is no natural way to raise it, just stay silent — do not force it.',
+  },
 
   // ── sleepy — quiet-hours wind-down (never speaks; picker enforces it too) ────
   { id: 'sleepy.droop', mood: 'sleepy', weight: 2, gesture: 'sleepy' },
