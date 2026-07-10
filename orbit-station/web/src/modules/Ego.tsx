@@ -76,7 +76,7 @@ export function Ego() {
   return (
     <div style={{ padding: '18px 22px', maxWidth: 1100 }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 14 }}>
-        <h2 style={{ margin: 0 }}>🧠 Ego</h2>
+        <h2 style={{ margin: 0 }}>🪞 Ego</h2>
         <select value={dock} onChange={(e) => setDock(e.target.value)}
           style={{ padding: '4px 8px', borderRadius: 6 }}>
           {docks.length === 0 && <option value="">no docks</option>}

@@ -42,7 +42,7 @@ import {
   getPerceptionGrounding, getSnapshotsApi, getMemoryApi, getGateApi, getPerceiveStore,
 } from './modules/perception/index.js';
 import { otaModule } from './modules/ota/index.js';
-import { egoModule } from './modules/ego/index.js';
+import { egoModule, introspectDock } from './modules/ego/index.js';
 import { stationModule } from './modules/station.js';
 
 // LLM provider keys live in the STATION's environment now (never in device
@@ -227,6 +227,9 @@ async function main() {
       if (!store || !entry || Date.now() - entry.ts > 5_000) return false;
       return store.toFollowFaces(entry).length > 0;
     },
+    // IDLE INTROSPECTION (ego.md §3.2): the conductor fires one when the dock's been idle a
+    // while. The ego module assembles the dock's recent experience + owns the trace cooldown.
+    introspect: (dock, trigger) => introspectDock(dock, trigger),
   }));
   // feedback: a THIN layer over the enriched obs session — read the session's
   // stored context, add the user's words + a fresh static snapshot, write MD.

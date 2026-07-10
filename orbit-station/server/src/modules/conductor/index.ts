@@ -17,6 +17,13 @@ import { CONDUCTED, type ConductedState, type World, type Tunings } from './cond
 import { reconcile, type Effects } from './reconcile.js';
 
 const TICK_MS = 1000;
+/** IDLE INTROSPECTION cadence (ego.md §3.2). The dock introspects when it's been idle at
+ *  least INTROSPECT_IDLE_MS, and at most once every INTROSPECT_MIN_GAP_MS. Coarse by design —
+ *  introspection is a slow, reflective LLM call, not a per-tick thing. The ego module's own
+ *  10-min trace cooldown decides whether each introspection also snapshots the trace. */
+const INTROSPECT_IDLE_MS = Number(process.env.EGO_INTROSPECT_IDLE_MS ?? 600_000);   // idle ≥ 10 min
+const INTROSPECT_MIN_GAP_MS = Number(process.env.EGO_INTROSPECT_GAP_MS ?? 1_800_000); // ≤ once / 30 min
+const INTROSPECT_ENABLED = process.env.EGO_INTROSPECT !== '0';
 
 export interface ConductorWiring {
   /** docks to conduct (live roster). */
@@ -44,6 +51,10 @@ export interface ConductorWiring {
   setWake: (dock: string, cfg: { enabled: boolean; phrase: string; prompt: string; aliases?: string[] } | null) => void;
   /** best-effort presence (someone in view) — optional; v1 conducted things don't require it. */
   present?: (dock: string) => boolean;
+  /** IDLE INTROSPECTION (ego.md §3.2): fire one introspection for the dock. Called by the
+   *  tick when the dock has been idle a while, at most every INTROSPECT_MIN_GAP_MS. Async +
+   *  fire-and-forget; the ego module owns the work + its own trace cooldown. Unset → disabled. */
+  introspect?: (dock: string, trigger: string) => Promise<unknown>;
 }
 
 interface DockState {
@@ -59,6 +70,11 @@ interface DockState {
    *  changes ("last bit: bored.sigh", "tracking guru", "yielded …") — the console's time-log.
    *  In-memory only; bounded. `norm` is the precomputed coalesce key (digits stripped). */
   history: Map<string, Array<{ ts: number; text: string; norm: string }>>;
+  /** epoch of the last INTROSPECTION the conductor fired for this dock (0 = never). Gates the
+   *  idle introspection heartbeat so it fires at most every INTROSPECT_MIN_GAP_MS. */
+  lastIntrospectMs: number;
+  /** true while an async introspection is in flight (don't overlap — it's an LLM call). */
+  introspecting: boolean;
 }
 
 const HISTORY_MAX = 30;
@@ -83,7 +99,7 @@ export function conductorModule(w: ConductorWiring): StationModule {
 
   const dockState = (dock: string): DockState => {
     let s = docks.get(dock);
-    if (!s) { s = { conducted: new Map(), lastConversationMs: 0, lastPresenceMs: 0, override: new Map(), history: new Map() }; docks.set(dock, s); }
+    if (!s) { s = { conducted: new Map(), lastConversationMs: 0, lastPresenceMs: 0, override: new Map(), history: new Map(), lastIntrospectMs: 0, introspecting: false }; docks.set(dock, s); }
     return s;
   };
 
@@ -141,14 +157,34 @@ export function conductorModule(w: ConductorWiring): StationModule {
     },
   });
 
+  /** IDLE INTROSPECTION heartbeat (ego.md §3.2). Independent of the conducted-things
+   *  reconcile: introspection is background cognition, not a start/stop lifecycle thing. Fire
+   *  one when the dock has been idle ≥ INTROSPECT_IDLE_MS and it's been ≥ INTROSPECT_MIN_GAP_MS
+   *  since the last one. Fire-and-forget (async LLM); `introspecting` guards against overlap. */
+  const maybeIntrospect = (dock: string, st: DockState, now: number, world: World) => {
+    if (!INTROSPECT_ENABLED || !w.introspect || st.introspecting) return;
+    if (world.turnActive || world.listening) return;                 // never mid-conversation
+    const idleFor = st.lastConversationMs === 0 ? Infinity : now - st.lastConversationMs;
+    if (idleFor < INTROSPECT_IDLE_MS) return;                         // not idle long enough
+    if (now - st.lastIntrospectMs < INTROSPECT_MIN_GAP_MS) return;    // too soon since last
+    st.introspecting = true; st.lastIntrospectMs = now;
+    pushEvent(st, 'introspect', now, 'introspecting (idle)…');
+    void Promise.resolve(w.introspect(dock, 'idle'))
+      .then(() => pushEvent(dockState(dock), 'introspect', Date.now(), 'introspected'))
+      .catch((e) => pushEvent(dockState(dock), 'introspect', Date.now(), `introspect failed: ${String(e).slice(0, 80)}`))
+      .finally(() => { dockState(dock).introspecting = false; });
+  };
+
   const tick = () => {
     const now = Date.now();
     for (const dock of w.docks()) {
       const st = dockState(dock);
       try {
         const taskList = w.tasks(dock);
-        reconcile(dock, CONDUCTED, assembleWorld(dock, st, now, taskList), st.conducted, tunFor(dock),
+        const world = assembleWorld(dock, st, now, taskList);
+        reconcile(dock, CONDUCTED, world, st.conducted, tunFor(dock),
           fx(dock, taskList), (name) => st.override.get(name));
+        maybeIntrospect(dock, st, now, world);
         // ACTIVITY LOG: fold each running conducted task's status line into its history
         // (digit-coalesced, so a per-tick angle refresh updates in place, not floods).
         for (const c of CONDUCTED) {

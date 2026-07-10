@@ -34,6 +34,12 @@ function recentExperience(dock: string): string {
   }
 }
 
+/** Run one introspection for a dock, assembling its recent experience — the shared entry
+ *  the REST handler and the conductor's idle heartbeat both call. */
+export function introspectDock(dock: string, trigger: string) {
+  return introspect(dock, recentExperience(dock), { trigger });
+}
+
 export function egoModule(): StationModule {
   return {
     name: 'ego',
@@ -66,7 +72,7 @@ export function egoModule(): StationModule {
       if (m && req.method === 'POST') {
         const [, dock] = m;
         try {
-          const r = await introspect(dock!, recentExperience(dock!), { trigger: 'manual' });
+          const r = await introspectDock(dock!, 'manual');
           json(res, 200, { ok: true, dock, fresh: r.fresh, snapshotted: r.snapshotted, trigger: r.trigger, ego: r.ego });
         } catch (e) {
           json(res, 500, { ok: false, error: String((e as Error).message || e) });
