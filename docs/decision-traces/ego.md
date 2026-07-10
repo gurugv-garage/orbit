@@ -4,7 +4,11 @@
 > reconciliation of the two (**tension**), whose stakes come from the dock's ever-open
 > sense of purpose; what we might call "traits" is emergent, not a primitive. This doc
 > fixes the **why** and the **model**; §3 opens the **how** as fill-in subsections with
-> TODOs. Philosophy is §5 — supporting, not central.
+> TODOs. Philosophy is §5 — supporting, not central. The two riskiest bets have
+> **encouraging (not proven) offline experiments**:
+> [experiments/ego-introspection](experiments/ego-introspection/) (does introspection
+> *form* an evolving self + catch its own rationalization?) and
+> [experiments/ego-use](experiments/ego-use/) (does the ego *drive* behaviour?).
 >
 > Related: [coherence-layer.md](coherence-layer.md) (predecessor),
 > [../perception-to-brain.md](../perception-to-brain.md) (the self-thought lane
@@ -196,6 +200,9 @@ Sections (first-person prose; a starting point, to be refined):
                                deeper, with why-I'm-here), and which repertoire move (§2.2)
                                is being reached for
 ## what I expect / want       ← ANTICIPATION — the forward edges and their pull
+## meta                       ← bookkeeping (not part of the self): last-updated
+                               timestamp, template + version, dock id, and whatever
+                               implementation fields we need later. Not read as identity.
 ```
 
 The five are **peers** — different perspectives on the one identity (why-I'm-here is the
@@ -284,8 +291,8 @@ per-perception.
 - [ ] **Trigger + cadence.** Idle-gated by the conductor; how often (a slow tick, on
   accumulated new perception, on idleness). Evolving — start coarse.
 - [ ] **The introspection prompt.** The core reasoning move: given current ego + recent
-  memory + the trace, produce the next ego. Likely the experiment we deferred (build an
-  ego from real/synthetic perception via a prompt, iterate, port to production).
+  memory + the trace, produce the next ego. First cut prototyped + encouraging in
+  [experiments/ego-introspection](experiments/ego-introspection/) — port and harden.
 - [ ] **Reading the trace to catch drift.** How introspection uses the *sequence* of past
   egos to notice a repeated rationalization ("5th time I've reinterpreted this") and let
   that tip a repertoire move toward changing the identity. **This is the rationalization
@@ -350,9 +357,11 @@ needs *nothing else built* — inject a file, watch what a consumer does.
 - **Introspection may never produce a real self.** Templates + a read surface let us ship
   behaviour that never actually *evolves* (§3.2/§3.3 unbuilt) — a dock that behaves from a
   fixed hand-authored ego but never *becomes* anyone. Guard: treat introspect + trace as
-  core, and run the generate-from-real-data experiment early to de-risk it.
+  core. (Offline generate-from-real-data experiment ran — encouraging, not proven; keep
+  re-testing as models/data change.)
 - **Rationalization engine by design** (§2.3) — the guard (introspection reading its own
-  trace) is unproven; see §3.2.
+  trace) showed positive early signal in [experiments/ego-introspection](experiments/ego-introspection/)
+  but is not proven; re-test as things change.
 - **Flattening** — a prose document is testable but may lose implicit richness.
 - **Cost** — an introspection tick is an LLM call carrying the ego + trace; idle-gated +
   coarse cadence (the bg-audio cooldown pattern) is the shape.
