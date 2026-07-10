@@ -243,15 +243,16 @@ Legend: `[x]` done · `[~]` in progress · `[ ]` not started · `[?]` open quest
   attention/sleepy/flavor bits; pure picker (quiet hours, speak gate, weights); `gesture` +
   `think` task capabilities; per-bit body lease @35; live status per conducted thing in the
   Conductor tab ([idle-moods-live-test.md](operations/idle-moods-live-test.md))
-- [ ] **Addressed vs overheard speech tagging** (verified missing 2026-07-05): speech
-  snapshots carry no addressed flag — the brain's addressed decision (`onAddressedFinal`)
-  never stamps the snapshot, so summaries/grounding/fact-extraction treat "said to the dock"
-  and room chatter identically. Seam: back-patch `payload.addressed` via `SnapshotStore.update`
-  from `onAddressedFinal` (incl. not-addressed branches) → render `SPEECH→dock` vs `SPEECH`
-  in `summarizer.ts stitch()` → the summarizer's fact-extraction respects it.
-  All future perception consumers must respect this distinction. (The background curator that
-  originally owned the consolidate prompt was removed 2026-07-10; fact extraction is now the
-  summarizer's trim pass — see memory.md §5a.)
+- [x] **Addressed vs overheard speech tagging** (built 2026-07-10): the brain now stamps its
+  authoritative addressed decision onto the speech snapshot — `markSpeechAddressed(dock, endedAt,
+  addressed)` called from every `onAddressedFinal` branch (ran-a-turn/wake → `true`; not-addressed
+  → `false`). `summarizer.ts stitch()` renders `[→ TO YOU]` vs `[overheard — not to you]`, its
+  prompt treats overheard speech as ambient room context, and fact-extraction won't mine
+  relationship facts from it. This killed the ego's "communication vacuum" spiral (it had read
+  overheard workout instructions as addressed to it). Fact extraction is the summarizer's trim pass
+  (the background curator was removed 2026-07-10 — see memory.md §5a). Remaining upstream gaps
+  (accepted as model limits, not chased): live diarization / stable speaker-IDs, gaze/head-pose,
+  and name↔speaker binding.
 - [ ] HTTPS in real deployment; auth on the WS for non-LAN
 
 ### 3.1 Audio pipeline — ▸ SUPERSEDED by the built perception/media stack
