@@ -4,8 +4,11 @@
 experience — and does reading the **trace** (past egos) let it catch its own
 rationalization, as ego.md §2.3/§3.2 claim?
 
-**Verdict (2026-07-10): YES on both.** The core of the ego model works with a plain prompt
-+ Gemini, over real persisted station data. No code in the station changed.
+**Early result (2026-07-10): ENCOURAGING on both — not proven.** With a plain prompt +
+Gemini over real persisted station data, the core of the ego model behaved as designed. But
+this is *one* scenario, *one* model, *one* dock's data, three runs. Real-world data + LLMs
+are uncertain; treat this as a **positive early signal to re-test as things change** (new
+models, other docks, longer arcs), not a settled conclusion.
 
 > **Public-repo note:** the extractor reads *real* private session data. It **redacts
 > personal names to placeholders** (`REDACT` map in `extract-experience.py`) before writing
@@ -49,7 +52,8 @@ conversations that rarely land; recurring task failures (reminders, face recogni
 *this* dock (stairs, rings, the curly-haired person, the reminders). Found a real tension —
 "my wish to be a lively companion doesn't fit how brief the conversations are" — and
 narrated its repertoire move (reinterpret gently + resolve to try harder). Purpose stayed
-an open wonder. **The model's structure holds with a plain prompt.**
+an open wonder. **In this run, the model's structure held with a plain prompt** (one data
+point).
 
 **Run 2 (prior ego + same pattern, no trace):** reinterpreted the *same* disappointment
 away *again* — "**still** trying to interpret this gently... resolve to listen even more
@@ -63,13 +67,14 @@ and escalated the move:
 > like a need to narrow the identity of 'helper' to what is currently achievable**."
 
 It moved from *reinterpret* (move 1) to *narrow the identity* (move 3) — **because it could
-see its own history.** This is the §2.3 claim proven: the rationalization guard is not a
+see its own history.** This is the §2.3 claim behaving as hoped (in this one run): the rationalization guard is not a
 threshold; it is the ego's self-awareness of its own repeated moves, supplied by the trace.
 
 ## Takeaways for the build
 
-- The introspection prompt + a capable LLM is enough for §3.2 — this is prompt engineering,
-  not a research problem.
+- The introspection prompt + a capable LLM *looks* sufficient for §3.2 — it points at
+  prompt engineering rather than a research problem, but that's a hypothesis to keep
+  stress-testing, not a settled fact.
 - The **trace is load-bearing and cheap** (snapshots of the doc); it is what turns a
   rationalizer into a self-correcting self. Do not cut it.
 - Input hygiene matters: prompt-scaffolding (the "you are bored…" injections) must be

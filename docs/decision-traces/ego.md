@@ -425,3 +425,19 @@ Kept out of the main line deliberately; useful framing, not load-bearing decisio
   (describes from outside — undersells) → *ego* (holds a self-image and the world that
   justifies it; names *who* the behaviour comes from). "Inner story" survives as the word
   for the ego's *content*.
+- **Prior art — OpenClaw's SOUL.md / IDENTITY.md** (a shipping local-first assistant).
+  Independent convergence on the core: a Markdown **self-document injected into the prompt**
+  drives behaviour, "you're not a chatbot, you're becoming someone," and the soul is told to
+  prefer *"contradictions over coherence"* (echoes our internal-conflict-makes-character).
+  *Vocabulary clash:* their **SOUL.md ≈ our identity**; their **IDENTITY.md** is just the
+  outward card (name/emoji/avatar) — our *presentation*, not our identity. **Key
+  divergence:** OpenClaw's soul/identity are **human-edited only** — the agent never revises
+  its own self; evolution is confined to append-only MEMORY.md, and there is **no runtime
+  self-vs-experience contradiction detection**. So OpenClaw is the *static half* of this
+  model; the **dynamic half — introspection revising the self, and the trace catching
+  rationalization (§3.2) — is exactly what they deliberately omit.** That a mature project
+  stopped there is a caution: the self-revising part is the hard, risky frontier. Two ideas
+  worth borrowing: (a) their **SOUL vs. AGENTS split** (personality vs. operating-rules) —
+  our disposition/rules may not all belong *in* the ego document; (b) their **"tell the user
+  when your soul changes"** rule — when introspection changes the identity (move 5), the dock
+  should probably *surface* it. Cheap, honest, good UX.
