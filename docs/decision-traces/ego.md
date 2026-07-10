@@ -201,7 +201,10 @@ Sections (first-person prose; a starting point, to be refined):
                                is being reached for
 ## what I expect / want       ← ANTICIPATION — the forward edges and their pull
 ## meta                       ← bookkeeping (not part of the self): last-updated
-                               timestamp, template + version, dock id, and whatever
+                               timestamp, template + version, dock id, and — importantly —
+                               the TRIGGER that caused this introspection (idle tick /
+                               accumulated perception / a specific event / manual), so the
+                               trace records *why* each version was written. Plus whatever
                                implementation fields we need later. Not read as identity.
 ```
 
