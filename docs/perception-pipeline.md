@@ -63,6 +63,8 @@ Key REST routes (all under `/api/perception`): `GET /snapshots`, `POST /snapshot
 - [6. Fusion — Gemini summarizer (gemini-2.5-flash), on demand](#6-fusion--gemini-summarizer-gemini-25-flash-on-demand)
 - [7. The console = the playground (where the tuning happens)](#7-the-console--the-playground-where-the-tuning-happens)
 - [7b. Persistent memory (beyond the ring)](#7b-persistent-memory-beyond-the-ring)
+- [7c. Retention + self-compression — perception is the enriched, durable truth](#7c-retention--self-compression--perception-is-the-enriched-durable-truth)
+  - [The refactor plan (to model this)](#the-refactor-plan-to-model-this)
 - [8. The hard-won lessons (the radars)](#8-the-hard-won-lessons-the-radars)
 - [9. The pyramid — tiered escalation (the forward plan)](#9-the-pyramid--tiered-escalation-the-forward-plan)
 - [Component summary](#component-summary)
@@ -471,6 +473,11 @@ affected.
 
 > Code: `summarizer.ts` (`stitch()` builds the transcript, `summarize()` calls Gemini);
 > invoked from the `POST /snapshots/summarize` route in `index.ts`.
+>
+> **Framing note (2026-07-10, §7c):** the summarizer is not a "coherence/sense-making layer"
+> above perception — it is **perception compressing its own tail** (lossy, to stay
+> affordable). §7c makes it a durable, retained *series* driven at trim time, and the model
+> reasons about it as a property of the perception stream, not a separate layer.
 
 **What:** on a Summarize request, the server **stitches** the window's records into
 one chronological, role-tagged transcript (collapsing identity flicker into spans,
@@ -539,6 +546,94 @@ implementation + integration reference (schema, store API, recall, the facade + 
 brain tools): **[memory.md](memory.md)**; the design rationale (the keystone argument):
 [perception-to-brain.md](perception-to-brain.md) **Decision 4**. Here it's flagged so the
 module's component inventory is complete; the details live in those.
+
+---
+
+## 7c. Retention + self-compression — perception is the enriched, durable truth
+
+> **DESIGN (2026-07-10, not yet built).** The retention model + a refactor plan. Triggered
+> by wiring the **ego** ([decision-traces/ego.md](decision-traces/ego.md)) in: its
+> introspection reads only a single overwritten ~60 s summary, so the dock's self could form
+> and speak but never *recover* or track its actual life. Fixing that surfaced a principle
+> and a latent bug (perception dies on restart). Refines
+> [decision-traces/coherence-layer.md](decision-traces/coherence-layer.md) §4.
+
+**The principle.** *Perception is the enriched truth; summarization is lossy compression,
+not sense-making — and it is a property OF the perception stream, not a layer above it.*
+
+- Perception is the **richest, most verbose, most robust** stream — the source of truth. With
+  infinite resources a consumer would read only raw perception. Any move to **derive more
+  meaning** (fact enrichment, added intelligence) belongs **in perception** (a new topic/
+  kind), never downstream.
+- **Summarization exists only because we can't keep raw perception forever.** It is the
+  perception stream **cutting itself short** to stay affordable — *bound to lose information*,
+  and that loss is accepted. It does **not** enrich. So there is no separate "coherence /
+  summary layer": there is one **perception stream**, dense-recent and self-compressed-older.
+- Reading rule everywhere: **lean toward raw.** Use raw perception wherever it's still
+  retained; fall back to a self-summary only for the older span where raw is gone.
+
+**The target shape (one stream, two fidelities):**
+
+```
+  DOCK ─ perception (vision/speech/identity/…) ─▶ ENRICHMENT HAPPENS HERE ONLY
+                    │  (derived intelligence = a new perception topic, never downstream)
+                    ▼
+   ┌──────────────── the PERCEPTION STREAM (one thing) ─────────────────┐
+   │  recent:  RAW records, retained on disk, restart/gap-tolerant       │
+   │  older:   the stream's OWN SPAN-SUMMARIES (it compressed its tail    │
+   │           at trim time — a retained SERIES, not one overwritten doc) │
+   └────────────────────────────────────────────────────────────────────┘
+                    ▲ consumers read ONE stream at whatever fidelity is available:
+     INTROSPECTION (ego §3.2) — checkpointed by the ego's own meta.updated:
+        raw where retained (richest) · span-summaries for the older gap ·
+        + the dock's CONVERSATIONS in the span (the recovery signal)
+     GROUNDING (brain, per turn) — should read the same feed, same reason.
+```
+
+**Sizing — storage is cheap, *consumption* binds (user, 2026-07-10).** Retaining perception
+on disk is cheap, so **retain generously**. The real limit is **consumption**: what
+introspection/grounding can practically feed an LLM. So the raw↔summary boundary is driven by
+*"raw exceeds a consumer's budget,"* not age alone — likely a **mix of time and count/size**:
+time gives the checkpoint span ("since I last introspected"); count/size gives the ceiling (a
+busy 10 min = hundreds of records, too much raw; a quiet hour = a handful, trivially raw).
+**Store liberally by time; read raw up to a size/count budget; self-summarize beyond it.**
+Numbers (retention window, per-read raw budget, summary threshold) are TBD — **measure, don't
+guess**. Keyframes (images) are the heavy part and may retain shorter than text.
+
+### The refactor plan (to model this)
+
+Current reality that must change (verified 2026-07-10):
+- The snapshot store (§1) is **in-memory, COUNT-capped (`CAP=1000`), no disk persistence** —
+  a restart **wipes all perception** (the amnesia-wipe coherence-layer §6 flagged).
+- The rolling summary is **overwritten** (`last-summary.json` = one current picture); each
+  summary is also a `kind:'summary'` ring record, but in the same volatile ring.
+- The curator **derives beliefs** (consolidate) — that's *enrichment*, sitting in a layer this
+  model says must only compress. **Open collision (see below).**
+
+Planned changes, in dependency order:
+1. **Durable, time-windowed perception store.** Persist snapshot records to disk, retained by
+   **time** (config; generous — storage is cheap), surviving restarts, tolerating gaps (a
+   hole in the timeline is fine). Replaces / backs the in-memory ring (`snapshots.ts`); the
+   ring can stay as a hot cache in front of it. `.data/perception/<dock>/…`.
+2. **Trim-time self-summarization → retained series.** When records age past the window, the
+   stream summarizes that trimmed span into a **span-summary** stored as a **retained series**
+   (reuse `summarizer.ts`; the summary is *perception compressing itself*, not a new layer).
+   Fixes the "overwritten summary" — replaces §6's single on-demand summary as the durable
+   record.
+3. **A "span since T" read API** on perception: given a checkpoint timestamp + a size/count
+   budget, return raw-where-retained + span-summaries-for-the-older-gap. The single feed both
+   introspection and grounding consume.
+4. **Introspection reads it** (ego §3.2 / `ego/index.ts` `recentExperience`): checkpoint =
+   ego `meta.updated`; add the dock's **conversation** turns in the span (from the brain
+   sessions, prompt-scaffolding filtered). Closes the recovery loop.
+5. **Grounding switches to the same feed** (brain per-turn) — richest available, aligned with
+   introspection. (Can lag; not required for the recovery test.)
+
+**Open decision — the curator vs. "no enrichment in cleanup."** The curator derives beliefs
+(enrichment). Under this model that either (a) moves *into* perception as a derivation topic,
+or (b) durable long-term memory is re-cast as a legitimately *separate* thing (semantic
+memory, days→weeks) rather than "cleanup," and stays. **Not decided; must not silently break
+the curator.** Resolve before touching it.
 
 ---
 

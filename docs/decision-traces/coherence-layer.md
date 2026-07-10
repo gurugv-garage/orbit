@@ -4,6 +4,11 @@
 > evidence from the research study + live data, the consumer audit, and the build
 > order. No code has moved yet.
 >
+> **Refined 2026-07-10 by [../perception-pipeline.md](../perception-pipeline.md) §7c** —
+> perception = enriched *durable* truth; summarization = lossy compression (not sense-making)
+> and a **property OF the perception stream**, not a "coherence layer" above it; enrichment
+> belongs in perception. That supersedes §4's framing here.
+>
 > Related: [../research/idle-cognition.md](../research/idle-cognition.md) (the
 > science this rests on), [long-term-memory-curator.md](long-term-memory-curator.md)
 > (the machinery being re-based), [bg-audio-summarizer.md](bg-audio-summarizer.md)
