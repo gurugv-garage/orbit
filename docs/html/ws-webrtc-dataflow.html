@@ -155,12 +155,12 @@
     <p style="font-size:12px;color:var(--ink-3);margin:-2px 0 8px"><em>Same graph, drawn — identical nodes and edges to the ASCII above (the ASCII is the edit-first source; this is the rendered view):</em></p>
     <pre class="mermaid">
 flowchart TD
-  audio(["RtpPacket · audio"]):::data --> stt["🎙 stt-watch"]:::proc
-  video(["RtpPacket · video"]):::data --> face["👤 face-recognition<br/><i>the only video decoder</i>"]:::proc
-  client(["ChannelItem · client.*"]):::data --> presence["🫥 presence"]:::proc
-  face -->|JPEG frame| vision["👁 vision-snapshot<br/><i>change-gated</i>"]:::proc
-  face -->|"DetectedFace[]"| identity["😮 identity-snapshot"]:::proc
-  body["🤖 bodymotion-watch"]:::proc -->|ego-motion| identity
+  audio(["RtpPacket · audio"]):::data --> stt["🎙 stt-watch<br/><i>stt-watch.ts</i><br/>⚡ VAD utterance-end (1.3s silence)"]:::proc
+  video(["RtpPacket · video"]):::data --> face["👤 face-recognition<br/><i>face-recognition.ts · the only video decoder</i><br/>⏳ ~1–2 fps frame grab"]:::proc
+  client(["ChannelItem · client.*"]):::data --> presence["🫥 presence<br/><i>presence.ts</i><br/>⚡ on client.* fact"]:::proc
+  face -->|JPEG frame| vision["👁 vision-snapshot<br/><i>vision-snapshot.ts · change-gated</i><br/>⚡ scene-change ·⚡ sense-wake · ⏳ 5-min heartbeat<br/>(DINOv2 probe every ⏳1.5s)"]:::proc
+  face -->|"DetectedFace[]"| identity["😮 identity-snapshot<br/><i>identity-snapshot.ts</i><br/>⏳ every 2s + ⚡ on presence change"]:::proc
+  body["🤖 bodymotion-watch<br/><i>bodymotion-watch.ts</i><br/>⚡ on motion command (proprioception)"]:::proc -->|ego-motion| identity
   stt --> emit{{"every node writes TWICE"}}:::hub
   vision --> emit
   identity --> emit
