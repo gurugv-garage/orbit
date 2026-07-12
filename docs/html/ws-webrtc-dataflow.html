@@ -135,7 +135,7 @@
   <span class="hlw">RtpPacket</span>{audio}   <span class="hlw">RtpPacket</span>{video}          <span class="hlw">ChannelItem</span>{client.*}
        │                │                             │
        ▼                ▼                             ▼
-  <span class="hl">🎙 stt-watch</span>     <span class="hl">👤 face-recognition</span>              <span class="hl">🫥 presence</span>
+  <span class="hl">🎙 speech-watch</span>     <span class="hl">👤 face-recognition</span>              <span class="hl">🫥 presence</span>
        │           (the only video decoder)           │
        │       <span class="hlw">JPEG frame</span>│        │<span class="hlw">DetectedFace[]</span>          │
        │                ▼        ▼                     │
@@ -155,12 +155,16 @@
     <p style="font-size:12px;color:var(--ink-3);margin:-2px 0 8px"><em>Same graph, drawn — identical nodes and edges to the ASCII above (the ASCII is the edit-first source; this is the rendered view):</em></p>
     <pre class="mermaid">
 flowchart TD
-  audio(["RtpPacket · audio"]):::data --> stt["🎙 stt-watch<br/><i>stt-watch.ts</i><br/>⚡ VAD utterance-end (1.3s silence)<br/>🚪3 confidence gate"]:::proc
-  video(["RtpPacket · video"]):::data --> face["👤 face-recognition<br/><i>face-recognition.ts · the only video decoder</i><br/>⏳ ~1–2 fps frame grab"]:::proc
-  client(["ChannelItem · client.*"]):::data --> presence["🫥 presence<br/><i>presence.ts</i><br/>⚡ on client.* fact"]:::proc
-  face -->|JPEG frame| vision["👁 vision-snapshot<br/><i>vision-snapshot.ts · change-gated</i><br/>⚡ scene-change ·⚡ sense-wake · ⏳ 5-min heartbeat<br/>(DINOv2 probe every ⏳1.5s)<br/>🚪1 change-gate · 🚪2 sense-wake"]:::proc
+  audio(["RtpPacket · audio"]):::data --> vad["🎧 audio front-end<br/><i>vad-endpoint.ts · UtteranceDetector</i><br/>decode Opus→PCM · VAD · ⚡ utterance-endpoint (1.3s)"]:::proc
+  vad -->|utterance PCM| stt["🎙 speech-watch<br/><i>speech-watch.ts · orchestrator</i><br/>→ transcribe: parakeet-tdt sidecar :8078<br/>🚪3 confidence gate"]:::proc
+  stt -. "significant event → async upgrade<br/>(addressed? · kind · salience · summary)" .-> bg["🌐 bg-audio interpreter<br/><i>background-audio.ts · Gemini flash-lite</i><br/>OPTIONAL · gated · endpoint: gemini"]:::proc
+  bg -. patches the speech record .-> stt
+  video(["RtpPacket · video"]):::data --> decode["🎞️ video decode<br/><i>face/frame-grabber.ts · ffmpeg VP8→JPEG</i><br/>⏳ ~1–2 fps · ONE per dock (owned by face-recognition)"]:::proc
+  decode -->|JPEG frame| face["👤 face-recognition<br/><i>face-recognition.ts · face-api recognize</i>"]:::proc
+  decode -->|JPEG frame| vision["👁 vision-snapshot<br/><i>vision-snapshot.ts · change-gated</i><br/>⚡ scene-change ·⚡ sense-wake · ⏳ 5-min heartbeat<br/>(DINOv2 probe every ⏳1.5s)<br/>🚪1 change-gate · 🚪2 sense-wake"]:::proc
   face -->|"DetectedFace[]"| identity["😮 identity-snapshot<br/><i>identity-snapshot.ts</i><br/>⏳ every 2s + ⚡ on presence change"]:::proc
-  body["🤖 bodymotion-watch<br/><i>bodymotion-watch.ts</i><br/>⚡ on motion command (proprioception)"]:::proc -->|ego-motion| identity
+  client(["ChannelItem · client.*"]):::data --> presence["🫥 presence<br/><i>presence.ts</i><br/>⚡ on client.* fact"]:::proc
+  body["🤖 bodymotion-watch<br/><i>bodymotion-watch.ts</i><br/>⚡ on motion command (proprioception)"]:::proc -->|"ego-motion (guard:<br/>freeze presence while panning)"| identity
   stt --> emit{{"every node writes TWICE"}}:::hub
   vision --> emit
   identity --> emit
@@ -172,7 +176,7 @@ flowchart TD
   classDef hub fill:#e6e9ef,stroke:#5a6472,color:#0b1220,stroke-width:1.3px;
   classDef store fill:#d7f0eb,stroke:#0f9d8a,color:#0b1220,stroke-width:1.4px;
     </pre>
-    <p><strong>The edges are the point.</strong> Only <code class="inl">face-recognition</code> decodes video (one ffmpeg per dock); <code class="inl">vision</code> and <code class="inl">identity</code> read <em>its</em> decoded frame and recognitions rather than decoding again. That coupling is safe because everything is keyed to the same <code class="inl">streamId</code>.</p>
+    <p><strong>The edges are the point.</strong> <strong>Video decode is a single shared stage</strong> (one ffmpeg per dock, owned by <code class="inl">face-recognition</code> via <code class="inl">FrameGrabber</code>) — <code class="inl">face-recognition</code>, <code class="inl">vision</code>, and <code class="inl">identity</code> all read <em>its</em> decoded JPEG rather than decoding again. That coupling is safe because everything is keyed to the same <code class="inl">streamId</code>. Two audio branches: <strong>parakeet-tdt</strong> is the live transcriber (every utterance); the <strong>Gemini bg-audio interpreter</strong> is a separate, optional, async upgrade fired only on a significant acoustic event — it patches the speech record with an addressed?/kind/salience/summary read (and can rewrite the transcript). And <code class="inl">bodymotion</code>→<code class="inl">identity</code> is the <strong>ego-motion guard</strong>: while the head pans, a face leaving frame is the <em>robot</em> turning, not the person leaving — so presence is frozen (no false "X left" / "Y arrived").</p>
     <div class="note warn">
       <span class="tag">vision is change-gated, not per-frame</span>
       <p><code class="inl">vision</code> does <em>not</em> run the ~5&nbsp;s VLM on every decoded frame. It probes ONE frame every ~1.5&nbsp;s and embeds it with an in-process <strong>DINOv2</strong> model (<code class="inl">perception/embed.ts</code>, onnxruntime, no sidecar). The expensive qwen call fires <em>only</em> when the frame's embedding has moved past a distance threshold from the last analyzed one — i.e. the <strong>scene actually changed</strong> — or on a <code class="inl">sense-wake</code> (the mic heard something salient) or a 5-min <code class="inl">heartbeat</code>. A static room costs cheap embeddings, not VLM inferences. Further gating built on the same embedder: a recent-view <strong>cache</strong> (reuse a description when the head sweeps back to a spot it just saw), <strong>self-motion suppression</strong> (defer while the head is panning), and <strong>window dedup</strong> (collapse near-identical frames in a window). So the <code class="inl">scene</code> results you see are change events, not a fixed cadence — the timeline in the Perception Studio labels each with why it ran (<code class="inl">scene-change</code> / <code class="inl">sense-wake</code> / <code class="inl">heartbeat</code> / <code class="inl">reused</code>) and accounts for the gated gaps. See <a class="file" href="../../orbit-station/server/src/modules/perception/processors/vision-snapshot.ts">vision-snapshot.ts</a>.</p>
@@ -192,14 +196,14 @@ flowchart TD
   ts:      number
 }</pre>
     </div>
-    <p><code class="inl">kind</code> is producer-owned: each processor emits a fixed one (stt-watch → <code class="inl">transcript</code>, face → <code class="inl">identity</code>) — it's a self-declaration, push not pull. Consumers <code class="inl">switch(kind)</code> to know how to read <code class="inl">payload</code>. Here is that <code class="inl">kind → payload</code> map:</p>
+    <p><code class="inl">kind</code> is producer-owned: each processor emits a fixed one (speech-watch → <code class="inl">transcript</code>, face → <code class="inl">identity</code>) — it's a self-declaration, push not pull. Consumers <code class="inl">switch(kind)</code> to know how to read <code class="inl">payload</code>. Here is that <code class="inl">kind → payload</code> map:</p>
     <p>The full per-processor detail — including the <em>tech / model</em> each runs (in <em>italic</em>, since that's the part most likely to change), its <em>file</em>, what it reads, and the <code class="inl">kind → payload</code> it emits — lives in one table so the graph above can stay a lean topology:</p>
     <table class="cmp">
       <thead><tr><th>Processor</th><th>Tech / model <span style="font-weight:400;color:var(--ink-3)">(volatile)</span></th><th>Reads</th><th>Emits <code class="inl">kind</code> → <code class="inl">payload</code></th></tr></thead>
       <tbody>
         <tr>
-          <td class="rtcc">🎙 <b>stt-watch</b><br><span style="color:var(--ink-3);font-size:11px;font-family:var(--mono)">processors/stt-watch.ts</span></td>
-          <td><em>parakeet-tdt</em> (whisper fallback) <span style="color:var(--ink-3)">· STT sidecar :8078</span>; VAD endpointing</td>
+          <td class="rtcc">🎙 <b>speech-watch</b><br><span style="color:var(--ink-3);font-size:11px;font-family:var(--mono)">processors/speech-watch.ts<br>+ vad-endpoint.ts</span></td>
+          <td>front-end = <em>vad-endpoint.ts</em> (Opus decode · VAD · endpoint); transcribe = <em>parakeet-tdt</em> (whisper fallback) <span style="color:var(--ink-3)">· sidecar :8078</span></td>
           <td><code class="inl">RtpPacket</code> (audio) → PCM → VAD utterance</td>
           <td><code class="inl">transcript</code> → <code class="inl">{ text, isFinal }</code></td>
         </tr>
@@ -263,7 +267,7 @@ flowchart TD
         </tr>
         <tr>
           <td class="rtcc">🚪3 <b>STT confidence gate</b></td>
-          <td>🎙 stt-watch <span style="color:var(--ink-3);font-family:var(--mono);font-size:11px">stt-watch.ts</span></td>
+          <td>🎙 speech-watch <span style="color:var(--ink-3);font-family:var(--mono);font-size:11px">speech-watch.ts</span></td>
           <td>the transcript isn't <b>garbage</b> (a repetition-loop, <code class="inl">compression &gt; 3.0</code>, or <code class="inl">no_speech &gt; 0.6</code> AND <code class="inl">logprob &lt; -1.0</code>). Garbage → rendered as <code class="inl">[unclear speech, ~Ns]</code>, never as words the brain acts on; <em>shaky</em> → tagged <code class="inl">[low-confidence]</code>.</td>
         </tr>
         <tr>
@@ -486,7 +490,7 @@ getGateApi()?.onRaise((thought) => session(dock).enqueueAutonomousTurn(thought))
                                         │
         ┌───────────────┬──────────────┼───────────────┐
         ▼               ▼              (edges)           ▼
-  <span class="hl">face-recog</span> ──frame──▶ <span class="hl">vision</span>    <span class="hl">stt-watch</span>            <span class="hl">presence</span>
+  <span class="hl">face-recog</span> ──frame──▶ <span class="hl">vision</span>    <span class="hl">speech-watch</span>            <span class="hl">presence</span>
         └──recog──▶ <span class="hl">identity</span> ◀──body── <span class="hl">bodymotion</span>       (+ bg-audio*)
         │               │               │                │
         └───────────────┴──── each emits TWICE ──────────┘
@@ -513,7 +517,7 @@ getGateApi()?.onRaise((thought) => session(dock).enqueueAutonomousTurn(thought))
     </div>
     <div class="note warn">
       <span class="tag">one representation caveat (bg-audio*)</span>
-      <p>The ASCII above lists <code class="inl">bg-audio*</code> alongside the processors, but it is <strong>not</strong> one of the six registered stream-processors (M3's canonical list) — so it does not appear in the M3 graph or table. <code class="inl">bg-audio</code> is <code class="inl">interpretAudio()</code> (<code class="inl">processors/background-audio.js</code>), an <em>async upgrade</em> that <code class="inl">stt-watch</code> calls to patch a speech record with an <code class="inl">addressedToRobot</code> guess — a step <em>on</em> the speech path, not a peer processor. Kept out of M3 to preserve the clean six; flagged here so the two don't read as contradictory.</p>
+      <p>The ASCII above lists <code class="inl">bg-audio*</code> alongside the processors, but it is <strong>not</strong> one of the six registered stream-processors (M3's canonical list) — so it does not appear in the M3 graph or table. <code class="inl">bg-audio</code> is <code class="inl">interpretAudio()</code> (<code class="inl">processors/background-audio.js</code>), an <em>async upgrade</em> that <code class="inl">speech-watch</code> calls to patch a speech record with an <code class="inl">addressedToRobot</code> guess — a step <em>on</em> the speech path, not a peer processor. Kept out of M3 to preserve the clean six; flagged here so the two don't read as contradictory.</p>
     </div>
     <p style="font-size:12px;color:var(--ink-3);margin:-2px 0 8px"><em>Same journey, drawn — packet to behaviour, end to end (condensed; the processor fan-out is M3, the memory arm is M4):</em></p>
     <pre class="mermaid">
