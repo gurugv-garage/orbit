@@ -436,10 +436,12 @@ export function visionSnapshotProcessor(
     return { trigger: d >= EMBED_THRESHOLD ? `scene-change emb=${d.toFixed(3)}` : false, emb };
   }
 
-  /** PIXEL change probe (fallback only): 16×16 signature vs the anchor, measured as EXCESS
-   *  over each cell's learned probe-to-probe jitter (a flickery edge earns a high floor; a
-   *  person exceeds the floor of the quiet cells they cover). Same return contract. */
-  function pixelChanged(s: StreamState, jpeg: Buffer | null): string | false | null {
+  /** The 16×16 local pixel signal vs the analyzed-frame anchor, as EXCESS over each cell's
+   *  learned probe-to-probe jitter (a flickery edge earns a high floor; a person exceeds the
+   *  floor of the quiet cells they cover). Returns { mean, max } or null (no frame/anchor).
+   *  Maintains the noise-floor EMA + prevProbeSig, so it must be called once per probe to stay
+   *  warm. Shared by the pixel-gate fallback AND the local veto (below). */
+  function localExcess(s: StreamState, jpeg: Buffer | null): { mean: number; max: number } | null {
     const sig = jpeg ? frameSignature(jpeg) : null;
     if (!sig || !s.lastSig) return null;
     if (!s.noiseFloor) s.noiseFloor = new Float32Array(sig.length).fill(0.02);
@@ -454,9 +456,16 @@ export function visionSnapshotProcessor(
       const excess = Math.max(0, Math.abs(sig[i]! - s.lastSig[i]!) - NOISE_K * s.noiseFloor[i]!);
       excessSum += excess; if (excess > excessMax) excessMax = excess;
     }
-    const excessMean = excessSum / sig.length;
-    if (excessMean >= DIFF_THRESHOLD) return `scene-change mean=${excessMean.toFixed(3)}`;
-    if (excessMax >= CELL_THRESHOLD) return `local-change max=${excessMax.toFixed(2)}`;
+    return { mean: excessSum / sig.length, max: excessMax };
+  }
+
+  /** PIXEL change probe (fallback only, when the embedder is unavailable): the local signal above,
+   *  reduced to the same trigger contract as the semantic gate. */
+  function pixelChanged(s: StreamState, jpeg: Buffer | null): string | false | null {
+    const e = localExcess(s, jpeg);
+    if (!e) return null;
+    if (e.mean >= DIFF_THRESHOLD) return `scene-change mean=${e.mean.toFixed(3)}`;
+    if (e.max >= CELL_THRESHOLD) return `local-change max=${e.max.toFixed(2)}`;
     return false;
   }
 
@@ -481,14 +490,32 @@ export function visionSnapshotProcessor(
         // person entering 0.25-0.53. Fallback: the pixel signature + learned noise floor,
         // used only when the embedder is unavailable (VISION_EMBED_GATE=0 / model missing).
         const probe = s.lastEmb ? await embedChanged(s, jpeg) : null;
-        const changed = probe ? probe.trigger : (s.lastEmb ? null : pixelChanged(s, jpeg));
+        let changed = probe ? probe.trigger : (s.lastEmb ? null : pixelChanged(s, jpeg));
         const probeEmb = probe?.emb ?? null;
+        // LOCAL VETO (fix for the presence-blind global embedding): a whole-frame DINOv2 vector is
+        // dominated by the large static scene, so a SMALL / backlit / distant person barely moves
+        // it (measured: person-on-a-bright-staircase = 0.07, below the 0.18 reuse band → the cache
+        // wrongly reused an "empty room" description and MISSED the person). The 16×16 LOCAL signal
+        // is not fooled: that same person is a strong local change (excessMax ~0.46 ≫ 0.12). So when
+        // the semantic gate is active, ALSO run the local signal every probe — and if a cell-level
+        // change clears CELL_THRESHOLD, force a FRESH VLM look: it overrides the reuse-cache AND
+        // self-motion suppression (a real local change, not just a re-framing). Keeps the pixel
+        // signal's noise-floor warm too. (Global still gates the common case; this only *adds* looks.)
+        let localOverride = false;
+        if (s.lastEmb) {
+          const e = localExcess(s, jpeg);
+          if (e && e.max >= CELL_THRESHOLD && !cameraMoving?.(s.ctx.dockId)) {
+            localOverride = true;
+            if (!changed) changed = `local-change max=${e.max.toFixed(2)}`;
+            if (EMBED_DEBUG) console.log(`[vision] ${s.ctx.dockId} LOCAL-VETO: max=${e.max.toFixed(2)} ≥ ${CELL_THRESHOLD} (global embedding diluted it) → fresh look`);
+          }
+        }
         // RECENT-ANALYSIS CACHE — checked BEFORE suppression: the view changed, but is it a
         // view we JUST described (the head swept back to the staircase we saw 8 s ago)? Reuse
         // that description — even WHILE MOVING, because "returning to a known view" is exactly
         // the case that suppression would otherwise just defer. Reuse is cheap + safe (tight
         // distance + short TTL), and strictly better than deferring when we already know the view.
-        if (changed && probeEmb) {
+        if (changed && probeEmb && !localOverride) {
           const hit = reuseFromCache(s, probeEmb);
           if (EMBED_DEBUG) {
             const dists = (s.recent ?? []).map((e) => embedDistance(probeEmb, e.emb).toFixed(3)).join(',');
