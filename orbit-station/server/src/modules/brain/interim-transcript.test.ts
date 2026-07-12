@@ -1,7 +1,7 @@
 /**
  * INTEGRATION: the live interim (partial) transcript path, brain → dock.
  *
- *   stt-watch (gated on isListening) → TranscriptApi.onInterim
+ *   speech-watch (gated on isListening) → TranscriptApi.onInterim
  *     → brain handler → session.sendInterim(text, seq)
  *     → directed 'transcript-interim' frame on the 'agent' topic → the phone.
  *

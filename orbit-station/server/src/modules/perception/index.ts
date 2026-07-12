@@ -26,7 +26,7 @@ import { presenceProcessor } from './processors/presence.js';
 import { faceRecognitionProcessor } from './processors/face-recognition.js';
 import { visionSnapshotProcessor } from './processors/vision-snapshot.js';
 import { identitySnapshotProcessor } from './processors/identity-snapshot.js';
-import { sttWatchProcessor } from './processors/stt-watch.js';
+import { speechWatchProcessor } from './processors/speech-watch.js';
 import { interpretAudio } from './processors/background-audio.js';
 import { bodyMotionWatchProcessor, type MotionCommand } from './processors/bodymotion-watch.js';
 import { SnapshotStore, isoIst, sampleEvenly, makeSnapshot, type SnapshotRecord } from './snapshots.js';
@@ -59,7 +59,7 @@ function sideOf(cx: number): 'left' | 'center' | 'right' {
   return cx < 0.4 ? 'left' : cx > 0.6 ? 'right' : 'center';
 }
 /** The MLX sidecars (the only out-of-process perception pieces). Same URLs +
- *  defaults the processors use (vision-snapshot.ts / stt-watch.ts). */
+ *  defaults the processors use (vision-snapshot.ts / speech-watch.ts). */
 const SIDECARS = [
   { name: 'vision', kind: 'qwen2.5-VL temporal', modelField: 'temporal_model',
     url: process.env.TEMPORAL_SIDECAR_URL ?? 'http://127.0.0.1:8080' },
@@ -512,7 +512,7 @@ export function getGateApi(): GateApi | undefined {
 
 /**
  * Final-transcript hook (A1.2, the always-on-mic shift). The server STT
- * (stt-watch) emits one final transcript per endpointed utterance; the brain
+ * (speech-watch) emits one final transcript per endpointed utterance; the brain
  * registers `onFinal` to receive each with its utterance window, so it can decide
  * — via the addressed latch — whether that utterance becomes an agent turn.
  * Mirrors GateApi.onRaise (a single consumer, set once at brain init).
@@ -648,8 +648,8 @@ export function perceptionModule(getHub: () => PerceptionProcessingHub): Station
   const gallery = new Gallery(GALLERY_PATH);
   const face = faceRecognitionProcessor(gallery);
   // A1.2: the brain registers onFinal (via TranscriptApi) to receive each final
-  // utterance; we hold the single handler and forward stt-watch's events to it.
-  // It also reports `speaking` per dock (echo-gate) — stt-watch drops audio then.
+  // utterance; we hold the single handler and forward speech-watch's events to it.
+  // It also reports `speaking` per dock (echo-gate) — speech-watch drops audio then.
   let finalHandler: ((t: FinalTranscript) => void) | undefined;
   // LIVE INTERIMS: the brain registers a handler (to forward partials to the dock UI)
   // and a listening-resolver (the gate — only produce interims during an active turn).
@@ -705,7 +705,7 @@ export function perceptionModule(getHub: () => PerceptionProcessingHub): Station
     return parts.join('\n');
   };
   // Always wired; gated at CALL time on the runtime toggle so it can flip live
-  // without rebuilding the processor. Disabled → returns null (the stt-watch path
+  // without rebuilding the processor. Disabled → returns null (the speech-watch path
   // then keeps the local-Whisper text, exactly like the old env-unset case).
   // Per-dock DEBOUNCE for the background audio interpreter — the primary cost/noise
   // clamp (bg-audio doc §5 + §7a.4): at most one call per cooldown, an in-flight guard,
@@ -735,7 +735,7 @@ export function perceptionModule(getHub: () => PerceptionProcessingHub): Station
       return { ...ev, model };
     } finally { st.inflight = false; }
   };
-  const stt = sttWatchProcessor(
+  const stt = speechWatchProcessor(
     snapshots,
     (e) => finalHandler?.(e),
     (dockId) => Date.now() < (speakingUntil.get(dockId) ?? 0),

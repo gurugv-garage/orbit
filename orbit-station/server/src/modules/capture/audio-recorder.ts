@@ -6,7 +6,7 @@
  *
  * Reuses the perception substrate: a one-shot StreamProcessor on the PerceptionProcessingHub
  * for ONE streamId, fed the same inbound Opus RTP the STT watcher gets. Each Opus
- * packet → 48 kHz mono PCM-16 (same decode as stt-watch), appended to a buffer; on
+ * packet → 48 kHz mono PCM-16 (same decode as speech-watch (vad-endpoint)), appended to a buffer; on
  * stop we prepend a WAV header and write the file. 48 kHz mono keeps it aligned with
  * WebRTC's native Opus rate (no resample) and plays natively in the browser.
  */

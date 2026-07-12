@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { UtteranceDetector, isHallucination, isLowConfBackchannel, hasNoWords } from './stt-watch.js';
+import { UtteranceDetector } from './vad-endpoint.js';
+import { isHallucination, isLowConfBackchannel, hasNoWords } from './speech-watch.js';
 
 // Mirrors the detector's own constants. FRAME_MS=30 @ 16 kHz → 480 samples/frame.
 // ENDPOINT_MS=1300 → ~44 silent frames commit. MIN_UTTERANCE_MS=180 → ≥6 voiced

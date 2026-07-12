@@ -11,7 +11,7 @@
 
 import { readFile } from 'node:fs/promises';
 import { isoIst } from '../perception/snapshots.js';
-import { confidenceTier } from '../perception/processors/stt-watch.js';
+import { confidenceTier } from '../perception/processors/speech-watch.js';
 import { isOnlineEngine, transcribeOnline } from './online-stt.js';
 
 const SIDECAR_URL = process.env.PERCEPTION_SIDECAR_URL ?? 'http://127.0.0.1:8078';
