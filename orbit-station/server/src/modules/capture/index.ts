@@ -204,10 +204,22 @@ export function captureModule(w: CaptureWiring): StationModule {
         if (!man) { json(res, 404, { error: 'not found' }); return true; }
         const label = body.label || body.model?.split('/').pop() || 'reprocess';
         try {
+          // For the ENRICH engine, feed context: the recording's live-run transcript as the
+          // recent authoritative reference (so it transcribes names/terms consistently), plus
+          // any bias prompt the user typed. (The live 'enrich' path will feed the rolling
+          // store transcript instead; here the recording IS the session.)
+          let enrichContext: { recentTranscript?: string; present?: string[] } | undefined;
+          if (body.model === 'enrich' || body.model === 'enrich-lite') {
+            const liveRun = (man.runs ?? []).find((r) => r.label === 'live') ?? (man.runs ?? [])[0];
+            const recent = (liveRun?.snapshots ?? [])
+              .map((s) => (s as { payload?: { text?: string } }).payload?.text ?? '')
+              .filter(Boolean).slice(-40).join('\n');
+            enrichContext = { recentTranscript: [body.prompt, recent].filter(Boolean).join('\n') || undefined };
+          }
           const run = await reprocessStt({
             audioPath: join(sessionDir(m[1]!), man.audio),
             dockId: man.dock, streamId: m[1]!, startedAtEpoch: man.startedAtEpoch,
-            model: body.model, prompt: body.prompt, label, job: body.job,
+            model: body.model, prompt: body.prompt, label, job: body.job, enrichContext,
           });
           // replace a same-label run if re-run, else append.
           man.runs = [...(man.runs ?? []).filter((r) => r.label !== label), run];

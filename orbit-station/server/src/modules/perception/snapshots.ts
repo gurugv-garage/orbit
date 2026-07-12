@@ -35,7 +35,10 @@ export interface SnapshotSource {
   // 'sound' = an interpreted NON-SPEECH acoustic event from the background audio
   // processor (laughter, music, a crash — bg-audio-summarizer.md): an EVENT stream;
   // payload carries { text: summary, audioKind, salience, … }.
-  kind: 'vision' | 'speech' | 'identity' | 'emotion' | 'bodymotion' | 'sound' | 'summary';
+  // 'enriched' = the AUDIO ENRICHER's unified record (one kind for all its output; WHAT it contains
+  // — speech / played media / a non-speech sound — is the `audioSource` field, not the kind).
+  // 'speech'/'sound' remain for the LIVE parakeet records + historical data.
+  kind: 'vision' | 'speech' | 'enriched' | 'identity' | 'emotion' | 'bodymotion' | 'sound' | 'summary';
   device: string;
   host: string;
 }
@@ -120,13 +123,18 @@ export class SnapshotStore {
     return added;
   }
 
-  /** Patch a record's payload in place (e.g. the background STT upgrade replacing the
-   *  live Whisper text with a better diarized transcript). Re-notifies listeners. No-op
-   *  if the record already rolled off the ring. Returns whether it was found. */
+  /** Patch a record's payload in place (e.g. the background-audio upgrade enriching the live
+   *  parakeet text with the Gemini acoustic read — audioKind/summary/salience/addressed). Re-notifies
+   *  listeners AND re-persists, so the enrichment reaches DISK readers (the ego reading `recordsSince`
+   *  off disk), not just the in-memory ring. The JSONL is append-only, so this appends a SECOND,
+   *  enriched line for the same utterance; disk readers reconcile last-wins on `interval.from|source.id|
+   *  source.kind` (see retention.dedupeLastWins) so they see only the patched version. No-op if the
+   *  record already rolled off the ring. Returns whether it was found. */
   update(rec: SnapshotRecord, patch: Partial<SnapshotRecord['payload']>): boolean {
     const r = this.#recs.find((x) => x === rec);
     if (!r) return false;
     r.payload = { ...r.payload, ...patch };
+    persistRecord(r);   // re-append the enriched record — close the bg-audio persist gap (durable)
     for (const l of this.#listeners) { try { l(r); } catch { /* */ } }
     return true;
   }

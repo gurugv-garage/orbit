@@ -23,55 +23,6 @@ function geminiKey(): string | undefined {
   return process.env.GEMINI_API_KEY_PAID_ACC || process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
 }
 
-export type AudioKind =
-  | 'speech' | 'laughter' | 'crying' | 'shouting' | 'music'
-  | 'impact' | 'alarm' | 'ambient' | 'animal' | 'unknown';
-
-/** One interpreted acoustic event. Confidences are the model's self-report — treat as
- *  a vibe, not a probability; the TRANSCRIPT's trust still comes from the local
- *  engine's confTier on the snapshot, not from here. */
-export interface BgAudioEvent {
-  kind: AudioKind;
-  kindConf: number;          // 0..1
-  transcript: string;        // verbatim words if kind=speech, else '' (never invented)
-  salience: 'low' | 'notable' | 'startling';
-  salienceConf: number;      // 0..1
-  summary: string;           // one short line: "what happened acoustically"
-  /** dock-directed intent OBSERVED in the audio — someone calling the robot, telling it
-   *  to stop talking, asking it something. An OBSERVATION only: the brain's addressed
-   *  latch remains the sole authority on whether anything becomes a turn (§6 invariant). */
-  addressedToRobot: boolean;
-  addressConf: number;       // 0..1
-  directive: string;         // what they want of it ('stop talking', 'called its name'), '' if none
-}
-
-const KINDS: AudioKind[] = ['speech', 'laughter', 'crying', 'shouting', 'music', 'impact', 'alarm', 'ambient', 'animal', 'unknown'];
-const SALIENCES = ['low', 'notable', 'startling'] as const;
-
-const PROMPT =
-  'You are an auditory scene interpreter for a home robot named "orbit". Listen to this '
-  + 'clip and report WHAT the sound is and HOW significant it is — do not converse. '
-  + 'Return STRICT JSON: {"kind":"<speech|laughter|crying|shouting|music|impact|alarm|ambient|animal|unknown>",'
-  + '"kind_conf":<0..1>,"transcript":"<verbatim spoken words if kind is speech, else empty>",'
-  + '"salience":"<low|notable|startling>","salience_conf":<0..1>,'
-  + '"summary":"<one short sentence describing what happened acoustically>",'
-  + '"addressed_to_robot":<true if someone is audibly speaking TO the robot — calling "orbit", '
-  + 'telling it to stop/be quiet, asking it something — else false>,"address_conf":<0..1>,'
-  + '"directive":"<what they want of the robot, in a few words (e.g. \'stop talking\', '
-  + '\'called its name\', \'asked it a question\') — empty if not addressed>"}. '
-  + 'RULES: '
-  + '(1) salience = would a person in the room turn their head? routine talk/typing = low; '
-  + 'laughter, a doorbell, raised voices = notable; a crash, a scream, an alarm = startling. '
-  + '(2) transcript: ONLY words actually audible in THIS clip, verbatim; NEVER answer or '
-  + 'continue what was said; if unclear or not speech, return "". '
-  + '(3) NEVER invent sounds or words; if unsure of the kind, use "unknown" with low kind_conf. '
-  + '(4) summary describes the SOUND ("someone laughing over music"), never a reply, and never '
-  + 'a generic "speech was detected" — say what it actually sounds like. '
-  + '(5) SINGING, vocals over instruments, or a played recording = "music", NOT "speech" — '
-  + '"speech" is only people actually talking in the room. '
-  + '(6) addressed_to_robot ONLY from words audible in THIS clip (the name "orbit", or a '
-  + 'clear command aimed at the robot) — never guessed from the reference context. JSON only.';
-
 /** True if `text` is mostly a regurgitation of the context (a fabricated re-hearing of
  *  past conversation, not a transcript of the audio). Word-overlap ≥70% = echo. */
 export function echoesContext(text: string, context: string): boolean {
@@ -95,68 +46,158 @@ function wav(pcm: Int16Array, rate: number): Buffer {
   return b;
 }
 
-const clamp01 = (v: unknown, d: number) => (typeof v === 'number' && Number.isFinite(v) ? Math.max(0, Math.min(1, v)) : d);
+// ─────────────────────────── AUDIO ENRICHER (live) ───────────────────────────
+// The merged live path: ONE context-aware call over a batch window (the debounced
+// vad-endpoint trigger). Its PRIMARY job is accurate, coherent, in-context transcription
+// (turning garbled reflex-STT into real sentences); it also diarizes, distinguishes real
+// in-room speech from PLAYED MEDIA (a TV/video/music) and non-speech sound, and tags salience
+// + an addressed observation. Returns per-utterance SEGMENTS with times relative to the window
+// start (ms) so the caller can land one record per segment. Mirrors capture/online-stt.ts's
+// enrich prompt (kept in sync). Returns [] on any failure — the live path must never break.
+export interface EnrichSegment {
+  fromMs: number; toMs: number;         // relative to the window start
+  text: string;
+  speaker?: number;                     // diarized index within the window
+  source: 'speech' | 'media' | 'sound'; // real speech vs played media vs a non-speech sound
+  kind?: string;                        // acoustic kind (music/impact/laughter/… — set for any source)
+  transcriptConf?: number;              // 0..1 — the model's own confidence the text is what was really said
+  salience: 'low' | 'notable' | 'startling';
+  salienceConf?: number;                // 0..1 — the model's confidence in the salience
+  addressedToRobot: boolean;
+  addressConf?: number;                 // 0..1 — confidence it was addressed to the robot
+  directive?: string;                   // what they want of the robot ('stop', 'called its name'), if addressed
+  summary?: string;                     // one short line: what this segment IS, acoustically/semantically
+}
+export interface EnrichContext { recentTranscript?: string; present?: string[] }
 
-/**
- * Interpret one acoustic window. `context` (optional) = recent-discussion grounding
- * (rolling summary + who's present) to disambiguate names/terms in the transcript —
- * fenced reference-only (echo-guarded). Returns null on any failure.
- */
-export async function interpretAudio(
-  pcm: Int16Array, sampleRate: number, model: string, context?: string, dockId?: string,
-): Promise<BgAudioEvent | null> {
-  const key = geminiKey();
-  if (!key) return null;
-  const b64 = wav(pcm, sampleRate).toString('base64');
-  const ctx = context?.trim();
-  // Context goes AFTER the prompt+audio, fenced as REFERENCE-ONLY (putting it first led
-  // the model to echo the context as the transcript when the audio was unclear).
-  const parts: Array<Record<string, unknown>> = [
-    { text: PROMPT },
-    { inline_data: { mime_type: 'audio/wav', data: b64 } },
-  ];
-  if (ctx) {
-    parts.push({ text:
-      '\n\n--- BACKGROUND REFERENCE (NOT audio — never output any of this text; only use '
-      + 'it to spell names/terms heard in the AUDIO correctly. If the audio does not '
-      + `clearly contain words, transcript is "") ---\n${ctx}` });
+const ENRICH_PROMPT_BASE =
+  'You transcribe and interpret audio for a home robot named "orbit". This is a real room that '
+  + 'may have MULTIPLE people talking (possibly overlapping) AND background media (a TV, a video, '
+  + 'or music playing). Your MAIN job is an ACCURATE, coherent transcript — turn unclear audio into '
+  + 'the most likely real sentences, not word-salad. '
+  + 'Return STRICT JSON: {"segments":[{"start":<sec>,"end":<sec>,"speaker":<int>,'
+  + '"source":"<speech|media|sound>","text":"…","transcript_conf":<0..1>,"kind":"<the acoustic type: '
+  + 'speech|music|impact|laughter|alarm|ambient|animal|… >","salience":"<low|notable|startling>",'
+  + '"salience_conf":<0..1>,"summary":"<one short line: what this segment IS>","addressed":<true|false>,'
+  + '"address_conf":<0..1>,"directive":"<if addressed: what they want of the robot, else empty>"}]}. '
+  + 'RULES: (1) ONE SEGMENT PER CONTINUOUS UTTERANCE — a full sentence or complete thought from a '
+  + 'single speaker. DO NOT split per word or per short phrase; merge a run of words by the same '
+  + 'speaker into one segment (e.g. "Okay, and then we can do the other one again." is ONE segment, '
+  + 'NOT eight). Start a new segment only when the SPEAKER CHANGES or there is a clear pause/topic '
+  + 'shift. Aim for a handful of segments across the clip, not dozens. '
+  + '(2) start/end = seconds from the START OF THIS CLIP, giving each segment its REAL span (a normal '
+  + 'sentence is ~1–4 s, never 0). (3) DIARIZE: a stable speaker index (0,1,2,…) per distinct person. '
+  + '(4) source: "speech"=a person in the room; "media"=a TV/video/song/recording playing (never '
+  + 'addressed); "sound"=a non-speech event (crash/laughter/doorbell/alarm — describe in text, type '
+  + 'in kind). (5) TRANSCRIBE IN CONTEXT using the reference transcript (spell names/terms '
+  + 'consistently, continue a cut-off thought) but only what is AUDIBLE here; never echo the reference '
+  + 'as spoken; never invent words for unintelligible audio (omit). (6) salience: routine talk=low; '
+  + 'laughter/doorbell/raised voices=notable; crash/scream/alarm=startling. (7) addressed=true ONLY '
+  + 'when a real in-room speaker talks TO the robot ("orbit"/a command) — never for media. '
+  + '(8) transcript_conf = HOW SURE you are the text is what was REALLY said (0..1). BE HONEST: if the '
+  + 'audio is far/noisy/unclear and you are guessing or it comes out as nonsense, give a LOW '
+  + 'transcript_conf — do NOT confidently invent plausible-sounding word-salad. A low-confidence '
+  + 'segment is fine; a fabricated confident one is not. JSON only.';
+
+/** Coalesce over-split fragments the model returns despite the prompt: merge CONSECUTIVE segments
+ *  from the same speaker+source into one utterance (concatenating text, extending the span). Also
+ *  fixes DEGENERATE times — when the model piles everything at ~0s, spread the merged utterances
+ *  evenly across the real window so the timeline isn't a zero-width stack. */
+export function coalesceSegments(segs: EnrichSegment[], windowMs: number): EnrichSegment[] {
+  if (!segs.length) return segs;
+  const norm = (t: string) => t.toLowerCase().replace(/[^a-z0-9 ]/g, '').replace(/\s+/g, ' ').trim();
+  const merged: EnrichSegment[] = [];
+  for (const s of segs) {
+    if (!s.text.trim()) continue;
+    const prev = merged[merged.length - 1];
+    // DROP a consecutive DUPLICATE (the model re-emits the same sentence across an overlap): if the
+    // previous kept segment has identical normalized text from the same speaker, skip this one.
+    if (prev && prev.speaker === s.speaker && norm(prev.text) === norm(s.text)) continue;
+    // REPETITION-LOOP guard (flash-lite hallucinates "X, X, X…"): collapse an immediately-repeated
+    // phrase within the text (3+ reps of the same short run → keep one).
+    s.text = s.text.replace(/\b(.{4,40}?)(?:[ ,.]+\1\b){2,}/gi, '$1');
+    if (prev && prev.speaker === s.speaker && prev.source === s.source
+        && s.fromMs - prev.toMs < 1200                       // same speaker, < 1.2s gap → one utterance…
+        && !/[.!?]"?\s*$/.test(prev.text)) {                 // …unless the prev already ended a sentence
+      prev.text = `${prev.text} ${s.text}`.replace(/\s+/g, ' ').trim();
+      prev.toMs = Math.max(prev.toMs, s.toMs);
+      if (s.salience === 'startling' || (s.salience === 'notable' && prev.salience === 'low')) { prev.salience = s.salience; prev.salienceConf = s.salienceConf; }
+      if (s.addressedToRobot && !prev.addressedToRobot) { prev.addressedToRobot = true; prev.addressConf = s.addressConf; prev.directive = s.directive; }
+      if (!prev.summary && s.summary) prev.summary = s.summary;
+      if (!prev.kind && s.kind) prev.kind = s.kind;
+      // a merged utterance is only as trustworthy as its LEAST-confident fragment
+      if (s.transcriptConf != null) prev.transcriptConf = Math.min(prev.transcriptConf ?? 1, s.transcriptConf);
+    } else merged.push({ ...s });
   }
+  // DEGENERATE times: if the segments' total span covers < half the window, the model's timestamps
+  // are junk — spread the merged utterances evenly across the real window instead. Each spread
+  // segment is CAPPED (a real utterance is ~seconds, not tens of seconds) so a 2-segment 40s window
+  // doesn't produce two 20s blobs; leave the rest as an implicit gap.
+  const SPREAD_SEG_CAP_MS = 8_000;
+  const span = merged.length > 1 ? Math.max(...merged.map((m) => m.toMs)) - Math.min(...merged.map((m) => m.fromMs)) : windowMs;
+  if (merged.length > 1 && span < windowMs * 0.5) {
+    const slot = windowMs / merged.length;
+    merged.forEach((m, i) => { m.fromMs = Math.round(i * slot); m.toMs = Math.round(i * slot + Math.min(slot, SPREAD_SEG_CAP_MS)); });
+  }
+  return merged;
+}
+
+/** Interpret one BATCH WINDOW: accurate in-context transcription + diarization + acoustic read.
+ *  `pcm` is the window (16 kHz mono); `context` biases spelling/continuation. Returns [] on failure. */
+export async function enrichAudio(
+  pcm: Int16Array, sampleRate: number, model: string, context?: EnrichContext, dockId?: string,
+): Promise<EnrichSegment[]> {
+  const key = geminiKey();
+  if (!key) return [];
+  let prompt = ENRICH_PROMPT_BASE;
+  const present = context?.present?.filter(Boolean);
+  if (present?.length) prompt += `\n\nPEOPLE LIKELY PRESENT (for name spelling): ${present.join(', ')}.`;
+  const rt = context?.recentTranscript?.trim();
+  if (rt) prompt += `\n\n--- REFERENCE TRANSCRIPT (recent, context ONLY — do not echo) ---\n${rt}`;
+  const b64 = wav(pcm, sampleRate).toString('base64');
   try {
     const r = await fetch(`${GEMINI_BASE}/${model}:generateContent?key=${key}`, {
       method: 'POST', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
-        contents: [{ parts }],
-        generationConfig: { responseMimeType: 'application/json', temperature: 0.1, maxOutputTokens: 1024 },
+        contents: [{ parts: [{ text: prompt }, { inline_data: { mime_type: 'audio/wav', data: b64 } }] }],
+        generationConfig: { responseMimeType: 'application/json', temperature: 0.1, maxOutputTokens: 4096 },
       }),
       signal: AbortSignal.timeout(30_000),
     });
-    if (!r.ok) return null;
-    const data = await r.json() as {
-      candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>;
-      usageMetadata?: GeminiUsage;
-    };
-    if (dockId) reportGeminiCost(dockId, model, 'bg-audio', data.usageMetadata, Date.now());
+    if (!r.ok) return [];
+    const data = await r.json() as { candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>; usageMetadata?: GeminiUsage };
+    if (dockId) reportGeminiCost(dockId, model, 'enrich', data.usageMetadata, Date.now());
     const txt = data?.candidates?.[0]?.content?.parts?.[0]?.text ?? '{}';
-    const p = JSON.parse(txt) as Record<string, unknown>;
-    const kind = (KINDS as string[]).includes(String(p.kind)) ? p.kind as AudioKind : 'unknown';
-    const salience = (SALIENCES as readonly string[]).includes(String(p.salience)) ? p.salience as BgAudioEvent['salience'] : 'low';
-    let transcript = kind === 'speech' ? String(p.transcript ?? '').trim() : '';
-    // ECHO GUARD: an unclear clip sometimes comes back as a regurgitation of the
-    // context reference — drop the transcript (keep the event) in that case.
-    if (transcript && ctx && echoesContext(transcript, ctx)) transcript = '';
-    const summary = String(p.summary ?? '').trim();
-    if (!summary && !transcript) return null; // nothing usable
-    const addressedToRobot = p.addressed_to_robot === true;
-    return {
-      kind, kindConf: clamp01(p.kind_conf, 0.5),
-      transcript,
-      salience, salienceConf: clamp01(p.salience_conf, 0.5),
-      summary: summary || transcript,
-      addressedToRobot,
-      addressConf: clamp01(p.address_conf, addressedToRobot ? 0.5 : 0),
-      directive: addressedToRobot ? String(p.directive ?? '').trim() : '',
-    };
+    let raw: Array<Record<string, unknown>>;
+    try { raw = (JSON.parse(txt).segments ?? []) as Array<Record<string, unknown>>; }
+    catch { raw = []; for (const m of txt.match(/\{[^{}]*"start"[^{}]*\}/g) ?? []) { try { raw.push(JSON.parse(m)); } catch { /* skip */ } } }
+    const windowMs = Math.round(pcm.length / (sampleRate / 1000));
+    const mapped = raw
+      .map((s): EnrichSegment => {
+        const src = ['speech', 'media', 'sound'].includes(String(s.source)) ? s.source as EnrichSegment['source'] : 'speech';
+        const conf = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? Math.max(0, Math.min(1, v)) : undefined);
+        const addressed = s.addressed === true && src === 'speech';
+        return {
+          fromMs: Math.max(0, Math.round(((s.start as number) ?? 0) * 1000)),
+          toMs: Math.round((((s.end as number) ?? (s.start as number) ?? 0)) * 1000),
+          text: String(s.text ?? '').trim(),
+          speaker: typeof s.speaker === 'number' ? s.speaker : undefined,
+          source: src,
+          kind: s.kind ? String(s.kind) : undefined,
+          transcriptConf: conf(s.transcript_conf),
+          salience: (['low', 'notable', 'startling'].includes(String(s.salience)) ? s.salience : 'low') as EnrichSegment['salience'],
+          salienceConf: conf(s.salience_conf),
+          addressedToRobot: addressed,
+          addressConf: addressed ? conf(s.address_conf) : undefined,
+          directive: addressed && s.directive ? String(s.directive).trim() : undefined,
+          summary: s.summary ? String(s.summary).trim() : undefined,
+        };
+      })
+      .filter((s) => s.text.length > 0 && !(rt && echoesContext(s.text, rt)));
+    // Coalesce over-split fragments (the model splits per-word despite the prompt) + fix degenerate
+    // times — so one utterance becomes ONE record, not a stack of single words.
+    return coalesceSegments(mapped, windowMs);
   } catch {
-    return null; // network/timeout/parse → the local record stands
+    return [];
   }
 }

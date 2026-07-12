@@ -70,17 +70,29 @@ async function durationSec(path: string): Promise<number> {
 export interface OnlineSeg {
   start: number; end: number; text: string; speaker?: number | string;
   avg_logprob?: number | null; no_speech_prob?: number | null; compression_ratio?: number | null;
+  // AUDIO-ENRICHER extras (present only on the 'enrich' engine): per-segment acoustic read.
+  source?: 'speech' | 'media' | 'sound';  // real in-room speech vs played media (TV/music) vs a non-speech sound
+  kind?: string;                           // acoustic kind (music/impact/laughter/…) when source≠speech
+  salience?: 'low' | 'notable' | 'startling';
+  addressedToRobot?: boolean;
 }
 export interface OnlineResult { model: string; segments: OnlineSeg[] }
 
 export function isOnlineEngine(model: string): boolean {
-  return model === 'deepgram' || model === 'gemini-audio' || model === 'gemini-audio-lite';
+  return model === 'deepgram' || model === 'gemini-audio' || model === 'gemini-audio-lite'
+    || model === 'enrich' || model === 'enrich-lite';
 }
 
-export async function transcribeOnline(engine: string, audioPath: string): Promise<OnlineResult> {
+/** Context fed to the enricher for accurate in-context transcription (the critical goal):
+ *  the recent authoritative transcript + who's present. Optional. */
+export interface EnrichContext { recentTranscript?: string; present?: string[] }
+
+export async function transcribeOnline(engine: string, audioPath: string, ctx?: EnrichContext): Promise<OnlineResult> {
   if (engine === 'deepgram') return deepgram(audioPath);
   if (engine === 'gemini-audio') return geminiAudio(audioPath, 'gemini-2.5-flash');
   if (engine === 'gemini-audio-lite') return geminiAudio(audioPath, 'gemini-2.5-flash-lite');
+  if (engine === 'enrich') return geminiEnrich(audioPath, 'gemini-2.5-flash', ctx);
+  if (engine === 'enrich-lite') return geminiEnrich(audioPath, 'gemini-2.5-flash-lite', ctx);
   throw new Error(`unknown online engine: ${engine}`);
 }
 
@@ -191,4 +203,96 @@ async function geminiAudio(audioPath: string, modelArg?: string): Promise<Online
     if (!total) break; // unknown duration → single chunk
   }
   return { model: `gemini-audio (${model})`, segments: out };
+}
+
+// ── AUDIO ENRICHER (context-aware transcription + diarization + acoustic read) ───
+// The merged "audio enricher": its PRIMARY job is ACCURATE, CONTEXT-AWARE transcription that
+// turns the pile of garbled reflex-STT fragments into coherent sentences. It:
+//   • re-transcribes the audio directly (like gemini-audio),
+//   • DIARIZES — separates multiple speakers (0,1,2,…), for overlap/multi-person rooms,
+//   • distinguishes REAL in-room speech from PLAYED MEDIA (a TV/video/music) and non-speech sound,
+//   • uses the recent authoritative transcript as CONTEXT so names/terms stay consistent and a
+//     cut-off thought continues coherently,
+//   • tags each segment with an acoustic salience + an addressed-to-robot observation.
+// Reuses geminiAudio's chunking / loose-parse / loop-collapse / degenerate-time machinery.
+const ENRICH_PROMPT_BASE =
+  'You transcribe and interpret audio for a home robot named "orbit". This is a real room that '
+  + 'may have MULTIPLE people talking (possibly overlapping) AND background media (a TV, a video, '
+  + 'or music playing). Your MAIN job is an ACCURATE, coherent transcript — turn unclear audio into '
+  + 'the most likely real sentences, not word-salad. '
+  + 'Return STRICT JSON: {"segments":[{"start":<sec>,"end":<sec>,"speaker":<int>,'
+  + '"source":"<speech|media|sound>","text":"…","salience":"<low|notable|startling>",'
+  + '"addressed":<true|false>,"kind":"<if source!=speech: music|impact|laughter|alarm|ambient|…>"}]}. '
+  + 'RULES: '
+  + '(1) start/end = seconds from the START OF THIS CLIP. Split into natural per-utterance segments. '
+  + '(2) DIARIZE: give each distinct person a stable speaker index (0,1,2,…) across the clip. '
+  + '(3) source: "speech" = a person physically in the room talking; "media" = a TV/video/song/'
+  + 'recording playing (label these but do NOT treat them as someone addressing the robot); '
+  + '"sound" = a non-speech event (a crash, laughter, a doorbell, an alarm) — put a short '
+  + 'description in text and the acoustic type in kind. '
+  + '(4) TRANSCRIBE IN CONTEXT: use the reference transcript below (if given) to spell names/terms '
+  + 'consistently and to continue a thought that was cut between clips — but transcribe only what is '
+  + 'AUDIBLE here; never copy the reference as if it were spoken, and never invent words for '
+  + 'unintelligible audio (omit those). '
+  + '(5) salience: would a person turn their head? routine talk = low; laughter/doorbell/raised '
+  + 'voices = notable; a crash/scream/alarm = startling. '
+  + '(6) addressed = true ONLY when a real in-room speaker is talking TO the robot (its name '
+  + '"orbit", or a command aimed at it) — never for media. JSON only.';
+
+function enrichPrompt(ctx?: EnrichContext): string {
+  let p = ENRICH_PROMPT_BASE;
+  const present = ctx?.present?.filter(Boolean);
+  if (present?.length) p += `\n\nPEOPLE LIKELY PRESENT (for name spelling): ${present.join(', ')}.`;
+  const rt = ctx?.recentTranscript?.trim();
+  if (rt) p += `\n\n--- REFERENCE TRANSCRIPT (recent, for context ONLY — do not echo as spoken) ---\n${rt}`;
+  return p;
+}
+
+async function geminiEnrich(audioPath: string, modelArg: string, ctx?: EnrichContext): Promise<OnlineResult> {
+  const key = process.env.GEMINI_API_KEY_PAID_ACC || process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
+  if (!key) throw new Error('no GEMINI_API_KEY');
+  const model = modelArg;
+  const prompt = enrichPrompt(ctx);
+  const total = await durationSec(audioPath);
+  const out: OnlineSeg[] = [];
+  for (let off = 0; off < (total || CHUNK_SEC); off += CHUNK_SEC) {
+    const wav = await to16kMonoWav(audioPath, off, CHUNK_SEC);
+    const b64 = wav.toString('base64');
+    const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${key}`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        contents: [{ parts: [{ text: prompt }, { inline_data: { mime_type: 'audio/wav', data: b64 } }] }],
+        generationConfig: { responseMimeType: 'application/json', temperature: 0.1, maxOutputTokens: 8192 },
+      }),
+      signal: AbortSignal.timeout(120_000),
+    });
+    if (!r.ok) throw new Error(`enrich ${r.status}: ${(await r.text()).slice(0, 200)}`);
+    const data = await r.json() as { candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }> };
+    const txt = data?.candidates?.[0]?.content?.parts?.[0]?.text ?? '{}';
+    const raw = parseSegmentsLoose(txt) as Array<Record<string, unknown>>;
+    const rawSegs = raw
+      .map((s) => ({
+        start: (s.start as number) ?? 0, end: (s.end as number) ?? (s.start as number) ?? 0,
+        text: String(s.text ?? '').trim(), speaker: s.speaker as number | undefined,
+        source: (['speech', 'media', 'sound'].includes(String(s.source)) ? s.source : 'speech') as OnlineSeg['source'],
+        kind: s.kind ? String(s.kind) : undefined,
+        salience: (['low', 'notable', 'startling'].includes(String(s.salience)) ? s.salience : 'low') as OnlineSeg['salience'],
+        addressedToRobot: s.addressed === true,
+      }))
+      .filter((s) => s.text.length > 0);
+    const chunkSegs = collapseLoops(rawSegs as unknown as Array<{ start: number; end: number; text: string; speaker?: number }>) as unknown as typeof rawSegs;
+    const win = Math.min(CHUNK_SEC, (total || CHUNK_SEC) - off);
+    const starts = chunkSegs.map((s) => s.start ?? 0);
+    const span = chunkSegs.length > 1 ? Math.max(...starts) - Math.min(...starts) : win;
+    const degenerate = chunkSegs.length > 1 && span < win * 0.5;
+    chunkSegs.forEach((s, i) => {
+      const [start, end] = degenerate
+        ? [(i / chunkSegs.length) * win, ((i + 1) / chunkSegs.length) * win]
+        : [s.start ?? 0, s.end ?? s.start ?? 0];
+      out.push({ start: off + start, end: off + end, text: s.text, speaker: s.speaker,
+        source: s.source, kind: s.kind, salience: s.salience, addressedToRobot: s.addressedToRobot });
+    });
+    if (!total) break;
+  }
+  return { model: `enrich (${model})`, segments: out };
 }

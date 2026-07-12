@@ -12,7 +12,7 @@
  *     from–to + duration).
  */
 import React from 'react';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useStationClient, useStationEvents } from '../lib/useStation';
 import { api } from '../lib/station';
 import { LiveTile } from './LiveTile';
@@ -70,6 +70,21 @@ interface Snapshot {
     // 🎙 STT row shows what the live engine heard and the 🔊 audio row shows the
     // upgraded read. Absent on un-upgraded records (then the STT row uses `text`).
     sttText?: string;
+    // ── AUDIO ENRICHER (merged path) ── the authoritative context-aware records. `enriched`
+    // marks an enricher segment (clean transcript + diarization); `audioSource` says whether it
+    // was real in-room speech, played media (a TV/video/song), or a non-speech sound. `liveOnly`
+    // marks the parakeet record as superseded (kept for the live addressed-latch/console, but the
+    // enricher's record is the durable truth). `armedBy` = what triggered the batch.
+    enriched?: boolean; audioSource?: 'speech' | 'media' | 'sound'; liveOnly?: boolean; armedBy?: string;
+    // the enricher's own confidence the transcript is what was really said (0..1). Low = the model
+    // was guessing on unclear/far audio — shown but visually de-emphasised, not hidden.
+    transcriptConf?: number;
+    // DEBUG (enricher): voicedPct = how much of the batch window was actually voiced (low = the
+    // window was mostly silence, so a full "conversation" here is a hallucination); sttWindow = the
+    // raw parakeet STT that overlapped this window (compare enricher vs live STT; empty = no speech).
+    voicedPct?: number; sttWindow?: string;
+    // stamped by the brain when THIS addressed utterance actually WOKE the robot (a turn fired).
+    wokeRobot?: boolean;
   };
 }
 
@@ -78,13 +93,13 @@ interface Snapshot {
  *  an unknown stream). label = human name shown in the lane header. */
 const KIND_META: Record<string, { icon: string; color: string; label: string }> = {
   vision:     { icon: '👁', color: '#dfe',    label: 'vision' },
-  // STT and the background AUDIO interpretation are SEPARATE concepts, though they
-  // ride the same 'speech' snapshot: STT = the live transcript (parakeet/whisper);
-  // audio = the background interpreter's read (what KIND of sound, how salient, a
-  // cleaner transcript). Standalone non-speech events land as 'sound' snapshots.
-  stt:         { icon: '🎙', color: '#9ecbff', label: 'STT' },
-  audio:       { icon: '🔊', color: '#c9b6ff', label: 'audio' },
-  sound:       { icon: '🔊', color: '#c9b6ff', label: 'sound' },
+  // 👂 enriched = the AUDIO ENRICHER's ONE lane — same record kind for speech / media / sound; the
+  // content-type shows as an emoji badge on the row (🗣/📺/🎵/💥…). 🎙 STT = parakeet's live-only
+  // reflex transcript (dimmed, superseded by the enricher). 🔊 sound = LEGACY standalone sound
+  // records (pre-merge history) — new enricher sounds ride the enriched lane.
+  enriched:    { icon: '👂', color: '#c9b6ff', label: 'enriched' },
+  stt:         { icon: '🎙', color: '#9ecbff', label: 'STT (live)' },
+  sound:       { icon: '🔊', color: '#b6d4ff', label: 'sound (legacy)' },
   identity:   { icon: '👤', color: '#ffd9a0', label: 'identity' },
   emotion:    { icon: '😮', color: '#ff9ed4', label: 'emotion' },
   bodymotion: { icon: '🤖', color: '#a0e0c0', label: 'bodymotion' },
@@ -94,7 +109,7 @@ function kindMeta(kind: string) {
   return KIND_META[kind] ?? { ...KIND_FALLBACK, label: kind };
 }
 /** Preferred lane/filter order; unknown (future) kinds sort after, alphabetically. */
-const KIND_ORDER = ['vision', 'stt', 'audio', 'sound', 'identity', 'emotion', 'bodymotion'];
+const KIND_ORDER = ['vision', 'enriched', 'stt', 'sound', 'identity', 'emotion', 'bodymotion'];
 
 /** Trim a model id to its recognizable short name (drops the org/quant suffix). */
 function MODEL_SHORT(name: string): string {
@@ -110,6 +125,14 @@ interface SummaryResult {
   counts: { vision: number; speech: number; identity: number; emotion: number; bodymotion: number; keyframes: number };
   prompt: { system: string; transcript: string };
   window?: { from: string; to: string }; // exact IST bounds the server filtered on
+}
+
+/** One dock's on-disk perception history extent — from GET /api/perception/docks. Lets the console
+ *  OFFER an offline dock as a source and bound its time-range picker (mirrors retention.ts DockHistory). */
+interface DockHistory {
+  dock: string;
+  from: string | null; to: string | null; lastSeen: string | null;
+  hasSummaries: boolean; days: number; bytes?: number; // bytes = on-disk size (vision frames dominate)
 }
 
 /** Read a param from the hash query (e.g. #perception?src=dock-redmi&hide=vision). */
@@ -184,6 +207,37 @@ export function PerceptionStudio() {
   // URL. The processors always run on EVERY live stream; this just focuses the view.
   const [source, setSource] = useState<string>(() => hashParam('src') ?? '');
   const [producers, setProducers] = useState<{ streamId: string; label: string; tracks: { audio: boolean; video: boolean } }[]>([]);
+  // Docks with PERSISTED history on disk (§7c) — the offline sources the console can review even
+  // when nothing is live-streaming. Merged with `producers` below to build the selector, so an
+  // offline dock is still selectable. Polled slowly (history changes slowly). [] until loaded.
+  const [histDocks, setHistDocks] = useState<DockHistory[]>([]);
+  // When the selected source is OFFLINE (history mode), the pinned window we're reviewing. null =
+  // the dock's full retained span (the default the /history route fills in). Set by the range picker.
+  const [histWindow, setHistWindow] = useState<{ from: string; to: string } | null>(null);
+  // "Load earlier" for a LIVE dock: when on, the persisted history is fetched and merged BEHIND the
+  // live ring, so a live dock's timeline reaches back past the ~1000-record ring into its on-disk
+  // past — without leaving live mode (the video tile / enroll / flush stay). Off by default (the
+  // resting live view is just "now"). Holds the fetched older records; [] when off / none.
+  const [showLiveHistory, setShowLiveHistory] = useState(false);
+  const [liveHistSnaps, setLiveHistSnaps] = useState<Snapshot[]>([]);
+
+  // The SOURCE SELECTOR = live producers ∪ docks-with-history, deduped by dock label. A dock that
+  // is BOTH live and has history shows once, marked live. Live-first, then history by recency.
+  // (Declared before the effects that read the derived mode below.)
+  const liveLabels = useMemo(
+    () => new Set(producers.filter((p) => p.label !== STREAM_ID).map((p) => p.label)), [producers]);
+  const sourceList = useMemo(() => {
+    const live = producers.filter((p) => p.label !== STREAM_ID)
+      .map((p) => ({ label: p.label, live: true, tracks: p.tracks, hist: histDocks.find((h) => h.dock === p.label) }));
+    const historyOnly = histDocks.filter((h) => !liveLabels.has(h.dock))
+      .map((h) => ({ label: h.dock, live: false, tracks: { audio: false, video: false }, hist: h }));
+    return [...live, ...historyOnly];
+  }, [producers, histDocks, liveLabels]);
+  // Is the currently-selected source LIVE (an active producer / the browser) or OFFLINE (history)?
+  // Everything live-only (the video tile, enroll, flush-NOW, perceive) keys off this.
+  const sourceIsLive = source === STREAM_ID || liveLabels.has(source);
+  const historyMode = !!source && !sourceIsLive;
+  const selectedHist = historyMode ? histDocks.find((h) => h.dock === source) : undefined;
   // Timeline filter: the set of view-kinds currently HIDDEN (a checkbox per type,
   // data-driven — any kind present can be toggled, incl. future ones). Empty = all on.
   // Initialized from the URL so filters survive refreshes.
@@ -192,6 +246,8 @@ export function PerceptionStudio() {
   // Summarize controls are collapsed by default — a compact button that expands its
   // window/model/keyframes inline, so the controls area stays small.
   const [showSummarizer, setShowSummarizer] = useState(false);
+  // Audio enricher config panel (model select) — collapsed; the bar button toggles it.
+  const [showEnricher, setShowEnricher] = useState(false);
   // Sidecar detail panel (model/latency + start/stop/restart) — collapsed; the bar
   // shows just status dots until opened.
   const [showSidecars, setShowSidecars] = useState(false);
@@ -213,6 +269,10 @@ export function PerceptionStudio() {
   // Timeline image lightbox: the base64 frame currently viewed at original size (null = closed).
   // Any timeline thumbnail (gap sample, reused frames, filmstrip) opens it; Esc / click closes.
   const [zoomImg, setZoomImg] = useState<string | null>(null);
+  // Per-row toggle: reveal the STT utterance a speech-details (audio) row rode on, inline.
+  // ▶ enricher row audio: which rowKey is currently playing + one shared <audio> element.
+  const [playingAudio, setPlayingAudio] = useState<string | null>(null);
+  const audioElRef = useRef<HTMLAudioElement | null>(null);
   useEffect(() => {
     if (!zoomImg) return;
     const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setZoomImg(null); };
@@ -263,14 +323,14 @@ export function PerceptionStudio() {
   // console stream has no on-device MLKit pass. Clears when the source changes.
   useEffect(() => {
     setPerceive(null);
-    if (!source || source === STREAM_ID) return;
+    if (!source || source === STREAM_ID || !sourceIsLive) return; // no live face-track for an offline dock
     let alive = true;
     const tick = () => api.get<PerceiveFrame>(`/perception/${encodeURIComponent(source)}/perceive`)
       .then((r) => { if (alive) setPerceive(r.payload ? r : null); }).catch(() => {});
     tick();
     const t = setInterval(tick, 1000);
     return () => { alive = false; clearInterval(t); };
-  }, [source]);
+  }, [source, sourceIsLive]);
 
   // Known-faces gallery (load once + after each enroll).
   const loadGallery = useCallback(() => {
@@ -344,13 +404,36 @@ export function PerceptionStudio() {
     if (activeTake) return; // showing frozen data; don't clobber it
     if (!source) { setSnaps([]); return; } // no source picked yet
     let alive = true;
+    // OFFLINE: read the persisted timeline from disk once (history doesn't move) for the pinned
+    // window (or the dock's full retained span if none picked). LIVE: poll the in-memory ring.
+    if (historyMode) {
+      const qs = new URLSearchParams({ dock: source });
+      if (histWindow) { qs.set('from', histWindow.from); qs.set('to', histWindow.to); }
+      api.get<{ records: Snapshot[] }>(`/perception/history?${qs.toString()}`)
+        .then((r) => { if (alive) setSnaps(r.records ?? []); }).catch(() => { if (alive) setSnaps([]); });
+      return () => { alive = false; };
+    }
     const q = `limit=400&dock=${encodeURIComponent(source)}`;
     const load = () => api.get<Snapshot[]>(`/perception/snapshots?${q}`)
       .then((r) => { if (alive) setSnaps(r); }).catch(() => {});
     load();
     const t = setInterval(load, 1500);
     return () => { alive = false; clearInterval(t); };
-  }, [activeTake, source]);
+  }, [activeTake, source, historyMode, histWindow]);
+
+  // LIVE + "load earlier": fetch the dock's persisted history ONCE (it's the past — doesn't move)
+  // when the toggle is on, to merge behind the ring below. Cleared when off / source changes / take.
+  useEffect(() => {
+    if (!showLiveHistory || historyMode || activeTake || !source || source === STREAM_ID) {
+      setLiveHistSnaps([]); return;
+    }
+    let alive = true;
+    api.get<{ records: Snapshot[] }>(`/perception/history?dock=${encodeURIComponent(source)}`)
+      .then((r) => { if (alive) setLiveHistSnaps(r.records ?? []); }).catch(() => { if (alive) setLiveHistSnaps([]); });
+    return () => { alive = false; };
+  }, [showLiveHistory, historyMode, activeTake, source]);
+  // Reset the live-history toggle when the source changes (a new dock, fetch afresh on demand).
+  useEffect(() => { setShowLiveHistory(false); }, [source]);
 
   // Poll the live producers (the sources to choose from): every dock streaming +
   // this console's own browser stream if started. (perception-pipeline §1a)
@@ -363,14 +446,30 @@ export function PerceptionStudio() {
     return () => { alive = false; clearInterval(t); };
   }, []);
 
-  // Default the source once producers are known (no ?src= in the URL): prefer the
-  // first live remote dock, else this browser. Single-stream view — no 'all'.
+  // Poll the docks with PERSISTED history (the OFFLINE sources). Slow — history changes slowly and
+  // this only gates what's selectable, not the live feed. (perception-pipeline §7c)
+  useEffect(() => {
+    let alive = true;
+    const load = () => api.get<DockHistory[]>('/perception/docks')
+      .then((r) => { if (alive) setHistDocks(Array.isArray(r) ? r : []); }).catch(() => {});
+    load();
+    const t = setInterval(load, 15_000);
+    return () => { alive = false; clearInterval(t); };
+  }, []);
+
+  // Default the source once sources are known (no ?src= in the URL): prefer the first live remote
+  // dock, else this browser if it's streaming, else the most-recent dock with history. So the
+  // console is useful even with nothing live right now. Single-stream view — no 'all'.
   useEffect(() => {
     if (source) return;
     const dock = producers.find((p) => p.label !== STREAM_ID);
     if (dock) setSource(dock.label);
     else if (producers.some((p) => p.label === STREAM_ID)) setSource(STREAM_ID);
-  }, [producers, source]);
+    else if (histDocks.length) setSource(histDocks[0]!.dock); // most-recently-seen (server-sorted)
+  }, [producers, histDocks, source]);
+
+  // Reset the history window when the source changes (a new dock has a different span).
+  useEffect(() => { setHistWindow(null); }, [source]);
 
   // Poll sidecar health (every 4s — a /health ping each; cheap).
   useEffect(() => {
@@ -536,6 +635,16 @@ export function PerceptionStudio() {
         setSumPhase('thinking');
         r = await api.post<SummaryResult>('/perception/takes/summarize',
           { name: activeTake, withKeyframes: sumKeyframes, maxKeyframes: 6, model: sumModel });
+      } else if (historyMode) {
+        // OFFLINE: nothing to flush (no live stream). Summarize the pinned history window (or the
+        // dock's full retained span). The server's summarize route falls back to on-disk records
+        // for an offline dock, so this re-narrates persisted history through the same summarizer.
+        setSumPhase('thinking');
+        const from = histWindow?.from ?? selectedHist?.from ?? istIso(sumWindow);
+        const to = histWindow?.to ?? selectedHist?.to ?? istIso(0);
+        setPinnedWindow({ from, to });
+        r = await api.post<SummaryResult>('/perception/snapshots/summarize',
+          { fromIso: from, toIso: to, withKeyframes: sumKeyframes, maxKeyframes: 6, model: sumModel, dock: source });
       } else {
         // 1) FLUSH the in-flight tail: force-commit the open utterance + a fresh
         //    one-shot vision analysis, so the freshest moment ("right now") is in
@@ -556,7 +665,7 @@ export function PerceptionStudio() {
     } catch (e) { setSumResult({ summary: '', error: String(e), model: '', withKeyframes: false,
       counts: { vision: 0, speech: 0, identity: 0, emotion: 0, bodymotion: 0, keyframes: 0 }, prompt: { system: '', transcript: '' } }); }
     setSumPhase(null); setSumBusy(false);
-  }, [sumWindow, sumKeyframes, sumModel, activeTake, snaps]);
+  }, [sumWindow, sumKeyframes, sumModel, activeTake, snaps, source, historyMode, histWindow, selectedHist]);
 
   // Changing the window picker (or window-only toggle off) un-pins → log follows live again.
   const pickWindow = useCallback((ms: number) => { setSumWindow(ms); setPinnedWindow(null); }, []);
@@ -611,8 +720,23 @@ export function PerceptionStudio() {
   const selectedProducer = source && source !== STREAM_ID
     ? producers.find((p) => p.label === source) : undefined;
 
-  // Ordered by start; latest of each modality for the live captions.
-  const ordered = [...snaps].sort((a, b) =>
+  // Ordered by start; latest of each modality for the live captions. In LIVE + "load earlier" mode,
+  // merge the on-disk history BEHIND the ring (older records the ring no longer holds). DEDUP the
+  // whole set by content key (from|to|source.id|kind), which removes BOTH the live↔history overlap
+  // (a record persisted to disk AND still in the ring) AND within-history duplicates (a crash-replay
+  // can append the same span-summary twice). The live copy is seen first so it wins. Without this,
+  // the boundary rows render twice and the day-divider lands on the wrong instance.
+  const recKey = (r: Snapshot) => `${r.interval.from}|${r.interval.to}|${r.source.id}|${r.source.kind}`;
+  const seenKeys = new Set<string>();
+  const merged = (liveHistSnaps.length ? [...snaps, ...liveHistSnaps] : snaps)
+    .filter((r) => { const k = recKey(r); if (seenKeys.has(k)) return false; seenKeys.add(k); return true; });
+  // Per-row ORIGIN: in "load earlier" mode a live dock's timeline mixes ring rows (live) with
+  // rows fetched from disk (liveHistSnaps) merged behind them. Keys that came ONLY from the disk
+  // fetch mark the from-disk rows, so each row can show a small live-vs-history indicator bar.
+  // (A whole offline dock is uniformly history; a live dock without "load earlier" is uniformly live.)
+  const liveHistKeys = new Set(liveHistSnaps.map(recKey));
+  const rowIsHistory = (r: Snapshot) => historyMode || liveHistKeys.has(recKey(r));
+  const ordered = [...merged].sort((a, b) =>
     a.interval.from < b.interval.from ? -1 : a.interval.from > b.interval.from ? 1 : 0);
 
   // Expand snapshots into TIMELINE ROWS. STT and the background AUDIO read are
@@ -621,11 +745,12 @@ export function PerceptionStudio() {
   // row (the interpreter's kind/salience/summary + cleaner transcript). Every other
   // kind (incl. standalone 'sound' events) is one row, keyed by its own kind.
   const rows: { snap: Snapshot; viewKind: string }[] = ordered.flatMap((s) => {
-    if (s.source.kind === 'speech') {
-      const out = [{ snap: s, viewKind: 'stt' }];
-      if (s.payload.bgModel) out.push({ snap: s, viewKind: 'audio' });
-      return out;
-    }
+    // ONE 👂 enriched lane for EVERYTHING the audio enricher emits — speech, played media, or a
+    // non-speech sound. It's one record kind ('enriched'); WHAT it contains is the `audioSource`
+    // field, shown as an emoji badge on the row (not a separate lane).
+    if (s.source.kind === 'enriched') return [{ snap: s, viewKind: 'enriched' }];
+    // parakeet's live-only record → the 🎙 STT lane (dimmed, superseded by the enricher).
+    if (s.source.kind === 'speech') return [{ snap: s, viewKind: 'stt' }];
     return [{ snap: s, viewKind: s.source.kind }];
   });
   // The view-kinds actually present (for the data-driven filter checkboxes), in
@@ -671,6 +796,17 @@ export function PerceptionStudio() {
   if (newestFirst) filtered.reverse();
   const latestVision = [...ordered].reverse().find((s) => s.source.kind === 'vision');
   const istTime = (iso: string) => iso.slice(11, 19);
+  // The DAY of a row (YYYY-MM-DD). Rows show TIME only (compact); a date DIVIDER is inserted
+  // wherever the day changes down the list — so a timeline that spans days (e.g. live "now" merged
+  // with loaded history from days ago) is never ambiguous, without dating every single row.
+  const istDay = (iso: string) => iso.slice(0, 10);
+  const dayLabel = (iso: string) => new Date(`${iso.slice(0, 10)}T00:00:00+05:30`)
+    .toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' });
+  // For each displayed row index, the day-divider label to render BEFORE it (null = same day as prev).
+  // The first row always gets its date, so the reader is never guessing the top of the list.
+  const dividerBefore: (string | null)[] = filtered.map(({ snap }, i) =>
+    (i === 0 || istDay(snap.interval.from) !== istDay(filtered[i - 1]!.snap.interval.from))
+      ? dayLabel(snap.interval.from) : null);
   const secs = (ms: number) => `${(ms / 1000).toFixed(1)}s`;
   // epoch ms → IST clock. `full` keeps milliseconds (HH:MM:SS.mmm) for the summary line;
   // default is HH:MM:SS for the small per-frame chips. IST because the whole console is IST
@@ -694,20 +830,27 @@ export function PerceptionStudio() {
           row, not three stacked panels. */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap',
         padding: '6px 10px', background: '#0b0e16', border: '1px solid #1c2233', borderRadius: 10 }}>
-        {/* SOURCE chips — one live stream at a time. (Watch several → open more tabs
-            with ?src=… ; there is no merged 'all' view.) */}
-        {producers.filter((p) => p.label !== STREAM_ID).map((p) => (
-          <SourceChip key={p.streamId} active={source === p.label} onClick={() => setSource(p.label)}
-            title={`${p.tracks.audio ? '🎙 audio ' : ''}${p.tracks.video ? '📹 video' : ''}`}>
-            📱 {p.label}{p.tracks.video ? ' 📹' : ''}{p.tracks.audio ? ' 🎙' : ''}
+        {/* SOURCE chips — one stream at a time. LIVE producers + docks with persisted HISTORY
+            (offline, reviewable). A live dock is marked ●; a history-only dock 🕓 with its span.
+            (Watch several → open more tabs with ?src=… ; there is no merged 'all' view.) */}
+        {sourceList.map((s) => (
+          <SourceChip key={s.label} active={source === s.label} onClick={() => setSource(s.label)}
+            title={s.live
+              ? `live — ${s.tracks.audio ? '🎙 audio ' : ''}${s.tracks.video ? '📹 video' : ''}`
+              : `offline — persisted history${s.hist?.lastSeen ? `, last seen ${s.hist.lastSeen.slice(0, 16).replace('T', ' ')}` : ''}`}>
+            {s.live ? '📱' : '🕓'} {s.label}
+            {s.live
+              ? <>{s.tracks.video ? ' 📹' : ''}{s.tracks.audio ? ' 🎙' : ''} ●</>
+              : <span style={{ opacity: 0.6 }}> history</span>}
           </SourceChip>
         ))}
         <SourceChip active={source === STREAM_ID} onClick={() => setSource(STREAM_ID)}
           title={publishing ? 'this laptop is streaming' : 'start the stream below to feed it'}>
           🖥 this browser{publishing ? ' ●' : ''}
         </SourceChip>
-        {!selectedProducer && source && source !== STREAM_ID &&
-          <span style={{ fontSize: 11, color: '#ffc454' }} title="The selected source isn't producing right now">⚠ offline</span>}
+        {historyMode &&
+          <span style={{ fontSize: 11, color: '#ffc454' }}
+            title="This dock isn't streaming now — showing its persisted perception history">🕓 offline · history</span>}
 
         {/* secondary controls, pushed right — compact, small font, each labeled */}
         <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', fontSize: 11 }}>
@@ -732,14 +875,14 @@ export function PerceptionStudio() {
               background: showSummarizer ? '#1e3a5f' : '#13243a', color: '#cfe', border: '1px solid #2c4a6f' }}>
             🧠 summarize {showSummarizer ? '▾' : '▸'}
           </button>
-          {/* BACKGROUND AUDIO INTERPRETER toggle */}
-          <button disabled={bgAudioBusy} onClick={() => void setBgAudioState({ enabled: !bgAudio.enabled })}
-            title={bgAudio.enabled ? `background audio interpreter ON (${bgAudio.model}) — click to turn off` : 'background audio interpreter OFF (local STT only) — click to turn on'}
-            style={{ display: 'flex', alignItems: 'center', gap: 5, padding: '4px 10px', borderRadius: 8, fontSize: 11, cursor: bgAudioBusy ? 'default' : 'pointer',
-              background: bgAudio.enabled ? '#13301f' : '#10182a', color: bgAudio.enabled ? '#7ee0a0' : '#9cd',
-              border: `1px solid ${bgAudio.enabled ? '#2c6f4a' : '#1c2233'}` }}>
-            <span style={{ width: 7, height: 7, borderRadius: '50%', background: bgAudio.enabled ? '#3ad29f' : '#5a6172' }} />
-            🔊 bg audio {bgAudioBusy ? '…' : bgAudio.enabled ? 'on' : 'off'}
+          {/* AUDIO ENRICHER — always on (the sole authoritative audio path). Click to open its
+              config panel (model select) below the bar, like the other config buttons. */}
+          <button onClick={() => setShowEnricher((v) => !v)}
+            title={`audio enricher · model ${bgAudio.model} — click for config`}
+            style={{ display: 'flex', alignItems: 'center', gap: 5, padding: '4px 10px', borderRadius: 8, fontSize: 11, cursor: 'pointer',
+              background: showEnricher ? '#1e3a5f' : '#13301f', color: '#7ee0a0', border: '1px solid #2c6f4a' }}>
+            <span style={{ width: 7, height: 7, borderRadius: '50%', background: '#3ad29f' }} />
+            👂 enricher {bgAudioBusy ? '…' : bgAudio.model.includes('lite') ? '(lite)' : '(flash)'} {showEnricher ? '▾' : '▸'}
           </button>
           {/* SIDECARS — status dots + label; click for the full panel */}
           <button onClick={() => setShowSidecars((v) => !v)} title="sidecar health (vision / speech) — click for controls"
@@ -785,6 +928,33 @@ export function PerceptionStudio() {
             );
           })}
         </div>
+      )}
+
+      {/* AUDIO ENRICHER config — model select (applied live via POST /perception/enricher). */}
+      {showEnricher && (
+      <div style={{ border: '1px solid #2c6f4a', borderRadius: 10, padding: '10px 12px', background: '#0a120d' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+          <span style={{ fontSize: 12, color: '#7ee0a0', fontWeight: 600 }}>👂 audio enricher</span>
+          <span style={{ fontSize: 11, color: '#7a8ca8' }}>
+            always on — the sole authoritative audio path (context-aware transcript · diarization · acoustic read).
+            Parakeet stays live-only.
+          </span>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <span style={{ fontSize: 11, color: '#9ab' }}>model:</span>
+            <select value={bgAudio.model} disabled={bgAudioBusy}
+              onChange={(e) => void setBgAudioState({ model: e.target.value })}
+              style={{ background: '#0b1a12', color: '#cfe', border: '1px solid #2c6f4a', borderRadius: 6, fontSize: 11, padding: '3px 6px' }}>
+              <option value="gemini-2.5-flash">gemini-2.5-flash (better transcription)</option>
+              <option value="gemini-2.5-flash-lite">gemini-2.5-flash-lite (cheaper, weaker)</option>
+            </select>
+            {bgAudioBusy && <span style={{ fontSize: 11, color: '#7a8ca8' }}>saving…</span>}
+          </div>
+        </div>
+        <div style={{ fontSize: 10.5, color: '#6a7a8a', marginTop: 6 }}>
+          flash-lite is cheaper but hallucinates more (repetition loops, weaker timestamps). flash gives cleaner,
+          more coherent transcripts. Changes apply to the NEXT batch (no restart).
+        </div>
+      </div>
       )}
 
       {/* SUMMARIZE options + result — only when expanded, dropping below the bar. */}
@@ -930,7 +1100,7 @@ export function PerceptionStudio() {
           gallery={gallery} open={galleryOpen} onToggle={toggleFace}
           onForget={forgetFace} onRemoveSample={removeFaceSample} onClean={cleanGallery} onRename={renameFace} onReassign={reassignSample}
           enrollName={enrollName} setEnrollName={setEnrollName} onEnroll={enroll} enrollMsg={enrollMsg}
-          canEnroll={!!snaps.length} />
+          canEnroll={!!snaps.length && sourceIsLive} />
       )}
 
       {/* VIDEO + ● NOW side by side — the live tile (selected dock, or this browser's
@@ -967,6 +1137,20 @@ export function PerceptionStudio() {
           // a dock: its recvonly live tile (video + per-tile audio + enroll)
           <div style={{ width: 420, maxWidth: '100%' }}>
             <LiveTile streamId={selectedProducer.streamId} label={selectedProducer.label} />
+          </div>
+        ) : historyMode ? (
+          // OFFLINE dock: no live video. Show a history card — the dock's retained span + a
+          // time-range picker that pins the window the timeline + Summarize read from disk.
+          <div style={{ width: 420, maxWidth: '100%', background: '#0b0e16', border: '1px solid #1c2233',
+            borderRadius: 10, padding: 14, display: 'flex', flexDirection: 'column', gap: 10 }}>
+            <div style={{ fontSize: 13, color: '#ffc454' }}>🕓 {source} — offline (persisted history)</div>
+            <div style={{ fontSize: 11, color: '#7a8699', lineHeight: 1.5 }}>
+              {selectedHist?.lastSeen
+                ? <>last seen <b style={{ color: '#aeb9cc' }}>{selectedHist.lastSeen.slice(0, 16).replace('T', ' ')}</b> · {selectedHist.days} day{selectedHist.days === 1 ? '' : 's'} of records{selectedHist.hasSummaries ? ' · + hourly digests' : ''}{selectedHist.bytes != null ? <> · <span title="On-disk size of this dock's raw records + hourly digests. Vision records carry the frames qwen saw (inputImages/reusedFromB64) — ~99% of the bytes are those JPEGs. Raw is trimmed after PERCEPTION_RETAIN_MS (6h default), so this reflects the live tail, not unbounded growth.">{selectedHist.bytes >= 1e9 ? `${(selectedHist.bytes / 1e9).toFixed(1)} GB` : selectedHist.bytes >= 1e6 ? `${Math.round(selectedHist.bytes / 1e6)} MB` : `${Math.max(1, Math.round(selectedHist.bytes / 1e3))} KB`} on disk</span></> : null}</>
+                : 'compressed hourly digests only (raw records aged out)'}
+              <br />No live video — reviewing what this dock perceived. Older spans show as 🔊 hourly summaries.
+            </div>
+            <HistoryRange hist={selectedHist} value={histWindow} onChange={setHistWindow} />
           </div>
         ) : (
           <div style={{ width: 420, aspectRatio: '4 / 3', display: 'grid', placeItems: 'center',
@@ -1011,6 +1195,18 @@ export function PerceptionStudio() {
               </button> · IST
               {source && <span style={{ opacity: 0.6 }}> · {source === STREAM_ID ? '🖥 this browser' : `📱 ${source}`}</span>}
             </div>
+            {/* LOAD EARLIER — a LIVE dock's timeline is just the ring (now). Toggle to merge its
+                on-disk persisted history behind the ring, so it reaches back into its past too.
+                Only for a live remote dock (offline already shows history; the browser has none). */}
+            {sourceIsLive && source !== STREAM_ID && (
+              <button onClick={() => setShowLiveHistory((v) => !v)}
+                title={showLiveHistory ? 'Hide persisted history — show just the live ring (now)' : 'Load this dock’s persisted history and merge it behind the live feed'}
+                style={{ padding: '3px 9px', borderRadius: 6, fontSize: 11, cursor: 'pointer',
+                  background: showLiveHistory ? '#2563eb' : '#10141f', color: showLiveHistory ? '#fff' : '#9ab',
+                  border: `1px solid ${showLiveHistory ? '#2563eb' : '#1c2233'}` }}>
+                🕓 {showLiveHistory ? `history on${liveHistSnaps.length ? ` (+${liveHistSnaps.length})` : ''}` : 'load earlier'}
+              </button>
+            )}
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 12, fontSize: 12, opacity: 0.85, flexWrap: 'wrap' }}>
             {/* ONE checkbox per row type present (data-driven — STT, audio, sound,
@@ -1063,25 +1259,47 @@ export function PerceptionStudio() {
             background: '#0b0e16', borderRadius: 10, padding: 10, fontSize: 13, lineHeight: 1.5 }}>
           {filtered.length === 0
             ? <div className="empty">No snapshots yet. Start the stream — vision runs latency-bound, speech per utterance.</div>
-            : filtered.map(({ snap: s, viewKind }) => {
+            : filtered.map(({ snap: s, viewKind }, rowIdx) => {
               const p = s.payload;
+              // The day-divider to render before this row (a new calendar day, or the list top).
+              const divider = dividerBefore[rowIdx];
+              const withDivider = (el: React.ReactNode) => divider
+                ? <React.Fragment key={`day-${s.interval.from}-${viewKind}`}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 10, margin: '8px 2px 2px',
+                      color: '#5f6f8a', fontSize: 11, textTransform: 'uppercase', letterSpacing: 0.5 }}>
+                      <span style={{ height: 1, flex: '0 0 14px', background: '#233048' }} />
+                      <span style={{ whiteSpace: 'nowrap' }}>{divider}</span>
+                      <span style={{ height: 1, flex: 1, background: '#233048' }} />
+                    </div>
+                    {el}
+                  </React.Fragment>
+                : el;
               // STABLE key from the snapshot's own identity (start + stream + kind), NOT the
               // array index. With newest-first, a new row is inserted at index 0, which shifts
               // every index → index keys made React re-render the whole list ("refills
               // everything"). A stable key means only the new row mounts; the rest stay put.
               const rowKey = `${s.interval.from}|${s.interval.to}|${s.source.id}|${viewKind}|${(p as { gap?: boolean }).gap ? 'gap' : ''}`;
+              // ORIGIN INDICATOR: a thin left bar marks each row's source — amber = replayed from
+              // DISK history, teal = LIVE (from the ring). Only meaningful when the two are mixed
+              // (a live dock with "load earlier" on, or a wholly-offline dock); a plain live view is
+              // all-teal and reads as no bar to speak of. Applied as a left border on the row.
+              const isHistoryRow = rowIsHistory(s);
+              const originBar = {
+                borderLeft: `2px solid ${isHistoryRow ? '#c08a2e' : '#2f7d63'}`,
+                paddingLeft: 8, marginLeft: 2,
+              } as const;
+              const originTitle = isHistoryRow ? 'from disk (persisted history)' : 'live (from the ring)';
               const m = kindMeta(viewKind);
-              const isAudio = viewKind === 'audio';
-              const isStt = viewKind === 'stt';
-              // model per row type: the audio row → the interpreter engine; everything
-              // else (incl. STT) → the snapshot's own model.
-              const modelName = isAudio ? (p.audioModel ?? 'gemini') : s.model.name;
+              const isStt = viewKind === 'stt' || viewKind === 'enriched';
+              // ENRICHER awareness: 'enriched' lane = the authoritative context-aware record
+              // (clean transcript + speaker + source). A 'stt' lane speech row is parakeet's
+              // live-only reflex transcript → dim it so the enriched row reads as the truth.
+              const isEnriched = viewKind === 'enriched';
+              const isLiveOnly = viewKind === 'stt' && p.liveOnly === true;
+              const isMedia = p.audioSource === 'media';
+              const modelName = s.model.name;
               const conf = p.confidence != null ? `${Math.round(p.confidence * 100)}%` : null;
-              // STT row shows the RAW transcript (preserved); the audio row shows the
-              // interpreter's read. When the words are identical, show the acoustic
-              // SUMMARY instead of repeating them.
               const sttText = p.sttText ?? p.text;
-              const audioSameWords = isAudio && p.text.trim() === sttText.trim();
               // FRAME-ACCOUNTING GAP ROW: a collapsed span of frames the VLM did NOT run
               // (dinov2 no-change gating, or self-motion deferral). Rendered compact + dimmed
               // as a "nothing was sent here, and here's why" strip — one thumbnail + the time
@@ -1089,9 +1307,9 @@ export function PerceptionStudio() {
               if (viewKind === 'vision' && p.gap) {
                 const label = p.gapKind === 'self-motion' ? 'self-motion (panning)' : 'no change (gated)';
                 const thumb = p.inputImages?.[0];
-                return (
-                  <div key={rowKey} style={{ display: 'flex', gap: 8, alignItems: 'center', opacity: 0.5,
-                    color: '#7a8ca8', fontStyle: 'italic', paddingLeft: 2 }}>
+                return withDivider(
+                  <div key={rowKey} title={originTitle} style={{ display: 'flex', gap: 8, alignItems: 'center', opacity: 0.5,
+                    color: '#7a8ca8', fontStyle: 'italic', ...originBar }}>
                     <span style={{ fontVariantNumeric: 'tabular-nums', width: 138, fontSize: 12 }}>
                       {istTime(s.interval.from)}–{istTime(s.interval.to)}<span style={{ opacity: 0.6 }}> ({secs(s.interval.durationMs)})</span>
                     </span>
@@ -1102,18 +1320,17 @@ export function PerceptionStudio() {
                     <span style={{ flex: 1, fontSize: 12 }}>
                       {label}{p.gapProbes ? ` — ${p.gapProbes} probes, no inference` : ''}
                     </span>
-                  </div>
+                  </div>,
                 );
               }
-              return (
-                <div key={rowKey} style={{ display: 'flex', gap: 8, color: m.color, alignItems: 'baseline',
-                  // the audio row is a CHILD of its STT row — indent + dim so the pair
-                  // reads as "utterance → interpreted acoustically", not two equals.
-                  ...(isAudio ? { opacity: 0.82, paddingLeft: 14 } : {}) }}>
-                  <span style={{ opacity: 0.45, fontVariantNumeric: 'tabular-nums', width: isAudio ? 124 : 138, fontSize: 12 }}>
-                    {isAudio
-                      ? <span style={{ opacity: 0.7 }}>↳ audio</span>
-                      : <>{istTime(s.interval.from)}–{istTime(s.interval.to)}<span style={{ opacity: 0.6 }}> ({secs(s.interval.durationMs)})</span></>}
+              return withDivider(
+                <div key={rowKey} title={isLiveOnly ? 'live-only (parakeet) — superseded by the audio enricher\'s record' : originTitle}
+                  style={{ display: 'flex', gap: 8, color: m.color, alignItems: 'baseline',
+                  ...originBar,
+                  // liveOnly parakeet rows are superseded by the enricher → dim + strike.
+                  ...(isLiveOnly ? { opacity: 0.4 } : {}) }}>
+                  <span style={{ opacity: 0.45, fontVariantNumeric: 'tabular-nums', width: 138, fontSize: 12 }}>
+                    {istTime(s.interval.from)}–{istTime(s.interval.to)}<span style={{ opacity: 0.6 }}> ({secs(s.interval.durationMs)})</span>
                   </span>
                   <span style={{ width: 18 }} title={m.label}>{m.icon}</span>
                   {/* WHAT MODEL produced this row. On a REUSED vision row the model was NOT
@@ -1128,45 +1345,176 @@ export function PerceptionStudio() {
                     {p.reused && <span style={{ opacity: 0.9 }}> · cached</span>}
                   </span>
                   <span style={{ flex: 1 }}>
-                    {/* AUDIO row: structured chips — kind, salience (when it matters), and
-                        dock-directed intent — each visually distinct. */}
-                    {(isAudio || viewKind === 'sound') && p.audioKind && (
-                      <span title="acoustic kind"
-                        style={{ marginRight: 5, fontSize: 10, fontWeight: 700, color: '#7ee0a0', border: '1px solid #2c6f4a', borderRadius: 4, padding: '0 5px' }}>
-                        {p.audioKind}
+                    {/* CONTENT-TYPE emoji — what this ONE 'enriched' record contains: real in-room
+                        speech, played media (TV/song), or a non-speech sound (crash/laughter/…).
+                        It's a field on the record, shown here (not a separate lane). */}
+                    {isEnriched && (() => {
+                      const src = p.audioSource ?? 'speech';
+                      const k = (p.audioKind ?? '').toLowerCase();
+                      const emoji = src === 'media' ? '📺' : src === 'sound'
+                        ? (k.includes('music') ? '🎵' : k.includes('impact') || k.includes('crash') ? '💥'
+                          : k.includes('laugh') ? '😆' : k.includes('alarm') || k.includes('bell') ? '🔔' : '🔊')
+                        : '🗣';
+                      const label = src === 'speech' ? 'in-room speech' : src === 'media' ? `played media${k ? ` (${k})` : ''}` : `sound${k ? ` (${k})` : ''}`;
+                      return <span title={label} style={{ marginRight: 5, fontSize: 12 }}>{emoji}</span>;
+                    })()}
+                    {/* ENRICHER row: speaker badge (diarized). */}
+                    {isEnriched && p.speaker != null && (
+                      <span title="diarized speaker (audio enricher)"
+                        style={{ marginRight: 5, fontSize: 10, fontWeight: 700, color: '#c9b6ff', border: '1px solid #4a3f6a', borderRadius: 4, padding: '0 5px' }}>
+                        S{p.speaker}
                       </span>
                     )}
-                    {(isAudio || viewKind === 'sound') && (p.salience === 'notable' || p.salience === 'startling') && (
+                    {/* TRANSCRIPT CONFIDENCE — the enricher's own certainty the words are real.
+                        Illustrated as a color pill + a tiny bar; low-conf text is dimmed (kept, not
+                        hidden — so you SEE the model was guessing on unclear/far audio). */}
+                    {isEnriched && p.transcriptConf != null && (() => {
+                      const c = p.transcriptConf;
+                      const col = c >= 0.75 ? '#7ee0a0' : c >= 0.45 ? '#ffd9a0' : '#ff8a8a';
+                      const bd = c >= 0.75 ? '#2c6f4a' : c >= 0.45 ? '#5a4a20' : '#7a2c2c';
+                      return (
+                        <span title={`transcript confidence ${Math.round(c * 100)}% — the enricher's own certainty the words are what was actually said`}
+                          style={{ marginRight: 6, display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                          <span style={{ fontSize: 9.5, fontWeight: 700, color: col, border: `1px solid ${bd}`, borderRadius: 4, padding: '0 4px' }}>
+                            {Math.round(c * 100)}%
+                          </span>
+                          <span style={{ display: 'inline-block', width: 26, height: 4, borderRadius: 2, background: '#1c2233', overflow: 'hidden' }}>
+                            <span style={{ display: 'block', width: `${Math.round(c * 100)}%`, height: '100%', background: col }} />
+                          </span>
+                        </span>
+                      );
+                    })()}
+                    {isEnriched && isMedia && (
+                      <span title="played media (a TV/video/song), NOT a person in the room"
+                        style={{ marginRight: 5, fontSize: 10, fontWeight: 700, color: '#8fb0d8', border: '1px solid #34506a', borderRadius: 4, padding: '0 5px' }}>
+                        📺 media
+                      </span>
+                    )}
+                    {isLiveOnly && (
+                      <span title="live-only parakeet — superseded by the enricher's record"
+                        style={{ marginRight: 5, fontSize: 9.5, opacity: 0.7, border: '1px solid #444', borderRadius: 4, padding: '0 4px' }}>
+                        live-only
+                      </span>
+                    )}
+                    {/* salience on an ENRICHED speech row too (not just audio/sound). */}
+                    {isEnriched && (p.salience === 'notable' || p.salience === 'startling') && (
                       <span title="salience — would a head turn?"
                         style={{ marginRight: 5, fontSize: 10, fontWeight: 700, color: p.salience === 'startling' ? '#ff9e6b' : '#ffd9a0',
                           border: `1px solid ${p.salience === 'startling' ? '#7a3d20' : '#5a4a20'}`, borderRadius: 4, padding: '0 5px' }}>
                         {p.salience}{p.salience === 'startling' ? ' ⚡' : ''}
                       </span>
                     )}
-                    {(isAudio || viewKind === 'sound') && p.addressedToRobot && (
+                    {/* ADDRESSED TO ROBOT — the most salient thing: someone spoke TO orbit. Shows the
+                        directive if the enricher captured what they want. (Observation only — the
+                        brain's addressed latch is the authority on whether it becomes a turn.) */}
+                    {isEnriched && p.addressedToRobot && (
+                      <span title={`the enricher heard this addressed to orbit${p.addressConf != null ? ` (${Math.round(p.addressConf * 100)}% sure)` : ''} — an observation; the brain decides if it acts`}
+                        style={{ marginRight: 5, fontSize: 10, fontWeight: 700, color: '#7ec8ff', border: '1px solid #2c4a6f', borderRadius: 4, padding: '0 5px' }}>
+                        → orbit{p.directive ? `: ${p.directive}` : ''}
+                      </span>
+                    )}
+                    {/* WOKE THE ROBOT — the brain stamped this record when it actually fired a turn
+                        from this utterance (downstream of the record write). The 🤖 = "this is the
+                        one that woke it", distinct from the enricher's softer → orbit observation. */}
+                    {isEnriched && p.wokeRobot && (
+                      <span title="this utterance WOKE the robot — a turn fired from it"
+                        style={{ marginRight: 5, fontSize: 10, fontWeight: 700, color: '#7ee0a0', border: '1px solid #2c6f4a', borderRadius: 4, padding: '0 5px' }}>
+                        🤖 woke
+                      </span>
+                    )}
+                    {/* LEGACY SOUND row (pre-merge standalone 'sound' records): kind + salience +
+                        addressed chips. New audio rides the 'enriched' lane (badges above). */}
+                    {viewKind === 'sound' && p.audioKind && (
+                      <span title="acoustic kind"
+                        style={{ marginRight: 5, fontSize: 10, fontWeight: 700, color: '#7ee0a0', border: '1px solid #2c6f4a', borderRadius: 4, padding: '0 5px' }}>
+                        {p.audioKind}
+                      </span>
+                    )}
+                    {viewKind === 'sound' && (p.salience === 'notable' || p.salience === 'startling') && (
+                      <span title="salience — would a head turn?"
+                        style={{ marginRight: 5, fontSize: 10, fontWeight: 700, color: p.salience === 'startling' ? '#ff9e6b' : '#ffd9a0',
+                          border: `1px solid ${p.salience === 'startling' ? '#7a3d20' : '#5a4a20'}`, borderRadius: 4, padding: '0 5px' }}>
+                        {p.salience}{p.salience === 'startling' ? ' ⚡' : ''}
+                      </span>
+                    )}
+                    {viewKind === 'sound' && p.addressedToRobot && (
                       <span title="the clip audibly addresses the robot (observation — the brain still decides)"
                         style={{ marginRight: 5, fontSize: 10, fontWeight: 700, color: '#7ec8ff', border: '1px solid #2c4a6f', borderRadius: 4, padding: '0 5px' }}>
                         → orbit{p.directive ? `: ${p.directive}` : ''}
                       </span>
                     )}
-                    {isAudio
-                      ? (audioSameWords
-                          ? <span style={{ opacity: 0.6, fontStyle: 'italic' }}>{p.summary || '(same words)'}</span>
-                          : p.text)
+                    {/* The transcript. Low-confidence enriched text is dimmed + italic so you SEE the
+                        model was unsure (kept in the stream, not hidden — the ego weights it down). */}
+                    {isEnriched && p.transcriptConf != null && p.transcriptConf < 0.45
+                      ? <span style={{ opacity: 0.5, fontStyle: 'italic' }} title="low-confidence — the enricher was unsure of these words">{sttText}</span>
                       : sttText}
-                    {/* HUMAN-READABLE full output: every field the producer emitted,
-                        as plain-English fragments — not JSON. Only fields that exist. */}
-                    {(() => {
+                    {/* LEGACY SOUND: the acoustic fields as a clean KEY–VALUE list. */}
+                    {viewKind === 'sound' && (() => {
                       const pct = (v: unknown) => (typeof v === 'number' ? `${Math.round(v * 100)}%` : '');
+                      const kv: { k: string; v: React.ReactNode }[] = [];
+                      if (p.audioKind) kv.push({ k: 'heard', v: <>{p.audioKind}{p.audioKindConf != null ? <span style={{ opacity: 0.6 }}> · {pct(p.audioKindConf)} sure</span> : null}</> });
+                      if (p.salience) kv.push({ k: 'salience', v: <><span style={{ color: p.salience === 'startling' ? '#ff9e6b' : p.salience === 'notable' ? '#ffd9a0' : undefined }}>{p.salience}</span>{p.salienceConf != null ? <span style={{ opacity: 0.6 }}> · {pct(p.salienceConf)}</span> : null}</> });
+                      if (p.addressedToRobot) kv.push({ k: 'addressed', v: <><b style={{ color: '#7fd0ff' }}>spoke to orbit</b>{p.directive ? ` — ${p.directive}` : ''}{p.addressConf != null ? <span style={{ opacity: 0.6 }}> · {pct(p.addressConf)}</span> : null}</> });
+                      if (p.summary && p.summary !== p.text) kv.push({ k: 'in short', v: p.summary });
+                      if (p.trigger) kv.push({ k: 'woken by', v: p.trigger });
+                      if (p.bgTranscript && p.bgTranscript !== p.text) kv.push({ k: 'alt hearing', v: <span style={{ fontStyle: 'italic' }}>“{p.bgTranscript}”</span> });
+                      if (!kv.length) return null;
+                      return (
+                        <div style={{ display: 'grid', gridTemplateColumns: 'max-content 1fr', columnGap: 8, rowGap: 1,
+                          fontSize: 10.5, color: '#8ba0bd', marginTop: 3, lineHeight: 1.5 }}>
+                          {kv.map(({ k, v }, i) => (
+                            <React.Fragment key={i}>
+                              <span style={{ color: '#5f728c', textAlign: 'right', opacity: 0.85, fontFamily: 'var(--mono)' }}>{k}</span>
+                              <span>{v}</span>
+                            </React.Fragment>
+                          ))}
+                        </div>
+                      );
+                    })()}
+                    {/* ENRICHER DEBUG: trigger reason + how much of the window was voiced + the raw
+                        parakeet STT for the same audio (empty STT + low voiced = a hallucination). */}
+                    {isEnriched && (
+                      <div style={{ marginTop: 3, fontSize: 10.5, color: '#7a8ca8', display: 'flex', flexWrap: 'wrap', gap: '2px 10px', alignItems: 'baseline' }}>
+                        {/* ▶ PLAY the exact audio this row was made from (if saved). Lets you verify
+                            the enricher's text against the real sound, right in the row. */}
+                        {(() => {
+                          const ms = Date.parse(s.interval.from);
+                          const src = source && source !== STREAM_ID ? `/api/perception/enrich-audio/${encodeURIComponent(source)}/${ms}` : '';
+                          if (!src) return null;
+                          const playing = playingAudio === rowKey;
+                          return <span
+                            onClick={() => {
+                              if (playing) { audioElRef.current?.pause(); setPlayingAudio(null); return; }
+                              if (audioElRef.current) { audioElRef.current.src = src; audioElRef.current.play().then(() => setPlayingAudio(rowKey)).catch(() => setPlayingAudio(null)); }
+                            }}
+                            title="play the exact audio window this row was made from"
+                            style={{ cursor: 'pointer', color: playing ? '#7ee0a0' : '#7fa8d8', fontWeight: 700 }}>
+                            {playing ? '⏸ playing' : '▶ play audio'}</span>;
+                        })()}
+                        <span title="what triggered this batch">⚡ {p.armedBy === 'acoustic' ? 'acoustic event' : 'speech endpoint'}</span>
+                        {p.voicedPct != null && (
+                          <span title="how much of the batch window was actually voiced — low % + confident text = likely hallucinated"
+                            style={{ color: p.voicedPct < 15 ? '#ff8a8a' : p.voicedPct < 40 ? '#ffd9a0' : '#7ee0a0' }}>
+                            🔊 {p.voicedPct}% voiced{p.voicedPct < 15 ? ' ⚠ mostly silent' : ''}
+                          </span>
+                        )}
+                        {p.sttWindow
+                          ? <span style={{ opacity: 0.85 }}>🎙 raw STT: <span style={{ fontStyle: 'italic' }}>“{p.sttWindow}”</span></span>
+                          : <span style={{ opacity: 0.6, fontStyle: 'italic' }}>🎙 no raw STT for this window</span>}
+                      </div>
+                    )}
+                    {/* Expandable COMPLETE JSON (pretty-printed) for any enriched/sound row. */}
+                    {(isEnriched || viewKind === 'sound') && (
+                      <details style={{ marginTop: 2 }}>
+                        <summary style={{ cursor: 'pointer', fontSize: 10, color: '#8fa8c8', listStyle: 'none' }}>⛓ full JSON</summary>
+                        <pre style={{ fontSize: 10, whiteSpace: 'pre-wrap', color: '#9ab', margin: '3px 0 0', maxHeight: 260, overflow: 'auto', background: '#0d1420', padding: 6, borderRadius: 4, border: '1px solid #1c2233' }}>
+                          {JSON.stringify({ ts: s.interval.from, to: s.interval.to, durationMs: s.interval.durationMs, model: s.model, payload: p }, null, 2)}
+                        </pre>
+                      </details>
+                    )}
+                    {(() => {
                       const bits: string[] = [];
-                      if (viewKind === 'audio' || viewKind === 'sound') {
-                        if (p.audioKind) bits.push(`heard: ${p.audioKind}${p.audioKindConf != null ? ` (${pct(p.audioKindConf)} sure)` : ''}`);
-                        if (p.salience) bits.push(`salience: ${p.salience}${p.salienceConf != null ? ` (${pct(p.salienceConf)})` : ''}`);
-                        if (p.addressedToRobot) bits.push(`spoke TO orbit${p.directive ? ` — ${p.directive}` : ''}${p.addressConf != null ? ` (${pct(p.addressConf)})` : ''}`);
-                        if (p.summary && p.summary !== p.text) bits.push(`in short: ${p.summary}`);
-                        if (p.trigger) bits.push(`woken by: ${p.trigger}`);
-                        if (p.bgTranscript && p.bgTranscript !== p.text) bits.push(`alt hearing: “${p.bgTranscript}”`);
-                      } else if (viewKind === 'vision') {
+                      if (viewKind === 'vision') {
                         if (p.reused) bits.push('REUSED a recently-seen view — no VLM call (saved ~5s)');
                         else if (p.gateTrigger) bits.push(`looked because: ${String(p.gateTrigger).replace('local-change', 'something moved locally').replace('scene-change', 'the scene changed').replace('sense-wake', 'it heard something').replace('first-look', 'first look').replace('heartbeat', 'periodic re-check')}`);
                         if (p.gatedProbes) bits.push(`${p.gatedProbes} quiet checks before this`);
@@ -1283,7 +1631,7 @@ export function PerceptionStudio() {
                   {/* PERF + CONFIDENCE meta, right-aligned, tabular */}
                   <span style={{ fontVariantNumeric: 'tabular-nums', fontSize: 10, opacity: 0.5, textAlign: 'right', whiteSpace: 'nowrap', display: 'flex', gap: 8 }}>
                     {conf && <span title="match/expression confidence">◷ {conf}</span>}
-                    {!isAudio && p.inferMs != null && <span title="inference latency (sidecar/in-process compute)">⚡{fmtMs(p.inferMs)}</span>}
+                    {p.inferMs != null && <span title="inference latency (sidecar/in-process compute)">⚡{fmtMs(p.inferMs)}</span>}
                     {viewKind === 'vision' && p.frames != null && <span title="frames sampled this window">🎞{p.frames}</span>}
                     {viewKind === 'vision' && p.reused && <span title="reused a recently-analyzed near-identical view (no VLM call)" style={{ fontSize: 10, color: '#7ee0a0', border: '1px solid #2c6f4a', borderRadius: 4, padding: '0 5px' }}>♻ reused</span>}
                     {viewKind === 'vision' && p.gateTrigger && !p.reused && <span title="why this analysis ran (the change gate's trigger)" style={{ fontSize: 10, color: '#8fa8c8' }}>⚑{p.gateTrigger}</span>}
@@ -1293,7 +1641,7 @@ export function PerceptionStudio() {
                       </span>
                     )}
                   </span>
-                </div>
+                </div>,
               );
             })}
         </div>
@@ -1301,6 +1649,8 @@ export function PerceptionStudio() {
       {/* TIMELINE LIGHTBOX — any frame thumbnail (gap sample, reused, filmstrip) opens here at
           ORIGINAL size. If the image is larger than the viewport the box scrolls; click the
           backdrop or press Esc to close. Natural size (no downscale) so pixels are inspectable. */}
+      {/* shared audio element for the ▶ play-audio buttons on enricher rows. */}
+      <audio ref={audioElRef} onEnded={() => setPlayingAudio(null)} onError={() => setPlayingAudio(null)} style={{ display: 'none' }} />
       {zoomImg && (
         <div onClick={() => setZoomImg(null)}
           style={{ position: 'fixed', inset: 0, zIndex: 1000, background: 'rgba(0,0,0,0.88)',
@@ -1525,6 +1875,41 @@ function SourceChip({ active, onClick, title, children }: {
         border: `1px solid ${active ? '#2563eb' : '#1c2233'}`, fontWeight: active ? 600 : 400 }}>
       {children}
     </button>
+  );
+}
+
+/** OFFLINE history time-range picker. Presets bounded by the dock's retained span (`hist.from/to`).
+ *  `null` value = the full span (the /history default). Emits explicit {from,to} for narrower picks. */
+function HistoryRange({ hist, value, onChange }: {
+  hist?: DockHistory; value: { from: string; to: string } | null;
+  onChange: (w: { from: string; to: string } | null) => void;
+}) {
+  const to = hist?.to ?? istIso(0);
+  // A preset's `from` is clamped to the dock's earliest retained record — asking for "last 6h" on a
+  // dock with only 2h of history just shows those 2h, never an empty window.
+  const clampFrom = (msBack: number): string => {
+    const want = new Date(new Date(to.replace('+05:30', 'Z')).getTime() - msBack).toISOString().replace('Z', '+05:30');
+    return hist?.from && want < hist.from ? hist.from : want;
+  };
+  const presets: [string, string | null][] = [
+    ['Full span', null], ['Last 6h', clampFrom(6 * 3600_000)], ['Last 1h', clampFrom(3600_000)],
+  ];
+  const activeFrom = value?.from ?? null;
+  return (
+    <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
+      <span style={{ fontSize: 11, color: '#7a8699' }}>window</span>
+      {presets.map(([lbl, from]) => {
+        const active = from === activeFrom || (from === null && value === null);
+        return (
+          <button key={lbl} onClick={() => onChange(from === null ? null : { from, to })}
+            style={{ padding: '3px 9px', borderRadius: 6, fontSize: 11, cursor: 'pointer',
+              background: active ? '#2563eb' : '#10141f', color: active ? '#fff' : '#9ab',
+              border: `1px solid ${active ? '#2563eb' : '#1c2233'}` }}>
+            {lbl}
+          </button>
+        );
+      })}
+    </div>
   );
 }
 

@@ -61,6 +61,26 @@ const MAX_UTTERANCE_MS = Number(process.env.STT_MAX_UTTERANCE_MS ?? 60_000);
  *  clip the first phoneme). */
 const PREROLL_MS = 200;
 
+// ─────────────────────────── MERGED ACOUSTIC BATCH (perception-to-brain merge) ───────────────────────────
+// The batch window feeds ONE context-aware interpreter call that replaces the two eager
+// bg-audio calls (per-utterance speech-details + per-impulse sound). It accumulates ALL
+// decoded PCM since the last fire (a DRAIN buffer, not the lossy 10s ring), and fires when
+// a trigger is ARMED and the room is quiet — cutting the window at an ENDPOINT boundary so
+// no word is split and no audio is missed between fires.
+/** Don't fire more often than this — the floor since the last fire. Also the natural
+ *  window size in a chatty room. */
+const BATCH_MIN_MS = Number(process.env.PERCEPTION_BATCH_MIN_MS ?? 10_000);
+/** Quiet gap required after an endpointed utterance before the batch may fire (so we
+ *  don't cut while the user is mid-thought between sentences). */
+const BATCH_SILENCE_MS = Number(process.env.PERCEPTION_BATCH_SILENCE_MS ?? 1500);
+/** Hard cap: if armed but the room never goes quiet, force-fire around here — but ONLY at
+ *  an endpoint boundary. If no endpoint has occurred by the cap, keep going until one does
+ *  (a true non-stop monologue) so we never split a word; the cursor picks up the remainder. */
+const BATCH_MAX_MS = Number(process.env.PERCEPTION_BATCH_MAX_MS ?? 30_000);
+/** Bound the drain buffer so a wedged interpreter can't grow it without limit (frames are
+ *  dropped from the FRONT past this — a degraded but bounded window, logged by the caller). */
+const BATCH_HARD_CAP_MS = Number(process.env.PERCEPTION_BATCH_HARD_CAP_MS ?? 90_000);
+
 /** How often, while the user is mid-utterance, we re-transcribe the buffer-so-far
  *  to emit a live interim (partial) transcript for the dock UI. 800ms (NOT pibot's
  *  250ms): the contention probe showed a 400ms cadence starves the shared Metal GPU
@@ -105,6 +125,20 @@ export class UtteranceDetector {
   // (voiced or not — never drained, unlike #utter) + the cheap per-frame trigger.
   #ring: Int16Array[] = [];
   #acoustic = new AudioTrigger();
+
+  // ── AUDIO ENRICHER batch state (the merged context-aware pass) ──
+  #batch: Int16Array[] = [];        // DRAIN buffer: all frames since the last fire (never lossy)
+  #batchMs = 0;                     // ms of audio held in #batch
+  #batchStartMs = 0;                // epoch ms of the batch's first frame (segment timestamps anchor here)
+  #batchArmed = false;              // a trigger (endpoint or acoustic) occurred → eligible to fire
+  #lastEndpointOffMs = 0;          // #batchMs at the most recent utterance endpoint (the safe cut point)
+  #batchFiring = false;             // an enricher pass is in flight — don't fire again until it returns
+  /** Fired when the batch is ready: the AUDIO ENRICHER should transcribe+interpret `windowPcm`
+   *  (starting at epoch `startedAtMs`) in context and return segment records. The window is cut
+   *  at an endpoint boundary; `armedBy` says what triggered (speech endpoint vs acoustic).
+   *  Opt-in; the caller (speech-watch) owns the async pass and clears it via `enrichDone()`. */
+  onEnrich?: (windowPcm: Int16Array, startedAtMs: number, armedBy: 'speech' | 'acoustic', voicedPct: number) => void;
+  #armedBy: 'speech' | 'acoustic' = 'speech';
 
   // Same as onUtterance but awaitable — used by flushNow so the caller knows the
   // transcript is persisted. Set alongside the constructor callback.
@@ -188,9 +222,28 @@ export class UtteranceDetector {
     this.#ring.push(frame);
     const ringCap = BG_WINDOW_MS / FRAME_MS;
     if (this.#ring.length > ringCap) this.#ring.shift();
-    if (this.onAcousticTrigger) {
-      const trig = this.#acoustic.frame(rms, FRAME_MS, Date.now(), this.#inSpeech);
-      if (trig) this.onAcousticTrigger(trig, concatFrames(this.#ring), new Date());
+    // The cheap acoustic trigger runs whenever EITHER consumer wants it (the legacy sound
+    // path OR the merged enricher's arming). Capture its verdict once.
+    let acousticTrig: 'impulse' | 'sustained' | null = null;
+    if (this.onAcousticTrigger || this.onEnrich) {
+      acousticTrig = this.#acoustic.frame(rms, FRAME_MS, Date.now(), this.#inSpeech);
+      if (acousticTrig && this.onAcousticTrigger) this.onAcousticTrigger(acousticTrig, concatFrames(this.#ring), new Date());
+    }
+
+    // AUDIO ENRICHER drain buffer: accumulate EVERY frame since the last fire. Unlike the
+    // 10s ring this is never lossy within a batch (bounded only by the hard cap). An acoustic
+    // trigger arms the batch; a speech endpoint arms it too (handled in #endUtterance).
+    if (this.onEnrich) {
+      if (!this.#batch.length) this.#batchStartMs = Date.now() - FRAME_MS;
+      this.#batch.push(frame);
+      this.#batchMs += FRAME_MS;
+      if (acousticTrig) { this.#batchArmed = true; this.#armedBy = 'acoustic'; }
+      // bound the drain buffer (wedged enricher safety): drop from the FRONT past the hard cap.
+      while (this.#batchMs > BATCH_HARD_CAP_MS && this.#batch.length > 1) {
+        this.#batch.shift(); this.#batchMs -= FRAME_MS;
+        this.#batchStartMs += FRAME_MS; this.#lastEndpointOffMs = Math.max(0, this.#lastEndpointOffMs - FRAME_MS);
+      }
+      this.#maybeEnrich(voiced);
     }
 
     if (this.#inSpeech) {
@@ -235,6 +288,68 @@ export class UtteranceDetector {
       .finally(() => { this.#interimInFlight = false; });
   }
 
+  /** Decide whether the AUDIO ENRICHER batch should fire this frame, and if so cut it at a
+   *  safe boundary and hand it off. Fires when: a pass isn't already in flight, the batch is
+   *  ARMED (an endpoint or acoustic trigger happened), at least BATCH_MIN_MS of audio has
+   *  accumulated (the floor), the room is currently quiet (>=BATCH_SILENCE_MS since the last
+   *  voiced frame) OR we've hit the BATCH_MAX_MS cap — AND there is an endpoint boundary to cut
+   *  at. If we're past the cap but no endpoint has occurred yet (a true non-stop monologue) we
+   *  keep going until one does, so a word is never split; the cursor picks up the remainder. */
+  #maybeEnrich(voiced: boolean): void {
+    // Track trailing silence CONTINUOUSLY (any non-voiced frame extends it) — the endpoint's
+    // own ~1.3s silence counts too, so a normal "utterance ends → room goes quiet" reaches the
+    // BATCH_SILENCE_MS threshold. A voiced frame resets it. (Done regardless of arming/floor so
+    // the counter is always current.)
+    this.#batchSilenceMs = voiced ? 0 : this.#batchSilenceMs + FRAME_MS;
+    if (!this.onEnrich || this.#batchFiring || !this.#batchArmed) return;
+    if (this.#batchMs < BATCH_MIN_MS) return;
+    // fire when the room is quiet (not mid a NEW utterance) with enough trailing silence, OR
+    // we've hit the cap. #inSpeech guards against firing while a fresh utterance is underway.
+    const quiet = !this.#inSpeech && this.#batchSilenceMs >= BATCH_SILENCE_MS;
+    const capped = this.#batchMs >= BATCH_MAX_MS;
+    if (!quiet && !capped) return;
+    // cut ONLY at the last endpoint boundary (never mid-word). If none yet, wait for one.
+    const cut = this.#lastEndpointOffMs;
+    if (cut <= 0) return; // no completed utterance in the batch yet → keep accumulating
+    this.#fireEnrich(cut);
+  }
+  #batchSilenceMs = 0;
+
+  /** Cut the batch at `cutFrames*FRAME_MS` worth of audio, hand the window to the enricher,
+   *  and retain the REMAINDER (audio after the cut) as the start of the next batch so nothing
+   *  is missed and windows never overlap. */
+  #fireEnrich(cutMs: number): void {
+    const cutFrames = Math.round(cutMs / FRAME_MS);
+    const head = this.#batch.slice(0, cutFrames);
+    const tail = this.#batch.slice(cutFrames);
+    const startedAtMs = this.#batchStartMs;
+    const armedBy = this.#armedBy;
+    // advance the cursor: the remainder becomes the new batch; timestamps continue from the cut.
+    this.#batch = tail;
+    this.#batchStartMs = startedAtMs + cutFrames * FRAME_MS;
+    this.#batchMs = tail.length * FRAME_MS;
+    this.#lastEndpointOffMs = 0;   // no endpoint boundary in the fresh remainder yet
+    this.#batchArmed = false;      // disarmed — re-arms only when a NEW endpoint/acoustic trigger occurs
+    this.#batchSilenceMs = 0;
+    this.#batchFiring = true;
+    const pcm = concatFrames(head);
+    // DIAG: how much of this window is actually VOICED? A window that's mostly silence but comes
+    // back as a full "conversation" is the model hallucinating (the goodbye-loop bug).
+    let voicedFrames = 0;
+    for (let i = 0; i + FRAME_SAMPLES <= pcm.length; i += FRAME_SAMPLES) {
+      let sum = 0; for (let j = 0; j < FRAME_SAMPLES; j++) { const v = pcm[i + j]! / 32768; sum += v * v; }
+      if (Math.sqrt(sum / FRAME_SAMPLES) >= SILENCE_RMS) voicedFrames++;
+    }
+    const totalFrames = Math.floor(pcm.length / FRAME_SAMPLES) || 1;
+    const voicedPct = Math.round((voicedFrames / totalFrames) * 100);
+    console.log(`[enrich] fire: ${(pcm.length / SAMPLE_RATE).toFixed(1)}s window, ${voicedPct}% voiced, armedBy=${armedBy}`);
+    this.onEnrich!(pcm, startedAtMs, armedBy, voicedPct);
+  }
+
+  /** The enricher pass finished — allow the next fire. Called by the owner after its async
+   *  interpret+persist completes (success or failure), like #interimInFlight for interims. */
+  enrichDone(): void { this.#batchFiring = false; }
+
   #endUtterance(): void {
     const frames = this.#utter;
     const ms = this.#utterMs - this.#silenceMs; // voiced span
@@ -244,6 +359,9 @@ export class UtteranceDetector {
                                        // under MIN_UTTERANCE_MS is dropped here — the
                                        // cause of an occasional "tapped but no reply"
                                        // when only a fragment of speech was voiced).
+    // ARM the enricher batch at THIS endpoint: it's a safe cut boundary (a completed
+    // utterance), so the batch may now fire here once the room stays quiet / the cap hits.
+    if (this.onEnrich) { this.#batchArmed = true; this.#armedBy = 'speech'; this.#lastEndpointOffMs = this.#batchMs; }
     this.#onUtterance(concatFrames(frames), this.#startedAt ?? new Date(), new Date());
     this.#startedAt = null;
   }

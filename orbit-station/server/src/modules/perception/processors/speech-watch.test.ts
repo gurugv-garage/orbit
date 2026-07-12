@@ -231,3 +231,67 @@ test('detector with no interim hook is unchanged (interims are opt-in)', () => {
   d.feedPcm(quiet(frames(1500)));
   assert.equal(ends.length, 1, 'final path identical when interims are not wired');
 });
+
+// ─────────────────────── AUDIO ENRICHER batch trigger ───────────────────────
+// The merged path's debounced batch window: BATCH_MIN_MS=10s floor, fires when armed
+// (a speech endpoint) AND quiet (BATCH_SILENCE_MS=1.5s) — cutting ONLY at an endpoint
+// boundary, retaining the remainder (cursor). Opt-in via detector.onEnrich; enrichDone()
+// clears the in-flight guard. These drive feedPcm locally (no dock/Opus/LLM).
+function enrichHarness() {
+  const fires: Array<{ ms: number; startedAtMs: number; armedBy: 'speech' | 'acoustic' }> = [];
+  const d = new UtteranceDetector(() => { /* utterance sink */ });
+  d.onEnrich = (windowPcm, startedAtMs, armedBy) => {
+    fires.push({ ms: windowPcm.length / 16, startedAtMs, armedBy });
+    d.enrichDone(); // synchronous "pass complete" so the guard clears immediately
+  };
+  return { d, fires };
+}
+
+test('enricher does NOT fire before the 10s floor even when armed+quiet', () => {
+  const { d, fires } = enrichHarness();
+  d.feedPcm(loud(frames(600)));    // a short utterance (arms on endpoint)
+  d.feedPcm(quiet(frames(2000)));  // endpoint + quiet — but total audio < 10s
+  assert.equal(fires.length, 0, 'floor not reached → no fire');
+});
+
+test('enricher fires once armed + past the 10s floor + quiet, at an endpoint boundary', () => {
+  const { d, fires } = enrichHarness();
+  d.feedPcm(loud(frames(9000)));   // 9s speech
+  d.feedPcm(quiet(frames(2000)));  // endpoint at ~9s, then quiet; total 11s ≥ 10s floor → FIRE
+  assert.equal(fires.length, 1, 'one batch fired');
+  assert.equal(fires[0]!.armedBy, 'speech', 'armed by the speech endpoint');
+  // the window is cut at the endpoint BOUNDARY = 9s speech + the ~1.3s ENDPOINT_MS silence the
+  // detector waited before declaring the endpoint (~10.3s), NOT the full 11s batch — the ~0.7s
+  // of extra trailing silence stays in the remainder for the next window.
+  assert.ok(fires[0]!.ms >= 9800 && fires[0]!.ms <= 10800, `cut at the endpoint (~10.3s), got ${fires[0]!.ms}ms`);
+  assert.ok(fires[0]!.ms < 11000, 'not the whole 11s batch — the trailing silence is retained');
+});
+
+test('enricher does not fire while still mid-speech past the floor (waits for quiet)', () => {
+  const { d, fires } = enrichHarness();
+  d.feedPcm(loud(frames(15_000))); // 15s of UNBROKEN speech — armed never (no endpoint), never quiet
+  assert.equal(fires.length, 0, 'no endpoint boundary + not quiet → no fire mid-monologue');
+});
+
+test('enricher cursor: the remainder after a cut carries into the next batch (no miss/overlap)', () => {
+  const { d, fires } = enrichHarness();
+  // first window: 9s speech → endpoint → quiet → fire (~9s)
+  d.feedPcm(loud(frames(9000)));
+  d.feedPcm(quiet(frames(2000)));
+  assert.equal(fires.length, 1, 'first fire');
+  const firstEnd = fires[0]!.startedAtMs + fires[0]!.ms;
+  // second batch accumulates from the cursor; another 10s+endpoint+quiet fires again.
+  d.feedPcm(loud(frames(10_000)));
+  d.feedPcm(quiet(frames(2000)));
+  assert.equal(fires.length, 2, 'second fire');
+  // the second window starts at/after the first window's end (no overlap, contiguous).
+  assert.ok(fires[1]!.startedAtMs >= firstEnd - 60, 'second window continues from the cursor');
+});
+
+test('detector with no onEnrich is unchanged (enricher is opt-in)', () => {
+  const ends: number[] = [];
+  const d = new UtteranceDetector((pcm) => { ends.push(pcm.length / 16); });
+  d.feedPcm(loud(frames(9000)));
+  d.feedPcm(quiet(frames(2000)));
+  assert.equal(ends.length, 1, 'utterance path identical when the enricher is not wired');
+});

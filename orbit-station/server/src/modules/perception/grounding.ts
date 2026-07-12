@@ -90,9 +90,18 @@ export interface GroundingInput {
  *  Keying off the dead `change` field made vision permanently non-salient — a person walking
  *  in never woke a reactive bit or reached the coherent grounding tail (fixed 2026-07-09). */
 export function isSalient(r: SnapshotRecord): boolean {
-  const p = r.payload as { confTier?: string; salience?: string; text?: string };
+  const p = r.payload as { confTier?: string; salience?: string; text?: string; audioSource?: string; transcriptConf?: number };
   switch (r.source.kind) {
     case 'speech': return (p.confTier ?? 'good') === 'good';
+    // 'enriched' = the audio enricher's authoritative record (the durable audio kind now). Real
+    // in-room speech is salient (unless the transcript was a low-confidence guess); a non-speech
+    // event (media/sound) is salient only if notable/startling — mirrors vision-snapshot senseWake.
+    // (Keying only off the old speech/sound kinds made ALL enriched audio non-salient — the same
+    // regression the vision `change`-field note below warns about.)
+    case 'enriched':
+      return (p.audioSource ?? 'speech') === 'speech'
+        ? (p.transcriptConf == null || p.transcriptConf >= 0.45)
+        : p.salience === 'notable' || p.salience === 'startling';
     case 'sound': return p.salience === 'notable' || p.salience === 'startling';
     case 'vision': return !!p.text?.trim();   // change-gated → a committed record is a change
     case 'identity':

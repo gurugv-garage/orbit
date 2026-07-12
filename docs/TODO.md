@@ -253,6 +253,18 @@ Legend: `[x]` done · `[~]` in progress · `[ ]` not started · `[?]` open quest
   (the background curator was removed 2026-07-10 — see memory.md §5a). Remaining upstream gaps
   (accepted as model limits, not chased): live diarization / stable speaker-IDs, gaze/head-pose,
   and name↔speaker binding.
+- [ ] **Bodymotion needs STANDING STATE, not just transitions** (gap found 2026-07-12): the
+  `bodymotion-watch` stream is edge-only — it records `moving` on a motion command and `stationary`
+  after the settle tail, so read at any resting moment it's *always* `stationary`. That can't
+  distinguish an idle-but-attached body from a **disconnected** one from a body that was never
+  there — so the value is near-meaningless to the summarizer/ego, which read state *at a moment*.
+  The standing state already exists station-side (no firmware change): body **connection** from the
+  `dock-body-fw` peer (bindings / bodylink `body(dock).profile` → "no body connected"), and
+  **activity** from the lease holder (idle vs actively-driven). Proposed: `current()` returns
+  `{connection: 'attached'|'detached', state: 'moving'|'idle', since}` and the stream emits on
+  connect/disconnect edges too, so a reader sees the body's *situation*, not just its last blip.
+  (Pose/pan-tilt would need the C3 to report it — separate, later.) Related seam to the addressed
+  tagging above — both are "the stream carries the wrong shape for at-a-moment consumers."
 - [ ] HTTPS in real deployment; auth on the WS for non-LAN
 
 ### 3.1 Audio pipeline — ▸ SUPERSEDED by the built perception/media stack

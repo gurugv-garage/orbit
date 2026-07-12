@@ -6,6 +6,27 @@
 <title>Orbit — WS + WebRTC data flow</title>
 <!-- shared design system for docs/html/ — see assets/doc.css -->
 <link rel="stylesheet" href="assets/doc.css">
+<style>
+  /* The flow diagrams are dense — the 960px .wrap squeezes their text tiny. Let each mermaid
+     block BREAK OUT of the wrap to the full viewport width and scroll horizontally if still
+     wider, so the node text renders at a readable size instead of being scaled down to fit. */
+  .mermaid {
+    /* full-bleed: escape the centered 960px column */
+    width: 100vw; max-width: 100vw; position: relative;
+    left: 50%; right: 50%; margin-left: -50vw; margin-right: -50vw;
+    padding: 8px 32px; box-sizing: border-box;
+    overflow-x: auto;                 /* scroll rather than shrink when very wide */
+    text-align: center;               /* center the svg within the bleed when it fits */
+  }
+  .mermaid svg {
+    max-width: none !important;        /* mermaid caps svg at container width by default — undo it */
+    height: auto;
+  }
+  /* The whole-path diagram flows top→bottom (tall, not wide). Let it render at its natural
+     size — big fonts come from themeVariables.fontSize — and just cap it so it doesn't get
+     scaled DOWN to fit narrow viewports (that's what shrank the text). */
+  .mermaid.big svg { min-width: 900px; max-height: none; }
+</style>
 </head>
 <body>
 
@@ -26,6 +47,131 @@
     </div>
   </div>
 </header>
+
+<section id="flow">
+  <div class="wrap">
+    <h2>The whole path — one diagram</h2>
+    <p class="step-title">Sense → record → remember → ground → act, top to bottom</p>
+    <p>One moment, end to end: a dock's mic audio and camera photons enter over WebRTC, fan out to the perception processors, land in the durable stream, feed the memory arm's writer-jobs, ground a brain turn, and return as speech and body motion. The sections below zoom into each band; this is the whole thing in one canvas.</p>
+  </div>
+  <p style="font-size:12px;color:var(--ink-3);margin:-2px 0 8px"><em>The WHOLE path, fully expanded in one canvas — every sensor, the two bg-audio calls, each memory-arm writer-job, the brain turn, and behaviour. Wide: scroll horizontally. This is where cross-stage gaps show up (e.g. the acoustic <code class="inl">audioKind·salience</code> fields are marked where they currently STOP).</em></p>
+    <pre class="mermaid big">
+flowchart TD
+  %% ───────────── SENSE · AUDIO (kept together on one side) ─────────────
+  subgraph SA["① SENSE · audio"]
+    direction TB
+    arx(["RtpPacket audio"]):::data --> vad["🎧 audio front-end<br/><i>vad-endpoint.ts</i><br/>Opus→PCM · VAD · ⚡endpoint<br/>+ DEBOUNCED batch (drain buffer,<br/>endpoint-cut, cursor)"]:::proc
+    vad -->|"live: utterance PCM"| stt["🎙 speech-watch<br/><i>speech-watch.ts</i><br/>parakeet :8078 · 🚪3 conf-gate<br/>(LIVE ONLY: conversation/wake/latch)"]:::proc
+    %% MERGED audio enricher (PERCEPTION_ENRICH=1): ONE context-aware pass per batch window
+    %% replaces the two old bg-audio calls. PRIMARY = accurate in-context transcription.
+    vad -. "⚡ batch window (10s floor · endpoint+quiet OR<br/>acoustic gate · cut at endpoint)" .-> enr["👂 audio enricher<br/><i>background-audio.ts · enrichAudio · gemini</i><br/>context-aware transcript · DIARIZE (speaker)<br/>· source: speech/media/sound · salience/addressed"]:::proc
+    stt -. "recent transcript + present (context)" .-> enr
+  end
+  %% ───────────── SENSE · VIDEO + FACTS ─────────────
+  subgraph SV["① SENSE · video + facts"]
+    direction TB
+    vrx(["RtpPacket video"]):::data --> dec["🎞️ video decode<br/><i>face/frame-grabber.ts</i><br/>ffmpeg VP8→JPEG · ~1–2fps<br/>(owned by face-recognition)"]:::proc
+    dec -->|JPEG| face["👤 face-recognition<br/><i>face-recognition.ts</i>"]:::proc
+    face -. "reuses face.currentFrame" .-> vis["👁 vision-snapshot<br/><i>vision-snapshot.ts · change-gated</i><br/>DINOv2 gate → qwen :8080<br/>🚪1 change · 🚪2 sense-wake"]:::proc
+    face -->|"DetectedFace[]"| idn["😮 identity-snapshot<br/><i>identity-snapshot.ts</i><br/>⏳2s + ⚡presence"]:::proc
+    bmc(["body motion commands"]):::data --> bod["🤖 bodymotion-watch<br/><i>bodymotion-watch.ts</i>"]:::proc
+    bod -. "ego-motion guard" .-> idn
+    cli(["client.* facts · WS"]):::data --> pres["🫥 presence<br/><i>presence.ts</i>"]:::proc
+  end
+
+  %% ───────────── RECORD (both sinks) ─────────────
+  ring[("🗄 SnapshotStore ring<br/>+ durable JSONL<br/><i>retention.ts · last-wins</i>")]:::store
+  busp(["📣 bus perception — published ×2<br/>①to:dock ②undirected/console"]):::data
+  stt -. "live-only record (not durable)" .-> ring
+  vis --> ring
+  idn --> ring
+  bod --> ring
+  %% the enricher lands the AUTHORITATIVE durable records: one per diarized segment
+  %% (speech → 'speech' record, media/sound → 'sound' record), timestamped from the window.
+  enr -->|"one record per segment (authoritative)"| ring
+  %% presence is BUS-ONLY (registered with no store) — it does not write the ring.
+  stt --> busp
+  vis --> busp
+  idn --> busp
+  pres --> busp
+
+  %% ───────────── REMEMBER (memory arm) — every writer-job reads the STORE, nothing feeds it directly ─────────────
+  subgraph MEM["③ REMEMBER · the memory arm"]
+    direction TB
+    roll["📝 rolling-summary<br/><i>auto-summarizer.ts · ~60s</i><br/>summarizer.stitch() → LLM<br/>reads text + salience + speaker + media"]:::job
+    trim["🗜 trim + self-compress<br/><i>retention.ts · ~30min sweep</i><br/>closed clock-hour → span-summary"]:::job
+    facts["🧩 fact-extraction<br/><i>same pass</i>"]:::job
+    ego["🪞 ego introspection<br/><i>ego/introspect.ts · ~hourly</i><br/>sched: conductor/index.ts"]:::job
+    roll --> rollS[("last-summary.json")]:::store
+    trim --> spanS[("span-summaries.jsonl")]:::store
+    facts --> memdb[("🧠 memory store · sqlite")]:::store
+    ego --> egoS[("ego.md + trace")]:::store
+    trim --> facts
+  end
+  ring -->|"reads window (inWindowWithState)"| roll
+  ring --> trim
+  %% ego reads RECONCILED perception off DISK (reconciledPerceptionSince), never the raw ring:
+  %% span-summaries + the rolling summary + a reconciled tail (recordsSince, disk).
+  spanS -. "reconciled" .-> ego
+  rollS -. "reconciled" .-> ego
+  ring -. "reconciled tail (recordsSince, disk)" .-> ego
+
+  %% ───────────── GROUND (context the next turn reads) ─────────────
+  %% grounding reads the LAST SUMMARY + recent records + memory beliefs — NOT ego.md.
+  rollS --> grnd["🎯 grounding<br/><i>grounding.ts · per-turn SYNC</i>"]:::proc
+  memdb -->|recall tool| loop
+  %% ego.md is injected into the BRAIN PROMPT directly ("who is speaking"), NOT via grounding.
+  egoS -. "injected as WHO IS SPEAKING (brain/prompt.ts)" .-> turn
+  %% the dock subscribes to the perception bus; that PROMPTS a next turn, which PULLS fresh
+  %% grounding synchronously (grounding is pull-per-turn, not pushed by a bus subscriber).
+  busp -. "prompts next turn → pulls grounding" .-> grnd
+
+  %% keep the two SENSE bands level at the top: an invisible same-rank link between their
+  %% entry nodes so the video band doesn't get dragged down by the addressed-latch cross-edge.
+  arx ~~~ vrx
+
+  %% ───────────── DECIDE + THINK (the brain owns addressed / attention — NOT speech-watch) ─────────────
+  %% THREE independent routes can start a turn; the addressed decision lives in the BRAIN.
+  subgraph BR["④ DECIDE + THINK · the brain"]
+    direction TB
+    addr{"🚪 addressed?<br/><i>brain addressed-latch</i><br/>listening-mode · local wake-word"}:::hub
+    gate["🔔 attention gate<br/><i>attention/gate-watcher.ts</i><br/>arrival · salience → self-thought"]:::hub
+    turn["🧠 DockBrainSession<br/><i>brain/session.ts · brain/index.ts</i><br/>a TURN"]:::proc
+    loop["🔁 LLM loop<br/><i>brain/index.ts · pi agent</i>"]:::proc
+    addr -->|addressed → wake| turn
+    gate -. "onRaise → enqueueAutonomousTurn" .-> turn
+    turn --> loop
+  end
+  stt -. "onFinal (final transcript + window)" .-> addr
+  enr -. "name heard in audio (wake fallback)" .-> addr
+  ring --> gate
+  grnd --> turn
+
+  %% ───────────── ACT (behaviour out) ─────────────
+  loop -->|agent| spk(["🗣 speak + face UI → phone"]):::sink
+  loop -->|bodylink| mot(["🤖 motion → ESP32"]):::sink
+  loop -->|tool RPC| tl(["🔧 tool-call ↔ result → phone"]):::sink
+  loop -. "remember(...)" .-> memdb
+  %% behaviours are CONDUCTOR-governed tasks (started/stopped by the conductor), NOT the LLM loop.
+  cond["🎛 conductor · behaviours<br/><i>conductor/index.ts · conducted.ts</i><br/>faceFollow · idle-moods (tasks)"]:::proc
+  cond -. "drives body (lease-arbitrated)" .-> mot
+  ring -. "idle / presence → conduct" .-> cond
+
+  classDef proc fill:#dbe9fb,stroke:#1f7ae0,color:#0b1220,stroke-width:1.4px;
+  classDef job fill:#e7ddfb,stroke:#7a52d0,color:#0b1220,stroke-width:1.4px;
+  classDef data fill:#eaf6f3,stroke:#0f9d8a,color:#0b1220,stroke-dasharray:4 3,stroke-width:1.3px;
+  classDef store fill:#d7f0eb,stroke:#0f9d8a,color:#0b1220,stroke-width:1.4px;
+  classDef hub fill:#fbe9d6,stroke:#c07a2e,color:#0b1220,stroke-width:1.4px;
+  classDef sink fill:#e6e9ef,stroke:#5a6472,color:#0b1220,stroke-width:1.3px;
+  %% subgraph containers: OUTLINE ONLY (no fill) — the band label + a faint dashed border,
+  %% so the grouping reads as a light region, not a heavy filled block behind the nodes.
+  style SA fill:none,stroke:#6b7688,stroke-width:1px,stroke-dasharray:5 4;
+  style SV fill:none,stroke:#6b7688,stroke-width:1px,stroke-dasharray:5 4;
+  style MEM fill:none,stroke:#6b7688,stroke-width:1px,stroke-dasharray:5 4;
+  style BR fill:none,stroke:#6b7688,stroke-width:1px,stroke-dasharray:5 4;
+    </pre>
+    <p style="font-size:12px;color:var(--ink-3)"><em>Note the memory arm: every writer-job reads the <b>SnapshotStore</b> — nothing feeds the summarizer directly (speech-watch writes the record; bg-audio patches that same record in the store; rolling-summary then reads the window). The <b style="color:#b06a2e">✗</b> inside the <b>rolling-summary</b> node marks the current gap: the acoustic <code class="inl">audioKind</code>/<code class="inl">salience</code> fields ARE on the record in the store (and now persist), but <code class="inl">summarizer.stitch()</code> only renders the <em>text</em> — so the ego's summary never sees "startling"/"music" as a weighted signal. This is the kind of cross-stage seam the one-canvas view is meant to surface.</em></p>
+</section>
 
 <section>
   <div class="wrap">
@@ -152,30 +298,7 @@
   SnapshotStore ring               bus [<span class="hlw">perception</span>] → dock + console
   (→ the memory arm, M4)</pre>
     </div>
-    <p style="font-size:12px;color:var(--ink-3);margin:-2px 0 8px"><em>Same graph, drawn — identical nodes and edges to the ASCII above (the ASCII is the edit-first source; this is the rendered view):</em></p>
-    <pre class="mermaid">
-flowchart TD
-  audio(["RtpPacket · audio"]):::data --> vad["🎧 audio front-end<br/><i>vad-endpoint.ts · UtteranceDetector</i><br/>decode Opus→PCM · VAD · ⚡ utterance-endpoint (1.3s)"]:::proc
-  vad -->|utterance PCM| stt["🎙 speech-watch<br/><i>speech-watch.ts · orchestrator</i><br/>→ transcribe: parakeet-tdt sidecar :8078<br/>🚪3 confidence gate"]:::proc
-  stt -. "significant event → async upgrade<br/>(addressed? · kind · salience · summary)" .-> bg["🌐 bg-audio interpreter<br/><i>background-audio.ts · Gemini flash-lite</i><br/>OPTIONAL · gated · endpoint: gemini"]:::proc
-  bg -. patches the speech record .-> stt
-  video(["RtpPacket · video"]):::data --> decode["🎞️ video decode<br/><i>face/frame-grabber.ts · ffmpeg VP8→JPEG</i><br/>⏳ ~1–2 fps · ONE per dock (owned by face-recognition)"]:::proc
-  decode -->|JPEG frame| face["👤 face-recognition<br/><i>face-recognition.ts · face-api recognize</i>"]:::proc
-  decode -->|JPEG frame| vision["👁 vision-snapshot<br/><i>vision-snapshot.ts · change-gated</i><br/>⚡ scene-change ·⚡ sense-wake · ⏳ 5-min heartbeat<br/>(DINOv2 probe every ⏳1.5s)<br/>🚪1 change-gate · 🚪2 sense-wake"]:::proc
-  face -->|"DetectedFace[]"| identity["😮 identity-snapshot<br/><i>identity-snapshot.ts</i><br/>⏳ every 2s + ⚡ on presence change"]:::proc
-  client(["ChannelItem · client.*"]):::data --> presence["🫥 presence<br/><i>presence.ts</i><br/>⚡ on client.* fact"]:::proc
-  body["🤖 bodymotion-watch<br/><i>bodymotion-watch.ts</i><br/>⚡ on motion command (proprioception)"]:::proc -->|"ego-motion (guard:<br/>freeze presence while panning)"| identity
-  stt --> emit{{"every node writes TWICE"}}:::hub
-  vision --> emit
-  identity --> emit
-  presence --> emit
-  emit -->|"① SnapshotRecord"| ring[("SnapshotStore ring<br/>→ memory arm (M4)")]:::store
-  emit -->|"② PerceptionResult"| bus(["bus perception ×2<br/>→ dock + console"]):::data
-  classDef proc fill:#dbe9fb,stroke:#1f7ae0,color:#0b1220,stroke-width:1.4px;
-  classDef data fill:#eaf6f3,stroke:#0f9d8a,color:#0b1220,stroke-dasharray:4 3,stroke-width:1.3px;
-  classDef hub fill:#e6e9ef,stroke:#5a6472,color:#0b1220,stroke-width:1.3px;
-  classDef store fill:#d7f0eb,stroke:#0f9d8a,color:#0b1220,stroke-width:1.4px;
-    </pre>
+    <p style="font-size:12px;color:var(--ink-3);margin:-2px 0 8px"><em>This processor fan-out is the SENSE band of the single end-to-end diagram at the top of the page — see there for the drawn version in context. The ASCII above is the edit-first source.</em></p>
     <p><strong>The edges are the point.</strong> <strong>Video decode is a single shared stage</strong> (one ffmpeg per dock, owned by <code class="inl">face-recognition</code> via <code class="inl">FrameGrabber</code>) — <code class="inl">face-recognition</code>, <code class="inl">vision</code>, and <code class="inl">identity</code> all read <em>its</em> decoded JPEG rather than decoding again. That coupling is safe because everything is keyed to the same <code class="inl">streamId</code>. Two audio branches: <strong>parakeet-tdt</strong> is the live transcriber (every utterance); the <strong>Gemini bg-audio interpreter</strong> is a separate, optional, async upgrade fired only on a significant acoustic event — it patches the speech record with an addressed?/kind/salience/summary read (and can rewrite the transcript). And <code class="inl">bodymotion</code>→<code class="inl">identity</code> is the <strong>ego-motion guard</strong>: while the head pans, a face leaving frame is the <em>robot</em> turning, not the person leaving — so presence is frozen (no false "X left" / "Y arrived").</p>
     <div class="note warn">
       <span class="tag">vision is change-gated, not per-frame</span>
@@ -205,7 +328,7 @@ flowchart TD
           <td class="rtcc">🎙 <b>speech-watch</b><br><span style="color:var(--ink-3);font-size:11px;font-family:var(--mono)">processors/speech-watch.ts<br>+ vad-endpoint.ts</span></td>
           <td>front-end = <em>vad-endpoint.ts</em> (Opus decode · VAD · endpoint); transcribe = <em>parakeet-tdt</em> (whisper fallback) <span style="color:var(--ink-3)">· sidecar :8078</span></td>
           <td><code class="inl">RtpPacket</code> (audio) → PCM → VAD utterance</td>
-          <td><code class="inl">transcript</code> → <code class="inl">{ text, isFinal }</code></td>
+          <td>live: <code class="inl">transcript</code> → <code class="inl">{ text, isFinal }</code> (parakeet, live-only). The durable audio record is the <b>audio enricher's</b> — one <code class="inl">kind:'enriched'</code> per segment (speech/media/sound in the <code class="inl">audioSource</code> field), on the debounced batch <span style="color:var(--ink-3)">(background-audio.ts · enrichAudio)</span></td>
         </tr>
         <tr>
           <td class="rtcc">👤 <b>face-recognition</b><br><span style="color:var(--ink-3);font-size:11px;font-family:var(--mono)">processors/face-recognition.ts</span></td>
@@ -303,7 +426,7 @@ flowchart TD
         │                   ▼
         │             <span class="hlw">grounding</span>  ── per-turn, SYNC ──▶ brain prompt (no LLM on the turn)
         │
-        └──▶ at TRIM (hourly), two outputs from the SAME pass:
+        └──▶ at TRIM (~30 min sweep; compresses each CLOSED clock-hour), two outputs from the SAME pass:
               ├─① <span class="hl">span-summary</span>  compress the aged raw → durable digest series
               │      (perception compressing its own tail; §7c)
               └─② <span class="hl">fact-extraction</span> → durable FACTS (append + light dedup)
@@ -312,24 +435,7 @@ flowchart TD
               <span class="hl">memory store</span> (sqlite, embedded) ── on demand ──▶ brain's recall_memory tool
                  ▲  also written directly by the LLM's `remember` tool</pre>
     </div>
-    <p style="font-size:12px;color:var(--ink-3);margin:-2px 0 8px"><em>Same flow, drawn — the three independent writer-jobs (detailed in the table below), each pulling from the stream and writing to its OWN store:</em></p>
-    <pre class="mermaid">
-flowchart TD
-  ring[("perception stream<br/>(durable ring + JSONL)")]:::store
-  ring -->|~60s| roll["rolling-summary job<br/><i>auto-summarizer.ts</i>"]:::job
-  ring -->|~30min, raw span| trim["trim / self-compress<br/><i>selfCompressAndTrim · retention.ts</i>"]:::job
-  ring -->|~hourly, reconciled| ego["ego introspection<br/><i>introspect.ts · conductor</i>"]:::job
-  roll -->|writes| lastsum[("lastSummary<br/>last-summary.json")]:::store
-  trim -->|"① writes"| span[("span-summaries.jsonl")]:::store
-  trim -->|"② writes facts"| mem[("memory store<br/>sqlite")]:::store
-  ego -->|writes itself| egomd[("ego.md + trace")]:::store
-  llm(["LLM remember tool"]):::data -.->|also writes| mem
-  mem -.->|recall_memory| brain(["brain turn"]):::data
-  lastsum -.->|grounding, per-turn| brain
-  classDef job fill:#dbe9fb,stroke:#1f7ae0,color:#0b1220,stroke-width:1.4px;
-  classDef store fill:#d7f0eb,stroke:#0f9d8a,color:#0b1220,stroke-width:1.4px;
-  classDef data fill:#eaf6f3,stroke:#0f9d8a,color:#0b1220,stroke-dasharray:4 3,stroke-width:1.3px;
-    </pre>
+    <p style="font-size:12px;color:var(--ink-3);margin:-2px 0 8px"><em>This memory arm is the REMEMBER band of the single end-to-end diagram at the top of the page (each writer-job → its own store, drawn in context). The ASCII above is the edit-first source; the table below has the cadences + files.</em></p>
     <ul class="tight">
       <li><strong>Grounding</strong> — pulled <em>synchronously</em> when a turn is built: the last summary (stamped with staleness) + the salient tail. No network on the turn's critical path. This is what the model always sees.</li>
       <li><strong>Span-summary (①)</strong> — at trim, each aged-out clock-hour is compressed into a durable digest <em>before</em> the raw is dropped, so the timeline compresses but never has a hole. This is perception <em>compressing its own tail</em>, not a separate layer.</li>
@@ -356,7 +462,7 @@ flowchart TD
         </tr>
         <tr>
           <td class="wsc"><b>ego introspection</b><br><span style="color:var(--ink-3);font-size:11px">a wholly separate job</span></td>
-          <td>~hourly idle, or event-triggered <span style="color:var(--ink-3)">· introspect.ts · conductor · EGO_INTROSPECT_GAP_MS</span></td>
+          <td>~hourly idle, or event-triggered <span style="color:var(--ink-3)">· <code class="inl">ego/introspect.ts</code>, scheduled by <code class="inl">conductor/index.ts</code> · EGO_INTROSPECT_GAP_MS</span></td>
           <td>the reconciled summaries via <code class="inl">reconciledPerceptionSince</code> (+ addressed conversation + its own trace)</td>
           <td><b>itself</b> — <code class="inl">ego.md</code> + its trace. It never touches memory or the summary stores.</td>
         </tr>
@@ -516,30 +622,10 @@ getGateApi()?.onRaise((thought) => session(dock).enqueueAutonomousTurn(thought))
         all wire-bound legs exit via <span class="hlw">WebSocketGateway</span> event frames</pre>
     </div>
     <div class="note warn">
-      <span class="tag">one representation caveat (bg-audio*)</span>
-      <p>The ASCII above lists <code class="inl">bg-audio*</code> alongside the processors, but it is <strong>not</strong> one of the six registered stream-processors (M3's canonical list) — so it does not appear in the M3 graph or table. <code class="inl">bg-audio</code> is <code class="inl">interpretAudio()</code> (<code class="inl">processors/background-audio.js</code>), an <em>async upgrade</em> that <code class="inl">speech-watch</code> calls to patch a speech record with an <code class="inl">addressedToRobot</code> guess — a step <em>on</em> the speech path, not a peer processor. Kept out of M3 to preserve the clean six; flagged here so the two don't read as contradictory.</p>
+      <span class="tag">the audio enricher (merged 2026-07-12)</span>
+      <p>The durable audio path is the <b>audio enricher</b> (<a class="file" href="../../orbit-station/server/src/modules/perception/processors/background-audio.ts"><code class="inl">background-audio.ts · enrichAudio</code></a>, Gemini <b>flash</b>), which <em>replaced</em> the old two <code class="inl">bg-audio</code> calls (per-utterance speech-details patch + per-impulse sound record). It is <strong>not</strong> one of the six registered stream-processors — it's a step <em>on</em> the audio path — so it's absent from the processor <em>table</em> but drawn as the 👂 node in the single diagram at the top. ONE debounced batch call per window (see the trigger on that node) does the accurate, in-context transcription + diarization + acoustic read, and lands <strong>ONE record kind: <code class="inl">'enriched'</code></strong> per segment — WHAT it contains (real in-room speech / played media / a non-speech sound) is the <code class="inl">audioSource</code> field, not a separate kind. Parakeet stays LIVE-ONLY (conversation/wake/addressed-latch); the enricher owns durable memory, and <code class="inl">dropSupersededSpeech</code> drops the overlapping parakeet record so nothing double-counts. Model is <b>flash, not flash-lite</b> — flash-lite hallucinated confident fake conversations from unintelligible audio; flash is honest ("[unintelligible]"/"[music]"). Full design + the flash decision: <a class="file" href="../decision-traces/audio-enricher.md">decision-traces/audio-enricher.md</a>.</p>
     </div>
-    <p style="font-size:12px;color:var(--ink-3);margin:-2px 0 8px"><em>Same journey, drawn — packet to behaviour, end to end (condensed; the processor fan-out is M3, the memory arm is M4):</em></p>
-    <pre class="mermaid">
-flowchart TD
-  dock(["dock"]):::data -->|WebRTC/RTP| sfu["Sfu"]:::proc
-  wsfacts(["client facts · WS"]):::data --> hub
-  sfu -->|tap| hub["PerceptionProcessingHub"]:::proc
-  hub --> procs["processors (M3)<br/><i>face · vision · identity · stt · presence · bodymotion</i>"]:::proc
-  procs -->|"① SnapshotRecord"| ring[("SnapshotStore ring → durable")]:::store
-  procs -->|"② PerceptionResult ×2"| bus(["bus perception → dock + console"]):::data
-  ring --> mem["memory arm (M4)<br/><i>summarizer · span-summaries · facts · ego</i>"]:::proc
-  mem -->|grounding + recall| brain["DockBrainSession<br/><i>onFinal / gate → a turn → LLM loop</i><br/>🚪4 addressed gate · 🚪5 attention gate"]:::proc
-  bus -.->|re-ground next turn| brain
-  brain -->|"agent"| speak(["🗣 speech + face UI → phone"]):::sink
-  brain -->|"bodylink"| motion(["🤖 motion → ESP32"]):::sink
-  brain -->|"agent tool RPC"| tool(["🔧 tool-call ↔ result → phone"]):::sink
-  brain -.->|writes, for future turns| memout(["🧠 durable memory"]):::sink
-  classDef proc fill:#dbe9fb,stroke:#1f7ae0,color:#0b1220,stroke-width:1.4px;
-  classDef data fill:#eaf6f3,stroke:#0f9d8a,color:#0b1220,stroke-dasharray:4 3,stroke-width:1.3px;
-  classDef store fill:#d7f0eb,stroke:#0f9d8a,color:#0b1220,stroke-width:1.4px;
-  classDef sink fill:#e6e9ef,stroke:#5a6472,color:#0b1220,stroke-width:1.3px;
-    </pre>
+    <p style="font-size:12px;color:var(--ink-3);margin:-2px 0 8px"><em>The drawn end-to-end diagram is at the <a href="#flow">top of the page</a>; the ASCII above is the same journey in text.</em></p>
     <p>Read the code in this order — the full journey:</p>
     <ul class="tight">
       <li><a class="file" href="../../orbit-station/server/src/modules/media/sfu.ts">media/sfu.ts</a> → <a class="file" href="../../orbit-station/server/src/modules/media/tap.ts">tap.ts</a> — media in, the <code class="inl">MediaTap</code> seam</li>
@@ -580,7 +666,7 @@ flowchart TD
         startOnLoad: true,
         theme: 'base',
         securityLevel: 'strict',
-        flowchart: { curve: 'basis', htmlLabels: true, nodeSpacing: 40, rankSpacing: 46 },
+        flowchart: { curve: 'basis', htmlLabels: true, nodeSpacing: 46, rankSpacing: 54, wrappingWidth: 260, padding: 12 },
         // Force node-label text DARK + semibold so it pops on the light classDef fills (regular
         // weight on light cyan/blue reads too soft). NOTE mermaid v11 wraps the visible text in a
         // <p> INSIDE .nodeLabel — that <p> carries the theme's light-grey unless targeted, so the
@@ -589,10 +675,20 @@ flowchart TD
         themeCSS:
           '.node .nodeLabel, .node .nodeLabel *, .node .label, .node foreignObject div, .node foreignObject p'
           + ' { color:#0b1220 !important; font-weight:600 !important; }'
+          // Breathing room inside boxes: taller lines + a little padding so the multi-line labels
+          // don't read as a cramped block, and the label box is wide enough that short phrases stop
+          // wrapping mid-word ("change-\ngated"). The first <br/>-line (icon + name) stays the visual
+          // title via its own weight; the <i> file line + trigger/gate lines sit under it, spaced.
+          + '.node .nodeLabel p, .node foreignObject p { line-height:1.55 !important; margin:0 !important; }'
+          + '.node foreignObject { overflow:visible; }'
+          + '.node foreignObject > div { padding:5px 9px !important; }'
+          // keep short two-word phrases on one line (no "change-\ngated" / "sense-\nwake" mid-break)
+          + '.node .nodeLabel, .node foreignObject > div { white-space:normal; word-break:normal; overflow-wrap:normal; }'
+          + '.node .nodeLabel i, .node foreignObject i { display:inline-block; margin:1px 0; opacity:0.92; }'
           + '.cluster .nodeLabel, .cluster .nodeLabel * { color:#0b1220 !important; }'
           + (dark ? '.edgeLabel, .edgeLabel *, .edgeLabel foreignObject p { color:#e6eaf2 !important; }' : ''),
         themeVariables: {
-          fontSize: '13px', fontFamily: 'ui-sans-serif, system-ui, sans-serif',
+          fontSize: '17px', fontFamily: 'ui-sans-serif, system-ui, sans-serif',
           // node label text — dark, so it reads on the light classDef fills in either theme
           primaryTextColor: '#0b1220', nodeTextColor: '#0b1220', titleColor: '#0b1220',
           // edge lines + their labels — light on dark page, dark on light page

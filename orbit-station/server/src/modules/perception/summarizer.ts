@@ -209,7 +209,14 @@ export function stitch(records: SnapshotRecord[], windowFromIso?: string): strin
       const label = identityLabel(r);
       if (idRun && idRun.label === label) idRun.to = t;                          // extend the run
       else { flushId(); idRun = { label, from: t, to: t, iso: r.interval.from }; }  // new run
-    } else if (r.source.kind === 'speech') {
+    } else if (r.source.kind === 'enriched' && ((r.payload as { audioSource?: string }).audioSource ?? 'speech') !== 'speech') {
+      // ENRICHER non-speech (played media / a sound): render as an ambient acoustic line, NOT as
+      // spoken conversation. The salience still rides so a crash reads as startling.
+      flushRuns();
+      const ps = r.payload as { salience?: string; audioKind?: string };
+      const es = ps.salience === 'startling' ? ' [STARTLING]' : ps.salience === 'notable' ? ' [notable]' : '';
+      lines.push(`${t} SOUND    ${r.payload.text}${ps.audioKind ? ` (${ps.audioKind})` : ''}${es}`);
+    } else if (r.source.kind === 'speech' || r.source.kind === 'enriched') {
       flushRuns();
       // ACTIVE-SPEAKER (cheap diarization): who had their mouth most open during
       // this utterance? Look at identity records overlapping the utterance time.
@@ -230,19 +237,33 @@ export function stitch(records: SnapshotRecord[], windowFromIso?: string): strin
         // fall back to the audio-interpreter's softer `addressedToRobot` guess. A line the brain
         // marked NOT addressed is room chatter / a video / another conversation — render it so the
         // summarizer (and the ego reading the summary) treat it as ambient, not spoken to the dock.
-        const pr = r.payload as { addressed?: boolean; addressedToRobot?: boolean; directive?: string };
+        const pr = r.payload as { addressed?: boolean; addressedToRobot?: boolean; directive?: string;
+          salience?: string; audioSource?: string; speaker?: number; transcriptConf?: number };
         let addr = '';
         if (pr.addressed === true) addr = ' [→ TO YOU]';
         else if (pr.addressed === false) addr = ' [overheard — not to you]';
         else if (pr.addressedToRobot) addr = ` [→ robot${pr.directive ? `: ${pr.directive}` : ''}]`;
-        lines.push(`${t} SPEECH  ${r.payload.text}${tag}${conf}${addr}`);
+        // AUDIO ENRICHER extras: a diarized speaker tag, a salience weight (so the ego reads a
+        // startling/notable moment as such, not flat text), and a MEDIA marker (played TV/video/
+        // song — not a person in the room, so the ego doesn't treat it as conversation).
+        const spk = pr.speaker != null ? ` [speaker ${pr.speaker}]` : '';
+        const sal = pr.salience === 'startling' ? ' [STARTLING]' : pr.salience === 'notable' ? ' [notable]' : '';
+        const media = pr.audioSource === 'media' ? ' [media playing — not the room]' : '';
+        // Low transcript confidence → mark it so the ego treats the words as uncertain (the enricher
+        // was guessing on unclear/far audio), rather than as something definitely said.
+        const unc = pr.transcriptConf != null && pr.transcriptConf < 0.45 ? ' [uncertain — words unclear]' : '';
+        lines.push(`${t} SPEECH  ${r.payload.text}${spk}${tag}${conf}${addr}${sal}${media}${unc}`);
       }
     } else {
       flushRuns();
       // Vision windows are change-gated at capture (DINOv2), so each record already IS a
       // scene change — the text is the signal. (A structured `change` field existed until
       // 2026-07-09; it was retired with the SIMPLE prompt and no longer set.)
-      lines.push(`${t} ${r.source.kind.toUpperCase().padEnd(8)} ${r.payload.text}`);
+      // For SOUND records (enricher acoustic events): render the salience so a crash/alarm reads
+      // as startling, not a flat line.
+      const ps = r.payload as { salience?: string };
+      const ssal = ps.salience === 'startling' ? ' [STARTLING]' : ps.salience === 'notable' ? ' [notable]' : '';
+      lines.push(`${t} ${r.source.kind.toUpperCase().padEnd(8)} ${r.payload.text}${ssal}`);
     }
   }
   flushRuns();

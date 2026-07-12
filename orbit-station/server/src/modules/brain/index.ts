@@ -29,7 +29,7 @@ import type { RouteContext, StationModule } from '../../core/module.js';
 import type { Directory } from '../docks/directory.js';
 import type { MotionExecutor } from '../bodylink/motion.js';
 import { gesturesFromConfig } from '../bodylink/motion.js';
-import { getFaceTools, getPerceptionGrounding, getMemoryApi, getGateApi, getTranscriptApi, getPerceiveStore, getBgAddressedApi, markSpeechAddressed, noteSelfRemark, lastSalientAt } from '../perception/index.js';
+import { getFaceTools, getPerceptionGrounding, getMemoryApi, getGateApi, getTranscriptApi, getPerceiveStore, getBgAddressedApi, markSpeechAddressed, markEnrichWoke, noteSelfRemark, lastSalientAt } from '../perception/index.js';
 import { getSelf } from '../ego/index.js';
 import { isRecording } from '../capture/index.js';
 import { getObsAccess } from '../observability/index.js';
@@ -537,6 +537,8 @@ export function brainModule(w: BrainWiring): StationModule {
         if (s2.conversation().mode !== 'idle') return; // already engaged
         console.log(`[wake] bg-audio fallback FIRED (conf ${e.conf.toFixed(2)}): ${e.directive || e.transcript}`);
         s2.wake(cfg.prompt);
+        // stamp the enricher record that triggered this wake so its row shows 🤖 woke-the-robot.
+        markEnrichWoke(e.dockId, e.transcript);
       });
 
       getGateApi()?.onRaise((t) => {

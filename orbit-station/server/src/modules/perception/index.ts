@@ -27,7 +27,7 @@ import { faceRecognitionProcessor } from './processors/face-recognition.js';
 import { visionSnapshotProcessor } from './processors/vision-snapshot.js';
 import { identitySnapshotProcessor } from './processors/identity-snapshot.js';
 import { speechWatchProcessor } from './processors/speech-watch.js';
-import { interpretAudio } from './processors/background-audio.js';
+import { enrichAudio } from './processors/background-audio.js';
 import { bodyMotionWatchProcessor, type MotionCommand } from './processors/bodymotion-watch.js';
 import { SnapshotStore, isoIst, sampleEvenly, makeSnapshot, type SnapshotRecord } from './snapshots.js';
 import { PerceiveStore, type PerceivePayload } from './perceive.js';
@@ -39,7 +39,8 @@ import { MemoryStore, type MemoryRow, type MemoryType, type RecallFilter, type L
 import { geminiEmbedder } from './memory/embedder.js';
 import { startGateWatcher, type RaisedThought } from './attention/gate-watcher.js';
 import { startAutoSummarizer } from './auto-summarizer.js';
-import { selfCompressAndTrim, recordsSince, spanSummariesSince } from './retention.js';
+import { selfCompressAndTrim, recordsSince, spanSummariesSince,
+  recordsInWindow, spanSummariesInWindow, listDockHistory, dockHistory } from './retention.js';
 import { DEFAULT_GATE_CONFIG, type GateConfig, type GateOutcome } from './attention/gate.js';
 import { orbitDb } from '../../core/db.js';
 import { setVisionExtra, getVisionExtra, visionBase } from './vision-instruction.js';
@@ -219,8 +220,26 @@ export function noteSelfRemark(dockId: string, text: string): void {
  *  clean transcript. Consumption is the constraint, not storage — so raw is capped by
  *  `maxRecords` (the most recent N; §7c "read raw up to a budget"). Chronological: summaries of
  *  the older gap first, then the recent raw. Returns '' only if the span has neither. */
+/** MEMORY-ARM DEDUP: the audio enricher writes the authoritative speech records; parakeet also
+ *  writes a live-only record for the SAME utterance (for the addressed-latch/console). The memory
+ *  arm must NOT summarize both — drop each `liveOnly` speech record whose span overlaps an ENRICHED
+ *  speech record (the enriched one is the truth). Non-speech + un-superseded records pass through. */
+export function dropSupersededSpeech(records: SnapshotRecord[]): SnapshotRecord[] {
+  // ENRICHED speech = an 'enriched' record whose audioSource is real in-room speech (media/sound
+  // don't supersede a spoken utterance). Only those override a live-only parakeet 'speech' record.
+  const enriched = records.filter((r) => r.source.kind === 'enriched'
+    && ((r.payload as { audioSource?: string }).audioSource ?? 'speech') === 'speech');
+  if (!enriched.length) return records; // no enricher speech → nothing supersedes parakeet
+  const overlaps = (a: SnapshotRecord, b: SnapshotRecord) =>
+    a.interval.from <= b.interval.to && b.interval.from <= a.interval.to;
+  return records.filter((r) => {
+    if (r.source.kind !== 'speech' || !(r.payload as { liveOnly?: boolean }).liveOnly) return true;
+    return !enriched.some((e) => overlaps(e, r)); // drop a live-only utterance the enricher covered
+  });
+}
+
 export function perceptionSince(dockId: string, sinceIso: string, maxRecords = 300): string {
-  const raw = recordsSince(dockId, sinceIso).filter((r) => r.source.kind !== 'summary');
+  const raw = dropSupersededSpeech(recordsSince(dockId, sinceIso).filter((r) => r.source.kind !== 'summary'));
   const capped = raw.slice(-maxRecords); // most-recent N raw (the consumption budget)
   const parts: string[] = [];
   // OLDER fidelity: span-summaries whose span starts at/after the checkpoint. If raw was capped,
@@ -270,7 +289,7 @@ export async function reconciledPerceptionSince(
   // TAIL: records newer than the rolling summary's window — summarize on demand so the ego never
   // sees raw. Boundary = max(checkpoint, rolling.to); if there's a meaningful tail, reconcile it.
   const tailSinceIso = rollTo && rollTo > sinceIso ? rollTo : sinceIso;
-  const tail = recordsSince(dockId, tailSinceIso).filter((r) => r.source.kind !== 'summary').slice(-120);
+  const tail = dropSupersededSpeech(recordsSince(dockId, tailSinceIso).filter((r) => r.source.kind !== 'summary')).slice(-120);
   if (tail.length >= 2) {
     try {
       const r = await summarize(tail, { windowFromIso: tailSinceIso });
@@ -465,13 +484,15 @@ export function getMemoryStore(): MemoryStore | undefined {
   return memoryStoreRef.current;
 }
 
-/** RUNTIME state of the background AUDIO interpreter (Gemini) — flippable live from
- *  the Perception Studio (GET/POST /api/perception/bg-audio; /bg-stt legacy alias).
- *  `enabled` gates whether significant acoustic windows get interpreted online
- *  (kind/salience/summary + a cleaner transcript); `model` is which Gemini model does
- *  it. Seeded from PERCEPTION_BG_AUDIO_MODEL (legacy PERCEPTION_BG_STT_MODEL). */
-const bgAudio_ = { enabled: false, model: 'gemini-2.5-flash-lite' };
-export function getBgAudio() { return { ...bgAudio_ }; }
+/** RUNTIME state of the AUDIO ENRICHER (Gemini) — flippable live from the Perception Studio
+ *  (GET/POST /api/perception/bg-audio; /bg-stt legacy alias). The enricher is ALWAYS ON (it's
+ *  the sole authoritative audio path now), so `enabled` is retained only for API back-compat;
+ *  `model` is the live-selectable Gemini model the enricher runs. Seeded from
+ *  PERCEPTION_ENRICH_MODEL (legacy PERCEPTION_BG_AUDIO_MODEL / PERCEPTION_BG_STT_MODEL). */
+const enricher_ = { enabled: true, model: 'gemini-2.5-flash' };
+export function getEnricherState() { return { ...enricher_ }; }
+/** The model the live enricher should use right now (console-selectable). */
+export function currentEnrichModel(): string { return enricher_.model; }
 
 /** Dock-addressed OBSERVATIONS from the background audio interpreter — the brain
  *  registers a handler and DECIDES (wake fallback for the local STT mis-hearing the
@@ -490,6 +511,13 @@ let markAddressedHandler: ((dockId: string, endedAtMs: number, addressed: boolea
 export function markSpeechAddressed(dockId: string, endedAtMs: number, addressed: boolean): void {
   markAddressedHandler?.(dockId, endedAtMs, addressed);
 }
+
+/** The brain calls this the moment it WAKES the robot from an enricher-addressed utterance, so the
+ *  enricher record that triggered it gets stamped `wokeRobot: true` — visible on the row (🤖). The
+ *  wake happens downstream of the record write, so this patches it after the fact (by matching the
+ *  most recent enriched addressed record for the dock with this text). */
+let markWokeHandler: ((dockId: string, text: string) => void) | undefined;
+export function markEnrichWoke(dockId: string, text: string): void { markWokeHandler?.(dockId, text); }
 
 /**
  * The proactive ATTENTION GATE control surface (docs/perception-to-brain.md Phase 5).
@@ -616,6 +644,24 @@ export function perceptionModule(getHub: () => PerceptionProcessingHub): Station
       if (best) snapshots.update(best, { addressed });
     } catch { /* best-effort — never break the turn path */ }
   };
+  // WOKE THE ROBOT: stamp the enriched addressed record that triggered a wake (so the row shows 🤖).
+  // The wake fires synchronously off the enricher result but AFTER the record is written, so we
+  // patch the most recent enriched+addressed record for the dock whose text matches.
+  markWokeHandler = (dockId, text) => {
+    try {
+      const norm = (s: string) => s.toLowerCase().replace(/[^a-z0-9 ]/g, '').replace(/\s+/g, ' ').trim();
+      const want = norm(text);
+      const recent = snapshots.list().filter((r) => r.dockId === dockId && r.source.kind === 'enriched'
+        && (r.payload as { addressedToRobot?: boolean }).addressedToRobot);
+      // newest matching-text record (walk from the end)
+      for (let i = recent.length - 1; i >= 0; i--) {
+        if (norm(String((recent[i]!.payload as { text?: string }).text ?? '')) === want) {
+          snapshots.update(recent[i]!, { wokeRobot: true });
+          break;
+        }
+      }
+    } catch { /* best-effort */ }
+  };
   const takes = new TakeStore();         // frozen snapshot bundles for A/B replay
   // LIVE per-dock face-track (the on-device MLKit `perceive` stream, §7) — latest-state,
   // NOT the heavy snapshot ring. The faceFollow `face-track` capability reads it.
@@ -683,11 +729,11 @@ export function perceptionModule(getHub: () => PerceptionProcessingHub): Station
   // flips it live) rather than a fixed env var: PERCEPTION_BG_STT_MODEL only seeds
   // the model name + the initial enabled state, so existing setups behave as before
   // (env set → on at boot; env unset → off, but still flippable on at runtime).
-  const DEFAULT_BG_AUDIO_MODEL = 'gemini-2.5-flash-lite';
-  // PERCEPTION_BG_STT_MODEL is the legacy alias — existing setups keep working.
-  const bgAudioEnv = process.env.PERCEPTION_BG_AUDIO_MODEL || process.env.PERCEPTION_BG_STT_MODEL;
-  bgAudio_.model = bgAudioEnv || DEFAULT_BG_AUDIO_MODEL;
-  bgAudio_.enabled = !!bgAudioEnv;
+  // Seed the enricher's live-selectable model. PERCEPTION_ENRICH_MODEL is the current knob;
+  // the old PERCEPTION_BG_AUDIO_MODEL / PERCEPTION_BG_STT_MODEL still seed it (back-compat).
+  enricher_.model = process.env.PERCEPTION_ENRICH_MODEL
+    || process.env.PERCEPTION_BG_AUDIO_MODEL || process.env.PERCEPTION_BG_STT_MODEL
+    || 'gemini-2.5-flash';
   // CONTEXT-AWARE: assemble the recent-discussion context for a dock (rolling summary
   // + who's present) so Gemini disambiguates names/topic/homophones. Cheap (a few
   // hundred chars; audio dominates the cost).
@@ -704,47 +750,35 @@ export function perceptionModule(getHub: () => PerceptionProcessingHub): Station
     if (names.length) parts.push(`People present: ${names.join(', ')}.`);
     return parts.join('\n');
   };
-  // Always wired; gated at CALL time on the runtime toggle so it can flip live
-  // without rebuilding the processor. Disabled → returns null (the speech-watch path
-  // then keeps the local-Whisper text, exactly like the old env-unset case).
-  // Per-dock DEBOUNCE for the background audio interpreter — the primary cost/noise
-  // clamp (bg-audio doc §5 + §7a.4): at most one call per cooldown, an in-flight guard,
-  // and a REPEAT-STRETCH (the same acoustic story back-to-back — music for an hour —
-  // doubles the cooldown up to the cap; anything new resets it). An 'impulse' trigger
-  // (a crash) BYPASSES the cooldown — its own 5 s refractory in the detector bounds it.
-  const BG_COOLDOWN_MS = Number(process.env.PERCEPTION_BG_COOLDOWN_MS ?? 8_000);
-  const BG_COOLDOWN_MAX_MS = 120_000;
-  const bgState = new Map<string, { until: number; ms: number; lastSig: string; inflight: boolean }>();
-  const bgAudio = async (pcm: Int16Array, rate: number, dockId: string, trigger: 'speech' | 'impulse' | 'sustained') => {
-    if (!bgAudio_.enabled) return null;
-    let st = bgState.get(dockId);
-    if (!st) { st = { until: 0, ms: BG_COOLDOWN_MS, lastSig: '', inflight: false }; bgState.set(dockId, st); }
-    if (st.inflight || (trigger !== 'impulse' && Date.now() < st.until)) return null;
-    st.inflight = true;
-    try {
-      const model = bgAudio_.model; // snapshot the model used for THIS call (it can flip live)
-      const ev = await interpretAudio(pcm, rate, model, bgContext(dockId), dockId);
-      if (!ev) { st.until = Date.now() + st.ms; return null; }
-      if (ev.addressedToRobot) {
-        bgAddressedHandler?.({ dockId, directive: ev.directive, transcript: ev.transcript, conf: ev.addressConf });
-      }
-      const sig = `${ev.kind}|${ev.summary.toLowerCase().replace(/[^a-z]+/g, ' ').trim()}`;
-      st.ms = sig === st.lastSig ? Math.min(st.ms * 2, BG_COOLDOWN_MAX_MS) : BG_COOLDOWN_MS;
-      st.lastSig = sig;
-      st.until = Date.now() + st.ms;
-      return { ...ev, model };
-    } finally { st.inflight = false; }
+  // ── AUDIO ENRICHER (the merged audio path) ── the debounced vad-endpoint batch window →
+  // ONE context-aware call that lands the authoritative diarized transcript (+ per-segment
+  // acoustic read: source/kind/salience/addressed). This REPLACES the old two bg-audio calls
+  // (speech-details patch + per-impulse sound). Always on; parakeet is live-only.
+  const enrich = (pcm: Int16Array, rate: number, dockId: string, context: import('./processors/background-audio.js').EnrichContext) =>
+    enrichAudio(pcm, rate, enricher_.model, context, dockId); // model is live-selectable from the console
+  const enrichCtx = (dockId: string): import('./processors/background-audio.js').EnrichContext => {
+    const names = [...new Set(
+      snapshots.list().filter((r) => r.dockId === dockId && r.source.kind === 'identity').slice(-8)
+        .flatMap((r) => ((r.payload.faces as Array<{ name?: string | null }> | undefined) ?? [])
+          .map((f) => f.name).filter((n): n is string => !!n)),
+    )];
+    return { recentTranscript: bgContext(dockId) || undefined, present: names };
   };
   const stt = speechWatchProcessor(
     snapshots,
     (e) => finalHandler?.(e),
     (dockId) => Date.now() < (speakingUntil.get(dockId) ?? 0),
-    bgAudio,
     // LIVE INTERIMS → brain → directed caption frame to the dock. Gated on the
     // brain's listening-resolver (only during an active listening/followup turn);
     // if the brain never registers one, interims never fire (resolver stays undefined).
     (e) => interimHandler?.(e),
     (dockId) => listeningResolver?.(dockId) ?? false,
+    enrich,
+    enrichCtx,
+    // the enricher's addressed in-room segments → the brain's wake fallback.
+    // enricher-addressed → brain, SYNCHRONOUS (no batching between detect and send); pass the
+    // enricher's ACTUAL address confidence + directive (was hardcoded 0.7/empty — wasted signal).
+    (e) => bgAddressedHandler?.({ dockId: e.dockId, directive: e.directive, transcript: e.text, conf: e.conf }),
   ); // 🎙 speech (exposes flushAll)
   const bodymotion = bodyMotionWatchProcessor(snapshots); // 🤖 ego-motion (setMotion seam)
   // Vision reuses the face processor's decoded frame (ONE ffmpeg per dock, not two). The
@@ -813,8 +847,8 @@ export function perceptionModule(getHub: () => PerceptionProcessingHub): Station
         const windowMs = Math.max(opts?.windowMs ?? 60_000, Date.now() - startedAt + 1_000);
         const fromIso = isoIst(new Date(Date.now() - windowMs));
         // exclude prior SUMMARY records: a summary must digest the streams, not itself.
-        const recs = snapshots.inWindowWithState(fromIso, toIso)
-          .filter((r) => r.dockId === dockId && r.source.kind !== 'summary');
+        const recs = dropSupersededSpeech(snapshots.inWindowWithState(fromIso, toIso)
+          .filter((r) => r.dockId === dockId && r.source.kind !== 'summary'));
         // KEYFRAMES as the tie-breaker: the small VLM (qwen-3B) is inconsistent and, on a
         // sparse window, a single wrong sentence ("a person on a pull-up bar" for straps on a
         // hook) becomes the headline with nothing to check it. Send the actual keyframes so
@@ -859,7 +893,7 @@ export function perceptionModule(getHub: () => PerceptionProcessingHub): Station
         forDock(dockId: string, opts?: { coherent?: boolean }): string | undefined {
           const now = Date.now();
           // this dock's recent records (the store mixes docks; records are tagged).
-          const recent = snapshots.list().filter((r) => r.dockId === dockId && r.source.kind !== 'summary');
+          const recent = dropSupersededSpeech(snapshots.list().filter((r) => r.dockId === dockId && r.source.kind !== 'summary'));
           const block = buildGrounding({
             last: lastSummary.get(dockId) ?? null,
             recent,
@@ -1240,6 +1274,35 @@ export function perceptionModule(getHub: () => PerceptionProcessingHub): Station
         json(res, 200, state.all());
         return true;
       }
+      // ── HISTORY (offline review) — the persisted perception on disk (§7c), so the console
+      // can show a dock that ISN'T live-streaming right now. Keyed by STABLE dock name, so an
+      // offline dock (and one reconnecting with a new peerId) is the same history.
+      // GET /docks → [{ dock, from, to, lastSeen, hasSummaries, days }] — every dock with
+      //   on-disk history. The console UNIONS this with /media/status producers (live ∪ history)
+      //   to build its source selector; `live` is computed client-side against that producer list.
+      if (req.method === 'GET' && subPath === '/docks') {
+        json(res, 200, listDockHistory());
+        return true;
+      }
+      // GET /history?dock=X[&from=ISO&to=ISO] → the persisted timeline for a pinned window,
+      //   in the SAME SnapshotRecord shape as /snapshots (so the console timeline renders it
+      //   unchanged; span-summaries ride in as kind:'summary' rows = the older, lossy fidelity).
+      //   Defaults to the full retained span for the dock when from/to are omitted.
+      if (req.method === 'GET' && subPath === '/history') {
+        const u = new URL(req.url ?? '', 'http://x');
+        const dock = u.searchParams.get('dock') ?? '';
+        if (!dock) { json(res, 400, { error: 'dock query param required' }); return true; }
+        const hist = dockHistory(dock);
+        const fromIso = u.searchParams.get('from') || hist?.from || isoIst(new Date(Date.now() - 6 * 3600_000));
+        const toIso = u.searchParams.get('to') || hist?.to || isoIst(new Date());
+        // raw records + the compressed older tail, merged and sorted (the timeline expects one feed).
+        const recs = [
+          ...recordsInWindow(dock, fromIso, toIso),
+          ...spanSummariesInWindow(dock, fromIso, toIso),
+        ].sort((a, b) => (a.interval.from < b.interval.from ? -1 : a.interval.from > b.interval.from ? 1 : 0));
+        json(res, 200, { dock, window: { from: fromIso, to: toIso }, records: recs });
+        return true;
+      }
       // The dock's LATEST on-device face-track (the `perceive` stream, §7) — live state
       // for the console + debugging. GET /api/perception/:dockId/perceive → { ts, payload }
       // or { error } when nothing's arrived. Must precede the bare /:dockId catch-all.
@@ -1405,9 +1468,16 @@ export function perceptionModule(getHub: () => PerceptionProcessingHub): Station
         // Exclude prior SUMMARY records: a summary must digest the raw streams, not itself
         // (the comment below promised this; the filter was missing → summaries fed on their
         // own past output, drifting). Matches the auto/background path.
-        const recs = snapshots.inWindowWithState(fromIso, toIso)
+        let recs = snapshots.inWindowWithState(fromIso, toIso)
           .filter((r) => r.source.kind !== 'summary')
           .filter((r) => !body.dock || body.dock === 'all' || r.dockId === body.dock);
+        // OFFLINE HISTORY: when this window is scoped to one dock and the ring has nothing for it
+        // (an offline dock, or a window older than the ~1000-record ring), fall back to the durable
+        // on-disk records so "Summarize" works over persisted history, not just the live tail (§7c).
+        // Ring-first keeps the live path exact (carried-in state streams); disk is the fallback only.
+        if (!recs.length && body.dock && body.dock !== 'all') {
+          recs = recordsInWindow(body.dock, fromIso, toIso).filter((r) => r.source.kind !== 'summary');
+        }
         const keyframes = body.withKeyframes
           ? snapshots.keyframesInWindow(fromIso, toIso, body.maxKeyframes ?? 6) : undefined;
         const result = await summarize(recs, { keyframes, model: body.model, windowFromIso: fromIso });
@@ -1499,18 +1569,17 @@ export function perceptionModule(getHub: () => PerceptionProcessingHub): Station
         json(res, 200, { base: visionBase(), extra: getVisionExtra() });
         return true;
       }
-      // Background AUDIO interpreter toggle. GET → {enabled, model}; POST {enabled?,
-      // model?} flips it live (no restart). Off ⇒ local engine only. '/bg-stt' is the
-      // legacy route alias (older consoles).
-      if (req.method === 'GET' && (subPath === '/bg-audio' || subPath === '/bg-stt')) {
-        json(res, 200, getBgAudio());
+      // AUDIO ENRICHER state. GET → {enabled, model}; POST {model?} picks the live Gemini model
+      // (no restart). The enricher is always ON now, so `enabled` is retained for API back-compat
+      // only. '/enricher' is the current route; '/bg-audio' + '/bg-stt' are legacy aliases.
+      if (req.method === 'GET' && (subPath === '/enricher' || subPath === '/bg-audio' || subPath === '/bg-stt')) {
+        json(res, 200, getEnricherState());
         return true;
       }
-      if (req.method === 'POST' && (subPath === '/bg-audio' || subPath === '/bg-stt')) {
+      if (req.method === 'POST' && (subPath === '/enricher' || subPath === '/bg-audio' || subPath === '/bg-stt')) {
         const body = await parseBody<{ enabled?: boolean; model?: string }>(req);
-        if (typeof body.enabled === 'boolean') bgAudio_.enabled = body.enabled;
-        if (typeof body.model === 'string' && body.model) bgAudio_.model = body.model;
-        json(res, 200, getBgAudio());
+        if (typeof body.model === 'string' && body.model) enricher_.model = body.model;
+        json(res, 200, getEnricherState()); // `enabled` ignored — enricher is always on
         return true;
       }
       // DEBUG: dump the current decoded frame the face processor sees, to inspect
@@ -1522,6 +1591,39 @@ export function perceptionModule(getHub: () => PerceptionProcessingHub): Station
         res.writeHead(200, { 'content-type': 'image/jpeg' });
         res.end(buf);
         return true;
+      }
+      // DEBUG: serve a saved enricher WAV so the Studio can PLAY the exact audio a row was made
+      // from. GET /api/perception/enrich-audio/:dock/:startedAtMs → the wav (or 404 if not saved,
+      // e.g. PERCEPTION_ENRICH_SAVE off or pruned). The console picks the nearest saved file to the
+      // row's start, since the filename is <startedAtMs>_v<voiced%>.wav.
+      {
+        const am = subPath.match(/^\/enrich-audio\/([^/]+)\/(\d+)$/);
+        if (am && req.method === 'GET') {
+          const dock = decodeURIComponent(am[1]!); const want = Number(am[2]!);
+          const dir = `.data/enrich-audio/${dock}`;
+          try {
+            const fs = await import('node:fs');
+            const files = fs.readdirSync(dir).filter((f) => f.endsWith('.wav'));
+            // A row's time (segment `interval.from`) sits INSIDE its batch WINDOW, which can be
+            // 10-30s long — so match the WAV whose window CONTAINS `want` (started at-or-before it,
+            // and its duration reaches past it), not the nearest start. Window duration = file size:
+            // 16 kHz mono 16-bit = 32000 bytes/s (+44 header). Fall back to the nearest-earlier start.
+            let best: string | undefined; let bestStart = -Infinity;
+            for (const f of files) {
+              const t = Number(f.split('_')[0]);
+              if (t > want + 1000) continue;                 // starts after the row → not this window
+              let durMs = 30_000;
+              try { durMs = Math.round(((fs.statSync(`${dir}/${f}`).size - 44) / 32000) * 1000); } catch { /* */ }
+              const contains = want <= t + durMs + 1000;
+              if (contains && t > bestStart) { bestStart = t; best = f; }
+            }
+            if (!best) { json(res, 404, { error: 'no saved audio for this row' }); return true; }
+            const buf = fs.readFileSync(`${dir}/${best}`);
+            res.writeHead(200, { 'content-type': 'audio/wav', 'content-length': String(buf.length) });
+            res.end(buf);
+          } catch { json(res, 404, { error: 'enrich audio not available (PERCEPTION_ENRICH_SAVE off?)' }); }
+          return true;
+        }
       }
       // Gallery: list enrolled people / remove one.
       if (req.method === 'GET' && subPath === '/gallery') {

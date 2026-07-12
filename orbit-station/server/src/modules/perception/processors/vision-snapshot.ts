@@ -425,9 +425,13 @@ export function visionSnapshotProcessor(
     const sinceIso = isoIst(new Date(s.lastAnalyzedAt));
     return store.list(30).some((r) => {
       if (r.dockId !== s.ctx.dockId || r.interval.from <= sinceIso) return false;
-      const p = r.payload as { confTier?: string; salience?: string };
+      const p = r.payload as { confTier?: string; salience?: string; audioSource?: string };
       if (r.source.kind === 'speech') return (p.confTier ?? 'good') === 'good';
       if (r.source.kind === 'sound') return p.salience === 'notable' || p.salience === 'startling';
+      // enricher records: real in-room speech wakes vision; a notable/startling non-speech sound too.
+      if (r.source.kind === 'enriched') {
+        return (p.audioSource ?? 'speech') === 'speech' || p.salience === 'notable' || p.salience === 'startling';
+      }
       return false;
     });
   }

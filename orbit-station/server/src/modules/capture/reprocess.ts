@@ -12,7 +12,7 @@
 import { readFile } from 'node:fs/promises';
 import { isoIst } from '../perception/snapshots.js';
 import { confidenceTier } from '../perception/processors/speech-watch.js';
-import { isOnlineEngine, transcribeOnline } from './online-stt.js';
+import { isOnlineEngine, transcribeOnline, type EnrichContext } from './online-stt.js';
 
 const SIDECAR_URL = process.env.PERCEPTION_SIDECAR_URL ?? 'http://127.0.0.1:8078';
 
@@ -55,17 +55,21 @@ export interface ReprocessRun {
 export async function reprocessStt(opts: {
   audioPath: string; dockId: string; streamId: string;
   startedAtEpoch: number; model?: string; prompt?: string; label: string; job?: string;
+  /** for the 'enrich' engine: recent authoritative transcript + who's present (context). */
+  enrichContext?: EnrichContext;
 }): Promise<ReprocessRun> {
-  // Route ONLINE engines (deepgram / gemini-audio) vs the LOCAL whisper sidecar.
+  // Route ONLINE engines (deepgram / gemini-audio / enrich) vs the LOCAL whisper sidecar.
   let modelName: string;
   let endpoint: string;
-  let segs: Array<SidecarSegment & { speaker?: number | string }>;
+  type ESeg = SidecarSegment & { speaker?: number | string; source?: string; kind?: string; salience?: string; addressedToRobot?: boolean };
+  let segs: ESeg[];
   if (opts.model && isOnlineEngine(opts.model)) {
-    const out = await transcribeOnline(opts.model, opts.audioPath);
+    const out = await transcribeOnline(opts.model, opts.audioPath, opts.enrichContext);
     modelName = out.model; endpoint = opts.model;
     segs = out.segments.map((s) => ({
       start: s.start, end: s.end, text: s.text, speaker: s.speaker,
       avg_logprob: s.avg_logprob ?? null, no_speech_prob: s.no_speech_prob ?? null, compression_ratio: s.compression_ratio ?? null,
+      source: s.source, kind: s.kind, salience: s.salience, addressedToRobot: s.addressedToRobot,
     }));
   } else {
     const { pcm, rate } = await readWav(opts.audioPath);
@@ -98,6 +102,11 @@ export async function reprocessStt(opts: {
         text: spk + s.text, confTier: tier, lowConfidence: tier !== 'good',
         ...(s.speaker != null ? { speaker: s.speaker } : {}),
         avgLogprob: s.avg_logprob, noSpeechProb: s.no_speech_prob, compressionRatio: s.compression_ratio,
+        // enricher extras (present only for the 'enrich' engine) — shown in the compare grid.
+        ...(s.source ? { audioSource: s.source } : {}),
+        ...(s.kind ? { audioKind: s.kind } : {}),
+        ...(s.salience ? { salience: s.salience } : {}),
+        ...(s.addressedToRobot ? { addressedToRobot: true } : {}),
       },
     };
   });

@@ -18,7 +18,7 @@
  * crash-replay is harmless — consumers reconcile, they don't tally), and a time gap is just a
  * hole in the JSONL, which reads back fine.
  */
-import { appendFileSync, readFileSync, existsSync, mkdirSync, readdirSync, writeFileSync, unlinkSync } from 'node:fs';
+import { appendFileSync, readFileSync, existsSync, mkdirSync, readdirSync, writeFileSync, unlinkSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import type { SnapshotRecord } from './snapshots.js';
 
@@ -54,9 +54,23 @@ export function persistRecord(rec: SnapshotRecord): void {
   } catch { /* durability is best-effort; never break the live add() */ }
 }
 
+/** The reconcile key for a record: an utterance/snapshot is uniquely identified by its start
+ *  time + producing source. The SAME key `hydrate` uses to de-dup the ring on boot. */
+const recKey = (r: SnapshotRecord) => `${r.interval?.from}|${r.source?.id}|${r.source?.kind}`;
+
+/** Last-wins reconcile over an append-only, time-sorted record list: a record that was ENRICHED
+ *  after first write (bg-audio patch → re-append) appears twice; keep the LAST occurrence (the
+ *  patched one). Input MUST be ascending by interval.from (both readers sort before calling), so
+ *  the later line for a key is the enriched one. Preserves order; O(n). */
+function dedupeLastWins(recs: SnapshotRecord[]): SnapshotRecord[] {
+  const lastIdx = new Map<string, number>();
+  recs.forEach((r, i) => lastIdx.set(recKey(r), i));
+  return recs.filter((r, i) => lastIdx.get(recKey(r)) === i);
+}
+
 /** Load the recent tail (records whose start is within `withinMs` of `nowMs`) for a dock, so a
  *  restart restores recent perception into the ring. Reads only the day-files that could hold
- *  in-window records. Ascending by interval.from. */
+ *  in-window records. Ascending by interval.from, last-wins reconciled. */
 export function loadRecent(dock: string, nowMs: number, withinMs = RETAIN_MS): SnapshotRecord[] {
   if (!ENABLED || !existsSync(dockDir(dock))) return [];
   const cutoffIso = new Date(nowMs + 5.5 * 3600_000 - withinMs).toISOString(); // IST-ish cutoff for string compare
@@ -75,11 +89,12 @@ export function loadRecent(dock: string, nowMs: number, withinMs = RETAIN_MS): S
     }
   }
   out.sort((a, b) => (a.interval.from < b.interval.from ? -1 : a.interval.from > b.interval.from ? 1 : 0));
-  return out;
+  return dedupeLastWins(out);
 }
 
 /** Read all persisted records for a dock whose start is at/after `sinceIso` — the durable
- *  "span since T" the introspection checkpoint reads (may reach back further than the ring). */
+ *  "span since T" the introspection checkpoint reads (may reach back further than the ring).
+ *  Last-wins reconciled so an enriched (re-appended) record shows only its patched version. */
 export function recordsSince(dock: string, sinceIso: string): SnapshotRecord[] {
   if (!ENABLED || !existsSync(dockDir(dock))) return [];
   const out: SnapshotRecord[] = [];
@@ -95,7 +110,7 @@ export function recordsSince(dock: string, sinceIso: string): SnapshotRecord[] {
     }
   }
   out.sort((a, b) => (a.interval.from < b.interval.from ? -1 : a.interval.from > b.interval.from ? 1 : 0));
-  return out;
+  return dedupeLastWins(out);
 }
 
 /** Read the self-compressed tail (span-summaries) whose span STARTS at/after `sinceIso`. These
@@ -115,6 +130,90 @@ export function spanSummariesSince(dock: string, sinceIso: string): SnapshotReco
   }
   out.sort((a, b) => (a.interval.from < b.interval.from ? -1 : a.interval.from > b.interval.from ? 1 : 0));
   return out;
+}
+
+/** Read persisted records for a dock whose start falls in `[fromIso, toIso]` — the bounded
+ *  form of `recordsSince` the console's OFFLINE history view reads (a pinned window over what's
+ *  still retained on disk). Raw records only; span-summaries come via `spanSummariesInWindow`. */
+export function recordsInWindow(dock: string, fromIso: string, toIso: string): SnapshotRecord[] {
+  return recordsSince(dock, fromIso).filter((r) => r.interval.from <= toIso);
+}
+
+/** Span-summaries (the compressed older tail) whose span OVERLAPS `[fromIso, toIso]`: it starts
+ *  at/before the window end and ends at/after the window start. */
+export function spanSummariesInWindow(dock: string, fromIso: string, toIso: string): SnapshotRecord[] {
+  return spanSummariesSince(dock, fromIso).filter((r) => r.interval.from <= toIso);
+}
+
+/** One dock's on-disk history extent — what the console needs to OFFER it as a selectable source
+ *  and bound its time-range picker, without loading the records. Derived cheaply from the day-file
+ *  names (the span edges) + a tail read of the newest day (lastSeen) + the summaries file existence.
+ *  Returns null for a dock dir with no raw day-files AND no summaries (nothing to show). */
+export interface DockHistory {
+  dock: string;
+  from: string | null;   // earliest retained record day (00:00) — coarse, from the oldest day-file
+  to: string | null;     // lastSeen (below) or the newest day — the span's right edge
+  lastSeen: string | null; // interval.from of the newest persisted record (fine-grained)
+  hasSummaries: boolean; // a span-summaries.jsonl exists (older, compressed fidelity available)
+  days: number;          // count of raw day-files retained
+  bytes: number;         // on-disk size of this dock's raw day-files + summaries (statSync, no reads).
+                         // Surfaced in the console because vision records carry the frames qwen saw
+                         // (inputImages/reusedFromB64 base64 JPEGs) → ~99% of the bytes are images, so
+                         // a live dock's day-file balloons to 100+MB before the 6h raw-trim reclaims it.
+                         // Making the cost visible (it's an intentional debug/review payload, not a leak).
+}
+export function dockHistory(dock: string): DockHistory | null {
+  if (!ENABLED || !existsSync(dockDir(dock))) return null;
+  let entries: string[];
+  try { entries = readdirSync(dockDir(dock)); } catch { return null; }
+  const days = entries.filter(isDayFile).sort();
+  const hasSummaries = existsSync(summaryFile(dock));
+  if (!days.length && !hasSummaries) return null;
+  // The RAW extent, from the day-file names + a tail read of the newest day for lastSeen.
+  const rawFrom = days.length ? `${days[0]!.slice(0, 10)}T00:00` : null;
+  let lastSeen: string | null = null;
+  if (days.length) {
+    try {
+      const lines = readFileSync(join(dockDir(dock), days[days.length - 1]!), 'utf8').split('\n');
+      for (let i = lines.length - 1; i >= 0 && !lastSeen; i--) {
+        if (!lines[i]!.trim()) continue;
+        try { lastSeen = (JSON.parse(lines[i]!) as SnapshotRecord).interval?.from ?? null; } catch { /* torn line — keep scanning up */ }
+      }
+    } catch { /* unreadable → leave lastSeen null */ }
+  }
+  const rawTo = lastSeen ?? (days.length ? `${days[days.length - 1]!.slice(0, 10)}T23:59` : null);
+  // The SUMMARY extent (span-summaries.jsonl, appended in time order) — so a dock whose raw has all
+  // aged out (summaries-only) still reports a real span, and `from`/`to` cover BOTH fidelities. Else
+  // the default history window (rawFrom/rawTo, or a now−6h fallback) would miss the older digests.
+  let sumFrom: string | null = null, sumTo: string | null = null;
+  if (hasSummaries) {
+    try {
+      const lines = readFileSync(summaryFile(dock), 'utf8').split('\n').filter((l) => l.trim());
+      for (const l of lines) { try { sumFrom = (JSON.parse(l) as SnapshotRecord).interval?.from ?? null; break; } catch { /* torn */ } }
+      for (let i = lines.length - 1; i >= 0 && !sumTo; i--) { try { sumTo = (JSON.parse(lines[i]!) as SnapshotRecord).interval?.to ?? null; } catch { /* torn */ } }
+    } catch { /* unreadable */ }
+  }
+  // On-disk size: stat the raw day-files + the summaries file (metadata only, no content read).
+  let bytes = 0;
+  for (const f of days) { try { bytes += statSync(join(dockDir(dock), f)).size; } catch { /* raced away */ } }
+  if (hasSummaries) { try { bytes += statSync(summaryFile(dock)).size; } catch { /* */ } }
+  const min = (a: string | null, b: string | null) => a && b ? (a < b ? a : b) : (a ?? b);
+  const max = (a: string | null, b: string | null) => a && b ? (a > b ? a : b) : (a ?? b);
+  const from = min(rawFrom, sumFrom);
+  const to = max(rawTo, sumTo);
+  return { dock, from, to, lastSeen: lastSeen ?? sumTo, hasSummaries, days: days.length, bytes };
+}
+
+/** Every dock that has ANY on-disk perception history — the directory the console merges with the
+ *  set of live producers to build its source selector (so an offline dock is still selectable). */
+export function listDockHistory(): DockHistory[] {
+  if (!ENABLED || !existsSync(ROOT)) return [];
+  let docks: string[];
+  try { docks = readdirSync(ROOT); } catch { return []; }
+  return docks
+    .map((d) => dockHistory(d))
+    .filter((h): h is DockHistory => h !== null)
+    .sort((a, b) => (b.lastSeen ?? '').localeCompare(a.lastSeen ?? '')); // most-recently-seen first
 }
 
 /** The clock-hour bucket key for an IST-ish ISO timestamp: `YYYY-MM-DDTHH`. Span-summaries are
@@ -187,7 +286,10 @@ export async function selfCompressAndTrim(
       if (!buckets.size) continue; // no fully-closed aged hour in this file
       let anyCompressed = false;
       for (const [bkt, recs] of [...buckets.entries()].sort()) {
-        const rawRecs = recs.filter((r) => r.source?.kind !== 'summary');
+        // last-wins reconcile within the hour: an enriched (re-appended) record is present twice;
+        // summarize/count only its patched version, else spanRecords double-counts and the digest
+        // sees the utterance twice. recs are file-order (ascending) so the later line wins.
+        const rawRecs = dedupeLastWins(recs.filter((r) => r.source?.kind !== 'summary'));
         if (summarizeSpan && rawRecs.length) {
           let text: string;
           try { text = await summarizeSpan(rawRecs); }

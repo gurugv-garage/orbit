@@ -33,7 +33,35 @@ import type { StreamContext, StreamProcessor } from '../processor.js';
 import { makeSnapshot, type SnapshotStore } from '../snapshots.js';
 import { dockConditions } from '../../../core/conditions.js';
 import { UtteranceDetector, SAMPLE_RATE } from './vad-endpoint.js';
-import type { BgAudioEvent } from './background-audio.js';
+import type { EnrichSegment, EnrichContext } from './background-audio.js';
+import { mkdirSync, writeFileSync, readdirSync, statSync, unlinkSync } from 'node:fs';
+import { join } from 'node:path';
+
+/** How much disk the enricher WAV-debug dump may use before it prunes the oldest files. */
+// ~0.5-0.9 MB per window (14-29s @ 16 kHz mono). 200 MB ≈ ~300-400 windows ≈ a few hours of active
+// conversation — enough to browse a tuning session and compare enricher text vs the real audio.
+const ENRICH_SAVE_BUDGET_BYTES = Number(process.env.PERCEPTION_ENRICH_SAVE_MB ?? 200) * 1024 * 1024;
+
+/** DEBUG (PERCEPTION_ENRICH_SAVE=1): dump the exact 16 kHz mono WAV the enricher received, so we
+ *  can LISTEN and tell whether the enricher's text matches the audio (Gemini/prompt) or the audio
+ *  itself is garbled (STT/mic) or misaligned (a bug). Filename encodes the window start + voiced%.
+ *  Self-bounded: keeps the newest ~ENRICH_SAVE_BUDGET_BYTES (default 100 MB), pruning oldest. */
+function saveEnrichWav(dockId: string, pcm: Int16Array, startedAtMs: number, voicedPct: number): void {
+  try {
+    const dir = `.data/enrich-audio/${dockId}`;
+    mkdirSync(dir, { recursive: true });
+    const db = pcm.length * 2, hdr = Buffer.alloc(44);
+    hdr.write('RIFF', 0); hdr.writeUInt32LE(36 + db, 4); hdr.write('WAVE', 8); hdr.write('fmt ', 12);
+    hdr.writeUInt32LE(16, 16); hdr.writeUInt16LE(1, 20); hdr.writeUInt16LE(1, 22);
+    hdr.writeUInt32LE(SAMPLE_RATE, 24); hdr.writeUInt32LE(SAMPLE_RATE * 2, 28); hdr.writeUInt16LE(2, 32);
+    hdr.writeUInt16LE(16, 34); hdr.write('data', 36); hdr.writeUInt32LE(db, 40);
+    writeFileSync(`${dir}/${startedAtMs}_v${voicedPct}.wav`, Buffer.concat([hdr, Buffer.from(pcm.buffer, pcm.byteOffset, db)]));
+    // prune oldest until under budget (the filename prefix = startedAtMs is a natural age sort).
+    const files = readdirSync(dir).filter((f) => f.endsWith('.wav')).sort();
+    let total = files.reduce((n, f) => n + statSync(join(dir, f)).size, 0);
+    for (const f of files) { if (total <= ENRICH_SAVE_BUDGET_BYTES) break; try { total -= statSync(join(dir, f)).size; unlinkSync(join(dir, f)); } catch { /* */ } }
+  } catch { /* debug best-effort */ }
+}
 
 const SIDECAR_URL = process.env.PERCEPTION_SIDECAR_URL ?? 'http://127.0.0.1:8078';
 /** A1.4: the echo-gate (drop audio while the dock speaks) is OFF by default — the
@@ -296,12 +324,6 @@ export function speechWatchProcessor(
    *  drop audio then so the station never transcribes the dock's own voice (the
    *  self-transcribe feedback loop). Defaults to never-speaking. */
   isSpeaking?: (dockId: string) => boolean,
-  /** PRODUCTION background AUDIO interpreter (bg-audio-summarizer.md): given an acoustic
-   *  window's PCM + what triggered it, return the interpreted event (kind/salience/
-   *  transcript/summary). Speech endpoints UPGRADE the speech snapshot in place;
-   *  impulse/sustained triggers become their own 'sound' snapshots. Async + best-effort —
-   *  the live path never waits on it. Undefined = local engine only (the default). */
-  backgroundAudio?: (pcm: Int16Array, sampleRate: number, dockId: string, trigger: 'speech' | 'impulse' | 'sustained') => Promise<(BgAudioEvent & { model?: string }) | null>,
   /** LIVE INTERIMS: emitted mid-utterance for the dock caption UI. Undefined = no
    *  interims (default). Best-effort, decoupled from the authoritative final path. */
   onInterim?: (e: InterimTranscriptEvent) => void,
@@ -309,6 +331,20 @@ export function speechWatchProcessor(
    *  returns true for the dock (i.e. the dock is in a listening/followup turn). Undefined
    *  ⇒ interims never fire. Keeps the cost bounded to active turns, not ambient speech. */
   isListening?: (dockId: string) => boolean,
+  /** AUDIO ENRICHER (the merged path): given a batch window's PCM + context, return diarized,
+   *  context-aware SEGMENTS (accurate transcript + source/kind/salience/addressed). When wired,
+   *  it REPLACES the two `backgroundAudio` calls: it lands the authoritative durable records
+   *  (one per segment); parakeet then stays live-only. Undefined ⇒ the legacy backgroundAudio
+   *  path is used instead. */
+  enrich?: (pcm: Int16Array, sampleRate: number, dockId: string, context: EnrichContext) => Promise<EnrichSegment[]>,
+  /** Context for the enricher: recent authoritative transcript + who's present (for name
+   *  spelling / continuity). Pulled live from the store/grounding by the caller. */
+  enrichContext?: (dockId: string) => EnrichContext,
+  /** An addressed in-room speech segment observed by the enricher → the brain's WAKE FALLBACK
+   *  (the interpreter heard the robot's name the local STT garbled). Fired SYNCHRONOUSLY the moment
+   *  the enricher's result lands — no queue/batch between detection and this call. Observation
+   *  only; the brain's addressed latch is the sole authority on whether it becomes a turn. */
+  onEnrichAddressed?: (e: { dockId: string; text: string; conf: number; directive: string }) => void,
 ): StreamProcessor & {
   /** Force-commit any in-progress utterance on EVERY stream now, awaiting the
    *  transcription. Used by the Summarize flush so a mid-sentence is captured. */
@@ -374,40 +410,13 @@ export function speechWatchProcessor(
             // keep the raw metrics on the record for the playground to inspect/tune
             avgLogprob: tr.avgLogprob, noSpeechProb: tr.noSpeechProb, compressionRatio: tr.compressionRatio,
             inferMs: tr.inferMs,
+            // Parakeet's record is LIVE-ONLY: it feeds the addressed-latch/onFinal + the console
+            // STT lane, but the AUDIO ENRICHER's batch pass lands the authoritative durable
+            // transcript. The memory arm prefers enricher segments over these (avoid double-count).
+            liveOnly: true,
           },
         });
         store.add(rec);
-        // BACKGROUND UPGRADE (production split): the snapshot lands NOW with the local
-        // engine's text (fast); if the background audio interpreter is wired, async
-        // interpret this utterance and PATCH the snapshot in place with the acoustic
-        // event fields (+ a transcript upgrade when the model heard the words better).
-        // NO speaker indices — per-clip diarization was structurally broken and polluted
-        // 81% of long-term memories with "speaker 0" (bg-audio-summarizer.md §1).
-        // Best-effort — never blocks the live addressed-turn path below.
-        if (backgroundAudio) {
-          void backgroundAudio(pcm, SAMPLE_RATE, ctx.dockId, 'speech').then((ev) => {
-            if (!ev) return;
-            store.update(rec, {
-              // The interpreter's transcript REPLACES the local text only when the local
-              // engine was itself unsure (shaky/garbage tier) — a confident local read is
-              // authoritative (Gemini rewrote "Hey now, are you still…" into mush, seen
-              // live 2026-07-05; the doc's original complaint). Otherwise the alternate
-              // read rides along as bgTranscript for corroboration.
-              ...(ev.transcript && tier !== 'good' ? {
-                sttText: rec.payload.text as string, // PRESERVE the raw local transcript
-                text: ev.transcript,
-              } : ev.transcript && ev.transcript !== (rec.payload.text as string) ? {
-                bgTranscript: ev.transcript,
-              } : {}),
-              audioKind: ev.kind, audioKindConf: ev.kindConf,
-              salience: ev.salience, salienceConf: ev.salienceConf,
-              summary: ev.summary,
-              ...(ev.addressedToRobot ? { addressedToRobot: true, addressConf: ev.addressConf, directive: ev.directive } : {}),
-              bgModel: true,                       // marks this snapshot as bg-upgraded
-              ...(ev.model ? { audioModel: ev.model } : {}), // the background audio interpreter engine
-            });
-          }).catch(() => { /* keep the local STT text */ });
-        }
         // confidence rides along so downstream sees the engine's certainty, not a constant.
         // Whisper gives a real logprob; Parakeet has none → the 0.8 neutral default.
         const conf = tr.avgLogprob != null ? Math.max(0, Math.min(1, 1 + tr.avgLogprob)) : 0.8;
@@ -430,30 +439,91 @@ export function speechWatchProcessor(
       };
       const detector = new UtteranceDetector((pcm, startedAt, endedAt) => { void commit(pcm, startedAt, endedAt); });
       detector.commit = commit; // flushNow awaits this; the live path stays fire-and-forget
-      // NON-SPEECH acoustic events (impulse/sustained): interpret the ring window and
-      // land a 'sound' snapshot — laughter, music, a crash now exist in the record
-      // (they were structurally invisible to the words-only pipeline).
-      if (backgroundAudio) {
-        detector.onAcousticTrigger = (trig, windowPcm, at) => {
-          void backgroundAudio(windowPcm, SAMPLE_RATE, ctx.dockId, trig).then((ev) => {
-            if (!ev) return;
-            const windowMs = Math.round(windowPcm.length / (SAMPLE_RATE / 1000));
-            store.add(makeSnapshot({
-              dockId: ctx.dockId,
-              source: { id: ctx.streamId, kind: 'sound', device: 'dock-webrtc', host: 'station' },
-              model: { name: ev.model ?? 'bg-audio', endpoint: 'gemini' },
-              from: new Date(at.getTime() - windowMs), to: at,
-              payload: {
-                text: ev.summary || `[${ev.kind}]`,
-                audioKind: ev.kind, audioKindConf: ev.kindConf,
-                salience: ev.salience, salienceConf: ev.salienceConf,
-                ...(ev.addressedToRobot ? { addressedToRobot: true, addressConf: ev.addressConf, directive: ev.directive } : {}),
-                trigger: trig,
-              },
-            }));
-          }).catch(() => { /* best-effort */ });
+
+      // ── AUDIO ENRICHER (merged path) ── when wired, ONE context-aware pass over each batch
+      // window replaces the two backgroundAudio calls: it lands the authoritative durable
+      // records (one per diarized segment). Parakeet then stays live-only (conversation/wake/
+      // addressed-latch) and does NOT write the durable speech record.
+      if (enrich) {
+        // CROSS-BATCH dedup: overlapping windows re-transcribe boundary audio, so the same
+        // sentence can come back in two consecutive batches. Remember the last few emitted texts
+        // per stream and skip an immediate repeat. (In-batch dupes are handled in coalesceSegments.)
+        const recentEnriched: string[] = [];
+        const normText = (t: string) => t.toLowerCase().replace(/[^a-z0-9 ]/g, '').replace(/\s+/g, ' ').trim();
+        detector.onEnrich = (windowPcm, startedAtMs, armedBy, voicedPct) => {
+         // The SYNCHRONOUS prologue (below, before `void enrich(...)`) must never throw without
+         // calling enrichDone() — else #batchFiring stays true and the enricher wedges forever for
+         // this stream. Wrap it; on any sync error, release the guard.
+         try {
+          // HALLUCINATION GUARD: a window that's almost all silence but comes back as a full
+          // "conversation" is the model inventing it. If <10% of the window was voiced AND it was
+          // armed by a speech endpoint (not a real acoustic event), skip the enrich entirely — the
+          // little speech there is already covered by the previous window's tail / parakeet.
+          if (voicedPct < 10 && armedBy === 'speech') { detector.enrichDone(); return; }
+          // DEBUG: dump the exact WAV the enricher receives (PERCEPTION_ENRICH_SAVE=1), so we can
+          // LISTEN and confirm whether the enricher's text matches the actual audio or hallucinates.
+          if (process.env.PERCEPTION_ENRICH_SAVE === '1') { void saveEnrichWav(ctx.dockId, windowPcm, startedAtMs, voicedPct); }
+          const windowEndMs = startedAtMs + Math.round(windowPcm.length / (SAMPLE_RATE / 1000));
+          // The raw parakeet STT that overlapped THIS window — so each enricher row can show what
+          // the live engine heard for the same audio (compare enricher vs raw STT; and if there's
+          // NO STT the window was non-speech / silence, exposing a hallucinated "conversation").
+          const sttHere = store.list()
+            .filter((r) => r.source.kind === 'speech' && (r.payload as { liveOnly?: boolean }).liveOnly
+              && Date.parse(r.interval.from) < windowEndMs && Date.parse(r.interval.to) > startedAtMs)
+            .map((r) => String((r.payload as { text?: string }).text ?? '')).filter(Boolean);
+          const sttWindow = sttHere.join(' ').slice(0, 300);
+          const context = enrichContext?.(ctx.dockId) ?? {};
+          void enrich(windowPcm, SAMPLE_RATE, ctx.dockId, context)
+            .then((segs) => {
+              for (const seg of segs) {
+                const nt = normText(seg.text);
+                if (nt.length > 3 && recentEnriched.includes(nt)) continue; // skip a cross-batch repeat
+                recentEnriched.push(nt); if (recentEnriched.length > 6) recentEnriched.shift();
+                // ADDRESSED → the brain FIRST, before we even write the record — so there is ZERO
+                // avoidable work between the enricher identifying "spoken to orbit" and the wake.
+                if (seg.addressedToRobot && seg.source === 'speech') {
+                  onEnrichAddressed?.({ dockId: ctx.dockId, text: seg.text, conf: seg.addressConf ?? 0.7, directive: seg.directive ?? '' });
+                }
+                const from = new Date(startedAtMs + seg.fromMs);
+                const to = new Date(startedAtMs + Math.max(seg.fromMs, seg.toMs));
+                // ONE record kind for everything the enricher emits: 'enriched'. Same input, same
+                // output shape every time — WHAT it contains (real in-room speech vs played media
+                // vs a non-speech sound) is the `audioSource` FIELD, not a separate record kind.
+                // Consumers read the field they need (the summarizer treats media/sound as ambient,
+                // speech as conversation; the UI shows it as an emoji badge).
+                store.add(makeSnapshot({
+                  dockId: ctx.dockId,
+                  source: { id: ctx.streamId, kind: 'enriched', device: 'dock-webrtc', host: 'station' },
+                  model: { name: 'audio-enricher', endpoint: 'gemini' },
+                  from, to,
+                  payload: {
+                    text: seg.text,
+                    ...(seg.speaker != null ? { speaker: seg.speaker } : {}),
+                    audioSource: seg.source,
+                    ...(seg.kind ? { audioKind: seg.kind } : {}),
+                    ...(seg.transcriptConf != null ? { transcriptConf: seg.transcriptConf } : {}),
+                    salience: seg.salience,
+                    ...(seg.salienceConf != null ? { salienceConf: seg.salienceConf } : {}),
+                    ...(seg.summary ? { summary: seg.summary } : {}),
+                    ...(seg.addressedToRobot ? { addressedToRobot: true } : {}),
+                    ...(seg.addressConf != null ? { addressConf: seg.addressConf } : {}),
+                    ...(seg.directive ? { directive: seg.directive } : {}),
+                    // DEBUG fields: what triggered this + how much real audio + the raw STT here.
+                    enriched: true, armedBy, voicedPct,
+                    ...(sttWindow ? { sttWindow } : {}),
+                  },
+                }));
+              }
+            })
+            .catch(() => { /* enricher best-effort — parakeet's live path already ran */ })
+            .finally(() => { detector.enrichDone(); });
+         } catch { detector.enrichDone(); } // sync prologue threw → release the batch guard
         };
       }
+
+      // (Non-speech acoustic events — a crash, music, laughter — are now produced by the AUDIO
+      // ENRICHER: its batch pass emits them as 'sound' segments with source:'sound'. The old
+      // per-impulse backgroundAudio path was removed with the merge.)
       // LIVE INTERIMS — only when a consumer (onInterim) AND a gate (isListening) are
       // wired. The detector calls onInterim(pcm) at INTERIM_INTERVAL_MS while in-speech;
       // we transcribe the partial and forward it with a per-utterance monotonic seq. A

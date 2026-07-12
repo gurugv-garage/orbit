@@ -42,8 +42,12 @@ All paths under `orbit-station/server/src/modules/perception/`.
 | **Sidecars** (the 2 MLX apps) | `sidecars.ts` | `SidecarSupervisor`; `GET/POST /api/perception/sidecars[/:name/...]` |
 | **Console** | `web/src/modules/PerceptionStudio.tsx` | the `/#perception` playground |
 
-Key REST routes (all under `/api/perception`): `GET /snapshots`, `POST /snapshots/flush`,
-`POST /snapshots/summarize`, `POST /bodymotion` (inject a mock motion command),
+Key REST routes (all under `/api/perception`): `GET /snapshots` (the live ring),
+`GET /docks` (every dock with **persisted history** on disk — the console's offline source list),
+`GET /history?dock=&from=&to=` (the persisted timeline for an OFFLINE/historical window — raw records
++ span-summaries, same envelope as `/snapshots`), `POST /snapshots/flush`,
+`POST /snapshots/summarize` (falls back to on-disk records for an offline dock, so Summarize works over
+history too), `POST /bodymotion` (inject a mock motion command),
 `/takes/*`, `/gallery/*`, `GET /sidecars`. The Python sidecar lives at
 `models/perception-sidecar/sidecar.py` (run/test: [operations/perception-runbook.md](operations/perception-runbook.md)).
 
@@ -653,7 +657,12 @@ Planned changes, in dependency order:
    by closed clock-hour (`selfCompressAndTrim` in `retention.ts`), not day-granular.
 3. **A "span since T" read API** on perception: given a checkpoint timestamp + a size/count
    budget, return raw-where-retained + span-summaries-for-the-older-gap. The single feed both
-   introspection and grounding consume.
+   introspection and grounding consume. **(BUILT — `recordsSince`/`spanSummariesSince` in
+   `retention.ts`, consumed by `perceptionSince`/`reconciledPerceptionSince`.)** The **console** now
+   reads the same durable store: `GET /docks` lists every dock with on-disk history and `GET /history`
+   returns a pinned window (raw + span-summaries), so the Perception Studio shows a dock's timeline —
+   and can re-Summarize it — **even when the dock is offline** (the selector merges live producers with
+   docks-that-have-history; an offline source swaps the live tile for a history card + time-range picker).
 4. **Introspection reads it** (ego §3.2 / `ego/index.ts` `recentExperience`): checkpoint =
    ego `meta.updated`; add the dock's **conversation** turns in the span (from the brain
    sessions, prompt-scaffolding filtered). Closes the recovery loop.
