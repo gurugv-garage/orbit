@@ -227,6 +227,28 @@ model is missing/unloadable it logs a loud `⚠️ DEGRADED` error and the loop 
 `VISION_EMBED_DEBUG=1` prints every probe's distance. sense-wake (audio) + heartbeat still
 force a look independent of the gate.
 
+**KNOWN LIMITATION — the presence blind spot (and the "local veto" we removed, 2026-07-12).**
+A whole-frame embedding is dominated by the large static scene, so a **small / backlit / distant
+person** barely moves it. Measured live: a person on a bright, blown-out staircase sat at embedding
+distance **0.071** — *below* the 0.18 reuse band — so the reuse-cache reused an "empty stairway"
+description and **missed the person entirely**. Real, verified, three ways (logged `reusedDist`, a
+fresh recompute from the pixels = 0.07125, and a 5.4% pixel-diff). face-api is also blind here (0
+faces — the person faces away / is backlit), so both global signals fail together.
+
+We first patched this with a **"local veto"**: run the fallback 16×16 signal every probe and force a
+fresh VLM look whenever a *single* cell cleared `CELL_THRESHOLD`, on the theory that a person is a
+strong local change the global mean dilutes. It was **removed** because it was a per-scene hack, not
+a model: on a bright/high-contrast static scene a lone blown-out edge cell clears the bar from
+compression/auto-exposure alone, so it fired on ~every probe — measured **6 forced looks in one
+session of which only 2 were real people** (the rest saw nothing), plus a wall of spurious reuse rows
+on an unchanging view (~40/min → the gate that should have said "no change" never got to). Trading
+one missed-person for constant false looks + I/O is a bad trade, and stacking hand-tuned pixel
+thresholds on top of a working embedding gate is exactly the losing battle the pixel gate already
+lost. **Decision:** keep the blind spot as a documented limitation rather than patch it per-scene.
+The real fix is a **presence-aware signal** — a cheap person/motion detector feeding the gate (the
+tiered "pyramid", §9), or DINOv2 patch-token (not just CLS) locality — not another threshold. Until
+then the global embedding gate + cache stand on their own.
+
 > **DINOv2 is a general-purpose embedder** — this same in-process model can serve place/thing
 > recognition, near-duplicate detection, and richer change signals with near-zero added
 > overhead. Feasibility + ranked verdict: [research/perceptual-memory.md](research/perceptual-memory.md).

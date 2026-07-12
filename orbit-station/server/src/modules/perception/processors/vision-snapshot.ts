@@ -327,9 +327,16 @@ export function visionSnapshotProcessor(
 
   /** Commit a vision record with a REUSED description (cache hit — no VLM call). Advances
    *  the change-gate anchor to this frame's embedding so the loop doesn't immediately
-   *  re-fire on the same view; tags reused:true so the Studio shows it wasn't a fresh look. */
-  function commitReused(s: StreamState, hit: { text: string; dist: number; frameB64: string }, emb: Float32Array, currentB64: string): void {
+   *  re-fire on the same view; tags reused:true so the Studio shows it wasn't a fresh look.
+   *
+   *  A reuse is LIVE PROOF the view is still current, so it REFRESHES the matched cache entry's
+   *  `at` — otherwise a view the dock stares at for minutes (reused every probe) still ages out
+   *  at REUSE_TTL_MS on its ORIGINAL doCapture timestamp, the cache goes cold, and the very next
+   *  probe re-inferences a view we were reusing one second earlier (measured: 30/44 fresh calls
+   *  fired right after a reuse streak crossed the 120 s TTL — the dominant waste, fixed here). */
+  function commitReused(s: StreamState, hit: { entry: NonNullable<StreamState['recent']>[number]; dist: number }, emb: Float32Array, currentB64: string): void {
     const now = new Date();
+    hit.entry.at = Date.now();     // keep the actively-reused view warm — reuse ≠ staleness
     // inputImages = [CURRENT probe frame, ORIGINAL analyzed frame] so the Studio can show
     // "reusing THIS view (left) → because it matches the view we already described (right)".
     // reusedFromB64 names which is the original; reusedDist is the embedding match distance.
@@ -338,11 +345,11 @@ export function visionSnapshotProcessor(
       source: { id: s.ctx.streamId, kind: 'vision', device: 'dock-webrtc', host: 'station' },
       model: { name: MODEL_NAME, endpoint: `${TEMPORAL_URL}/temporal` },
       from: now, to: now,
-      payload: { text: hit.text, frames: 0, latencyMs: 0, inferMs: 0, gatedProbes: s.skippedProbes,
+      payload: { text: hit.entry.text, frames: 0, latencyMs: 0, inferMs: 0, gatedProbes: s.skippedProbes,
         gateTrigger: 'reused', reused: true, reusedDist: hit.dist, camMoving: cameraMoving?.(s.ctx.dockId) ?? false,
-        inputImages: [currentB64, hit.frameB64], reusedFromB64: hit.frameB64 },
+        inputImages: [currentB64, hit.entry.frameB64], reusedFromB64: hit.entry.frameB64 },
     }));
-    s.ctx.emit({ kind: 'scene', source: 'vision-snapshot', payload: { description: hit.text }, confidence: 0.7 });
+    s.ctx.emit({ kind: 'scene', source: 'vision-snapshot', payload: { description: hit.entry.text }, confidence: 0.7 });
     s.lastEmb = emb;               // anchor to the reused view (don't re-fire on it)
     s.lastAnalyzedAt = Date.now();
     s.skippedProbes = 0;
@@ -391,15 +398,16 @@ export function visionSnapshotProcessor(
   }
 
   /** Cache lookup: does the probe embedding match a FRESH recently-analyzed view closely
-   *  enough to reuse its description (skip the VLM)? Returns the reused text or null. */
-  function reuseFromCache(s: StreamState, emb: Float32Array): { text: string; dist: number; frameB64: string } | null {
+   *  enough to reuse its description (skip the VLM)? Returns the matched cache ENTRY (so the
+   *  caller can refresh its `at` on reuse — see commitReused) + the match distance, or null. */
+  function reuseFromCache(s: StreamState, emb: Float32Array): { entry: NonNullable<StreamState['recent']>[number]; dist: number } | null {
     if (!REUSE_CACHE || !s.recent?.length) return null;
     const now = Date.now();
     s.recent = s.recent.filter((e) => now - e.at < REUSE_TTL_MS);   // expire stale entries
-    let best: { text: string; dist: number; frameB64: string } | null = null;
+    let best: { entry: NonNullable<StreamState['recent']>[number]; dist: number } | null = null;
     for (const e of s.recent) {
       const d = embedDistance(emb, e.emb);
-      if (d < REUSE_DIST && (!best || d < best.dist)) best = { text: e.text, dist: d, frameB64: e.frameB64 };
+      if (d < REUSE_DIST && (!best || d < best.dist)) best = { entry: e, dist: d };
     }
     return best;
   }
@@ -481,8 +489,17 @@ export function visionSnapshotProcessor(
       else console.error(`[vision] ${s.ctx.dockId}: change-gate = PIXEL (DEGRADED — embed model unavailable)`);
     });
     while (streams.has(streamId)) {
-      let trigger: string | null = 'first-look';
-      if ((s.lastEmb || s.lastSig) && !s.busy) {
+      // BUSY ⇒ an on-demand captureNow (force_get_current / Summarize flush) is mid-inference on the
+      // single-threaded sidecar. Skip this tick entirely — do NOT fall through to the gate: the
+      // `first-look` default below would leak through as a full un-gated, un-cached inference that
+      // re-describes the current view (measured: repeated `first-look` rows ~30 s apart mid-session,
+      // each right after an on-demand capture — a distinct waste from the TTL-expiry one). The queued
+      // on-demand capture already covers "look now"; the loop re-probes cleanly next tick.
+      if (s.busy) { await sleep(PROBE_MS); continue; }
+      // No anchor yet ⇒ genuine first look. Once an anchor exists this branch is never re-taken,
+      // so `first-look` can only appear at true stream start, never mid-session.
+      let trigger: string | null = (s.lastEmb || s.lastSig) ? null : 'first-look';
+      if (s.lastEmb || s.lastSig) {
         const jpeg = getFrame(s.ctx.streamId);
         // Ask the active gate whether the CONTENT changed since the last analyzed frame.
         // Preferred: the SEMANTIC gate (embedding distance) — robust to the lighting/
@@ -490,39 +507,31 @@ export function visionSnapshotProcessor(
         // person entering 0.25-0.53. Fallback: the pixel signature + learned noise floor,
         // used only when the embedder is unavailable (VISION_EMBED_GATE=0 / model missing).
         const probe = s.lastEmb ? await embedChanged(s, jpeg) : null;
-        let changed = probe ? probe.trigger : (s.lastEmb ? null : pixelChanged(s, jpeg));
+        const changed = probe ? probe.trigger : (s.lastEmb ? null : pixelChanged(s, jpeg));
         const probeEmb = probe?.emb ?? null;
-        // LOCAL VETO (fix for the presence-blind global embedding): a whole-frame DINOv2 vector is
-        // dominated by the large static scene, so a SMALL / backlit / distant person barely moves
-        // it (measured: person-on-a-bright-staircase = 0.07, below the 0.18 reuse band → the cache
-        // wrongly reused an "empty room" description and MISSED the person). The 16×16 LOCAL signal
-        // is not fooled: that same person is a strong local change (excessMax ~0.46 ≫ 0.12). So when
-        // the semantic gate is active, ALSO run the local signal every probe — and if a cell-level
-        // change clears CELL_THRESHOLD, force a FRESH VLM look: it overrides the reuse-cache AND
-        // self-motion suppression (a real local change, not just a re-framing). Keeps the pixel
-        // signal's noise-floor warm too. (Global still gates the common case; this only *adds* looks.)
-        let localOverride = false;
-        if (s.lastEmb) {
-          const e = localExcess(s, jpeg);
-          if (e && e.max >= CELL_THRESHOLD && !cameraMoving?.(s.ctx.dockId)) {
-            localOverride = true;
-            if (!changed) changed = `local-change max=${e.max.toFixed(2)}`;
-            if (EMBED_DEBUG) console.log(`[vision] ${s.ctx.dockId} LOCAL-VETO: max=${e.max.toFixed(2)} ≥ ${CELL_THRESHOLD} (global embedding diluted it) → fresh look`);
-          }
-        }
+        // NOTE: a "local veto" heuristic once lived here (removed 2026-07-12). It ran the 16×16 local
+        // signal every probe and forced a fresh look whenever ONE cell cleared CELL_THRESHOLD, meant to
+        // catch a small/backlit person the whole-frame DINOv2 embedding dilutes (a real, verified blind
+        // spot — see docs/perception-pipeline.md §2a "KNOWN LIMITATION — the presence blind spot"). But on a bright/high-
+        // contrast static scene a single blown-out edge cell clears the bar from compression/auto-exposure
+        // alone, so it fired ~every probe: measured 6 fresh looks in a session of which only 2 were real
+        // people and the rest saw nothing, plus a wall of spurious reuse rows on an unchanging view. It was
+        // a per-scene patch, not a model. The right fix is a presence-aware signal (a cheap person/motion
+        // detector feeding the gate), not more hand-tuned pixel thresholds — until then the global embedding
+        // gate + cache stand on their own and the blind spot is a KNOWN, documented limitation.
         // RECENT-ANALYSIS CACHE — checked BEFORE suppression: the view changed, but is it a
         // view we JUST described (the head swept back to the staircase we saw 8 s ago)? Reuse
         // that description — even WHILE MOVING, because "returning to a known view" is exactly
         // the case that suppression would otherwise just defer. Reuse is cheap + safe (tight
         // distance + short TTL), and strictly better than deferring when we already know the view.
-        if (changed && probeEmb && !localOverride) {
+        if (changed && probeEmb) {
           const hit = reuseFromCache(s, probeEmb);
           if (EMBED_DEBUG) {
             const dists = (s.recent ?? []).map((e) => embedDistance(probeEmb, e.emb).toFixed(3)).join(',');
             console.log(`[vision] ${s.ctx.dockId} cache-check: ${s.recent?.length ?? 0} entries [d=${dists}] thr=${REUSE_DIST} → ${hit ? 'HIT' : 'miss'}`);
           }
           if (hit) {
-            if (EMBED_DEBUG) console.log(`[vision] ${s.ctx.dockId} REUSE (d=${hit.dist.toFixed(3)}): ${hit.text.slice(0, 50)}`);
+            if (EMBED_DEBUG) console.log(`[vision] ${s.ctx.dockId} REUSE (d=${hit.dist.toFixed(3)}): ${hit.entry.text.slice(0, 50)}`);
             flushGap(s);   // close any open no-change/self-motion span before this reuse row
             commitReused(s, hit, probeEmb, jpeg!.toString('base64'));  // probeEmb set ⇒ jpeg was non-null
             s.skippedProbes++; await sleep(PROBE_MS); continue;
