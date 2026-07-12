@@ -227,6 +227,43 @@
       <span class="tag">why the summarizer is the one gate</span>
       <p>Both durable outputs feed from the <strong>reconciled summary</strong>, not the raw ring — deliberate. Consolidating raw per-utterance speech once produced 81% junk "speaker 0" beliefs. Digest first, then compress + remember. Crucially, <strong>the ego reads this reconciled stream too</strong> (<code class="inl">reconciledPerceptionSince</code>) — never raw sensor lines, because a faithful reasoner reads raw contradictions as "my eyes are broken" and spirals.</p>
     </div>
+
+    <p class="step-title" style="margin-top:26px"><span class="step-n">M4b</span>Inside the summarizer — stitch (deterministic) then fuse (LLM)</p>
+    <p>"The summarizer" (<code class="inl">summarizer.ts</code>) is not one Gemini call — it's <strong>two stages</strong>, and most of the noise-handling is <em>deterministic code</em>, not the model. <code class="inl">stitch()</code> turns the four independent, time-ordered streams into one clean, annotated transcript; <code class="inl">summarize()</code> then sends <em>that</em> (plus keyframe images) to Gemini for the fusion. The model reasons over an already-cleaned timeline, not raw jitter.</p>
+    <div class="diagram">
+<pre>  raw records (vision · speech · identity · bodymotion, one dock, a window)
+        │
+        ▼   <span class="hl">stitch()</span>  — PURE CODE, no LLM
+   ┌────────────────────────────────────────────────────────────────┐
+   │ • sort all four streams into ONE chronological timeline          │
+   │ • collapse repeating state (IDENTITY / CAMERA) into SPANS         │
+   │     40× "no one present" ─▶ one span with a start–end range       │
+   │ • STALENESS tag: state carried in from before the window ─▶       │
+   │     "[as of 14:38, 21m before window]"  (don't read as current)   │
+   │ • CONFIDENCE tier: garbage speech ─▶ "[unclear speech, ~3s]"      │
+   │     (never the garbled words); shaky ─▶ "[low-confidence]"        │
+   │ • ADDRESSED flag (from the brain): "[→ TO YOU]" vs "[overheard]"  │
+   │ • active-speaker guess (mouth-open): "[likely Guru]"              │
+   │ • drop gap-marker records (Studio-only, not perceived content)    │
+   └────────────────────────────────────────────────────────────────┘
+        │  a clean, role-tagged, de-jittered TRANSCRIPT
+        ▼   <span class="hl">summarize()</span>  — the LLM (Gemini, multimodal)
+   SYSTEM prompt + transcript + <span class="hlw">keyframe JPEGs</span>  ──▶  reconciled narrative
+   (the model can SEE the scene, so it overrides a bad VLM text line)</pre>
+    </div>
+    <table class="cmp">
+      <thead><tr><th>Function · export</th><th>LLM?</th><th>Does</th><th>Also used by</th></tr></thead>
+      <tbody>
+        <tr><td class="rtcc"><code class="inl">stitch()</code></td><td>no — pure code</td><td>correlate 4 streams → one clean, span-collapsed, staleness/confidence/addressed-annotated transcript</td><td><strong>grounding</strong> (per-turn brain context) and the <strong>ego</strong>'s reconciled read — the same formatting intelligence everywhere</td></tr>
+        <tr><td class="rtcc"><code class="inl">summarize()</code></td><td>yes — Gemini, multimodal</td><td>fuse the stitched transcript + keyframes → the reconciled narrative (the QC / hallucination-override step); returns the exact prompt + counts for the console</td><td>rolling summary · span-summaries · fact-extraction</td></tr>
+        <tr><td class="rtcc"><code class="inl">SYSTEM</code> prompt</td><td>(the rules)</td><td>how to read each stream, egocentric camera-motion, VLM-hallucination guards, addressed vs overheard, "write for relevance not coverage"</td><td>—</td></tr>
+        <tr><td class="rtcc"><code class="inl">geminiText()</code></td><td>yes — Gemini, text</td><td>a shared one-shot text→text entrypoint (key/base/cost) so other steps don't stand up their own client</td><td>the <strong>ego's introspection</strong> runs its whole prompt through this</td></tr>
+      </tbody>
+    </table>
+    <div class="note warn">
+      <span class="tag">where the QC actually lives</span>
+      <p>Most of "make sense of noisy streams" is the <strong>deterministic <code class="inl">stitch()</code></strong> — spans, staleness, confidence tiers, addressed/overheard. The LLM only does the <em>fusion</em> on top of a transcript that's already been cleaned. And because <code class="inl">stitch()</code> is reused by grounding and the ego, that cleaning is <strong>consistent for every consumer</strong>, not re-implemented per reader. Graceful degradation: no API key ⇒ <code class="inl">summarize()</code> still returns the stitched transcript (with an <code class="inl">error</code> field); empty window ⇒ a canned "no perception data".</p>
+    </div>
   </div>
 </section>
 
