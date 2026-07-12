@@ -17,6 +17,8 @@ import type { SnapshotRecord } from './snapshots.js';
 import { reportGeminiCost } from './cost-report.js';
 
 const MODEL = process.env.PERCEPTION_SUMMARY_MODEL ?? 'gemini-2.5-flash';
+/** The default Gemini text model (exported so callers can name it in debug/inputs surfaces). */
+export const DEFAULT_MODEL = MODEL;
 const GEMINI_BASE = 'https://generativelanguage.googleapis.com/v1beta/models';
 
 function geminiKey(): string | undefined {

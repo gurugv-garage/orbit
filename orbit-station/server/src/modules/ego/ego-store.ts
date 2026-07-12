@@ -78,8 +78,10 @@ function thinTrace(dock: string, nowMs: number, keepAllMs: number): void {
     const ms = parseMs(n);
     if (!ms || nowMs - ms <= keepAllMs) continue;   // recent window: keep every snapshot
     const bucket = Math.floor(ms / keepAllMs);       // older: one per bucket
-    if (seenBucket.has(bucket)) { try { unlinkSync(join(td, n)); } catch { /* */ } }
-    else seenBucket.add(bucket);
+    if (seenBucket.has(bucket)) {
+      try { unlinkSync(join(td, n)); } catch { /* */ }
+      try { unlinkSync(join(td, n.replace(/\.md$/, '.inputs.json'))); } catch { /* no sidecar — fine */ }
+    } else seenBucket.add(bucket);
   }
 }
 
@@ -99,10 +101,41 @@ export function saveEgo(
     const ts = new Date(stampMs).toISOString().replace(/[:.]/g, '-');
     tracePath = join(traceDir(dock), `${ts}.md`);
     writeFileSync(tracePath, readFileSync(prior, 'utf8'));
+    // Carry the PRIOR ego's captured inputs along with its trace snapshot, so the console can
+    // pair every past ego version with exactly what produced it (not just the current one).
+    const priorInputs = latestInputsFile(dock);
+    if (existsSync(priorInputs)) {
+      try { writeFileSync(tracePath.replace(/\.md$/, '.inputs.json'), readFileSync(priorInputs, 'utf8')); } catch { /* */ }
+    }
   }
   writeFileSync(egoFile(dock), newText.endsWith('\n') ? newText : newText + '\n');
   thinTrace(dock, stampMs, keepAllMs);
   return { tracePath, snapshotted: tracePath != null };
+}
+
+// ── Introspection INPUTS (the debug/console surface): the exact material each ego version was
+//    produced from. `latest.inputs.json` pairs with the current ego; `trace/<ts>.inputs.json`
+//    pairs with a past snapshot (copied on snapshot, above). ──
+const latestInputsFile = (dock: string) => join(dir(dock), 'latest.inputs.json');
+
+/** Persist the inputs that produced the CURRENT ego (best-effort; never breaks introspection). */
+export function saveInputs(dock: string, inputs: unknown, _tracePath?: string | null): void {
+  try {
+    mkdirSync(dir(dock), { recursive: true });
+    writeFileSync(latestInputsFile(dock), JSON.stringify(inputs, null, 2));
+  } catch { /* the console just won't have inputs for this run */ }
+}
+
+/** Inputs for the CURRENT ego, or undefined if none captured (pre-feature egos). */
+export function loadLatestInputs(dock: string): unknown | undefined {
+  try { const f = latestInputsFile(dock); return existsSync(f) ? JSON.parse(readFileSync(f, 'utf8')) : undefined; }
+  catch { return undefined; }
+}
+
+/** Inputs for a past trace snapshot (by its `<ts>` name), or undefined. */
+export function loadTraceInputs(dock: string, name: string): unknown | undefined {
+  try { const f = join(traceDir(dock), `${name}.inputs.json`); return existsSync(f) ? JSON.parse(readFileSync(f, 'utf8')) : undefined; }
+  catch { return undefined; }
 }
 
 export const egoPaths = { egoFile, traceDir, dir };

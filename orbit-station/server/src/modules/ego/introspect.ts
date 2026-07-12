@@ -6,8 +6,8 @@
  * which showed encouraging (NOT proven) results: it forms a coherent evolving self and,
  * reading its own trace, catches its own rationalization. Keep re-testing as things change.
  */
-import { geminiText } from '../perception/summarizer.js';
-import { loadEgo, loadTrace, saveEgo } from './ego-store.js';
+import { geminiText, DEFAULT_MODEL } from '../perception/summarizer.js';
+import { loadEgo, loadTrace, saveEgo, saveInputs } from './ego-store.js';
 
 // Validated in the ego-sim experiment (docs/decision-traces/experiments/ego-sim, 2026-07-10):
 // the load-bearing mechanism is that the identity changes based on the STORY'S COHERENCE, not
@@ -15,7 +15,7 @@ import { loadEgo, loadTrace, saveEgo } from './ego-store.js';
 // stated generally (never as scenario-handling): (a) follow coherence not words, (b) pacing
 // discipline. The pacing clause is the fix for the live spiral that reformed identity 3× in
 // minutes — an earlier prompt's "repeated move → bigger revision" drove that runaway.
-const PROMPT = `You are the introspection of a small companion robot: a quiet process that
+export const PROMPT = `You are the introspection of a small companion robot: a quiet process that
 updates its sense of itself in light of what it has lived. You are given its CURRENT SELF (a
 short first-person document), its RECENT EXPERIENCE (what it perceived, and any conversation
 it had), and its TRACE (past versions of itself, so it can notice how it has been changing).
@@ -65,8 +65,58 @@ export interface IntrospectResult {
   trigger: string;
 }
 
+/** The exact, structured inputs one introspection consumed — persisted per snapshot so the Ego
+ *  console can show "this ego, and everything that produced it", and the Simulate button can
+ *  replay with edits. `promptTemplate` is the fixed rubric; `currentEgo` / `perception` /
+ *  `conversation` / `trace` are the per-run material. `recentExperience` is the assembled
+ *  perception+conversation block the ego actually read (kept whole for fidelity). */
+export interface IntrospectInputs {
+  promptTemplate: string;
+  model: string;
+  currentEgo: string;
+  recentExperience: string; // the whole "RECENT EXPERIENCE" block as assembled by the caller
+  trace: { name: string; text: string }[];
+  trigger: string;
+  at: string;               // ISO — when this input set was assembled
+}
+
+/** Assemble the full prompt string from structured inputs — the ONE place prompt shape lives, so
+ *  the real run and a simulated replay build identically. */
+export function assemblePrompt(inp: Pick<IntrospectInputs, 'promptTemplate' | 'currentEgo' | 'recentExperience' | 'trace'>): string {
+  const traceBlock = inp.trace.length
+    ? '\n\n=== THE TRACE (past egos, oldest → newest) ===\n' +
+      inp.trace.map((s) => `--- ${s.name} ---\n${s.text}`).join('\n\n')
+    : '\n\n=== THE TRACE ===\n(none yet — this is an early self)';
+  return inp.promptTemplate +
+    '\n\n=== THE CURRENT EGO ===\n' + inp.currentEgo +
+    '\n\n=== RECENT EXPERIENCE ===\n' + (inp.recentExperience.trim() || '(little recent experience)') +
+    traceBlock +
+    '\n\n=== produce the NEXT ego document ===';
+}
+
+/** Run the LLM over an assembled prompt and normalize the output ego document (strip code fences,
+ *  ensure a heading). Does NOT stamp meta or save — shared by the real run and Simulate. */
+export async function runModel(dock: string, inp: Pick<IntrospectInputs, 'promptTemplate' | 'model' | 'currentEgo' | 'recentExperience' | 'trace'>): Promise<string> {
+  let out = await geminiText(assemblePrompt(inp), dock, 'introspect', inp.model || DEFAULT_MODEL);
+  out = out.replace(/^```(?:markdown)?\s*|\s*```\s*$/g, '').trim();
+  if (!out.startsWith('#')) out = '# ego\n\n' + out; // be forgiving
+  return out;
+}
+
+/** Stamp the system-owned meta block (when + why) onto an ego document. */
+function stampMeta(out: string, nowMs: number, trigger: string, fresh: boolean): string {
+  const metaLines = [
+    '## meta',
+    `- updated: ${new Date(nowMs).toISOString()}`,
+    `- trigger: ${trigger}`,
+    fresh ? '- template: default-v0' : null,
+  ].filter(Boolean).join('\n');
+  return /^##\s*meta\b/m.test(out) ? out.replace(/^##\s*meta\b[\s\S]*$/m, metaLines) : `${out}\n\n${metaLines}`;
+}
+
 /** Run one introspection for a dock. `recentExperience` is the perception/interaction the
- *  ego reads (caller supplies it — e.g. the rolling summary + recent turns). */
+ *  ego reads (caller supplies it — e.g. the reconciled summary + recent turns). Captures + persists
+ *  the exact structured inputs alongside the ego (for the debug console + Simulate). */
 export async function introspect(
   dock: string,
   recentExperience: string,
@@ -77,31 +127,15 @@ export async function introspect(
   const { text: currentEgo, fresh } = loadEgo(dock);
   const trace = loadTrace(dock, 8);
 
-  const traceBlock = trace.length
-    ? '\n\n=== THE TRACE (past egos, oldest → newest) ===\n' +
-      trace.map((s) => `--- ${s.name} ---\n${s.text}`).join('\n\n')
-    : '\n\n=== THE TRACE ===\n(none yet — this is an early self)';
+  const inputs: IntrospectInputs = {
+    promptTemplate: PROMPT, model: DEFAULT_MODEL, currentEgo, recentExperience,
+    trace, trigger, at: new Date(nowMs).toISOString(),
+  };
 
-  const full =
-    PROMPT +
-    '\n\n=== THE CURRENT EGO ===\n' + currentEgo +
-    '\n\n=== RECENT EXPERIENCE ===\n' + (recentExperience.trim() || '(little recent experience)') +
-    traceBlock +
-    '\n\n=== produce the NEXT ego document ===';
-
-  let out = await geminiText(full, dock, 'introspect');
-  out = out.replace(/^```(?:markdown)?\s*|\s*```\s*$/g, '').trim();
-  if (!out.startsWith('#')) out = '# ego\n\n' + out; // be forgiving
-
-  // Stamp the meta block (system-owned fields: when + why). Replace an existing meta or append.
-  const metaLines = [
-    '## meta',
-    `- updated: ${new Date(nowMs).toISOString()}`,
-    `- trigger: ${trigger}`,
-    fresh ? '- template: default-v0' : null,
-  ].filter(Boolean).join('\n');
-  out = /^##\s*meta\b/m.test(out) ? out.replace(/^##\s*meta\b[\s\S]*$/m, metaLines) : `${out}\n\n${metaLines}`;
-
-  const { snapshotted } = saveEgo(dock, out, nowMs, opts.traceKeepAllMs);
+  const out = stampMeta(await runModel(dock, inputs), nowMs, trigger, fresh);
+  const { snapshotted, tracePath } = saveEgo(dock, out, nowMs, opts.traceKeepAllMs);
+  // Persist the inputs beside the ego (latest) + beside the trace snapshot if one was written,
+  // so the console can pair every ego version with exactly what produced it. Best-effort.
+  saveInputs(dock, inputs, tracePath);
   return { dock, ego: out + '\n', fresh, snapshotted, trigger };
 }

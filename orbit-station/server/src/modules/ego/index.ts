@@ -15,9 +15,20 @@ import { json } from '../../core/http.js';
 import { readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import type { RouteContext, StationModule } from '../../core/module.js';
-import { loadEgo, loadTrace } from './ego-store.js';
-import { introspect } from './introspect.js';
+import { loadEgo, loadTrace, loadLatestInputs, loadTraceInputs } from './ego-store.js';
+import type { IncomingMessage } from 'node:http';
+import { introspect, runModel, PROMPT as EGO_PROMPT, type IntrospectInputs } from './introspect.js';
 import { reconciledPerceptionSince } from '../perception/index.js';
+import { DEFAULT_MODEL as EGO_DEFAULT_MODEL } from '../perception/summarizer.js';
+
+/** Read + JSON-parse a request body (local helper; the ego routes are the only POSTs here). */
+async function parseBody<T>(req: IncomingMessage): Promise<Partial<T>> {
+  const chunks: Buffer[] = [];
+  for await (const c of req) chunks.push(c as Buffer);
+  const raw = Buffer.concat(chunks).toString('utf8').trim();
+  if (!raw) return {};
+  try { return JSON.parse(raw) as Partial<T>; } catch { return {}; }
+}
 
 const LAST_SUMMARY_FILE = '.data/perception/last-summary.json';
 
@@ -158,6 +169,58 @@ export function egoModule(): StationModule {
         try {
           const r = await introspectDock(dock!, 'manual');
           json(res, 200, { ok: true, dock, fresh: r.fresh, snapshotted: r.snapshotted, trigger: r.trigger, ego: r.ego });
+        } catch (e) {
+          json(res, 500, { ok: false, error: String((e as Error).message || e) });
+        }
+        return true;
+      }
+
+      // GET /:dock/trace/:name/inputs — the captured inputs that produced a PAST ego snapshot
+      m = subPath.match(/^\/([^/]+)\/trace\/([^/]+)\/inputs$/);
+      if (m && req.method === 'GET') {
+        const [, dock, name] = m;
+        const inputs = loadTraceInputs(dock!, name!);
+        json(res, 200, { dock, name, inputs: inputs ?? null });
+        return true;
+      }
+
+      // GET /:dock/inputs — the captured inputs that produced the CURRENT ego (for the console)
+      m = subPath.match(/^\/([^/]+)\/inputs$/);
+      if (m && req.method === 'GET') {
+        const [, dock] = m;
+        json(res, 200, { dock, inputs: loadLatestInputs(dock!) ?? null });
+        return true;
+      }
+
+      // POST /:dock/simulate — REPLAY introspection with (optionally edited) inputs, WITHOUT saving.
+      // Body: { inputs?: Partial<IntrospectInputs>, refreshPerception?: boolean }. Starts from the
+      // captured/current inputs, applies any edits, optionally re-pulls perception+conversation LIVE
+      // (the reconciled feed as of now), runs the model, and returns the would-be ego. Never writes.
+      m = subPath.match(/^\/([^/]+)\/simulate$/);
+      if (m && req.method === 'POST') {
+        const [, dock] = m;
+        try {
+          const body = await parseBody<{ inputs?: Partial<IntrospectInputs>; refreshPerception?: boolean }>(req);
+          // base = the current ego's captured inputs, or freshly assembled if none captured yet
+          const captured = loadLatestInputs(dock!) as IntrospectInputs | undefined;
+          const base: IntrospectInputs = captured ?? {
+            promptTemplate: EGO_PROMPT, model: EGO_DEFAULT_MODEL, currentEgo: loadEgo(dock!).text,
+            recentExperience: await recentExperience(dock!, Date.now()),
+            trace: loadTrace(dock!, 8), trigger: 'simulate', at: new Date().toISOString(),
+          };
+          // LIVE re-pull of perception+conversation (the "test against NOW" toggle)
+          let recentExp = base.recentExperience;
+          if (body.refreshPerception) recentExp = await recentExperience(dock!, Date.now());
+          const merged: IntrospectInputs = {
+            ...base,
+            ...body.inputs,
+            // empty edits fall back to sensible defaults (a fresh dock has no captured prompt)
+            promptTemplate: body.inputs?.promptTemplate?.trim() ? body.inputs.promptTemplate : (base.promptTemplate || EGO_PROMPT),
+            model: body.inputs?.model?.trim() ? body.inputs.model : (base.model || EGO_DEFAULT_MODEL),
+            recentExperience: body.inputs?.recentExperience ?? recentExp,
+          };
+          const ego = await runModel(dock!, merged);
+          json(res, 200, { ok: true, dock, ego, usedInputs: merged });
         } catch (e) {
           json(res, 500, { ok: false, error: String((e as Error).message || e) });
         }
