@@ -130,30 +130,27 @@
     <p>Every processor implements one interface — <code class="inl">StreamProcessor</code> (<code class="inl">perception/processor.ts</code>): it declares <code class="inl">mediaKinds</code> / <code class="inl">channels</code> / <code class="inl">sources</code>, and gets <code class="inl">onStreamStart(ctx)</code>, <code class="inl">onRtp?</code>, <code class="inl">onChannelItem?</code>, <code class="inl">onStreamEnd</code>. That uniformity is <em>why</em> the hub's registry can treat them all the same. Each is a factory returning <code class="inl">StreamProcessor</code> (a few return <code class="inl">StreamProcessor &amp; {…}</code> to expose an extra method like <code class="inl">captureNow</code>).</p>
     <p>The hub delivers each only what it declared, try/catch-wrapped so one can't kill the SFU. But they aren't independent — <strong>some read others' work</strong> — and <strong>each writes to two places</strong>: the live <code class="inl">perception</code> topic <em>and</em> the durable SnapshotStore ring.</p>
     <div class="diagram">
-<pre>  <span class="dim">──edges labelled with the DATA that crosses them──</span>
+<pre>  <span class="dim">──TOPOLOGY: edges labelled with the DATA that crosses them.  (tech · model · file → the table below)──</span>
 
   <span class="hlw">RtpPacket</span>{audio}   <span class="hlw">RtpPacket</span>{video}          <span class="hlw">ChannelItem</span>{client.*}
        │                │                             │
        ▼                ▼                             ▼
   <span class="hl">🎙 stt-watch</span>     <span class="hl">👤 face-recognition</span>              <span class="hl">🫥 presence</span>
-   PCM→VAD→:8078     decode VP8→<span class="hlw">JPEG</span> + face-api        (facts only)
-       │                │        │                    │
+       │           (the only video decoder)           │
        │       <span class="hlw">JPEG frame</span>│        │<span class="hlw">DetectedFace[]</span>          │
        │                ▼        ▼                     │
-       │           <span class="hl">👁 vision</span>    <span class="hl">😮 identity</span>               │
-       │        gate→:8080 VLM  fuse + debounce         │
+       │           <span class="hl">👁 vision</span>    <span class="hl">😮 identity</span>  ◀─<span class="hlw">ego-motion</span>─ <span class="hl">🤖 bodymotion</span>
        │                │        │                     │
        └────────────────┴────────┴─────────────────────┘
-                        │  every node calls ctx.emit(…)
+                        │  every node writes TWICE (①+②)
       ┌─────────────────┴──────────────────┐
-      ▼ ①                                  ▼ ②
+      ▼ ①  durable                         ▼ ②  live, ×2
   <span class="hl">store.add(</span><span class="hlw">SnapshotRecord</span><span class="hl">)</span>              <span class="hl">ctx.emit(</span><span class="hlw">PerceptionResult</span><span class="hl">)</span>
-  {interval, source,               {kind, payload, +hub stamps
-   payload:{text,…}}                dockId/streamId/ts}
+   {interval, source, payload}       {kind, payload +hub stamps dockId/streamId/ts}
       │                                  │
-      ▼  durable                         ▼  live, ×2
+      ▼                                  ▼
   SnapshotStore ring               bus [<span class="hlw">perception</span>] → dock + console
-  (→ the memory arm)</pre>
+  (→ the memory arm, M4)</pre>
     </div>
     <p><strong>The edges are the point.</strong> Only <code class="inl">face-recognition</code> decodes video (one ffmpeg per dock); <code class="inl">vision</code> and <code class="inl">identity</code> read <em>its</em> decoded frame and recognitions rather than decoding again. That coupling is safe because everything is keyed to the same <code class="inl">streamId</code>.</p>
     <div class="note warn">
@@ -176,15 +173,46 @@
 }</pre>
     </div>
     <p><code class="inl">kind</code> is producer-owned: each processor emits a fixed one (stt-watch → <code class="inl">transcript</code>, face → <code class="inl">identity</code>) — it's a self-declaration, push not pull. Consumers <code class="inl">switch(kind)</code> to know how to read <code class="inl">payload</code>. Here is that <code class="inl">kind → payload</code> map:</p>
+    <p>The full per-processor detail — including the <em>tech / model</em> each runs (in <em>italic</em>, since that's the part most likely to change), its <em>file</em>, what it reads, and the <code class="inl">kind → payload</code> it emits — lives in one table so the graph above can stay a lean topology:</p>
     <table class="cmp">
-      <thead><tr><th>Processor · code</th><th>Consumes (input shape)</th><th><code class="inl">kind</code> → <code class="inl">payload</code> shape</th></tr></thead>
+      <thead><tr><th>Processor</th><th>Tech / model <span style="font-weight:400;color:var(--ink-3)">(volatile)</span></th><th>Reads</th><th>Emits <code class="inl">kind</code> → <code class="inl">payload</code></th></tr></thead>
       <tbody>
-        <tr><td class="rtcc">🎙 stt-watch<br><span style="color:var(--ink-3);font-size:11px">processors/stt-watch.ts · sttWatchProcessor()</span></td><td><code class="inl">RtpPacket</code> (audio) → PCM → VAD utterance → STT sidecar :8078 (<strong>parakeet-tdt</strong> default, whisper fallback)</td><td><code class="inl">transcript</code> → <code class="inl">{ text, isFinal }</code></td></tr>
-        <tr><td class="rtcc">👤 face-recognition<br><span style="color:var(--ink-3);font-size:11px">processors/face-recognition.ts · faceRecognitionProcessor()</span></td><td><code class="inl">RtpPacket</code> (video) → decodes VP8→JPEG (owns grabber)</td><td>the decoded frame + recognitions (read by others; not a result)</td></tr>
-        <tr><td class="rtcc">👁 vision-snapshot<br><span style="color:var(--ink-3);font-size:11px">processors/vision-snapshot.ts · visionSnapshotProcessor()</span></td><td><em>face's</em> JPEG frame, <strong>change-gated</strong> (DINOv2) → qwen2.5-VL :8080</td><td><code class="inl">scene</code> → <code class="inl">{ description }</code></td></tr>
-        <tr><td class="rtcc">😮 identity-snapshot<br><span style="color:var(--ink-3);font-size:11px">processors/identity-snapshot.ts · identitySnapshotProcessor()</span></td><td><em>face's</em> recognitions + <em>bodymotion's</em> ego-motion</td><td><code class="inl">identity</code> → <code class="inl">{ name }</code>; <code class="inl">emotion</code> → <code class="inl">{ kind, confidence }</code></td></tr>
-        <tr><td class="rtcc">🫥 presence<br><span style="color:var(--ink-3);font-size:11px">processors/presence.ts · presenceProcessor()</span></td><td><code class="inl">ChannelItem</code> (<code class="inl">client.*</code> fact) — no media</td><td><code class="inl">presence</code> → <code class="inl">{ present }</code></td></tr>
-        <tr><td class="rtcc">🤖 bodymotion<br><span style="color:var(--ink-3);font-size:11px">processors/bodymotion-watch.ts · bodyMotionWatchProcessor()</span></td><td>the body's motion commands (station-fed)</td><td><code class="inl">bodymotion</code> → <code class="inl">{ text, … }</code></td></tr>
+        <tr>
+          <td class="rtcc">🎙 <b>stt-watch</b><br><span style="color:var(--ink-3);font-size:11px;font-family:var(--mono)">processors/stt-watch.ts</span></td>
+          <td><em>parakeet-tdt</em> (whisper fallback) <span style="color:var(--ink-3)">· STT sidecar :8078</span>; VAD endpointing</td>
+          <td><code class="inl">RtpPacket</code> (audio) → PCM → VAD utterance</td>
+          <td><code class="inl">transcript</code> → <code class="inl">{ text, isFinal }</code></td>
+        </tr>
+        <tr>
+          <td class="rtcc">👤 <b>face-recognition</b><br><span style="color:var(--ink-3);font-size:11px;font-family:var(--mono)">processors/face-recognition.ts</span></td>
+          <td><em>face-api</em> (in-process) <span style="color:var(--ink-3)">· ffmpeg VP8→JPEG grabber</span></td>
+          <td><code class="inl">RtpPacket</code> (video) — <b>the only video decoder</b></td>
+          <td>decoded frame + recognitions <span style="color:var(--ink-3)">(read by others; not a result)</span></td>
+        </tr>
+        <tr>
+          <td class="rtcc">👁 <b>vision-snapshot</b><br><span style="color:var(--ink-3);font-size:11px;font-family:var(--mono)">processors/vision-snapshot.ts</span></td>
+          <td><em>qwen2.5-VL</em> <span style="color:var(--ink-3)">· VLM sidecar :8080</span>; gate = <em>DINOv2</em> <span style="color:var(--ink-3)">(embed.ts, onnxruntime, in-process)</span></td>
+          <td><em>face's</em> JPEG frame, <b>change-gated</b> (see below)</td>
+          <td><code class="inl">scene</code> → <code class="inl">{ description }</code></td>
+        </tr>
+        <tr>
+          <td class="rtcc">😮 <b>identity-snapshot</b><br><span style="color:var(--ink-3);font-size:11px;font-family:var(--mono)">processors/identity-snapshot.ts</span></td>
+          <td><em>face-api</em> descriptors + expression <span style="color:var(--ink-3)">(match against the JSON gallery)</span></td>
+          <td><em>face's</em> recognitions + <em>bodymotion's</em> ego-motion</td>
+          <td><code class="inl">identity</code> → <code class="inl">{ name }</code>; <code class="inl">emotion</code> → <code class="inl">{ kind, confidence }</code></td>
+        </tr>
+        <tr>
+          <td class="rtcc">🫥 <b>presence</b><br><span style="color:var(--ink-3);font-size:11px;font-family:var(--mono)">processors/presence.ts</span></td>
+          <td><span style="color:var(--ink-3)">no model — pure facts</span></td>
+          <td><code class="inl">ChannelItem</code> (<code class="inl">client.*</code> fact) — <b>no media</b></td>
+          <td><code class="inl">presence</code> → <code class="inl">{ present }</code></td>
+        </tr>
+        <tr>
+          <td class="rtcc">🤖 <b>bodymotion-watch</b><br><span style="color:var(--ink-3);font-size:11px;font-family:var(--mono)">processors/bodymotion-watch.ts</span></td>
+          <td><span style="color:var(--ink-3)">no model — reads the body's own motion commands</span></td>
+          <td>the body's motion commands (station-fed)</td>
+          <td><code class="inl">bodymotion</code> → <code class="inl">{ text, … }</code></td>
+        </tr>
       </tbody>
     </table>
     <p>All six are registered onto the hub in <a class="file" href="../../orbit-station/server/src/modules/perception/index.ts">perception/index.ts</a> (<code class="inl">hub.register(…)</code>), where the inter-processor edges are also wired (vision is handed <code class="inl">face.currentFrame</code>; identity is handed <code class="inl">face.recognizeAllCurrent</code> + <code class="inl">bodymotion.current</code>).</p>
@@ -224,8 +252,35 @@
       <li><strong>Facts (②)</strong> — the same trim pass extracts durable facts ("Guru prefers tea") into the <strong>memory store</strong> (append + a light semantic dedup), which is a generic fact primitive the LLM also writes via <code class="inl">remember</code> and reads via <code class="inl">recall_memory</code>.</li>
     </ul>
     <div class="note wire">
+      <span class="tag">separate jobs — each PULLS from the stream, WRITES to its own store</span>
+      <p><code class="inl">summarize()</code>/<code class="inl">stitch()</code> are <em>tools</em> (pure functions — they never write). The writing is done by <strong>independent scheduled jobs</strong>, each on its own timer, each reading the perception stream and writing to a <em>different</em> store. Nothing "flows through" the summarizer into memory automatically — a job pulls, and a job writes. Three writers:</p>
+    </div>
+    <table class="cmp">
+      <thead><tr><th>Writer job</th><th>Cadence / trigger <span style="font-weight:400;color:var(--ink-3)">(file · env)</span></th><th>Pulls from</th><th>Writes to (its OWN store)</th></tr></thead>
+      <tbody>
+        <tr>
+          <td class="wsc"><b>rolling-summary</b><br><span style="color:var(--ink-3);font-size:11px">the auto-summarizer</span></td>
+          <td>~60&nbsp;s debounced <span style="color:var(--ink-3)">· auto-summarizer.ts</span></td>
+          <td><code class="inl">summarize()</code> over the recent window (+ keyframes)</td>
+          <td><code class="inl">lastSummary</code> (the <code class="inl">last-summary.json</code> cache) + a <code class="inl">kind:'summary'</code> ring record</td>
+        </tr>
+        <tr>
+          <td class="wsc"><b>trim / self-compress</b><br><span style="color:var(--ink-3);font-size:11px">selfCompressAndTrim</span></td>
+          <td>~30&nbsp;min sweep, per aged-out clock-hour <span style="color:var(--ink-3)">· retention.ts · PERCEPTION_TRIM_INTERVAL_MS</span></td>
+          <td>the <b>raw</b> span (re-summarized itself — <em>not</em> the rolling pulse)</td>
+          <td>① <b>span-summary</b> → <code class="inl">span-summaries.jsonl</code> · &nbsp;② <b>facts</b> → the sqlite <b>memory store</b> (<code class="inl">remember</code>)</td>
+        </tr>
+        <tr>
+          <td class="wsc"><b>ego introspection</b><br><span style="color:var(--ink-3);font-size:11px">a wholly separate job</span></td>
+          <td>~hourly idle, or event-triggered <span style="color:var(--ink-3)">· introspect.ts · conductor · EGO_INTROSPECT_GAP_MS</span></td>
+          <td>the reconciled summaries via <code class="inl">reconciledPerceptionSince</code> (+ addressed conversation + its own trace)</td>
+          <td><b>itself</b> — <code class="inl">ego.md</code> + its trace. It never touches memory or the summary stores.</td>
+        </tr>
+      </tbody>
+    </table>
+    <div class="note wire">
       <span class="tag">why the summarizer is the one gate</span>
-      <p>Both durable outputs feed from the <strong>reconciled summary</strong>, not the raw ring — deliberate. Consolidating raw per-utterance speech once produced 81% junk "speaker 0" beliefs. Digest first, then compress + remember. Crucially, <strong>the ego reads this reconciled stream too</strong> (<code class="inl">reconciledPerceptionSince</code>) — never raw sensor lines, because a faithful reasoner reads raw contradictions as "my eyes are broken" and spirals.</p>
+      <p>Both durable outputs feed from a <strong>reconciled read</strong>, not the raw ring — deliberate. Consolidating raw per-utterance speech once produced 81% junk "speaker 0" beliefs. Digest first, then compress + remember. Crucially, <strong>the ego reads reconciled too</strong> (<code class="inl">reconciledPerceptionSince</code>) — never raw sensor lines, because a faithful reasoner reads raw contradictions as "my eyes are broken" and spirals. Note the trim job re-summarizes the <em>raw</em> span (not the rolling pulse), so facts derive from the full window, not a lossy 60&nbsp;s snapshot.</p>
     </div>
 
     <p class="step-title" style="margin-top:26px"><span class="step-n">M4b</span>Inside the summarizer — stitch (deterministic) then fuse (LLM)</p>
