@@ -152,6 +152,26 @@
   SnapshotStore ring               bus [<span class="hlw">perception</span>] → dock + console
   (→ the memory arm, M4)</pre>
     </div>
+    <p style="font-size:12px;color:var(--ink-3);margin:-2px 0 8px"><em>Same graph, drawn — identical nodes and edges to the ASCII above (the ASCII is the edit-first source; this is the rendered view):</em></p>
+    <pre class="mermaid">
+flowchart TD
+  audio(["RtpPacket · audio"]):::data --> stt["🎙 stt-watch"]:::proc
+  video(["RtpPacket · video"]):::data --> face["👤 face-recognition<br/><i>the only video decoder</i>"]:::proc
+  client(["ChannelItem · client.*"]):::data --> presence["🫥 presence"]:::proc
+  face -->|JPEG frame| vision["👁 vision-snapshot<br/><i>change-gated</i>"]:::proc
+  face -->|"DetectedFace[]"| identity["😮 identity-snapshot"]:::proc
+  body["🤖 bodymotion-watch"]:::proc -->|ego-motion| identity
+  stt --> emit{{"every node writes TWICE"}}:::hub
+  vision --> emit
+  identity --> emit
+  presence --> emit
+  emit -->|"① SnapshotRecord"| ring[("SnapshotStore ring<br/>→ memory arm (M4)")]:::store
+  emit -->|"② PerceptionResult"| bus(["bus perception ×2<br/>→ dock + console"]):::data
+  classDef proc fill:#dbe9fb,stroke:#1f7ae0,color:#0b1220,stroke-width:1.4px;
+  classDef data fill:#eaf6f3,stroke:#0f9d8a,color:#0b1220,stroke-dasharray:4 3,stroke-width:1.3px;
+  classDef hub fill:#e6e9ef,stroke:#5a6472,color:#0b1220,stroke-width:1.3px;
+  classDef store fill:#d7f0eb,stroke:#0f9d8a,color:#0b1220,stroke-width:1.4px;
+    </pre>
     <p><strong>The edges are the point.</strong> Only <code class="inl">face-recognition</code> decodes video (one ffmpeg per dock); <code class="inl">vision</code> and <code class="inl">identity</code> read <em>its</em> decoded frame and recognitions rather than decoding again. That coupling is safe because everything is keyed to the same <code class="inl">streamId</code>.</p>
     <div class="note warn">
       <span class="tag">vision is change-gated, not per-frame</span>
@@ -246,6 +266,24 @@
               <span class="hl">memory store</span> (sqlite, embedded) ── on demand ──▶ brain's recall_memory tool
                  ▲  also written directly by the LLM's `remember` tool</pre>
     </div>
+    <p style="font-size:12px;color:var(--ink-3);margin:-2px 0 8px"><em>Same flow, drawn — the three independent writer-jobs (detailed in the table below), each pulling from the stream and writing to its OWN store:</em></p>
+    <pre class="mermaid">
+flowchart TD
+  ring[("perception stream<br/>(durable ring + JSONL)")]:::store
+  ring -->|~60s| roll["rolling-summary job<br/><i>auto-summarizer.ts</i>"]:::job
+  ring -->|~30min, raw span| trim["trim / self-compress<br/><i>selfCompressAndTrim · retention.ts</i>"]:::job
+  ring -->|~hourly, reconciled| ego["ego introspection<br/><i>introspect.ts · conductor</i>"]:::job
+  roll -->|writes| lastsum[("lastSummary<br/>last-summary.json")]:::store
+  trim -->|"① writes"| span[("span-summaries.jsonl")]:::store
+  trim -->|"② writes facts"| mem[("memory store<br/>sqlite")]:::store
+  ego -->|writes itself| egomd[("ego.md + trace")]:::store
+  llm(["LLM remember tool"]):::data -.->|also writes| mem
+  mem -.->|recall_memory| brain(["brain turn"]):::data
+  lastsum -.->|grounding, per-turn| brain
+  classDef job fill:#dbe9fb,stroke:#1f7ae0,color:#0b1220,stroke-width:1.4px;
+  classDef store fill:#d7f0eb,stroke:#0f9d8a,color:#0b1220,stroke-width:1.4px;
+  classDef data fill:#eaf6f3,stroke:#0f9d8a,color:#0b1220,stroke-dasharray:4 3,stroke-width:1.3px;
+    </pre>
     <ul class="tight">
       <li><strong>Grounding</strong> — pulled <em>synchronously</em> when a turn is built: the last summary (stamped with staleness) + the salient tail. No network on the turn's critical path. This is what the model always sees.</li>
       <li><strong>Span-summary (①)</strong> — at trim, each aged-out clock-hour is compressed into a durable digest <em>before</em> the raw is dropped, so the timeline compresses but never has a hole. This is perception <em>compressing its own tail</em>, not a separate layer.</li>
@@ -407,7 +445,7 @@ getGateApi()?.onRaise((thought) => session(dock).enqueueAutonomousTurn(thought))
         ┌───────────────┬──────────────┼───────────────┐
         ▼               ▼              (edges)           ▼
   <span class="hl">face-recog</span> ──frame──▶ <span class="hl">vision</span>    <span class="hl">stt-watch</span>            <span class="hl">presence</span>
-        └──recog──▶ <span class="hl">identity</span> ◀──body── <span class="hl">bodymotion</span>       (+ <span class="hl">bg-audio</span>)
+        └──recog──▶ <span class="hl">identity</span> ◀──body── <span class="hl">bodymotion</span>       (+ bg-audio*)
         │               │               │                │
         └───────────────┴──── each emits TWICE ──────────┘
                      │                          │
@@ -431,6 +469,31 @@ getGateApi()?.onRaise((thought) => session(dock).enqueueAutonomousTurn(thought))
    ══════════ THE ENDS: speech · motion · memory · console ══════════
         all wire-bound legs exit via <span class="hlw">WebSocketGateway</span> event frames</pre>
     </div>
+    <div class="note warn">
+      <span class="tag">one representation caveat (bg-audio*)</span>
+      <p>The ASCII above lists <code class="inl">bg-audio*</code> alongside the processors, but it is <strong>not</strong> one of the six registered stream-processors (M3's canonical list) — so it does not appear in the M3 graph or table. <code class="inl">bg-audio</code> is <code class="inl">interpretAudio()</code> (<code class="inl">processors/background-audio.js</code>), an <em>async upgrade</em> that <code class="inl">stt-watch</code> calls to patch a speech record with an <code class="inl">addressedToRobot</code> guess — a step <em>on</em> the speech path, not a peer processor. Kept out of M3 to preserve the clean six; flagged here so the two don't read as contradictory.</p>
+    </div>
+    <p style="font-size:12px;color:var(--ink-3);margin:-2px 0 8px"><em>Same journey, drawn — packet to behaviour, end to end (condensed; the processor fan-out is M3, the memory arm is M4):</em></p>
+    <pre class="mermaid">
+flowchart TD
+  dock(["dock"]):::data -->|WebRTC/RTP| sfu["Sfu"]:::proc
+  wsfacts(["client facts · WS"]):::data --> hub
+  sfu -->|tap| hub["PerceptionProcessingHub"]:::proc
+  hub --> procs["processors (M3)<br/><i>face · vision · identity · stt · presence · bodymotion</i>"]:::proc
+  procs -->|"① SnapshotRecord"| ring[("SnapshotStore ring → durable")]:::store
+  procs -->|"② PerceptionResult ×2"| bus(["bus perception → dock + console"]):::data
+  ring --> mem["memory arm (M4)<br/><i>summarizer · span-summaries · facts · ego</i>"]:::proc
+  mem -->|grounding + recall| brain["DockBrainSession<br/><i>onFinal / gate → a turn → LLM loop</i>"]:::proc
+  bus -.->|re-ground next turn| brain
+  brain -->|"agent"| speak(["🗣 speech + face UI → phone"]):::sink
+  brain -->|"bodylink"| motion(["🤖 motion → ESP32"]):::sink
+  brain -->|"agent tool RPC"| tool(["🔧 tool-call ↔ result → phone"]):::sink
+  brain -.->|writes, for future turns| memout(["🧠 durable memory"]):::sink
+  classDef proc fill:#dbe9fb,stroke:#1f7ae0,color:#0b1220,stroke-width:1.4px;
+  classDef data fill:#eaf6f3,stroke:#0f9d8a,color:#0b1220,stroke-dasharray:4 3,stroke-width:1.3px;
+  classDef store fill:#d7f0eb,stroke:#0f9d8a,color:#0b1220,stroke-width:1.4px;
+  classDef sink fill:#e6e9ef,stroke:#5a6472,color:#0b1220,stroke-width:1.3px;
+    </pre>
     <p>Read the code in this order — the full journey:</p>
     <ul class="tight">
       <li><a class="file" href="../../orbit-station/server/src/modules/media/sfu.ts">media/sfu.ts</a> → <a class="file" href="../../orbit-station/server/src/modules/media/tap.ts">tap.ts</a> — media in, the <code class="inl">MediaTap</code> seam</li>
@@ -452,6 +515,49 @@ getGateApi()?.onRaise((thought) => session(dock).enqueueAutonomousTurn(thought))
 </footer>
 
 
+<!-- Mermaid: graphical node-graphs for the diagrams below, drawn CLIENT-SIDE (offline). The
+     library is a SIBLING asset (like doc.css) so this page stays small; it renders every
+     pre.mermaid block. Theme follows the doc's light/dark. Each mermaid diagram sits
+     BESIDE its ASCII + table version (kept as the edit-first / no-JS fallback). -->
+<script src="assets/mermaid.min.js"></script>
+<script>
+  (function () {
+    if (!window.mermaid) return; // graceful: ASCII + tables still there if the lib is missing
+    // The node classDefs use LIGHT fills + DARK text in BOTH page themes (light boxes read well
+    // on a dark page too). So we DON'T switch to mermaid's 'dark' base — its dark theme sets a
+    // light default label colour that fights the dark classDef text and washes it out. Use the
+    // 'base' theme always and pin the label/edge colours for legibility on either page background.
+    var dark = matchMedia('(prefers-color-scheme: dark)').matches
+      || document.documentElement.getAttribute('data-theme') === 'dark';
+    try {
+      window.mermaid.initialize({
+        startOnLoad: true,
+        theme: 'base',
+        securityLevel: 'strict',
+        flowchart: { curve: 'basis', htmlLabels: true, nodeSpacing: 40, rankSpacing: 46 },
+        // Force node-label text DARK + semibold so it pops on the light classDef fills (regular
+        // weight on light cyan/blue reads too soft). NOTE mermaid v11 wraps the visible text in a
+        // <p> INSIDE .nodeLabel — that <p> carries the theme's light-grey unless targeted, so the
+        // selector MUST reach it (verified by walking the rendered DOM, not assuming). Edge labels
+        // keep light text on the dark page.
+        themeCSS:
+          '.node .nodeLabel, .node .nodeLabel *, .node .label, .node foreignObject div, .node foreignObject p'
+          + ' { color:#0b1220 !important; font-weight:600 !important; }'
+          + '.cluster .nodeLabel, .cluster .nodeLabel * { color:#0b1220 !important; }'
+          + (dark ? '.edgeLabel, .edgeLabel *, .edgeLabel foreignObject p { color:#e6eaf2 !important; }' : ''),
+        themeVariables: {
+          fontSize: '13px', fontFamily: 'ui-sans-serif, system-ui, sans-serif',
+          // node label text — dark, so it reads on the light classDef fills in either theme
+          primaryTextColor: '#0b1220', nodeTextColor: '#0b1220', titleColor: '#0b1220',
+          // edge lines + their labels — light on dark page, dark on light page
+          lineColor: dark ? '#8a93a6' : '#5a6472',
+          edgeLabelBackground: dark ? '#11151f' : '#eef1f6',
+          tertiaryTextColor: dark ? '#dbe2ec' : '#222',
+        },
+      });
+    } catch (e) { /* leave the ASCII/table fallback in place */ }
+  })();
+</script>
 </body>
 
 </html>
