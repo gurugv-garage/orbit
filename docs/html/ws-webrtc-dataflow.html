@@ -198,30 +198,34 @@
 <section>
   <div class="wrap">
     <h2>The memory arm</h2>
-    <p class="step-title"><span class="step-n">M4</span>The ring is digested — twice, on two clocks</p>
-    <p>Raw snapshots are noisy (a small VLM misreads a mug as a "ruler" frame to frame, or straps on a hook as "a person on a pull-up bar"). Nothing acts on raw mush directly. The <strong>summarizer</strong> (Gemini) fuses a recent window of the ring into one coherent picture — and it's sent the window's <strong>keyframe images</strong> alongside the text, so it can <em>see</em> the scene and override a bad VLM line rather than propagate it. That picture feeds the brain two ways, on two cadences:</p>
+    <p class="step-title"><span class="step-n">M4</span>The ring is durable and self-compressing — one summarizer, two outputs</p>
+    <p>Raw snapshots are noisy (a small VLM misreads a mug as a "ruler" frame to frame, or straps on a hook as "a person on a pull-up bar") and internally contradictory (identity flickers "no one" while speech is heard). Nothing reasons over raw mush directly. The ring is now <strong>durable on disk</strong> (per-dock JSONL, <code class="inl">retention.ts</code>); the <strong>summarizer</strong> (Gemini) is the single quality-control point that fuses it into a coherent, reconciled picture — sent the window's <strong>keyframe images</strong> too, so it can <em>see</em> the scene and override a bad VLM line rather than propagate it. There is <strong>one summarizer, one checkpoint</strong>, producing <strong>two outputs</strong> (the background <em>curator</em> job — a second pipeline with its own checkpoint — was removed 2026-07-10):</p>
     <div class="diagram">
-<pre>  SnapshotStore ring  (all processors write here)
+<pre>  SnapshotStore ring → durable JSONL  (all processors write here; retained on disk)
         │
-        ├──▶ <span class="hl">summarizer</span> (Gemini, windowed) ──▶ <span class="hl">lastSummary</span>  the rolling picture
-        │         │                                 │
-        │         │ (also added back as a           ▼
-        │         │  'summary' ring record)   <span class="hlw">grounding</span>  ── per-turn, SYNC ──▶ brain prompt
-        │         ▼                            (summary + salient tail; no LLM on the turn)
-        │    <span class="hl">curator</span> (background clock)
-        │     consolidate: salient speech → durable BELIEFS
-        │     reconcile:   revise / forget old beliefs
-        │         │
-        │         ▼
-        └──▶ <span class="hl">long-term memory</span> (sqlite, embedded) ── on demand ──▶ brain's recall_memory tool</pre>
+        │   THE SUMMARIZER (Gemini) — the one quality-control point
+        ├──▶ rolling ──▶ <span class="hl">lastSummary</span>  the reconciled "now"
+        │   (~60s)          │
+        │                   ▼
+        │             <span class="hlw">grounding</span>  ── per-turn, SYNC ──▶ brain prompt (no LLM on the turn)
+        │
+        └──▶ at TRIM (hourly), two outputs from the SAME pass:
+              ├─① <span class="hl">span-summary</span>  compress the aged raw → durable digest series
+              │      (perception compressing its own tail; §7c)
+              └─② <span class="hl">fact-extraction</span> → durable FACTS (append + light dedup)
+                     │
+                     ▼
+              <span class="hl">memory store</span> (sqlite, embedded) ── on demand ──▶ brain's recall_memory tool
+                 ▲  also written directly by the LLM's `remember` tool</pre>
     </div>
     <ul class="tight">
-      <li><strong>Grounding</strong> — pulled <em>synchronously</em> when a turn is built: the last summary (stamped with staleness) + the salient stream since. No network on the turn's critical path. This is what the model always sees.</li>
-      <li><strong>Curator</strong> — a <em>background</em> job on its own clock. It consolidates <em>summaries</em> (never raw utterances — the coherence diet) into durable per-dock beliefs, and periodically reconciles them (revise/forget). The brain reaches these on demand via <code class="inl">recall_memory</code>.</li>
+      <li><strong>Grounding</strong> — pulled <em>synchronously</em> when a turn is built: the last summary (stamped with staleness) + the salient tail. No network on the turn's critical path. This is what the model always sees.</li>
+      <li><strong>Span-summary (①)</strong> — at trim, each aged-out clock-hour is compressed into a durable digest <em>before</em> the raw is dropped, so the timeline compresses but never has a hole. This is perception <em>compressing its own tail</em>, not a separate layer.</li>
+      <li><strong>Facts (②)</strong> — the same trim pass extracts durable facts ("Guru prefers tea") into the <strong>memory store</strong> (append + a light semantic dedup), which is a generic fact primitive the LLM also writes via <code class="inl">remember</code> and reads via <code class="inl">recall_memory</code>.</li>
     </ul>
     <div class="note wire">
-      <span class="tag">why the summarizer is the gate</span>
-      <p>Both memory paths feed from the <strong>summary pulse</strong>, not the raw ring — that's deliberate. Consolidating raw per-utterance speech once produced 81% junk "speaker 0" beliefs. Digest first, then remember.</p>
+      <span class="tag">why the summarizer is the one gate</span>
+      <p>Both durable outputs feed from the <strong>reconciled summary</strong>, not the raw ring — deliberate. Consolidating raw per-utterance speech once produced 81% junk "speaker 0" beliefs. Digest first, then compress + remember. Crucially, <strong>the ego reads this reconciled stream too</strong> (<code class="inl">reconciledPerceptionSince</code>) — never raw sensor lines, because a faithful reasoner reads raw contradictions as "my eyes are broken" and spirals.</p>
     </div>
   </div>
 </section>
@@ -266,18 +270,24 @@
       <thead><tr><th>Consumes from perception</th><th>How</th></tr></thead>
       <tbody>
         <tr><td class="rtcc">grounding (live picture)</td><td>pulled <em>synchronously</em> into every turn's prompt — summary + salient tail</td></tr>
-        <tr><td class="rtcc">long-term memory (beliefs)</td><td>on demand via the <code class="inl">recall_memory</code> tool (curator's output)</td></tr>
+        <tr><td class="rtcc">memory store (facts)</td><td>on demand via the <code class="inl">recall_memory</code> tool (facts the summarizer extracted at trim, + the LLM's own <code class="inl">remember</code>)</td></tr>
         <tr><td class="rtcc">the trigger</td><td>a <code class="inl">🎙 speech</code> result's <code class="inl">onFinal</code> → <strong>addressed?</strong> → enqueue a turn</td></tr>
       </tbody>
     </table>
     <div class="code">
-      <div class="bar"><span class="fname">brain/index.ts</span><span>trigger: onFinal → addressed → enqueue</span></div>
+      <div class="bar"><span class="fname">brain/index.ts</span><span>trigger: onFinal → addressed → enqueue (+ stamp the record)</span></div>
 <pre>getTranscriptApi()?.onFinal((t) => {
-  <span class="k">if</span> (!session(t.dockId).utteranceAddressed(t.endedAt, ...)) <span class="k">return</span>; <span class="c">// room chatter → drop</span>
-  session(t.dockId).enqueueTurn({ text: t.text, ... });          <span class="c">// addressed → a turn</span>
+  <span class="k">const</span> addressed = session(t.dockId).utteranceAddressed(t.endedAt, ...);
+  markSpeechAddressed(t.dockId, t.endedAt, addressed); <span class="c">// ← STAMP the decision on the speech record</span>
+  <span class="k">if</span> (!addressed) <span class="k">return</span>;                              <span class="c">// room chatter → drop the turn</span>
+  session(t.dockId).enqueueTurn({ text: t.text, ... });   <span class="c">// addressed → a turn</span>
 });
 <span class="c">// or, no user at all: the attention gate raises a self-thought</span>
 getGateApi()?.onRaise((thought) => session(dock).enqueueAutonomousTurn(thought));</pre>
+    </div>
+    <div class="note wire">
+      <span class="tag">addressed vs overheard, persisted</span>
+      <p>The brain owns the authoritative <strong>addressed decision</strong> (tap / wake / conversation-window latch) — and now <em>stamps it onto the speech snapshot</em> (<code class="inl">markSpeechAddressed</code>). So the summarizer renders <code class="inl">[→ TO YOU]</code> vs <code class="inl">[overheard — not to you]</code>, fact-extraction won't mine relationship facts from room chatter, and the <strong>ego</strong> stops reading a workout video's instructions as words spoken to it. Previously this decision was used and discarded — every downstream consumer treated "said to the dock" and ambient speech identically.</p>
     </div>
     <p>Once a turn runs, the session streams its output back out as <strong>directed</strong> frames (<code class="inl">toAddr: dock/phone</code>) — and this is where the pipeline ends, in more than one place:</p>
     <table class="cmp">
@@ -290,7 +300,7 @@ getGateApi()?.onRaise((thought) => session(dock).enqueueAutonomousTurn(thought))
     </table>
     <div class="note">
       <span class="tag">the ends (plural)</span>
-      <p>There is no single "end." A moment fans into several sinks: <strong>speech + face UI</strong> (<code class="inl">agent</code>→phone), <strong>body motion</strong> (<code class="inl">bodylink</code>→ESP32), the <strong>durable memory</strong> the curator wrote (for future turns), and the <strong>console</strong> (the undirected perception copy). The pipeline's true output is the robot changing state in the world — not a published frame.</p>
+      <p>There is no single "end." A moment fans into several sinks: <strong>speech + face UI</strong> (<code class="inl">agent</code>→phone), <strong>body motion</strong> (<code class="inl">bodylink</code>→ESP32), the <strong>durable memory</strong> the summarizer wrote at trim — span-summaries + facts (for future turns), and the <strong>console</strong> (the undirected perception copy). The pipeline's true output is the robot changing state in the world — not a published frame.</p>
     </div>
   </div>
 </section>
@@ -312,12 +322,12 @@ getGateApi()?.onRaise((thought) => session(dock).enqueueAutonomousTurn(thought))
           ① <span class="hl">SnapshotStore</span> ring          ② bus [<span class="hlw">perception</span>] ×2
                      │                          ├──▶ dock  (directed)
         <span class="hl">summarizer</span> ─▶ lastSummary          └──▶ console (undirected)
-             │            │
-        <span class="hl">curator</span>      <span class="hlw">grounding</span> (per-turn, sync)
-             │            │
-   <span class="hl">long-term memory</span>    │
-      (recall tool) │    │
-             └──┬───┴────┘
+        (one gate)   │
+             │       └─▶ <span class="hlw">grounding</span> (per-turn, sync; ego reads reconciled)
+     at trim ├─① <span class="hl">span-summary</span> (compress the aged tail)
+             └─② <span class="hl">facts</span> ─▶ <span class="hl">memory store</span> (recall_memory tool)
+                          │
+                ┌─────────┘
                 ▼
         <span class="hlw">DockBrainSession</span>  (grounding + memory in; onFinal/gate triggers a turn)
                 │  LLM loop
@@ -333,8 +343,8 @@ getGateApi()?.onRaise((thought) => session(dock).enqueueAutonomousTurn(thought))
     <ul class="tight">
       <li><a class="file" href="../../orbit-station/server/src/modules/media/sfu.ts">media/sfu.ts</a> → <a class="file" href="../../orbit-station/server/src/modules/media/tap.ts">tap.ts</a> — media in, the <code class="inl">MediaTap</code> seam</li>
       <li><a class="file" href="../../orbit-station/server/src/modules/perception/perception-processing-hub.ts">perception-processing-hub.ts</a> — the processor graph + dual output</li>
-      <li><a class="file" href="../../orbit-station/server/src/modules/perception/index.ts">perception/index.ts</a> — where processors + edges + the summarizer/curator are wired</li>
-      <li><a class="file" href="../../orbit-station/server/src/modules/perception/summarizer.ts">summarizer.ts</a> + <a class="file" href="../../orbit-station/server/src/modules/perception/memory/longterm/curator.ts">memory/longterm/curator.ts</a> — the memory arm</li>
+      <li><a class="file" href="../../orbit-station/server/src/modules/perception/index.ts">perception/index.ts</a> — where processors + edges + the summarizer are wired, plus fact-extraction (<code class="inl">reconciledPerceptionSince</code>, <code class="inl">extractFactsFromSpan</code>)</li>
+      <li><a class="file" href="../../orbit-station/server/src/modules/perception/summarizer.ts">summarizer.ts</a> + <a class="file" href="../../orbit-station/server/src/modules/perception/retention.ts">retention.ts</a> (<code class="inl">selfCompressAndTrim</code> → span-summaries) — the memory arm</li>
       <li><a class="file" href="../../orbit-station/server/src/modules/perception/grounding.ts">grounding.ts</a> — the per-turn context block the brain injects</li>
       <li><a class="file" href="../../orbit-station/server/src/modules/brain/session.ts">brain/session.ts</a> + <a class="file" href="../../orbit-station/server/src/modules/brain/index.ts">index.ts</a> — <code class="inl">DockBrainSession</code>: consumes grounding/memory, trigger, LLM loop → behaviour</li>
       <li><a class="file" href="../../orbit-station/server/src/core/websocket-gateway.ts">websocket-gateway.ts</a> — bus <code class="inl">*</code> → outbound <code class="inl">event</code> frames (every wire-bound leg)</li>
