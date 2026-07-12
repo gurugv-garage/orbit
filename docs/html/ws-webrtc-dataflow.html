@@ -155,10 +155,10 @@
     <p style="font-size:12px;color:var(--ink-3);margin:-2px 0 8px"><em>Same graph, drawn — identical nodes and edges to the ASCII above (the ASCII is the edit-first source; this is the rendered view):</em></p>
     <pre class="mermaid">
 flowchart TD
-  audio(["RtpPacket · audio"]):::data --> stt["🎙 stt-watch<br/><i>stt-watch.ts</i><br/>⚡ VAD utterance-end (1.3s silence)"]:::proc
+  audio(["RtpPacket · audio"]):::data --> stt["🎙 stt-watch<br/><i>stt-watch.ts</i><br/>⚡ VAD utterance-end (1.3s silence)<br/>🚪3 confidence gate"]:::proc
   video(["RtpPacket · video"]):::data --> face["👤 face-recognition<br/><i>face-recognition.ts · the only video decoder</i><br/>⏳ ~1–2 fps frame grab"]:::proc
   client(["ChannelItem · client.*"]):::data --> presence["🫥 presence<br/><i>presence.ts</i><br/>⚡ on client.* fact"]:::proc
-  face -->|JPEG frame| vision["👁 vision-snapshot<br/><i>vision-snapshot.ts · change-gated</i><br/>⚡ scene-change ·⚡ sense-wake · ⏳ 5-min heartbeat<br/>(DINOv2 probe every ⏳1.5s)"]:::proc
+  face -->|JPEG frame| vision["👁 vision-snapshot<br/><i>vision-snapshot.ts · change-gated</i><br/>⚡ scene-change ·⚡ sense-wake · ⏳ 5-min heartbeat<br/>(DINOv2 probe every ⏳1.5s)<br/>🚪1 change-gate · 🚪2 sense-wake"]:::proc
   face -->|"DetectedFace[]"| identity["😮 identity-snapshot<br/><i>identity-snapshot.ts</i><br/>⏳ every 2s + ⚡ on presence change"]:::proc
   body["🤖 bodymotion-watch<br/><i>bodymotion-watch.ts</i><br/>⚡ on motion command (proprioception)"]:::proc -->|ego-motion| identity
   stt --> emit{{"every node writes TWICE"}}:::hub
@@ -239,6 +239,48 @@ flowchart TD
     <div class="note">
       <span class="tag">two sinks, two shapes</span>
       <p>The live result (② → <code class="inl">perception</code> topic) is a <code class="inl">PerceptionResult</code>. The durable record (① → the ring) is a <code class="inl">SnapshotRecord</code> — a different shared shape: <code class="inl">{ dockId, source, interval:{from,to,durationMs}, payload:{ text, …extra } }</code>, IST-stamped. One is for reacting now; the other is the memory arm's raw feed. A processor writes both.</p>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <h2>🚪 The gates</h2>
+    <p class="step-title">The conditions that decide whether flow continues</p>
+    <p>Not everything perceived flows through — several <strong>gates</strong> drop, defer, or downgrade signal so the expensive stages (the VLM, an LLM turn, a self-thought) fire only when they should. Each is numbered and marked on the diagrams (🚪1–🚪3 in M3, 🚪4–🚪5 on the whole-path). What each one asks:</p>
+    <table class="cmp">
+      <thead><tr><th>Gate</th><th>Where <span style="font-weight:400;color:var(--ink-3)">(file)</span></th><th>Passes only when… <span style="font-weight:400;color:var(--ink-3)">(else → )</span></th></tr></thead>
+      <tbody>
+        <tr>
+          <td class="rtcc">🚪1 <b>vision change-gate</b></td>
+          <td>👁 vision-snapshot <span style="color:var(--ink-3);font-family:var(--mono);font-size:11px">vision-snapshot.ts</span></td>
+          <td>the frame's <b>DINOv2 embedding moved</b> past a distance threshold (pixel Δ ≥ <code class="inl">VISION_DIFF_THRESHOLD 0.03</code> as fallback) — the <b>scene actually changed</b>. Else → skip the VLM (cheap probe only). Sub-gates: <em>self-motion</em> defers while the head pans; <em>window-dedup</em> collapses near-identical frames. ⏳ 5-min <code class="inl">REFRESH</code> overrides (guards slow drift).</td>
+        </tr>
+        <tr>
+          <td class="rtcc">🚪2 <b>sense-wake gate</b></td>
+          <td>👁 vision-snapshot <span style="color:var(--ink-3);font-family:var(--mono);font-size:11px">vision-snapshot.ts</span></td>
+          <td>another sense heard something <b>salient</b> since the last analysis → earns <b>ONE</b> vision look per audio episode (continuous audio ≠ continuous visual change). Else → no extra look.</td>
+        </tr>
+        <tr>
+          <td class="rtcc">🚪3 <b>STT confidence gate</b></td>
+          <td>🎙 stt-watch <span style="color:var(--ink-3);font-family:var(--mono);font-size:11px">stt-watch.ts</span></td>
+          <td>the transcript isn't <b>garbage</b> (a repetition-loop, <code class="inl">compression &gt; 3.0</code>, or <code class="inl">no_speech &gt; 0.6</code> AND <code class="inl">logprob &lt; -1.0</code>). Garbage → rendered as <code class="inl">[unclear speech, ~Ns]</code>, never as words the brain acts on; <em>shaky</em> → tagged <code class="inl">[low-confidence]</code>.</td>
+        </tr>
+        <tr>
+          <td class="wsc">🚪4 <b>addressed gate</b></td>
+          <td>🧠 DockBrainSession <span style="color:var(--ink-3);font-family:var(--mono);font-size:11px">brain/index.ts · conversation-state.ts</span></td>
+          <td>the utterance was <b>addressed</b> — a tap, a wake phrase, or it landed inside an open conversation window. Else → <code class="inl">skip:not-addressed</code> (room chatter, no turn). Also skips: recording, garbage tier, &lt;2 words, or queued while mid-turn. The decision is stamped on the record (🚪 → <code class="inl">[→ TO YOU]</code> vs <code class="inl">[overheard]</code>).</td>
+        </tr>
+        <tr>
+          <td class="wsc">🚪5 <b>attention gate</b></td>
+          <td>🧠 proactive <span style="color:var(--ink-3);font-family:var(--mono);font-size:11px">perception/attention/gate.ts</span></td>
+          <td>with no user speaking, cheap rules over a signals snapshot say <b>raise</b> a self-thought — <b>and</b> not within the <code class="inl">cooldownMs</code> window (don't nag) <b>and</b> not a dup of the last raise (<code class="inl">key</code>). Else → stay quiet.</td>
+        </tr>
+      </tbody>
+    </table>
+    <div class="note warn">
+      <span class="tag">gates vs triggers</span>
+      <p>A <strong>trigger</strong> (⏳/⚡ on the M3 nodes) is what <em>starts</em> a processor looking; a <strong>gate</strong> (🚪) is the condition that decides whether the result <em>flows on</em>. Vision is the clearest: it's <em>triggered</em> to probe every ⏳1.5s, but the expensive VLM only fires when the 🚪1 change-gate passes.</p>
     </div>
   </div>
 </section>
@@ -483,7 +525,7 @@ flowchart TD
   procs -->|"① SnapshotRecord"| ring[("SnapshotStore ring → durable")]:::store
   procs -->|"② PerceptionResult ×2"| bus(["bus perception → dock + console"]):::data
   ring --> mem["memory arm (M4)<br/><i>summarizer · span-summaries · facts · ego</i>"]:::proc
-  mem -->|grounding + recall| brain["DockBrainSession<br/><i>onFinal / gate → a turn → LLM loop</i>"]:::proc
+  mem -->|grounding + recall| brain["DockBrainSession<br/><i>onFinal / gate → a turn → LLM loop</i><br/>🚪4 addressed gate · 🚪5 attention gate"]:::proc
   bus -.->|re-ground next turn| brain
   brain -->|"agent"| speak(["🗣 speech + face UI → phone"]):::sink
   brain -->|"bodylink"| motion(["🤖 motion → ESP32"]):::sink
