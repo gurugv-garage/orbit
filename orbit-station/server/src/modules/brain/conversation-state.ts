@@ -45,6 +45,11 @@ export const ConvCfg = {
   /** SPEAKING safety cap: if a tts-end is lost, SPEAKING can't wedge forever.
    *  Reconcile-on-connect is the primary recovery; this is the backstop. */
   SPEAK_MAX_MS: Number(process.env.CONV_SPEAK_MAX_MS ?? 30_000),
+  /** THINKING safety cap: a turn that never completes (an LLM error / lost tts-start / a dropped
+   *  429-retry) must not wedge the conversation in 'thinking' forever — which silently gates every
+   *  subsequent wake. If a turn hasn't reached tts within this long, fall back to idle. Generous so
+   *  a slow-but-legit turn (tool calls, retries) isn't cut short. */
+  THINK_MAX_MS: Number(process.env.CONV_THINK_MAX_MS ?? 60_000),
   /** A face arriving in view opens a brief low-priority listen window. */
   FACE_ARRIVAL_MS: Number(process.env.CONV_FACE_ARRIVAL_MS ?? 5_000),
   /** Whether a face arriving in view opens a listen window AT ALL. Default OFF:
@@ -78,6 +83,9 @@ const SRC_PRIORITY: Record<WindowSource, number> = { face: 10, followup: 50, tap
 
 export class ConversationState {
   #mode: ConvMode = 'idle';
+  #thinkUntil = 0;  // THINKING safety expiry (ms), or 0 — a turn that never completes (e.g. an LLM
+                    // error / lost tts-start) must not wedge the conversation in 'thinking' forever
+                    // (which gates every subsequent wake). Falls back to idle when it expires.
   #windowUntil = 0; // LISTENING/FOLLOWUP expiry (ms), or 0
   #lastWindowUntil = 0; // expiry of the MOST RECENT window, kept after it closes — so a
                         // long utterance that STARTED while listening still counts as
@@ -303,6 +311,14 @@ export class ConversationState {
 
   /** Drop expired windows → the correct mode (called before every read/event). */
   #prune(now: number): void {
+    // THINKING safety recovery: a turn that never reached tts (LLM error / dropped retry) would
+    // otherwise leave the conversation stuck in 'thinking' forever, silently gating every wake.
+    // Fall back to idle so the next "hey orbit" isn't swallowed. (#set clears #thinkUntil on any
+    // normal transition, so this only fires for a genuinely wedged turn.)
+    if (this.#mode === 'thinking' && this.#thinkUntil && now >= this.#thinkUntil) {
+      this.#thinkUntil = 0;
+      this.#set('idle', now, 'think-timeout');
+    }
     if (this.#mode === 'speaking' && this.#speakUntil && now >= this.#speakUntil) {
       // tts-end lost → behave as if speech ended (bounded recovery).
       this.#speakUntil = 0;
@@ -352,6 +368,9 @@ export class ConversationState {
     const enteringWindow = (to === 'listening' || to === 'followup');
     const wasInWindow = (from === 'listening' || from === 'followup');
     if (enteringWindow && !wasInWindow) this.#windowOpenedAt = at;
+    // arm/disarm the THINKING safety timeout at the single mode chokepoint: entering 'thinking'
+    // starts the clock; any other mode clears it (a completed/interrupted turn moved on).
+    this.#thinkUntil = to === 'thinking' ? at + ConvCfg.THINK_MAX_MS : 0;
     this.#mode = to;
     this.#onTransition?.({ from, to, reason, at });
   }

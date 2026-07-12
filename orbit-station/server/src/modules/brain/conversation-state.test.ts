@@ -438,6 +438,21 @@ describe('ConversationState — robustness (unit; full reconnection sim separate
     assert.notEqual(cs.mode(ConvCfg.SPEAK_MAX_MS), 'speaking', 'recovered (→ followup)');
   });
 
+  // R1b (unit) — a DEAD turn (LLM error / dropped 429-retry): thinking can't wedge the
+  // conversation forever (which silently gated every subsequent wake — seen live 2026-07-12).
+  it('R1b: a turn that never completes → leaves thinking by THINK_MAX_MS (→ idle)', () => {
+    const { cs } = make();
+    cs.turnStart(0);
+    assert.equal(cs.mode(ConvCfg.THINK_MAX_MS - 1), 'thinking', 'still thinking within the cap');
+    assert.equal(cs.mode(ConvCfg.THINK_MAX_MS), 'idle', 'recovered to idle so the next wake fires');
+  });
+  it('R1b2: a NORMAL turn (thinking→speaking) clears the think-timeout (no false recovery)', () => {
+    const { cs } = make();
+    cs.turnStart(0); cs.speakStart(10);
+    // long after THINK_MAX_MS, but the turn moved to speaking → not stuck; speaking has its own cap.
+    assert.notEqual(cs.mode(ConvCfg.THINK_MAX_MS + 100), 'thinking');
+  });
+
   // R2 (unit) — reconcile on connect → idle from any mode.
   it('R2: reconcileConnected → idle from speaking', () => {
     const { cs } = make();
