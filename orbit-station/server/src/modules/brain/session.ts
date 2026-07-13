@@ -58,7 +58,7 @@ import { SessionStore, type SessionMeta } from './store.js';
 import { loadDockSkills, type DockSkills } from './skills.js';
 import { buildFileTools, FILE_TOOLS_PROMPT } from './filetools.js';
 import { buildDockTools, buildGrantTools, buildSlackTools, buildWhatsAppTools, buildResearchTools, buildMemoryTools, buildFeedbackTools, buildObsTools, type ToolTurnContext } from './tools.js';
-import type { MoveStep } from './schemas.js';
+import { FACES, type MoveStep } from './schemas.js';
 import type { VideoRecorderApi } from '../perception/record/recorder.js';
 import * as slack from '../../integrations/slack.js';
 
@@ -219,6 +219,12 @@ export class DockBrainSession {
   #cancelled = false;
   #timedOut = false;
   #spokeThisTurn = false;
+  // Inline mood tag (WI-3): a leading [face:NAME] in the reply text sets the
+  // face WITHOUT a separate LLM step. Per-STEP parse state (each pi step
+  // streams a fresh assistant message) + a per-TURN applied latch.
+  #moodStepChecked = false; // this step's leading text has been classified
+  #moodStripLen = 0;        // chars to strip from this step's cumulative text
+  #moodApplied = false;     // face already set this turn (first tag wins)
   #toolRanThisTurn = false;
   #streamer = new SentenceStreamer();
   #speakSeq = 0;
@@ -785,6 +791,9 @@ export class DockBrainSession {
     this.#cancelled = false;
     this.#timedOut = false;
     this.#spokeThisTurn = false;
+    this.#moodStepChecked = false;
+    this.#moodStripLen = 0;
+    this.#moodApplied = false;
     this.#spokenSentences = [];
     this.#toolRanThisTurn = false;
     this.#streamer = new SentenceStreamer();
@@ -872,6 +881,8 @@ export class DockBrainSession {
       // utterance — frame it so the model doesn't reply "you said…" to itself
       // and knows it may stay silent (docs/perception-to-brain.md 2.1).
       selfThought: this.#triggerKind === 'self',
+      // false → the pre-WI-3 tool-mood prompt (kill-switch pairs with #filterMood)
+      inlineMood: this.#d.config('brainInlineMood') !== false,
     });
     agent.state.model = this.#resolveModel();
     agent.state.thinkingLevel = (str(this.#d.config('brainThinkingLevel')) ?? 'off') as never;
@@ -1176,6 +1187,8 @@ export class DockBrainSession {
         }
         this.#streamer = new SentenceStreamer();
         this.#shippedStreamStart = false;
+        this.#moodStepChecked = false; // a later step may lead with its own tag
+        this.#moodStripLen = 0;
         this.#stepIndex++;
         this.#stepStartedAt = Date.now();
         this.#stepTtft = undefined;
@@ -1204,7 +1217,7 @@ export class DockBrainSession {
           }
           this.#debug('thinking-delta', { delta: ame.delta });
         }
-        const text = assistantText(event.message);
+        const text = this.#filterMood(assistantText(event.message));
         if (text.length > 0) {
           for (const sentence of this.#streamer.push(text)) this.#speak(sentence);
           this.#sendToVoice('turn-status', { turnId: this.#activeTurnId, state: 'thinking' });
@@ -1332,6 +1345,54 @@ export class DockBrainSession {
    *  on isListening, so this only fires during an active listening/followup turn. */
   sendInterim(text: string, seq: number): void {
     this.#sendToVoice('transcript-interim', { text, seq, isFinal: false });
+  }
+
+  /** Inline mood tag (WI-3, busy-queue-black-hole.md Addendum 3): the reply's
+   *  leading `[face:NAME]` sets the face with NO extra LLM step (the old
+   *  separate set_face step cost a full serial ttft on a ~23k prompt — the
+   *  dominant term in the 8s median reply latency). Called on each step's
+   *  CUMULATIVE text before it enters the SentenceStreamer, so the tag is
+   *  never spoken and never subtitled. While a leading tag is still streaming
+   *  in ("[face:ha"), output is HELD (empty) so a partial tag can't leak;
+   *  a leading bracket that turns out not to be a mood tag passes through. */
+  #filterMood(text: string): string {
+    if (this.#d.config('brainInlineMood') === false) return text;
+    if (this.#moodStripLen > 0) return text.slice(this.#moodStripLen);
+    if (this.#moodStepChecked || text.length === 0) return text;
+    const m = text.match(/^\s*\[(?:face|mood)\s*:\s*([a-z_-]+)\s*\]\s*/i);
+    if (m) {
+      this.#moodStepChecked = true;
+      this.#moodStripLen = m[0].length;
+      this.#applyMood(m[1]!.toLowerCase());
+      return text.slice(this.#moodStripLen);
+    }
+    if (/^\s*\[[^\]]*$/.test(text) && text.length < 40) return ''; // tag may still be completing
+    this.#moodStepChecked = true; // leading text is real prose (or a non-mood bracket)
+    return text;
+  }
+
+  /** Apply a parsed mood: same effects as the set_face tool (gesture in-process,
+   *  face UI via phone RPC), both best-effort and NOT awaited. First tag wins
+   *  per turn; unknown names are logged and ignored (the tag is still stripped
+   *  — better silent than spoken). */
+  #applyMood(expression: string): void {
+    if (this.#moodApplied) return;
+    if (!FACES.includes(expression as never)) {
+      this.#d.log?.(`[brain] ${this.dock}: inline mood ignored (unknown face "${expression}")`);
+      return;
+    }
+    this.#moodApplied = true;
+    this.#debug('mood', { expression });
+    try {
+      this.#d.motion.playGesture(this.dock, expression,
+        gesturesFromConfig(this.#d.config('faceGestures')) as Record<string, MoveStep[]>);
+    } catch { /* body offline — face still changes */ }
+    void this.#d.rpc.call({
+      dock: this.dock, cap: 'face', turnId: this.#activeTurnId ?? '',
+      toolCallId: `mood-${this.#obsTurnId}`, name: 'set_face', args: { expression },
+    }).then((ack) => {
+      if (ack.isError) this.#d.log?.(`[brain] ${this.dock}: inline mood rpc failed: ${ack.content}`);
+    }).catch((err) => this.#d.log?.(`[brain] ${this.dock}: inline mood rpc failed: ${String(err)}`));
   }
 
   /** One spoken sentence → directed speak frame to the voice component. */

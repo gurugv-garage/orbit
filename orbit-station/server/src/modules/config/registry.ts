@@ -238,6 +238,16 @@ export const REGISTRY: ConfigEntry[] = [
     description: 'Absolute path to last30days.py (mvanhorn/last30days-skill). When set (and a Python 3.12+ is on PATH), the brain gets a `research_recent` tool that pulls the last ~30 days of community discussion (Reddit/HN/YouTube/GitHub/Polymarket — no API keys) for a topic. Empty = tool off.',
   }),
   entry({
+    key: 'brainInlineMood', type: 'boolean', schema: z.boolean(), default: true, tags: ['station'],
+    label: 'Inline mood tag',
+    description: 'The reply text leads with a [face:NAME] tag the station strips and applies — the mood costs NO extra LLM step (WI-3, busy-queue RCA: the separate set_face step was a full serial ttft, the dominant term in the 8s median reply latency). Off = the pre-WI-3 behavior: the prompt teaches set_face as a tool call for ordinary moods.',
+  }),
+  entry({
+    key: 'brainVoiceStop', type: 'boolean', schema: z.boolean(), default: true, tags: ['station'],
+    label: 'Voice stop',
+    description: 'A bare "stop" / "never mind" / "wait" spoken while the dock is replying or moving aborts the turn (the spoken tap-interrupt — WI-2, busy-queue RCA). Deliberately narrow: content sentences containing stop words still queue and get answered. Off = stop words queue like any other speech.',
+  }),
+  entry({
     key: 'brainAlwaysPaid', type: 'boolean', schema: z.boolean(), default: false, tags: ['station'],
     label: 'Always use paid key',
     description: 'For Google/Gemini: always use the paid-account key (GEMINI_API_KEY_PAID_ACC) instead of the free key. Off = use the free key and fall back to the paid one only when the free key hits a quota or overload (429/503). No effect if no paid key is set.',

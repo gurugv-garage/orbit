@@ -568,6 +568,41 @@ queue's retained-items semantics.
 
 ### WI-3 — Cut the serial `set_face` step (the latency item)
 
+> **STATUS: BUILT + HEADLESS-SIGNED-OFF (compliance gate passed) — 2026-07-13,
+> branch `conv-quality-july-13`.** The live ≥40% p50 criterion moves to the wave
+> close-out (see honest-measurement note below).
+>
+> **As built:** (a) `set_face` no longer awaits the face RPC ack (`tools.ts`) —
+> fire-and-forget like the gesture, errors to the log; benefits explicit face
+> asks regardless of mode. (b) Inline mood: the prompt (two variants in
+> `prompt.ts`, selected by config `brainInlineMood`, default ON) teaches the model
+> to LEAD every reply with `[face:NAME]`; the session strips it from the stream
+> before the SentenceStreamer (`#filterMood` — holds partial tags so "[face:ha"
+> never leaks to TTS, passes non-mood brackets through) and fans it to the same
+> gesture + face RPC, un-awaited (`#applyMood`, first tag wins, unknown names
+> strip-but-log). Both config keys (`brainInlineMood`, `brainVoiceStop`)
+> registered with console labels.
+>
+> **Sign-off evidence:** 6 unit tests (strip, delta-split hold, unknown name,
+> no-tag, non-mood bracket, kill-switch); brain suite 220/220. Headless
+> measurement (fake-phone waterfall, 8 runs per mode, fresh session per run via
+> WI-5's console-close): **inline mode 8/8 tag emission, 8/8 stripped from
+> speech, face RPC lands ~4ms before first speak** — the compliance gate
+> (≤20% omission) passes decisively.
+>
+> **Honest-measurement note:** the old two-step baseline did NOT reproduce
+> headless — on small fresh-session prompts the model simply skipped `set_face`
+> (0/8 face changes in old mode), so first-speak medians were similar
+> (~3.4s new vs ~3.7s old; same-model ttft dominates both). Two conclusions
+> stand: the mood channel is now MORE RELIABLE (8/8 vs 0/8 faces changed), and
+> the structural cause of the measured live 8s (a second serial ttft on the 23k
+> prompt + an awaited phone RPC) is removed by construction. The live-dock p50
+> before/after (rich persona/grounding sessions, where the RCA saw the two-step
+> pattern on nearly every turn) is the close-out measurement.
+> Also caught by this pass: measurement runs sharing one session CONTAMINATE
+> each other (old-mode turns imitated `[face:…]` tags from new-mode transcript
+> history) — per-run session isolation is mandatory for any prompt A/B here.
+
 **Covers.** (a) Stop awaiting the face RPC ack in `set_face` (`tools.ts:410-414`) — same
 best-effort contract as the gesture on `:409`. (b) Fold routine mood selection into the
 reply step: prompt change (`prompt.ts:24-28`) + an inline mood tag (e.g. `[face:happy]`)

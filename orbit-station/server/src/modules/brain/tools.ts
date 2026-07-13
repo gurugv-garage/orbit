@@ -407,12 +407,16 @@ export function buildDockTools(deps: ToolDeps): AgentTool<any>[] {
       }
       // gesture choreography in-process (best-effort), face UI via phone RPC.
       deps.motion.playGesture(deps.dock, args.expression, deps.getGestures());
-      const ack = await deps.rpc.call({
+      // The face graphic is best-effort UX exactly like the gesture above — do
+      // NOT await the phone round-trip on the reply's critical path (WI-3,
+      // busy-queue-black-hole.md Addendum 1 P1). Errors go to the log.
+      void deps.rpc.call({
         dock: deps.dock, cap: 'face', turnId: deps.getTurnContext().turnId,
         toolCallId, name: 'set_face', args,
-      });
-      if (ack.isError) throw new Error(ack.content);
-      return textResult(ack.content || `face set to ${args.expression}`);
+      }).then((ack) => {
+        if (ack.isError) console.warn(`[brain] ${deps.dock}: set_face rpc failed: ${ack.content}`);
+      }).catch((err) => console.warn(`[brain] ${deps.dock}: set_face rpc failed: ${String(err)}`));
+      return textResult(`face set to ${args.expression}`);
     }),
 
     tool('set_face_style', S.SET_FACE_STYLE_DESC, S.setFaceStyleSchema, async (toolCallId, args: { style: string }) => {
