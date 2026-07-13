@@ -37,6 +37,7 @@ stress-dock-pipeline method: instrument, many reps, honest failure classes.
 - [Addendum 5 — 2026-07-13: live session, first pass (dock-redmi, interim)](#addendum-5--2026-07-13-live-session-first-pass-dock-redmi-interim)
   - [Addendum 5.1 — the ambient call, decided + the step-3 fix (same day)](#addendum-51--the-ambient-call-decided--the-step-3-fix-same-day)
   - [Addendum 5.2 — dismissal + enricher name-gate (same day)](#addendum-52--dismissal--enricher-name-gate-same-day)
+  - [Addendum 5.3 — pause vs dismiss (same day)](#addendum-53--pause-vs-dismiss-same-day)
 <!-- /TOC -->
 
 ## TL;DR
@@ -920,3 +921,21 @@ followup window → `stop:dismiss` → idle ✓; an acoustic "Stop. Go away." wa
 misheard as "So go away." — the reflex missed but the OVERHEARD framing silenced
 the reply and the chain still died (defense-in-depth working); the mishear is now
 in the lexicon.
+
+### Addendum 5.3 — pause vs dismiss (same day)
+
+**User's model, now the code's model:** both reflexes STOP TALKING (abort the
+reply/motion); only the end state differs — **dismiss** ("stop", "shut up", "not
+talking to you", "go away", "enough", "never mind", "cancel") also STOPS LISTENING
+(all windows closed, queue cleared traced, idle — re-engage via tap/palm/wake);
+**pause** ("wait", "hold on", "wait a second") STARTS LISTENING (listening window
+opens, the busy queue is KEPT — they're mid-exchange). `classifyStopIntent` returns
+none|pause|dismiss (dismiss wins mixed: "wait, stop" dismisses); ring decisions
+`stop:dismiss` / `stop:pause`. This resolves the 'wait-as-hard-cancel' call: "wait"
+no longer stands the dock down.
+
+**Evidence:** class fixtures (pause/dismiss/mixed/content); suite green; harness
+F9 (pause: turn cancelled, mode listening, the next question runs) — matrix
+S4+F1–F9 **36/36**. Acoustic pause rep merged with (again-active) room speech and
+was correctly refused as content — the overheard framing handled the merged line;
+clean-utterance validation stands on F9 + the earlier live dismissal reps.

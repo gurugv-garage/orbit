@@ -29,12 +29,16 @@ const PHRASE_FOLDS: Array<[RegExp, string]> = [
   [/\bbe quiet\b/g, 'bequiet'],
 ];
 
-/** A token that BY ITSELF signals stop/dismissal. At least one required. */
-const CORE = new Set([
-  'stop', 'nevermind', 'wait', 'holdon', 'cancel', 'enough',
+/** Cores split by INTENT (Addendum 5.3): a dismissal means "leave me alone" —
+ *  stand down completely; a pause means "hold on, I want to say something" —
+ *  shut up and LISTEN. "wait" as a full dismissal ate real exchanges. */
+const DISMISS_CORE = new Set([
+  'stop', 'nevermind', 'cancel', 'enough',
   'quiet', 'bequiet', 'shutup', 'shush', 'shh',
-  'notyou', 'goaway', 'leavealone', // dismissals: "I'm not talking to you" etc.
+  'notyou', 'goaway', 'leavealone', // "I'm not talking to you" etc.
 ]);
+const PAUSE_CORE = new Set(['wait', 'holdon']);
+const CORE = new Set([...DISMISS_CORE, ...PAUSE_CORE]);
 
 /** Tokens allowed AROUND the core without changing the meaning ("okay stop",
  *  "actually never mind, stop moving", "orbit, stop it"). Anything outside
@@ -49,12 +53,24 @@ const FILLER = new Set([
 
 const MAX_TOKENS = 8; // longer than this and it's a sentence, not a reflex
 
-export function isStopIntent(text: string): boolean {
+export type StopIntent = 'none' | 'pause' | 'dismiss';
+
+/** Classify a bare stop utterance:
+ *  - 'dismiss' — stand down (any dismissal core present: it wins over pause);
+ *  - 'pause'   — only wait/hold-on cores: shut up and LISTEN;
+ *  - 'none'    — carries content (or too long): handle normally. */
+export function classifyStopIntent(text: string): StopIntent {
   let norm = text.toLowerCase().replace(/[^a-z\s']/g, ' ').replace(/\s+/g, ' ').trim();
-  if (!norm) return false;
+  if (!norm) return 'none';
   for (const [re, folded] of PHRASE_FOLDS) norm = norm.replace(re, folded);
   const tokens = norm.split(' ');
-  if (tokens.length > MAX_TOKENS) return false;
-  return tokens.every((t) => CORE.has(t) || FILLER.has(t))
-    && tokens.some((t) => CORE.has(t));
+  if (tokens.length > MAX_TOKENS) return 'none';
+  if (!tokens.every((t) => CORE.has(t) || FILLER.has(t))) return 'none';
+  if (tokens.some((t) => DISMISS_CORE.has(t))) return 'dismiss';
+  if (tokens.some((t) => PAUSE_CORE.has(t))) return 'pause';
+  return 'none';
+}
+
+export function isStopIntent(text: string): boolean {
+  return classifyStopIntent(text) !== 'none';
 }

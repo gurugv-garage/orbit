@@ -36,7 +36,7 @@ import { isRecording } from '../capture/index.js';
 import type { VideoRecorderApi } from '../perception/record/recorder.js';
 import { RpcBroker } from './rpc.js';
 import { BusyQueue, splitByAge, type HeardUtterance } from './busy-queue.js';
-import { isStopIntent } from './stop-intent.js';
+import { classifyStopIntent } from './stop-intent.js';
 import { DockBrainSession, type TurnRequest, keyStatusFor } from './session.js';
 import { SessionStore } from './store.js';
 import { installDockSkill, listDockSkills, removeDockSkill, loadDockSkills } from './skills.js';
@@ -719,11 +719,22 @@ export function brainModule(w: BrainWiring): StationModule {
         // queue (traced skip:dismissed so nothing drains after), → idle.
         // Re-engage via tap/palm/wake. Deliberately narrow (stop-intent.ts):
         // content sentences are handled normally. Kill-switch: brainVoiceStop=false.
-        if (pre.mode !== 'idle' && w.config('brainVoiceStop') !== false && isStopIntent(t.text)) {
-          trace('stop:dismiss');
-          for (const u of busyQueue.take(t.dockId)) pushAddrTrace(u, 'skip:dismissed', pre.mode);
-          session(t.dockId).dismiss();
-          return;
+        if (pre.mode !== 'idle' && w.config('brainVoiceStop') !== false) {
+          const stop = classifyStopIntent(t.text);
+          if (stop === 'dismiss') {
+            trace('stop:dismiss');
+            for (const u of busyQueue.take(t.dockId)) pushAddrTrace(u, 'skip:dismissed', pre.mode);
+            session(t.dockId).dismiss();
+            return;
+          }
+          // PAUSE ("wait" / "hold on"): shut up and LISTEN — abort the reply and
+          // open a listening window (the spoken tap-interrupt); the busy queue is
+          // KEPT (they're mid-exchange; it drains at the next settle).
+          if (stop === 'pause') {
+            trace('stop:pause');
+            session(t.dockId).tapOpen();
+            return;
+          }
         }
         // BUSY QUEUE: don't let a heard utterance auto-start a turn while the dock is
         // already mid-turn (THINKING/SPEAKING). handleTurnRequest has supersede

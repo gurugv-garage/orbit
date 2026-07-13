@@ -351,6 +351,27 @@ async function f7_tapThenSilence(): Promise<void> {
     `after window close: [${d}], drained turn ${drained.state} — nothing stranded`);
 }
 
+async function f9_pause(): Promise<void> {
+  log('── F9 pause (Addendum 5.3): "Wait." mid-reply shuts up and LISTENS (not a dismissal)');
+  await idle();
+  const scenarioStart = Date.now();
+  const mark = frames.length;
+  await say('Count from one to nine, slowly, one number per sentence.');
+  await waitConv('thinking', 20_000);
+  await hear('Wait. Hold on a second.');
+  const e = (await ring()).filter((x) => x.at >= scenarioStart && x.text.startsWith('Wait'));
+  check('F9a', decisions(e).join() === 'stop:pause', `mid-turn wait → [${decisions(e)}]`);
+  const end1 = await waitTurnEnd(mark, 30_000);
+  check('F9b', end1.state === 'cancelled', `counting turn: ${end1.state} — it shut up`);
+  const m = await waitConv(['listening', 'idle'], 10_000);
+  check('F9c', m === 'listening', `conversation after wait = ${m} — LISTENING for what they say next`);
+  // and what they say next runs a turn
+  const mark2 = frames.length;
+  await hear(`Okay, what is eight plus eight, run ${RUN}?`);
+  const end2 = await waitTurnEnd(mark2, 60_000);
+  check('F9d', end2.state === 'done', `the held-back question ran after the pause: ${end2.state}`);
+}
+
 // ── main ────────────────────────────────────────────────────────────────────
 
 async function main(): Promise<void> {
@@ -399,6 +420,7 @@ async function main(): Promise<void> {
     ['S4', s4_control], ['F1', f1_coreDrain], ['F2', f2_mixedAge],
     ['F3', f3_everyTurnKind], ['F4', f4_voiceStop], ['F5', f5_stopFalsePositives],
     ['F6', f6_cannedWake], ['F7', f7_tapThenSilence], ['F8', f8_dismissClearsAll],
+    ['F9', f9_pause],
   ];
   for (const [name, fn] of scenarios) {
     try { await fn(); }

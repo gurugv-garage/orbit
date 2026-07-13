@@ -97,3 +97,20 @@ test('STT mishear tolerance: leading "So" for "Stop" (live 2026-07-13)', () => {
   assert.equal(isStopIntent('So go away.'), true);
   assert.equal(isStopIntent('So what is the plan for tomorrow?'), false); // content stays content
 });
+
+// ── pause vs dismiss classes (Addendum 5.3) ─────────────────────────────────
+
+test('classify: wait/hold-on are PAUSE; stop/shut-up family is DISMISS; dismiss wins mixed', async () => {
+  const { classifyStopIntent } = await import('./stop-intent.js');
+  for (const s of ['Wait.', 'wait wait', 'Hold on a second.', 'No wait.']) {
+    assert.equal(classifyStopIntent(s), 'pause', `expected PAUSE: "${s}"`);
+  }
+  for (const s of ['Stop.', 'Never mind.', 'Shut up.', 'Go away.', "I'm not talking to you.", 'Enough.']) {
+    assert.equal(classifyStopIntent(s), 'dismiss', `expected DISMISS: "${s}"`);
+  }
+  // mixed: a dismissal core anywhere wins over pause
+  assert.equal(classifyStopIntent('Wait, stop.'), 'dismiss');
+  assert.equal(classifyStopIntent('Hold on, never mind.'), 'dismiss');
+  // content still none
+  assert.equal(classifyStopIntent('Wait, tell me a joke instead.'), 'none');
+});
