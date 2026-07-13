@@ -246,6 +246,7 @@ function enrichHarness(opts: { words?: boolean } = {}) {
     fires.push({ ms: windowPcm.length / 16, startedAtMs, armedBy });
     d.enrichDone(); // synchronous "pass complete" so the guard clears immediately
   };
+  d.setEnrichPaths({ speech: true, nonSpeech: true }); // exercise BOTH paths (gate defaults tested separately)
   return { d, fires };
 }
 
@@ -306,6 +307,7 @@ test('SPEECH OVERRIDES an open acoustic window: fires early via the speech path'
   let sawWords = false; // the speech happens only after the ambient lead-in
   const d = new UtteranceDetector(() => { d.speechEndpoint(sawWords); });
   d.onEnrich = (w, _s, armedBy) => { fires.push({ ms: w.length / 16, armedBy }); d.enrichDone(); };
+  d.setEnrichPaths({ speech: true, nonSpeech: true }); // this test drives the acoustic path
   d.feedPcm(quiet(frames(500)));    // baseline
   d.feedPcm(loud(frames(60)));      // impulse → acoustic window opens (this endpoint has NO words)
   d.feedPcm(quiet(frames(3000)));   // 3s of ambient quiet (window running, ~27s left)

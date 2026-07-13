@@ -23,6 +23,16 @@ function loadWavPcm(name: string): Int16Array {
 
 const silence = (ms: number) => new Int16Array(Math.round((16000 * ms) / 1000)); // 16 kHz
 
+/** A loud broadband burst (deterministic seeded noise) — trips the RMS AudioTrigger's impulse
+ *  path (a bang/clunk), the real acoustic (non-speech) signal. Not speech: parakeet returns ''. */
+function burst(ms: number, amp = 0.3): Int16Array {
+  const n = Math.round((16000 * ms) / 1000);
+  const out = new Int16Array(n);
+  let s = 12345; // fixed seed → reproducible
+  for (let i = 0; i < n; i++) { s = (s * 1103515245 + 12345) & 0x7fffffff; out[i] = Math.round(((s / 0x7fffffff) * 2 - 1) * amp * 32767); }
+  return out;
+}
+
 function harness(hasWords: boolean) {
   const fires: Array<{ ms: number; armedBy: 'speech' | 'acoustic' }> = [];
   const d = new UtteranceDetector(() => { d.speechEndpoint(hasWords); }); // inject parakeet's verdict
@@ -46,4 +56,47 @@ test('REAL non-speech hum → speech path NEVER arms (parakeet would return "")'
   d.feedPcm(silence(6000));                      // even with an RMS endpoint + quiet, no words → no speech fire
   const speechFires = fires.filter((f) => f.armedBy === 'speech');
   assert.equal(speechFires.length, 0, 'a hum must NOT fire the fast speech path (no words)');
+});
+
+// ── ENRICH-PATH GATES (console toggles: speech / non-speech triggers) ──────────────────────────
+// setEnrichPaths gates each path at its ARM point, so a disabled path never produces a clip.
+// The acoustic path is driven by a real RMS burst (a clunk), not the hum fixture — a steady 90 Hz
+// hum sits below the impulse/sustained thresholds and never trips the AudioTrigger on its own.
+
+test('non-speech ENABLED → an acoustic burst fires an acoustic clip', () => {
+  const { d, fires } = harness(false); // not speech (parakeet '')
+  d.setEnrichPaths({ speech: true, nonSpeech: true });
+  d.feedPcm(silence(500));
+  d.feedPcm(burst(200));                        // loud clunk → impulse → opens the acoustic window
+  d.feedPcm(silence(31_000));                    // past the 30s window → fires
+  assert.equal(fires.filter((f) => f.armedBy === 'acoustic').length, 1, 'non-speech on → the burst fires an acoustic clip');
+});
+
+test('non-speech DISABLED (default) → the same burst opens NO window, fires nothing', () => {
+  const { d, fires } = harness(false);
+  d.setEnrichPaths({ speech: true, nonSpeech: false }); // the shipped default
+  d.feedPcm(silence(500));
+  d.feedPcm(burst(200));                        // identical clunk
+  d.feedPcm(silence(35_000));                    // well past the 30s window — would fire if armed
+  assert.equal(fires.length, 0, 'non-speech off → an acoustic event never fires a clip');
+});
+
+test('speech DISABLED → real speech does NOT arm the speech path', () => {
+  const speech = loadWavPcm('speech-16k.wav');
+  const { d, fires } = harness(true); // parakeet WOULD return words
+  d.setEnrichPaths({ speech: false, nonSpeech: false });
+  d.feedPcm(speech);
+  d.feedPcm(silence(6000));
+  assert.equal(fires.filter((f) => f.armedBy === 'speech').length, 0, 'speech off → no speech-armed clip');
+});
+
+test('disabling non-speech mid-window retires an already-open acoustic window', () => {
+  const { d, fires } = harness(false);
+  d.setEnrichPaths({ speech: true, nonSpeech: true });
+  d.feedPcm(silence(500));
+  d.feedPcm(burst(200));                        // opens a 30s acoustic window
+  d.feedPcm(silence(5_000));                     // window still open (not yet at 30s)
+  d.setEnrichPaths({ speech: true, nonSpeech: false }); // toggle off mid-window
+  d.feedPcm(silence(30_000));                    // past when it WOULD have fired
+  assert.equal(fires.length, 0, 'a live acoustic window is retired when non-speech is turned off');
 });

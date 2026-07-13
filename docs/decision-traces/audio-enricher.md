@@ -6,8 +6,8 @@
 > coherent, in-context transcription with diarization, and which also carries the acoustic
 > read (kind/salience/summary/addressed) on the same record. This replaces the old path
 > entirely (enricher-only; parakeet is now live-only). As built:
-> [`background-audio.ts`](../../orbit-station/server/src/modules/perception/processors/background-audio.ts)
-> (`enrichAudio` + `coalesceSegments`), the debounced batch trigger in
+> [`audio-enricher.ts`](../../orbit-station/server/src/modules/perception/processors/audio-enricher.ts)
+> (`enrichAudio` + `coalesceSegments`), the dual-path batch trigger in
 > [`vad-endpoint.ts`](../../orbit-station/server/src/modules/perception/processors/vad-endpoint.ts),
 > the wiring + memory-arm dedup in
 > [`speech-watch.ts`](../../orbit-station/server/src/modules/perception/processors/speech-watch.ts)
@@ -28,16 +28,57 @@ that produces the authoritative, coherent transcript for the durable record**, i
 with diarization and the acoustic read all on one packet. Parakeet stays live-only (fast
 path for the addressed-latch / wake / console caption); the enricher owns durable memory.
 
-## Trigger (the debounced batch)
+## Trigger (dual-path batching)
 
-The `vad-endpoint` detector keeps a **drain buffer** (all audio since the last fire) + a
-**cursor**. It fires the enricher when:
-- `≥ BATCH_MIN_MS` (10 s floor) of audio has accumulated, AND
-- it is **armed** — an utterance endpointed (+ trailing silence), OR the impulse/sustained
-  acoustic gate fired, AND
-- the room is quiet now (or the `BATCH_MAX_MS` 30 s cap hit) — cutting the window **only at
-  an endpoint boundary** so a word is never split. The remainder carries to the next batch
-  (no miss, no overlap).
+> **UPDATED 2026-07-13.** The original single "armed + quiet" trigger became **two independent
+> paths** so a short utterance closes fast while ambient sound is buffered long. The window is
+> always cut **at an endpoint boundary** (a word is never split); the remainder carries to the
+> next batch (no miss, no overlap). As built in
+> [`vad-endpoint.ts`](../../orbit-station/server/src/modules/perception/processors/vad-endpoint.ts).
+
+Two paths fire the enricher, and each stamps the record with **`armedBy` — the CAUSE, not the
+content** (an acoustic-triggered clip may still contain speech, and that's fine):
+
+- **Path A — speech** (`armedBy:'speech'`). **Parakeet** (not the energy VAD) drives this: after
+  transcription, `speechEndpoint(hasWords)` arms the fast path only when parakeet returned
+  *substantive* words (≥2 alphanumeric chars, non-garbage tier — so far-field noise can't arm it).
+  The clip fires `PERCEPTION_SPEECH_INACTIVITY_MS` (3 s) after the last real-speech endpoint —
+  short natural utterance, closes shortly after you stop talking.
+- **Path B — acoustic** (`armedBy:'acoustic'`). A non-speech acoustic event (impulse/sustained from
+  the RMS `AudioTrigger`) opens a `PERCEPTION_ACOUSTIC_WINDOW_MS` (30 s) window **anchored at the
+  first event**; further acoustic events don't extend it (continuous sound → back-to-back windows).
+  Speech **overrides** an open acoustic window: the clip START stays the acoustic marker (lead-up
+  kept), the END uses speech-end logic, and `armedBy` stays `'acoustic'` (audio was the cause).
+
+A `PERCEPTION_BATCH_MAX_MS` (45 s) hard cap fires either path at the last endpoint if it runs long.
+The RMS energy VAD can **only** arm Path B — an RMS blip (a quiet whir) is not speech.
+
+### The three `armedBy` labels in the Studio
+
+The console badge is `armedBy` + `hasSpeech` (whether the enricher found speech *in* the clip):
+
+| `armedBy` | `hasSpeech` | Badge | Meaning |
+|---|---|---|---|
+| `acoustic` | any | **acoustic event** | Path B — ambient sound opened the window (may still contain speech). |
+| `speech` | `true` | **speech endpoint** | Path A happy case — parakeet heard words, enricher confirmed. |
+| `speech` | `false` | **VAD endpoint · no speech** | Path A mismatch — parakeet armed the speech path but the enricher found NO speech (a parakeet-vs-enricher disagreement, **not** a VAD event). The label name is legacy; it does not mean the energy VAD fired. |
+
+### Trigger-path gates (console toggles)
+
+> **ADDED 2026-07-13.** Each of the two paths can be turned off independently, live, from the
+> Perception Studio's enricher panel (**enrich triggers**: `speech` / `non-speech` checkboxes) →
+> `POST /api/perception/enricher {speech?, nonSpeech?}`.
+
+- **speech** gates Path A, **non-speech** gates Path B. The gate is applied at the **arm** point
+  (`UtteranceDetector.setEnrichPaths`), so a disabled path never even opens a clip — no Gemini call
+  is made for it. Disabling non-speech mid-window also retires an acoustic window already open.
+- **Default: speech ON, non-speech OFF.** Only real in-room speech reaches Gemini; ambient/acoustic
+  sound is ignored. Rationale: an acoustic window costs a full Gemini call and, in practice, ambient
+  sound rarely carries value worth that spend — so it's opt-in, not on by default. (A "VAD endpoint ·
+  no speech" row can still appear with only speech on: it's a *speech*-armed clip that came back
+  empty, not the non-speech path.)
+- State lives in perception's `enricher_` runtime object (`{speech, nonSpeech}`), pushed to every
+  live detector via `registerEnrichPathSink`/`applyEnrichPaths`; not a persisted config-registry key.
 
 ## Output (one packet, all fields — ONE record kind)
 

@@ -283,6 +283,8 @@ interface StreamState {
   /** diagnostics: whether any RTP has arrived + a packet counter. */
   rtpSeen?: boolean;
   rtpCount?: number;
+  /** unregister this detector from the live enrich-path gate (called on stream end). */
+  unregisterEnrichPaths?: () => void;
 }
 
 /** A final transcript + its utterance window, handed to the A1.2 transcript hook. */
@@ -345,6 +347,11 @@ export function speechWatchProcessor(
    *  the enricher's result lands — no queue/batch between detection and this call. Observation
    *  only; the brain's addressed latch is the sole authority on whether it becomes a turn. */
   onEnrichAddressed?: (e: { dockId: string; text: string; conf: number; directive: string }) => void,
+  /** Register a detector's enrich-path gate so console toggles (speech / non-speech triggers)
+   *  apply live. Called once per detector with its `setEnrichPaths`; returns an unregister fn the
+   *  stream teardown calls. Undefined ⇒ paths stay at the detector's defaults (speech on/non-speech
+   *  off). Wired to perception's enricher_ state by the caller. */
+  registerEnrichPaths?: (apply: (p: { speech: boolean; nonSpeech: boolean }) => void) => () => void,
 ): StreamProcessor & {
   /** Force-commit any in-progress utterance on EVERY stream now, awaiting the
    *  transcription. Used by the Summarize flush so a mid-sentence is captured. */
@@ -589,7 +596,10 @@ export function speechWatchProcessor(
         };
       }
       detector.start();
-      streams.set(ctx.streamId, { ctx, detector, muted: false });
+      // Live enrich-path gates (console speech / non-speech toggles). The registrar seeds the
+      // detector with current state immediately and pushes future changes; keep the unregister.
+      const unregisterEnrichPaths = registerEnrichPaths?.((p) => detector.setEnrichPaths(p));
+      streams.set(ctx.streamId, { ctx, detector, muted: false, unregisterEnrichPaths });
     },
 
     onRtp(streamId: string, _kind: MediaKind, rtp: RtpPacket) {
@@ -627,7 +637,9 @@ export function speechWatchProcessor(
 
     onStreamEnd(streamId: string) {
       console.warn(`[speech-watch] onStreamEnd: ${streamId} — detector stopped + removed`); // DIAG (restart hunt)
-      streams.get(streamId)?.detector.stop();
+      const st = streams.get(streamId);
+      st?.detector.stop();
+      st?.unregisterEnrichPaths?.();
       streams.delete(streamId);
     },
   };

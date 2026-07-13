@@ -159,6 +159,15 @@ export class UtteranceDetector {
   // it fires ACOUSTIC_WINDOW_MS of audio after that anchor. 0 = no acoustic window open.
   #acousticOpen = false;
   #acousticFireAtMs = 0;           // #batchMs at which the acoustic window fires (anchor + ACOUSTIC_WINDOW_MS)
+  // ENRICH PATH GATES (console-tunable, live). Which of the two trigger paths may fire the enricher:
+  //   #enrichSpeech   → Path A (parakeet speech endpoint) may arm. Default ON (real in-room speech is
+  //                     the durable-memory signal everyone wants).
+  //   #enrichNonSpeech→ Path B (acoustic/ambient event) may open a window. Default OFF (ambient sound
+  //                     rarely carries value + costs a Gemini call). When OFF, an RMS event never opens
+  //                     a window, so no acoustic-armed clip is ever produced.
+  // Gating happens at the ARM points (not at fire) so a disabled path never even starts a clip.
+  #enrichSpeech = true;
+  #enrichNonSpeech = false;
   /** Fired when the batch is ready: the AUDIO ENRICHER should transcribe+interpret `windowPcm`
    *  (starting at epoch `startedAtMs`) in context and return segment records. The window is cut
    *  at an endpoint boundary; `armedBy` says what triggered (speech endpoint vs acoustic).
@@ -264,7 +273,7 @@ export class UtteranceDetector {
       // PATH B arm: an acoustic event, when NO acoustic window is already open, opens one anchored
       // HERE (fires ACOUSTIC_WINDOW_MS of audio later). Further acoustic events during the window do
       // NOT extend it (anchored). A speech clip owns the batch instead when one is open (speech wins).
-      if (acousticTrig && !this.#acousticOpen && !this.#speechArmed) {
+      if (this.#enrichNonSpeech && acousticTrig && !this.#acousticOpen && !this.#speechArmed) {
         this.#acousticOpen = true;
         this.#acousticFireAtMs = this.#batchMs + ACOUSTIC_WINDOW_MS;
       }
@@ -422,12 +431,25 @@ export class UtteranceDetector {
    *  (parakeet returned '') → NOT speech → leave the speech path alone (only the acoustic path can
    *  arm). This is what makes "STT had an endpoint" the definition of a speech trigger. */
   speechEndpoint(hasWords: boolean): void {
-    if (!this.onEnrich || !hasWords) return;
+    if (!this.onEnrich || !hasWords || !this.#enrichSpeech) return;
     this.#speechArmed = true;
     this.#speechDeadlineMs = this.#batchMs + SPEECH_INACTIVITY_MS;
     // speech OVERRIDES an open acoustic window: keep the window's START (the acoustic marker, so the
     // lead-up sound is in the clip) but let the SPEECH path own the END → fires before the full window.
     // (armedBy still reports 'acoustic' when a window was open — the audio was the cause.)
+  }
+
+  /** Console-tunable: which enricher trigger PATHS are live. `speech` gates Path A (parakeet
+   *  speech endpoint), `nonSpeech` gates Path B (acoustic/ambient event). A path turned off
+   *  never ARMS, so no clip of that kind is produced (nor its Gemini call). Applied live. */
+  setEnrichPaths(paths: { speech: boolean; nonSpeech: boolean }): void {
+    this.#enrichSpeech = paths.speech;
+    this.#enrichNonSpeech = paths.nonSpeech;
+    // If non-speech was just disabled, retire any acoustic window that's mid-flight (no speech
+    // has overridden it — a pure acoustic clip would fire under the now-disabled path).
+    if (!this.#enrichNonSpeech && this.#acousticOpen && !this.#speechArmed) {
+      this.#acousticOpen = false; this.#acousticFireAtMs = 0;
+    }
   }
 
   /** Force-commit an in-progress utterance NOW (don't wait for the silence

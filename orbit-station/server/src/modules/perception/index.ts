@@ -489,11 +489,27 @@ export function getMemoryStore(): MemoryStore | undefined {
  *  (GET/POST /api/perception/enricher). The enricher is ALWAYS ON (it's
  *  the sole authoritative audio path now), so `enabled` is retained only for API back-compat;
  *  `model` is the live-selectable Gemini model the enricher runs. Seeded from
- *  PERCEPTION_ENRICH_MODEL. */
-const enricher_ = { enabled: true, model: 'gemini-2.5-flash' };
+ *  PERCEPTION_ENRICH_MODEL.
+ *  TRIGGER PATHS (which audio starts an enrich call): `speech` = Path A, parakeet speech endpoint
+ *  (real in-room speech); `nonSpeech` = Path B, acoustic/ambient event. Default speech ON /
+ *  nonSpeech OFF — only real speech reaches Gemini; ambient sound is ignored (no value + costs a
+ *  call). A disabled path never arms, so no clip of that kind is produced. Pushed live to every
+ *  detector via `applyEnrichPaths()`. */
+const enricher_ = { enabled: true, model: 'gemini-2.5-flash', speech: true, nonSpeech: false };
 export function getEnricherState() { return { ...enricher_ }; }
 /** The model the live enricher should use right now (console-selectable). */
 export function currentEnrichModel(): string { return enricher_.model; }
+/** Live detectors that want the enrich-path gates pushed to them. speech-watch registers each
+ *  UtteranceDetector's `setEnrichPaths` here so a console toggle applies without a restart. */
+const enrichPathSinks = new Set<(p: { speech: boolean; nonSpeech: boolean }) => void>();
+export function registerEnrichPathSink(apply: (p: { speech: boolean; nonSpeech: boolean }) => void): () => void {
+  apply({ speech: enricher_.speech, nonSpeech: enricher_.nonSpeech }); // seed the new detector with current state
+  enrichPathSinks.add(apply);
+  return () => { enrichPathSinks.delete(apply); };
+}
+function applyEnrichPaths(): void {
+  for (const apply of enrichPathSinks) apply({ speech: enricher_.speech, nonSpeech: enricher_.nonSpeech });
+}
 
 /** Dock-addressed OBSERVATIONS from the background audio interpreter — the brain
  *  registers a handler and DECIDES (wake fallback for the local STT mis-hearing the
@@ -780,6 +796,7 @@ export function perceptionModule(getHub: () => PerceptionProcessingHub): Station
     // enricher-addressed → brain, SYNCHRONOUS (no batching between detect and send); pass the
     // enricher's ACTUAL address confidence + directive (was hardcoded 0.7/empty — wasted signal).
     (e) => bgAddressedHandler?.({ dockId: e.dockId, directive: e.directive, transcript: e.text, conf: e.conf }),
+    registerEnrichPathSink, // live speech / non-speech trigger gates → each detector
   ); // 🎙 speech (exposes flushAll)
   const bodymotion = bodyMotionWatchProcessor(snapshots); // 🤖 ego-motion (setMotion seam)
   // Vision reuses the face processor's decoded frame (ONE ffmpeg per dock, not two). The
@@ -1570,16 +1587,21 @@ export function perceptionModule(getHub: () => PerceptionProcessingHub): Station
         json(res, 200, { base: visionBase(), extra: getVisionExtra() });
         return true;
       }
-      // AUDIO ENRICHER state. GET → {enabled, model}; POST {model?} picks the live Gemini model
-      // (no restart). The enricher is always ON now, so `enabled` is retained for API back-compat
-      // only. The route is '/api/perception/enricher' (no legacy aliases).
+      // AUDIO ENRICHER state. GET → {enabled, model, speech, nonSpeech}; POST {model?, speech?,
+      // nonSpeech?} picks the live Gemini model + which trigger paths are live (no restart). The
+      // enricher is always ON now, so `enabled` is retained for API back-compat only. The route is
+      // '/api/perception/enricher' (no legacy aliases).
       if (req.method === 'GET' && subPath === '/enricher') {
         json(res, 200, getEnricherState());
         return true;
       }
       if (req.method === 'POST' && subPath === '/enricher') {
-        const body = await parseBody<{ enabled?: boolean; model?: string }>(req);
+        const body = await parseBody<{ enabled?: boolean; model?: string; speech?: boolean; nonSpeech?: boolean }>(req);
         if (typeof body.model === 'string' && body.model) enricher_.model = body.model;
+        let pathsChanged = false;
+        if (typeof body.speech === 'boolean') { enricher_.speech = body.speech; pathsChanged = true; }
+        if (typeof body.nonSpeech === 'boolean') { enricher_.nonSpeech = body.nonSpeech; pathsChanged = true; }
+        if (pathsChanged) applyEnrichPaths(); // push the gate change to every live detector
         json(res, 200, getEnricherState()); // `enabled` ignored — enricher is always on
         return true;
       }
