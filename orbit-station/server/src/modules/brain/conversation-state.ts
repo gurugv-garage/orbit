@@ -212,6 +212,19 @@ export class ConversationState {
     this.#set('speaking', now, 'tts-start');
   }
 
+  /** Spoken DISMISSAL ("stop", "shut up", "I'm not talking to you") → stand
+   *  down: idle from ANY mode, all windows closed, the long-utterance grace
+   *  clamped to now (like tap-off) so trailing speech isn't addressed. Unlike
+   *  tap-interrupt this does NOT open a listening window — dismissed means
+   *  leave me alone; re-engage via tap/palm/wake. */
+  dismiss(now: number): void {
+    this.#prune(now);
+    this.#speakUntil = 0;
+    this.#windowUntil = 0;
+    this.#lastWindowUntil = now;
+    if (this.#mode !== 'idle') this.#set('idle', now, 'dismissed');
+  }
+
   /** A turn completed WITHOUT ever speaking (e.g. a self-thought that chose
    *  silence) → the lane is quiet NOW; don't leave 'thinking' wedged until the
    *  THINK_MAX_MS safety prune (which also silently gated every wake for up to

@@ -36,6 +36,7 @@ stress-dock-pipeline method: instrument, many reps, honest failure classes.
   - [⚠ CALLS TO MAKE — before or during the live session](#-calls-to-make--before-or-during-the-live-session)
 - [Addendum 5 — 2026-07-13: live session, first pass (dock-redmi, interim)](#addendum-5--2026-07-13-live-session-first-pass-dock-redmi-interim)
   - [Addendum 5.1 — the ambient call, decided + the step-3 fix (same day)](#addendum-51--the-ambient-call-decided--the-step-3-fix-same-day)
+  - [Addendum 5.2 — dismissal + enricher name-gate (same day)](#addendum-52--dismissal--enricher-name-gate-same-day)
 <!-- /TOC -->
 
 ## TL;DR
@@ -895,3 +896,27 @@ imperfectly but enough to break the chain economics.
 **Still open from the calls list:** the enricher wake-fallback firing on
 directive-shaped room speech ("tell me something" conf 0.95) — untouched pending a
 separate decision; 'wait'/'hold on' in the stop lexicon; tap-off drain behavior.
+
+### Addendum 5.2 — dismissal + enricher name-gate (same day)
+
+**User call:** "stop / I'm not talking to you / shut up" must stand the dock DOWN.
+Built as: (a) the stop lexicon grew a dismissal class (`not (talking) to you`,
+`go away`, `leave me/us alone`, plus filler `so` — live STT rendered "Stop." as
+"So"); (b) a stop/dismissal heard in ANY engaged mode (busy OR an open
+listening/followup window) now runs `session.dismiss()` — abort the active turn,
+close every window (NO listening window, unlike tap-interrupt), clear the busy
+queue traced `skip:dismissed`, → idle (`stop:dismiss` in the ring). Re-engage via
+tap/palm/wake. This CHANGES WI-2's original behavior (stop used to open a listening
+window); F4 updated. (c) The enricher wake-fallback now requires the robot's NAME
+(same renderings/soundalikes the local matcher accepts) in what it heard — meeting
+chatter shaped like a directive ("tell me something", conf 0.95) no longer ignites
+chains; skips are logged.
+
+**Evidence:** lexicon fixtures extended (dismissal positives/negatives + the "So"
+mishear); brain suite 228/228; harness F4 updated + new F8 (dismissal while busy:
+queued item `skip:dismissed`, turn cancelled, idle, nothing drained) — full matrix
+S4+F1–F8 **32/32**. Live on dock-redmi: "Shut up. I'm not talking to you." in a
+followup window → `stop:dismiss` → idle ✓; an acoustic "Stop. Go away." was
+misheard as "So go away." — the reflex missed but the OVERHEARD framing silenced
+the reply and the chain still died (defense-in-depth working); the mishear is now
+in the lexicon.

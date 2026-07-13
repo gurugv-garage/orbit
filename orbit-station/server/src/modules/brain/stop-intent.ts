@@ -15,18 +15,25 @@
  * turns a match into the tap-interrupt path (abort + open listening).
  */
 
-/** Multi-word stop phrases folded to single tokens before the token scan. */
+/** Multi-word stop phrases folded to single tokens before the token scan.
+ *  Order matters: longer phrases fold before their sub-phrases. */
 const PHRASE_FOLDS: Array<[RegExp, string]> = [
+  [/\b(?:i'?m|i am)\s+not\s+talking\s+to\s+you\b/g, 'notyou'],
+  [/\bnot\s+talking\s+to\s+you\b/g, 'notyou'],
+  [/\bnot\s+you\b/g, 'notyou'],
+  [/\bgo\s+away\b/g, 'goaway'],
+  [/\bleave\s+(?:me|us)\s+alone\b/g, 'leavealone'],
   [/\bnever mind\b/g, 'nevermind'],
   [/\bhold on\b/g, 'holdon'],
   [/\bshut up\b/g, 'shutup'],
   [/\bbe quiet\b/g, 'bequiet'],
 ];
 
-/** A token that BY ITSELF signals stop. At least one required. */
+/** A token that BY ITSELF signals stop/dismissal. At least one required. */
 const CORE = new Set([
   'stop', 'nevermind', 'wait', 'holdon', 'cancel', 'enough',
   'quiet', 'bequiet', 'shutup', 'shush', 'shh',
+  'notyou', 'goaway', 'leavealone', // dismissals: "I'm not talking to you" etc.
 ]);
 
 /** Tokens allowed AROUND the core without changing the meaning ("okay stop",
@@ -37,6 +44,7 @@ const FILLER = new Set([
   'it', 'that', 'this', 'right', 'um', 'uh', 'a', 'the',
   'moving', 'talking', 'there', 'orbit',
   'moment', 'second', 'sec', 'minute', // "wait a second" / "hold on a moment"
+  'so', // STT renders a leading "Stop." as "So" (live 2026-07-13: "So go away.")
 ]);
 
 const MAX_TOKENS = 8; // longer than this and it's a sentence, not a reflex

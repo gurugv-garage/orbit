@@ -67,3 +67,33 @@ test('negatives: content with embedded stop words must NOT match', () => {
 test('length guard: a long sentence of stop-ish words is not a reflex', () => {
   assert.equal(isStopIntent('wait wait wait wait wait wait wait wait wait wait'), false);
 });
+
+// ── dismissals (Addendum 5.1: "stop, I'm not talking to you, shut up") ──────
+
+test('dismissal positives', () => {
+  for (const s of [
+    "I'm not talking to you.",
+    'I am not talking to you!',
+    'Not talking to you.',
+    'Not you.',
+    'Go away.',
+    'Leave me alone.',
+    'Leave us alone.',
+    'Stop. Not you.',
+    'Shut up, go away.',
+  ]) assert.equal(isStopIntent(s), true, `expected DISMISS: "${s}"`);
+});
+
+test('dismissal negatives: content around the phrases must not match', () => {
+  for (const s of [
+    "It's not you, it's me.",          // its/me not in lexicon
+    'Do not go away mad, just go away tomorrow.', // do/mad/tomorrow… too long + content
+    'I was not talking to you about the budget.', // budget = content
+    'Leave the milk alone on the counter.',
+  ]) assert.equal(isStopIntent(s), false, `expected NOT dismiss: "${s}"`);
+});
+
+test('STT mishear tolerance: leading "So" for "Stop" (live 2026-07-13)', () => {
+  assert.equal(isStopIntent('So go away.'), true);
+  assert.equal(isStopIntent('So what is the plan for tomorrow?'), false); // content stays content
+});

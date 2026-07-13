@@ -240,22 +240,46 @@ async function f3_everyTurnKind(): Promise<void> {
 }
 
 async function f4_voiceStop(): Promise<void> {
-  log('── F4 voice-stop (WI-2): "Stop. Never mind." mid-turn CANCELS the turn + opens listening');
+  log('── F4 voice-stop (WI-2 + dismissal): "Stop. Never mind." mid-turn CANCELS + stands DOWN');
   await idle();
   const scenarioStart = Date.now();
   const mark = frames.length;
   await say('Count from one to seven, slowly, one number per sentence.');
   await waitConv('thinking', 20_000);
   await hear('Stop. Never mind.');
-  // the ring entry (nonce-free text — filter by time) must be stop:cancel
   const e = (await ring()).filter((x) => x.at >= scenarioStart && x.text.startsWith('Stop'));
-  check('F4a', decisions(e).join() === 'stop:cancel', `mid-turn stop → [${decisions(e)}]`);
+  check('F4a', decisions(e).join() === 'stop:dismiss', `mid-turn stop → [${decisions(e)}]`);
   const end1 = await waitTurnEnd(mark, 90_000);
   check('F4b', end1.state === 'cancelled', `turn terminal state = ${end1.state} — voice stopped it (was: impossible)`);
-  const m = await waitConv(['listening', 'idle'], 10_000); // spoken tap opens a window
-  check('F4c', m === 'listening', `conversation after stop = ${m} — ready for what they say next`);
-  // let the listening window time out back to idle before the next scenario
-  await waitConv('idle', 15_000);
+  const m = await waitConv('idle', 10_000);
+  check('F4c', m === 'idle', `conversation after dismissal = ${m} — stood down, no window (re-engage via tap/wake)`);
+}
+
+async function f8_dismissClearsAll(): Promise<void> {
+  log('── F8 dismissal (Addendum 5.1): dismissal while busy stands down; queued items traced, not drained');
+  await idle();
+  const HELD = `what is nine plus nine, run ${RUN}`;
+  const scenarioStart = Date.now();
+  const mark = frames.length;
+  await say('Count from one to nine, slowly, one number per sentence.');
+  await waitConv('thinking', 20_000);
+  await hear(`And ${HELD}?`); // queued while busy
+  await hear("Stop. I'm not talking to you."); // dismissal while busy
+  const e = (await ring()).filter((x) => x.at >= scenarioStart);
+  const stopE = e.filter((x) => x.text.startsWith('Stop'));
+  const heldE = e.filter((x) => x.text.includes(HELD));
+  check('F8a', decisions(stopE).join() === 'stop:dismiss', `dismissal decision → [${decisions(stopE)}]`);
+  check('F8b', decisions(heldE).join() === 'queue:busy,skip:dismissed',
+    `queued item after dismissal → [${decisions(heldE)}] — traced, never drained`);
+  const end1 = await waitTurnEnd(mark, 30_000);
+  check('F8c', end1.state === 'cancelled', `counting turn: ${end1.state}`);
+  const m = await waitConv('idle', 10_000);
+  // no drained turn may follow — watch for any terminal frame in the next 10s
+  await sleep(10_000);
+  const extras = frames.slice(end1.frameIdx + 1).filter(
+    (f) => f.kind === 'turn-status' && ['done', 'failed', 'cancelled'].includes(f.payload?.state));
+  check('F8d', m === 'idle' && extras.length === 0,
+    `stood down (mode=${m}), no turn drained after dismissal (${extras.length} extras)`);
 }
 
 async function f5_stopFalsePositives(): Promise<void> {
@@ -374,7 +398,7 @@ async function main(): Promise<void> {
   const scenarios: Array<[string, () => Promise<void>]> = [
     ['S4', s4_control], ['F1', f1_coreDrain], ['F2', f2_mixedAge],
     ['F3', f3_everyTurnKind], ['F4', f4_voiceStop], ['F5', f5_stopFalsePositives],
-    ['F6', f6_cannedWake], ['F7', f7_tapThenSilence],
+    ['F6', f6_cannedWake], ['F7', f7_tapThenSilence], ['F8', f8_dismissClearsAll],
   ];
   for (const [name, fn] of scenarios) {
     try { await fn(); }

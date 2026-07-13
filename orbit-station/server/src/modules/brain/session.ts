@@ -401,6 +401,16 @@ export class DockBrainSession {
     this.#sendToVoice('turn-status', { turnId, state: 'done' });
   }
 
+  /** Spoken dismissal ("stop" / "shut up" / "not talking to you"): abort any
+   *  active turn and stand DOWN to idle — no listening window (unlike
+   *  tap-interrupt, where the user wants to speak next). The →idle transition
+   *  fires the settle chokepoint; the caller clears the busy queue first so
+   *  nothing drains after a dismissal. */
+  dismiss(now = Date.now()): void {
+    if (this.#turnActive) this.cancel();
+    this.#conv.dismiss(now);
+  }
+
   /** VAD activity from the phone — extends an open listening/followup window. */
   vadActivity(active = true, now = Date.now()): void { this.#conv.vadActivity(now, active); }
 

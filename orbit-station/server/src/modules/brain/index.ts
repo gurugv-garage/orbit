@@ -530,6 +530,15 @@ export function brainModule(w: BrainWiring): StationModule {
       getBgAddressedApi().onAddressed((e) => {
         const cfg = wakeCfg.get(e.dockId);
         if (!cfg?.enabled || e.conf < 0.6 || isRecording(e.dockId)) return;
+        // NAME REQUIRED (Addendum 5.1): the enricher judged meeting chatter
+        // ("tell me something", conf 0.95) as addressed and IGNITED followup
+        // chains. An out-of-band wake must contain the robot's actual name —
+        // the same renderings the local matcher accepts (incl. soundalikes).
+        const heard = `${e.transcript ?? ''} ${e.directive ?? ''}`.toLowerCase();
+        if (!nameAliases(cfg.phrase, cfg.aliases).some((n) => heard.includes(n))) {
+          console.log(`[wake] enricher fallback SKIPPED, no name (conf ${e.conf.toFixed(2)}): ${e.directive || e.transcript}`);
+          return;
+        }
         const s2 = session(e.dockId);
         if (s2.conversation().mode !== 'idle') return; // already engaged
         console.log(`[wake] audio-enricher fallback FIRED (conf ${e.conf.toFixed(2)}): ${e.directive || e.transcript}`);
@@ -702,6 +711,20 @@ export function brainModule(w: BrainWiring): StationModule {
         // never run a turn even if it slips the upstream filter (observed: a lone "!"
         // → the dock replied). <2 alphanumerics = no words.
         if (t.text.replace(/[^a-z0-9]/gi, '').length < 2) { trace('skip:no-words'); return; }
+        // REFLEX VOICE-STOP / DISMISSAL (WI-2 + Addendum 5.1): a bare "stop" /
+        // "never mind" / "shut up" / "I'm not talking to you" heard in ANY
+        // engaged mode stands the dock DOWN: aborts the active turn (the only
+        // voice path that can stop a move), closes every window — NO listening
+        // window (dismissed ≠ tap-interrupt: leave me alone), clears the busy
+        // queue (traced skip:dismissed so nothing drains after), → idle.
+        // Re-engage via tap/palm/wake. Deliberately narrow (stop-intent.ts):
+        // content sentences are handled normally. Kill-switch: brainVoiceStop=false.
+        if (pre.mode !== 'idle' && w.config('brainVoiceStop') !== false && isStopIntent(t.text)) {
+          trace('stop:dismiss');
+          for (const u of busyQueue.take(t.dockId)) pushAddrTrace(u, 'skip:dismissed', pre.mode);
+          session(t.dockId).dismiss();
+          return;
+        }
         // BUSY QUEUE: don't let a heard utterance auto-start a turn while the dock is
         // already mid-turn (THINKING/SPEAKING). handleTurnRequest has supersede
         // semantics — a new addressed turn ABORTS the active reply and runs the new one.
@@ -713,19 +736,6 @@ export function brainModule(w: BrainWiring): StationModule {
         // and run it as one combined turn when the reply finishes (below). A tap can still
         // interrupt. Use the PRE snapshot (mode before utteranceAddressed() consumes it).
         if (pre.mode === 'thinking' || pre.mode === 'speaking') {
-          // REFLEX VOICE-STOP (WI-2): a bare "stop"/"never mind"/"wait" over the
-          // dock's reply or motion aborts it NOW — the only voice path that can
-          // stop a move turn (D1: only tap/wake-supersede could). Deliberately
-          // narrow (stop-intent.ts): anything with content queues instead and is
-          // ANSWERED at settle. Routed through tapOpen(), i.e. exactly a spoken
-          // tap-interrupt: aborts generation + motion, ships `cancelled`, opens a
-          // listening window (they clearly want to say something). The stop
-          // utterance itself is consumed. Config kill-switch: brainVoiceStop=false.
-          if (w.config('brainVoiceStop') !== false && isStopIntent(t.text)) {
-            trace('stop:cancel');
-            session(t.dockId).tapOpen();
-            return;
-          }
           busyQueue.add(t);
           trace('queue:busy');
           return;
