@@ -1842,9 +1842,23 @@ function EnrichedRow({ snap, source, rowIsHistory, istTime, secs }: {
   const wavId = (bid != null && bid > 1e12) ? bid : Date.parse(clipFrom);
   const audioSrc = source && source !== STREAM_ID ? `/api/perception/enrich-audio/${encodeURIComponent(source)}/${wavId}` : '';
 
-  // Stitched headline transcript (roll-up if present, else join the segments). Trimmed if very long.
-  const stitchedFull = (p.text?.trim()) || segments.map((s) => (s.text ?? '').trim()).filter(Boolean).join(' ');
-  const stitched = stitchedFull.length > 240 ? `${stitchedFull.slice(0, 240)}…` : stitchedFull;
+  // Stitched headline transcript. We format BY SEGMENT: real speech reads as plain prose, but a
+  // non-speech segment (source 'sound'/'media') is a DESCRIPTION of a noise, not something anyone
+  // said — so we set it as a dimmed bracketed caption ([mechanical whirring]) instead of stitching it
+  // inline as if it were speech. (The flat server roll-up p.text runs them together — "Mechanical
+  // whirring Oh! Mechanical whirring" — which misreads sound as words; segments let us separate them.)
+  // Fall back to the flat roll-up only when there are no segments (pre-change history).
+  const headlineParts: Array<{ text: string; speech: boolean }> = segments.length
+    ? segments.map((s) => ({ text: (s.text ?? '').trim(), speech: (s.audioSource ?? 'speech') === 'speech' })).filter((x) => x.text)
+    : (p.text?.trim() ? [{ text: p.text.trim(), speech: true }] : []);
+  // char-budget the headline (~240) across parts so a long clip stays one line.
+  let hbudget = 240;
+  const headline = headlineParts.map((part) => {
+    if (hbudget <= 0) return null;
+    const t = part.text.length > hbudget ? `${part.text.slice(0, hbudget)}…` : part.text;
+    hbudget -= part.text.length + 1;
+    return { text: t, speech: part.speech };
+  }).filter(Boolean) as Array<{ text: string; speech: boolean }>;
 
   const pill = (bg: string, bd: string, col: string, title: string, children: React.ReactNode) => (
     <span title={title} style={{ fontSize: 10, fontWeight: 700, color: col, background: bg, border: `1px solid ${bd}`, borderRadius: 4, padding: '0 6px' }}>{children}</span>
@@ -1934,8 +1948,21 @@ function EnrichedRow({ snap, source, rowIsHistory, istTime, secs }: {
               </div>
             </div>
           )}
-          {/* STITCHED headline transcript — the call's utterances joined, in order. */}
-          {stitched && <span style={{ color: '#dfe', fontSize: 13, lineHeight: 1.45 }}>{stitched}</span>}
+          {/* STITCHED headline — speech as prose, non-speech sounds as dimmed [captions] so a noise
+              description never reads as something that was said. */}
+          {headline.length > 0 && (
+            <span style={{ fontSize: 13, lineHeight: 1.45 }}>
+              {headline.map((part, i) => (
+                <React.Fragment key={`hl-${i}`}>
+                  {i > 0 && ' '}
+                  {part.speech
+                    ? <span style={{ color: '#dfe' }}>{part.text}</span>
+                    : <span title="a non-speech sound the enricher described — not spoken words"
+                        style={{ color: '#a07a30', fontStyle: 'italic' }}>[{part.text}]</span>}
+                </React.Fragment>
+              ))}
+            </span>
+          )}
           {/* 🎙 raw parakeet STT for the clip (call-level) — shown once. */}
           {p.sttWindow
             ? <span style={{ fontSize: 10.5, color: '#7a8ca8' }}>🎙 raw STT: <span style={{ fontStyle: 'italic' }}>“{p.sttWindow}”</span></span>
@@ -2019,9 +2046,12 @@ function EnrichedRow({ snap, source, rowIsHistory, istTime, secs }: {
                     <span title="the enricher flagged this as a POSSIBLE echo of recent context (not sure it's fresh audio) — kept for review, not dropped"
                       style={{ marginRight: 5, fontSize: 10, fontWeight: 700, color: '#c8a86b', border: '1px solid #6a5320', borderRadius: 4, padding: '0 5px' }}>⤴ echo?</span>
                   )}
-                  {(s.transcriptConf != null && s.transcriptConf < 0.45) || s.echo
-                    ? <span style={{ opacity: 0.5, fontStyle: 'italic' }} title={s.echo ? 'possible context echo — review' : 'low-confidence — the enricher was unsure of these words'}>{text}</span>
-                    : <span style={{ color: '#dfe' }}>{text}</span>}
+                  {!isSpeech
+                    ? <span title="a non-speech sound the enricher described — not spoken words"
+                        style={{ color: '#a07a30', fontStyle: 'italic' }}>[{text}]</span>
+                    : (s.transcriptConf != null && s.transcriptConf < 0.45) || s.echo
+                      ? <span style={{ opacity: 0.5, fontStyle: 'italic' }} title={s.echo ? 'possible context echo — review' : 'low-confidence — the enricher was unsure of these words'}>{text}</span>
+                      : <span style={{ color: '#dfe' }}>{text}</span>}
                 </span>
               </div>
             );
