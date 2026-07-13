@@ -168,21 +168,24 @@ async function s4_control(): Promise<void> {
 }
 
 async function f1_coreDrain(): Promise<void> {
-  log('── F1 core drain: two lines heard mid-thinking → ONE combined turn at settle');
+  // Since Addendum 10, THINKING-phase speech MERGES (F10 covers it); the queue's
+  // remaining user-turn domain is SPEAKING — inject during the reply's TTS.
+  log('── F1 core drain: two lines heard mid-SPEAKING → ONE combined turn at settle');
   await idle();
   const A = `what color is grass, run ${RUN}`;
   const B = `what color is the sky, run ${RUN}`;
   const mark = frames.length;
+  ttsHoldMs = 8_000; // long enough to inject both lines during the reply's TTS
   await say('What is two plus two? Answer in one short sentence.');
-  await waitConv('thinking', 20_000);
+  const end1 = await waitTurnEnd(mark, 60_000);
+  check('F1b', end1.state === 'done', `original turn completed: ${end1.state}`);
+  await waitConv('speaking', 15_000);
+  ttsHoldMs = 1_200; // drained turn's own TTS back to normal
   await hear(`And ${A}?`);
   await hear(`Also ${B}?`);
   const q1 = decisions(await ringFor(A)); const q2 = decisions(await ringFor(B));
   check('F1a', q1.join() === 'queue:busy' && q2.join() === 'queue:busy',
-    `both lines queued while thinking → [${q1}], [${q2}]`);
-
-  const end1 = await waitTurnEnd(mark, 60_000);
-  check('F1b', end1.state === 'done', `original turn completed: ${end1.state}`);
+    `both lines queued while speaking → [${q1}], [${q2}]`);
   // settle = tts-end (~1.2s after done) → drain runs the combined turn
   const drained = await waitTurnEnd(end1.frameIdx + 1, 60_000);
   check('F1c', drained.state === 'done', `drained combined turn ran + completed: ${drained.state}`);
@@ -205,10 +208,9 @@ async function f2_mixedAge(): Promise<void> {
   const mark = frames.length;
   ttsHoldMs = BUSY_QUEUE_MAX_AGE_MS + 3_000; // the reply "speaks" for 23s — ages the early item past the cap
   await say('What is one plus one? Answer in one short sentence.');
-  await waitConv('thinking', 20_000);
-  await hear(`And ${OLD}?`); // will be >20s old by settle
   const end1 = await waitTurnEnd(mark, 60_000);
   await waitConv('speaking', 15_000);
+  await hear(`And ${OLD}?`); // early in the long TTS → >20s old by settle
   log(`   holding TTS ${Math.round(ttsHoldMs / 1000)}s to age the first item…`);
   await sleep(ttsHoldMs - 4_000); // inject the fresh line near the END of the long reply
   ttsHoldMs = 1_200; // drained turn's own TTS back to normal
@@ -261,18 +263,20 @@ async function f8_dismissClearsAll(): Promise<void> {
   const HELD = `what is nine plus nine, run ${RUN}`;
   const scenarioStart = Date.now();
   const mark = frames.length;
+  ttsHoldMs = 8_000; // inject during the reply's TTS (thinking-phase speech now merges)
   await say('Count from one to nine, slowly, one number per sentence.');
-  await waitConv('thinking', 20_000);
-  await hear(`And ${HELD}?`); // queued while busy
-  await hear("Stop. I'm not talking to you."); // dismissal while busy
+  const end1 = await waitTurnEnd(mark, 60_000);
+  await waitConv('speaking', 15_000);
+  ttsHoldMs = 1_200;
+  await hear(`And ${HELD}?`); // queued while speaking
+  await hear("Stop. I'm not talking to you."); // dismissal while speaking
   const e = (await ring()).filter((x) => x.at >= scenarioStart);
   const stopE = e.filter((x) => x.text.startsWith('Stop'));
   const heldE = e.filter((x) => x.text.includes(HELD));
   check('F8a', decisions(stopE).join() === 'stop:dismiss', `dismissal decision → [${decisions(stopE)}]`);
   check('F8b', decisions(heldE).join() === 'queue:busy,skip:dismissed',
     `queued item after dismissal → [${decisions(heldE)}] — traced, never drained`);
-  const end1 = await waitTurnEnd(mark, 30_000);
-  check('F8c', end1.state === 'cancelled', `counting turn: ${end1.state}`);
+  check('F8c', end1.state === 'done', `counting turn had completed (${end1.state}); dismissal killed its TTS`);
   const m = await waitConv('idle', 10_000);
   // no drained turn may follow — watch for any terminal frame in the next 10s
   await sleep(10_000);
@@ -287,12 +291,14 @@ async function f5_stopFalsePositives(): Promise<void> {
   await idle();
   const BUS = `bus stop, run ${RUN}`;
   const mark = frames.length;
+  ttsHoldMs = 6_000;
   await say('What is three plus three? Answer in one short sentence.');
-  await waitConv('thinking', 20_000);
+  const end1 = await waitTurnEnd(mark, 60_000);
+  await waitConv('speaking', 15_000);
+  ttsHoldMs = 1_200;
   await hear(`Tell me about the ${BUS}.`);
   const q = decisions(await ringFor(BUS));
-  check('F5a', q.join() === 'queue:busy', `"…the bus stop…" mid-turn → [${q}] — queued, NOT cancelled`);
-  const end1 = await waitTurnEnd(mark, 60_000);
+  check('F5a', q.join() === 'queue:busy', `"…the bus stop…" mid-speaking → [${q}] — queued, NOT cancelled`);
   check('F5b', end1.state === 'done', `turn completed despite the stop word: ${end1.state}`);
   const drained = await waitTurnEnd(end1.frameIdx + 1, 60_000);
   const d = decisions(await ringFor(BUS));
@@ -334,18 +340,20 @@ async function f7_tapThenSilence(): Promise<void> {
   await idle();
   const HELD = `what is the capital of France, run ${RUN}`;
   const mark = frames.length;
+  ttsHoldMs = 8_000; // inject during TTS (thinking-phase speech now merges)
   await say('Count from one to five, slowly, one number per sentence.');
-  await waitConv('thinking', 20_000);
-  await hear(`And ${HELD}?`); // queued while busy
-  await post('/debug/event', { event: 'tap' }); // tap-interrupt: cancel + open listening
+  const end1 = await waitTurnEnd(mark, 60_000);
+  await waitConv('speaking', 15_000);
+  ttsHoldMs = 1_200;
+  await hear(`And ${HELD}?`); // queued while speaking
+  await post('/debug/event', { event: 'tap' }); // tap-interrupt: silence + open listening
   await waitConv('listening', 5_000);
   const q = decisions(await ringFor(HELD));
   check('F7a', q.join() === 'queue:busy', `queued line held through the tap-interrupt → [${q}]`);
-  const cancelled = await waitTurnEnd(mark, 20_000); // the interrupted counting turn
-  check('F7b', cancelled.state === 'cancelled', `tap cancelled the counting turn: ${cancelled.state}`);
+  check('F7b', end1.state === 'done', `counting turn had completed (${end1.state}); tap killed only its TTS`);
   // user says NOTHING: the listening window (8s) expires → idle → the settle
   // chokepoint fires → the held line drains (was: stranded forever, untraced)
-  const drained = await waitTurnEnd(cancelled.frameIdx + 1, 30_000);
+  const drained = await waitTurnEnd(end1.frameIdx + 1, 30_000);
   const d = decisions(await ringFor(HELD));
   check('F7c', drained.state === 'done' && d.join() === 'queue:busy,drain:ran',
     `after window close: [${d}], drained turn ${drained.state} — nothing stranded`);
@@ -370,6 +378,46 @@ async function f9_pause(): Promise<void> {
   await hear(`Okay, what is eight plus eight, run ${RUN}?`);
   const end2 = await waitTurnEnd(mark2, 60_000);
   check('F9d', end2.state === 'done', `the held-back question ran after the pause: ${end2.state}`);
+}
+
+async function f10_thinkingMerge(): Promise<void> {
+  log('── F10 merge (Addendum 10): speech mid-THINKING cancels + re-asks merged; obs shows cancelled');
+  // a) correction folds in: ONE final answer reflecting the correction
+  await idle();
+  const mark = frames.length;
+  await say('What is twelve plus twelve? Answer with just the number.');
+  await waitConv('thinking', 20_000);
+  await hear('Actually, multiply them instead.');
+  const e = (await ring()).filter((x) => x.text.startsWith('Actually, multiply'));
+  check('F10a', decisions(e).join() === 'merge:supersede', `mid-thinking correction → [${decisions(e)}]`);
+  const t1 = await waitTurnEnd(mark, 60_000);
+  const t2 = await waitTurnEnd(t1.frameIdx + 1, 60_000);
+  const spoken = frames.slice(mark).filter((f) => f.kind === 'speak').map((f) => String(f.payload.text)).join(' ');
+  check('F10b', t1.state === 'cancelled' && t2.state === 'done',
+    `original ${t1.state}, merged ${t2.state}`);
+  check('F10c', spoken.includes('144') && !spoken.includes('24'),
+    `one MERGED answer: "${spoken.slice(0, 60)}" — expect 144, not 24`);
+  // obs must record the cancelled turn (user requirement)
+  const sid = (await (await fetch(`${HTTP}/api/brain/${DOCK}/sessions`)).json() as Array<{ sessionId: string }>)[0]!.sessionId;
+  const obs = await (await fetch(`${HTTP}/api/observability/sessions/${sid}`)).json() as
+    { turns: Array<{ state?: string; merges?: number; trigger?: { text?: string } }> };
+  const twelve = obs.turns.filter((t) => t.trigger?.text?.includes('twelve plus twelve'));
+  check('F10d', twelve.some((t) => t.state === 'cancelled') && twelve.some((t) => t.state === 'done' && t.merges === 1),
+    `obs terminal states for the pair: [${twelve.map((t) => `${t.state}/m${t.merges ?? 0}`).join(', ')}]`);
+  // b) repeated question → ONE answer, no follow-up duplicate
+  await idle();
+  const mark2 = frames.length;
+  const Q = `what is five plus four, run ${RUN}`;
+  await say(`Tell me ${Q}? Answer with just the number.`);
+  await waitConv('thinking', 20_000);
+  await hear(`Tell me ${Q}?`); // the classic repeat-into-the-silence
+  const r1 = await waitTurnEnd(mark2, 60_000);
+  const r2 = await waitTurnEnd(r1.frameIdx + 1, 60_000);
+  await sleep(8_000); // any spurious drained duplicate would land here
+  const extras = frames.slice(r2.frameIdx + 1).filter(
+    (f) => f.kind === 'turn-status' && ['done', 'failed', 'cancelled'].includes(f.payload?.state));
+  check('F10e', r1.state === 'cancelled' && r2.state === 'done' && extras.length === 0,
+    `repeat dedupes: ${r1.state}+${r2.state}, ${extras.length} extra turns — ONE answer`);
 }
 
 // ── main ────────────────────────────────────────────────────────────────────
@@ -420,7 +468,7 @@ async function main(): Promise<void> {
     ['S4', s4_control], ['F1', f1_coreDrain], ['F2', f2_mixedAge],
     ['F3', f3_everyTurnKind], ['F4', f4_voiceStop], ['F5', f5_stopFalsePositives],
     ['F6', f6_cannedWake], ['F7', f7_tapThenSilence], ['F8', f8_dismissClearsAll],
-    ['F9', f9_pause],
+    ['F9', f9_pause], ['F10', f10_thinkingMerge],
   ];
   for (const [name, fn] of scenarios) {
     try { await fn(); }

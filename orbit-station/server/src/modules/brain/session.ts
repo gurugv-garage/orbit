@@ -90,6 +90,10 @@ export interface TurnRequest {
   /** STT confidence for an addressed (heard) turn — surfaced in observability so the
    *  trace shows WHY a heard utterance was trusted/flagged (Whisper's own metrics). */
   stt?: { confTier?: string; avgLogprob?: number | null; noSpeechProb?: number | null; compressionRatio?: number | null };
+  /** How many times this turn is a MERGE-SUPERSEDE of a prior thinking turn
+   *  (Addendum 10: speech heard mid-thinking cancels + re-asks with the
+   *  addition folded in). Bounds the abort-restart loop (cap in brain index). */
+  merges?: number;
 }
 
 export interface SessionDeps {
@@ -213,6 +217,7 @@ export class DockBrainSession {
   /** the sentences actually SPOKEN this turn (for the self-remark feedback loop). */
   #spokenSentences: string[] = [];
   #triggerVia: string | undefined; // the raising source (mood bit / gate key / …) — obs only
+  #mergeCount = 0; // merge-supersedes carried by the CURRENT turn (Addendum 10)
   // A1.2: a station-originated user turn (an addressed always-on-mic utterance) —
   // the phone must adopt it even though its trigger.kind is 'user'.
   #stationOriginated = false;
@@ -320,6 +325,13 @@ export class DockBrainSession {
   }
   get turnActive(): boolean {
     return this.#turnActive;
+  }
+  /** The in-flight turn's identity for the MERGE decision (Addendum 10): what
+   *  kind started it, its (possibly already-merged) trigger text, and how many
+   *  merges it carries. Null when no turn is running. */
+  get activeTurn(): { kind: string; text: string; merges: number } | null {
+    if (!this.#turnActive) return null;
+    return { kind: this.#triggerKind, text: this.#triggerText, merges: this.#mergeCount };
   }
   get lastTurnEndedAt(): number {
     return this.#meta?.lastTurnEndedAt ?? 0;
@@ -846,6 +858,7 @@ export class DockBrainSession {
     this.#triggerText = req.trigger.text;
     this.#triggerKind = req.trigger.kind || 'user';
     this.#triggerVia = req.trigger.via;
+    this.#mergeCount = req.merges ?? 0;
     this.#stationOriginated = req.stationOriginated === true;
     this.#cancelled = false;
     this.#timedOut = false;
@@ -1095,7 +1108,13 @@ export class DockBrainSession {
       }
 
       if (this.#meta) this.#d.store.turnEnded(this.dock, this.#meta.sessionId, agent.state.messages);
-      this.#shipObs('TurnEnd');
+      // obs records the TERMINAL STATE (cancelled turns were previously
+      // indistinguishable from done ones in /api/observability — a merge-
+      // superseded turn must show as cancelled, per Addendum 10).
+      this.#shipObs('TurnEnd', {
+        state: this.#cancelled ? 'cancelled' : failCode != null ? 'failed' : 'done',
+        ...(this.#mergeCount > 0 ? { merges: this.#mergeCount } : {}),
+      });
 
       // FEEDBACK LOOP (coherence-layer.md §4 step 4): an UNPROMPTED spoken remark
       // (a self-thought that actually spoke) is an action in the world — hand it to

@@ -53,6 +53,8 @@ export class ObsStore {
         break;
       case 'TurnEnd':
         turn.endedAt = ev.ts;
+        if (ev.data?.state != null) turn.state = ev.data.state;
+        if (ev.data?.merges != null) turn.merges = ev.data.merges;
         turn.llmCalls = turn.steps.filter((s) => s.tools.length > 0).length + 1;
         break;
       case 'StepStart':

@@ -243,6 +243,11 @@ export const REGISTRY: ConfigEntry[] = [
     description: 'The reply text leads with a [face:NAME] tag the station strips and applies — the mood costs NO extra LLM step (WI-3, busy-queue RCA: the separate set_face step was a full serial ttft, the dominant term in the 8s median reply latency). Off = the pre-WI-3 behavior: the prompt teaches set_face as a tool call for ordinary moods.',
   }),
   entry({
+    key: 'brainThinkingMerge', type: 'boolean', schema: z.boolean(), default: true, tags: ['station'],
+    label: 'Merge speech into thinking',
+    description: 'Speech heard while the dock is THINKING (nothing spoken yet) cancels the in-flight call and re-asks with the addition folded in — corrections apply immediately and a repeated question gets ONE answer (Addendum 10, busy-queue RCA). Capped at 2 merges per turn; overflow queues. Off = queue everything (pre-merge behavior).',
+  }),
+  entry({
     key: 'brainVoiceStop', type: 'boolean', schema: z.boolean(), default: true, tags: ['station'],
     label: 'Voice stop',
     description: 'A bare "stop" / "never mind" / "wait" spoken while the dock is replying or moving aborts the turn (the spoken tap-interrupt — WI-2, busy-queue RCA). Deliberately narrow: content sentences containing stop words still queue and get answered. Off = stop words queue like any other speech.',

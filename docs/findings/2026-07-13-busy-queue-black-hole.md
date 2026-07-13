@@ -43,6 +43,7 @@ stress-dock-pipeline method: instrument, many reps, honest failure classes.
 - [Addendum 7 — 2026-07-13: prompt caching — don't trim, stop breaking the cache](#addendum-7--2026-07-13-prompt-caching--dont-trim-stop-breaking-the-cache)
 - [Addendum 8 — 2026-07-13: one ear owns the window (RCA fix #7, done differently)](#addendum-8--2026-07-13-one-ear-owns-the-window-rca-fix-7-done-differently)
 - [Addendum 9 — 2026-07-13: STT-lag breakdown — the wait is patience, not waste](#addendum-9--2026-07-13-stt-lag-breakdown--the-wait-is-patience-not-waste)
+- [Addendum 10 — 2026-07-13: merge-supersede — corrections fold into the thinking turn](#addendum-10--2026-07-13-merge-supersede--corrections-fold-into-the-thinking-turn)
 <!-- /TOC -->
 
 ## TL;DR
@@ -1114,3 +1115,36 @@ Seam: an `endpointHint()` supplier on `UtteranceDetector` consulted between the
 short and long thresholds. Effort: a few careful hours (the segmenter has RCA
 history — docs/rca/2026-06-22-post-restart-no-stt.md); gains ~500ms on completed
 sentences without losing patience at pauses.
+
+---
+
+## Addendum 10 — 2026-07-13: merge-supersede — corrections fold into the thinking turn
+
+**User call:** speech heard while the dock is THINKING (nothing audible yet) should
+CANCEL the in-flight call and re-ask with the addition folded in — and observability
+must record the cancellation.
+
+**As built:** the busy branch splits by phase. THINKING + a user-triggered turn →
+`merge:supersede`: `handleTurnRequest` (existing supersede semantics) with the
+original trigger + a folded note — *"while you were thinking, they also said: X —
+fold it in and answer ONCE if it belongs; ignore it if it's room talk"* (the model
+judges relevance, same trust-the-model pattern as the overheard framing). Guards:
+`MERGE_MAX = 2` per turn (overflow queues as before — continuous chatter can't
+abort-restart forever); task/self triggers never merge (user speech doesn't fold
+into a robot thought); SPEAKING still queues (never abort audible speech on heard
+content — stop/wait/tap are the aborts). Kill-switch `brainThinkingMerge=false`.
+**Obs now records terminal state**: `TurnEnd` carries `state`
+(done/failed/cancelled) + `merges`, persisted on the turn record — cancelled turns
+were previously indistinguishable from completed ones in /api/observability.
+
+**What it buys:** a correction ("actually, multiply them") yields ONE right answer
+~3–4s after the addition instead of the wrong answer in full + a follow-up; a
+REPEATED question (the #1 talk-into-the-silence behavior) dedupes to one reply.
+Merged calls are cheap post-caching (~95% of the aborted input was cache hits).
+
+**Evidence:** harness F10 — correction merges ("144", not "24"), obs pair
+`cancelled/m0 + done/m1`, repeat-dedup (one answer, zero extras); F1/F2/F5/F7/F8
+repointed to SPEAKING-phase injection (the queue's remaining user-turn domain) —
+full matrix S4+F1–F10 **41/41**; suite 232/232. Live on dock-redmi: "what is
+twenty plus twenty" + mid-thinking "actually, divide them instead" → obs
+`cancelled/m0` + `done/m1`, spoken answer "1".

@@ -55,6 +55,8 @@ export interface AgentEventDto {
     result?: string;
     text?: string;
     trigger?: { kind: string; text?: string; via?: string };
+    state?: string;
+    merges?: number;
     stopReason?: string;
     /** usage if the host reports it on StepEnd / MessageEnd. */
     usage?: { inputTokens?: number; outputTokens?: number; totalTokens?: number; cost?: number; cacheRead?: number };
@@ -125,6 +127,11 @@ export interface TurnRecord {
   speech?: SpeechWindow[];
   startedAt: number;
   endedAt?: number;
+  /** terminal state from TurnEnd ('done' | 'failed' | 'cancelled') — a merge-
+   *  superseded or interrupted turn must be distinguishable from a completed one. */
+  state?: string;
+  /** merge-supersedes this turn carried (speech folded in mid-thinking). */
+  merges?: number;
   /** when the TTS tail finished after endedAt — the real end of the UX turn. */
   settledAt?: number;
   steps: StepRecord[];

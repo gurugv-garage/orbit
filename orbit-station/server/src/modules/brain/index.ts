@@ -573,6 +573,7 @@ export function brainModule(w: BrainWiring): StationModule {
       type AddressedFinal = HeardUtterance;
       const busyQueue = new BusyQueue();
       const BUSY_QUEUE_MAX_AGE_MS = 20_000; // per-ITEM age cap at drain time
+      const MERGE_MAX = 2; // merge-supersedes per turn; overflow queues (Addendum 10)
       // drain-side trace: same ring as the addressed decisions, so a queued
       // utterance's TERMINAL outcome (drain:ran / skip:stale) is always visible.
       const pushAddrTrace = (u: AddressedFinal, decision: string, mode: string) => {
@@ -746,6 +747,36 @@ export function brainModule(w: BrainWiring): StationModule {
         // and a bare "And" ran a turn. So we ACCUMULATE everything heard during the reply
         // and run it as one combined turn when the reply finishes (below). A tap can still
         // interrupt. Use the PRE snapshot (mode before utteranceAddressed() consumes it).
+        // MERGE-SUPERSEDE (Addendum 10): speech heard while THINKING — nothing
+        // audible yet — cancels the in-flight call and re-asks with the addition
+        // folded in. One merged answer instead of "wrong answer, then the
+        // correction as a follow-up"; a REPEATED question dedupes to one reply.
+        // Guards: user-triggered turns only (speech never merges into a task/
+        // self trigger); MERGE_MAX bounds the abort-restart loop under
+        // continuous room chatter (overflow queues as before, where the
+        // overheard framing judges it). The model itself judges relevance —
+        // the folded note says ignore it if it's unrelated room talk. During
+        // SPEAKING the reply is audible: queue (never abort the dock's own
+        // speech on heard content — stop/wait/tap are the aborts).
+        if (pre.mode === 'thinking' && w.config('brainThinkingMerge') !== false) {
+          const info = session(t.dockId).activeTurn;
+          if (info && info.kind === 'user' && info.merges < MERGE_MAX) {
+            trace('merge:supersede');
+            void session(t.dockId).handleTurnRequest({
+              turnId: `addr-${randomUUID()}`,
+              trigger: {
+                kind: 'user',
+                text: `${info.text}\n[While you were thinking, they also said: "${t.text}" — if it belongs to the request (a correction, addition, or a repeat of it), fold it in and answer ONCE; if it is unrelated room talk, ignore it.]`,
+                via: 'merge',
+              },
+              stationOriginated: true,
+              merges: info.merges + 1,
+              stt: { confTier: t.confTier, avgLogprob: t.avgLogprob,
+                noSpeechProb: t.noSpeechProb, compressionRatio: t.compressionRatio },
+            }).catch((err) => console.error(`[brain] ${t.dockId}: merged turn crashed`, err));
+            return;
+          }
+        }
         if (pre.mode === 'thinking' || pre.mode === 'speaking') {
           busyQueue.add(t);
           trace('queue:busy');
