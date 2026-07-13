@@ -39,6 +39,7 @@ stress-dock-pipeline method: instrument, many reps, honest failure classes.
   - [Addendum 5.2 — dismissal + enricher name-gate (same day)](#addendum-52--dismissal--enricher-name-gate-same-day)
   - [Addendum 5.3 — pause vs dismiss (same day)](#addendum-53--pause-vs-dismiss-same-day)
   - [Addendum 5.4 — the dock now actually SHUTS UP (app build 31 + station fix)](#addendum-54--the-dock-now-actually-shuts-up-app-build-31--station-fix)
+- [Addendum 6 — 2026-07-13: the prompt breakdown (what the ~18k tokens actually are)](#addendum-6--2026-07-13-the-prompt-breakdown-what-the-18k-tokens-actually-are)
 <!-- /TOC -->
 
 ## TL;DR
@@ -978,3 +979,32 @@ when testing interruption.
 > work" was most likely the STT-finalization lag (~1.5–3.5s from speech-end to the
 > stop landing) reading as failure on a short reply — the known feel-vs-mechanism gap.
 > Voice-stop is done: state, audio, synthetic voice, and human voice all confirmed.
+
+---
+
+## Addendum 6 — 2026-07-13: the prompt breakdown (what the ~18k tokens actually are)
+
+Measured empirically (fresh smoke sessions + config toggles + live dock turns):
+
+| Component | ~tokens | How measured |
+|---|---|---|
+| **Tool schemas + system prompt (the FLOOR — paid on EVERY turn)** | **10,300** | fresh session, zero history: inputTokens 10,256 |
+| — of which task tools + task prompt | 3,900 | brainTaskMax=0 → 6,373 |
+| — of which remaining ~20 tools (face/move/compute/faces/memory/slack/whatsapp/record/zoom/obs/…) + SYSTEM (~350) | 6,400 | remainder |
+| Dock-specific context (grounding + ego + memory seed + persona) | ~800 | dock fresh turn 11,028 − smoke floor |
+| Conversation history (capped at MAX_HISTORY_MESSAGES=48) | 0 → ~9,000 | mid-session turns 17.5–19.8k − floor |
+
+**The headline: the tool surface is the floor — ~10.3k tokens on every single turn,
+more than half the typical prompt** — history only catches up late-session (and is
+capped). The RCA's "trim the prompt" fix direction lands here, not on history:
+
+1. **Task tools behind progressive disclosure** (~3.9k): the skills pattern — expose
+   `list_tasks` + one gateway tool, load the other 8 task tools' schemas only after
+   the model engages tasks. Biggest single lever.
+2. **Situational tools** (~2-3k of the 6.4k): slack/whatsapp/research/obs tools ride
+   every turn but are used in a tiny fraction — same disclosure treatment.
+3. History cap 48 → ~9k late-session: consider 24–32 with the compaction summary
+   picking up the slack (memory already seeds the next session).
+Grounding/ego (~800) are cheap — not worth touching.
+
+Cost check: 18k × flash pricing ≈ $0.0054/turn — matches the observed $0.46/82 turns.
