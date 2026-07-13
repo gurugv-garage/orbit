@@ -42,6 +42,7 @@ stress-dock-pipeline method: instrument, many reps, honest failure classes.
 - [Addendum 6 — 2026-07-13: the prompt breakdown (what the ~18k tokens actually are)](#addendum-6--2026-07-13-the-prompt-breakdown-what-the-18k-tokens-actually-are)
 - [Addendum 7 — 2026-07-13: prompt caching — don't trim, stop breaking the cache](#addendum-7--2026-07-13-prompt-caching--dont-trim-stop-breaking-the-cache)
 - [Addendum 8 — 2026-07-13: one ear owns the window (RCA fix #7, done differently)](#addendum-8--2026-07-13-one-ear-owns-the-window-rca-fix-7-done-differently)
+- [Addendum 9 — 2026-07-13: STT-lag breakdown — the wait is patience, not waste](#addendum-9--2026-07-13-stt-lag-breakdown--the-wait-is-patience-not-waste)
 <!-- /TOC -->
 
 ## TL;DR
@@ -1084,3 +1085,32 @@ trailing grace after tap-off/dismiss; suite 207/207. Live (dock-redmi): tap + a
 continuous 14s spoken sentence with no wake word → mode stayed `listening` 14s
 (base window is 8s — interims held it), then the FULL utterance ran as one
 addressed turn and was answered.
+
+---
+
+## Addendum 9 — 2026-07-13: STT-lag breakdown — the wait is patience, not waste
+
+Measured the "1.5–3.5s from speech-end to the dock having your words":
+
+| Component | ms | Source |
+|---|---|---|
+| **Endpoint silence wait** (`STT_ENDPOINT_MS`, default **1300**) | 1300 | `vad-endpoint.ts` — the segmenter must SEE you're done; `endedAt` is stamped at commit, i.e. AFTER this wait |
+| Parakeet inference + filters + delivery | **~264 median** (156–897) | live ring: `decision.at − endedAt`, n=21 |
+| **Total mouth-stop → decision** | **~1.4–1.6s typical** | live spoken-line measurement (1426/1489/3033ms; the 3s tail = long-clip inference / audio tail) |
+
+**Tried `STT_ENDPOINT_MS=900` live:** lag drops to ~1.1–1.3s (−400ms) — but a
+sentence with a 1.0s internal pause SPLIT into two finals ("My favorite animal." /
+"Is the red panda?"). 0.9–1.3s is precisely the human thinking-pause range, and a
+split mid-request makes the dock answer half a thought (fragment 1 consumes the
+window and runs; the continuation queues and drains after — coherent post-wave, but
+eager/interrupty). **Reverted to 1300.** The endpoint wait is a patience/
+responsiveness trade, not dead time — inference (~0.26s) is already lean.
+
+**The real fix (next session's design): ADAPTIVE ENDPOINTING.** The interim path
+already re-transcribes mid-utterance; the detector can consult the latest interim's
+text shape — endpoint SHORT (~700ms) when it reads complete ("…lazy dog." /
+a question), LONG (~1300–1600ms) when it reads mid-phrase ("my favorite animal…").
+Seam: an `endpointHint()` supplier on `UtteranceDetector` consulted between the
+short and long thresholds. Effort: a few careful hours (the segmenter has RCA
+history — docs/rca/2026-06-22-post-restart-no-stt.md); gains ~500ms on completed
+sentences without losing patience at pauses.

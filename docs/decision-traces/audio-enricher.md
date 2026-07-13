@@ -106,6 +106,9 @@ the handoff. The brain stamps `wokeRobot` back onto the triggering record right 
 
 ## THE MODEL DECISION: flash, not flash-lite
 
+> **REVERSED 2026-07-13 — now defaults to `gemini-2.5-flash-lite`.** See the addendum at
+> the end of this section. The original investigation below is kept as-was for the record.
+
 **Default the enricher to `gemini-2.5-flash`, not `gemini-2.5-flash-lite`.**
 
 On real dock-redmi audio (quiet/far-field room with background music, measured RMS 344–872),
@@ -122,8 +125,9 @@ capturing the exact WAVs the enricher received (`PERCEPTION_ENRICH_SAVE=1`):
 confidence gate + the "be honest, low transcript_conf if you're guessing" prompt rule only
 work with a model that will actually admit uncertainty; flash-lite would not.
 
-Set via `PERCEPTION_ENRICH_MODEL=gemini-2.5-flash` in `.env` (legacy `PERCEPTION_BG_AUDIO_MODEL`
-/ `PERCEPTION_BG_STT_MODEL` still seed it) and as the code default in `perception/index.ts`.
+Set via `PERCEPTION_ENRICH_MODEL` in `.env` and as the code default in `perception/index.ts`
+(both now `gemini-2.5-flash-lite` per the 2026-07-13 addendum below; legacy
+`PERCEPTION_BG_AUDIO_MODEL` / `PERCEPTION_BG_STT_MODEL` aliases were removed 2026-07-13).
 Live-switchable from the Studio's 👂 enricher config panel (`/api/perception/enricher`).
 
 ### Corollary — separate real issue: the mic
@@ -133,6 +137,17 @@ The underlying **audio capture is poor** (low RMS, distance, background media) �
 gain/placement problem, independent of the enricher. The enricher's honesty + the confidence
 pills at least make this *visible* (low voiced%, "[unintelligible]", low transcript_conf)
 instead of silently fabricating.
+
+### Addendum 2026-07-13 — reversed to flash-lite
+
+Default flipped back to `gemini-2.5-flash-lite` (both `.env`'s `PERCEPTION_ENRICH_MODEL`
+and the code fallback in `perception/index.ts`). The flash-lite hallucination risk described
+above still stands — this is a deliberate cost tradeoff, leaning on the guards below
+(voiced-% gate, confidence gate, the "be honest" prompt rule) to bound the garbage rather than
+paying flash's ~3× audio-token price on every window. Watch the enricher rows for a return of
+the confident-fabrication failure mode (repetition loops, goodbye-loops at 0.9 conf over silent
+windows); if it resurfaces, flip back via the Studio's 👂 enricher panel or set
+`PERCEPTION_ENRICH_MODEL=gemini-2.5-flash`.
 
 ## Guards against garbage in durable memory
 
