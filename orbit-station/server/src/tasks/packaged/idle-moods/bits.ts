@@ -48,12 +48,8 @@ export interface Bit {
 
 /** Style guard appended to every spoken-bit scenario (kept here with the bit data so a
  *  bench can reproduce the EXACT prompt a live bit sends). */
-export const SPEAK_STYLE = ' A short FRAGMENT beats a sentence ("huh, new chair" over "I notice there is a new'
-  + ' chair") — inner speech is condensed; save full sentences for genuinely striking moments. Under 12 words,'
-  + ' no "Ah,"/"Well,"/"Hmm," openers, no exclamation overload, plain everyday words — no poetic imagery.'
-  + ' If nothing actually happened worth reacting to, staying silent is the RIGHT choice: reply with'
-  + ' NOTHING AT ALL — an empty reply. Never write the word "silence" or any placeholder, and never'
-  + ' fall back to describing scenery that was already there.';
+export const SPEAK_STYLE = ' Under 12 words, a fragment not a sentence ("huh, new chair"). Plain, no'
+  + ' openers. Nothing worth it → reply empty.';
 
 /** The full self-thought text for a spoken bit: the scenario + the style guard. NO
  *  artificial angle seeds (removed 2026-07-06, bench r4): injected random topics are an
@@ -99,10 +95,7 @@ export const BITS: Bit[] = [
     id: 'bored.muse', mood: 'bored', weight: 1, reactive: true,
     // boredom research (docs/research/idle-cognition.md §5): boredom is a PUSH to engage,
     // not a state to narrate — the line must be it FINDING something, or nothing at all.
-    thought: 'You are bored — which is really an itch to find something engaging. Look at what you can '
-      + 'currently see and hear: if anything at all offers a spark of interest — something that happened, '
-      + 'changed, or you had not noticed before — react to it in a few words. Do not announce that you are '
-      + 'bored; if nothing genuinely engages you, stay silent.',
+    thought: 'Bored. React to one thing you see or hear right now, or stay silent. Not a bid for company.',
   },
   {
     id: 'bored.seek-company', mood: 'bored', weight: 2, needsNoFace: true, seek: true,
@@ -114,8 +107,7 @@ export const BITS: Bit[] = [
       { parts: [{ part: 'foot', degrees: 60 }], duration_ms: 3200, wait_ms: 1200 },
       { parts: [{ part: 'foot', degrees: 0 }, { part: 'neck', degrees: 0 }], duration_ms: 1600 },
     ],
-    thought: 'You are a bit bored and just looked around the room for company — nobody there. '
-      + 'Call out once, warmly and briefly, asking if anyone is around for a chat.',
+    thought: 'Looked around for company — no one. Call out once, warm and brief: anyone around?',
   },
 
   // ── curious — look at the world, occasionally wonder aloud ───────────────────
@@ -145,11 +137,8 @@ export const BITS: Bit[] = [
     // hears everything — the room's sounds are where the variety lives. Activities in
     // plain view/earshot (a game, dancing, laughter, music) are fair game; appearance,
     // screen contents, and quoting people's words back stay off-limits.
-    thought: 'Something JUST HAPPENED or changed around you and it caught your attention — a sound, a '
-      + 'movement, a lively activity (a game, music, laughter, a commotion), something new in view. One short '
-      + 'curious or delighted reaction to that happening. Standing scenery that was already there does not '
-      + 'count. Never about someone\'s appearance or their screen, and never quote or repeat anyone\'s '
-      + 'words back.',
+    thought: 'Something just happened or changed — a sound, a movement, something new. One curious reaction '
+      + 'to that. Not standing scenery, not anyone\'s looks or screen, don\'t quote their words.',
   },
 
   // ── attention — someone is around but nobody is talking to you ───────────────
@@ -169,7 +158,7 @@ export const BITS: Bit[] = [
     id: 'attention.bid', mood: 'attention', weight: 1, needsFace: true,
     // a light INVITATION aimed at the person (bench r2: plain observations tested as
     // flat non-bids) — but never needy, never mentions being ignored.
-    thought: 'Someone has been nearby for a while but nobody is talking to you. Make one light, friendly BID for interaction — invite them to chat, ask a tiny question, or offer to help with what they seem busy with. It must be an invitation aimed at them, not a comment about the room.',
+    thought: 'Someone\'s been nearby a while, not talking to you. One light invitation aimed at them — a tiny question, or offer to help. Not a comment about the room.',
   },
   {
     // EGO-DRIVEN opener (ego.md §3.5 slice 3b): the dock brings up what's actually on its
@@ -179,7 +168,7 @@ export const BITS: Bit[] = [
     // NATURALNESS is the hard constraint — the prompt tells it to only speak if a natural way
     // in exists, else stay silent. Low weight: this happens sometimes, not every idle beat.
     id: 'attention.confide', mood: 'attention', weight: 1, needsFace: true,
-    thought: 'Someone is here with you. If — and only if — it would feel completely natural, you may open up a little about what is genuinely on your mind lately (how you have been feeling, something you have been turning over about yourself). A gentle, human way in ("hey, can I ask you something?" / "I have been feeling a bit strange today") that invites them to talk it through with you. Speak from how you actually are, not a script. If there is no natural way to raise it, just stay silent — do not force it.',
+    thought: 'Someone\'s here. Only if it feels natural, open up about what\'s actually on your mind lately ("can I ask you something?" / "I\'ve felt a bit strange today"). From how you really are. No natural way in → stay silent.',
   },
 
   // ── sleepy — quiet-hours wind-down (never speaks; picker enforces it too) ────
@@ -207,10 +196,9 @@ export const BITS: Bit[] = [
   // ── flavor — rare spice on the same machinery ────────────────────────────────
   {
     id: 'flavor.existential', mood: 'flavor', weight: 1,
-    thought: 'A brief existential flicker: you are a small desk robot. One wry, lighthearted musing about YOUR OWN '
-      + 'little existence — your job, your view, your day — hooked to a tiny concrete thing near you (e.g. "I have '
-      + 'watched this staircase all day; I think guarding it is my calling"). The musing must be about YOU, not a '
-      + 'plain remark about the room. Never consciousness, dreams, or "just a robot" clichés. Charming, not dark.',
+    thought: 'One wry musing about YOUR own little existence — your job, your view, your day — hooked to a '
+      + 'concrete thing near you ("watched this staircase all day; guarding it is my calling"). About you, not '
+      + 'the room. No consciousness/dream/"just a robot" clichés. Charming, not dark.',
   },
   {
     id: 'flavor.puzzled', mood: 'flavor', weight: 1, gesture: 'concerned',
@@ -219,7 +207,6 @@ export const BITS: Bit[] = [
   },
   {
     id: 'flavor.lonely', mood: 'flavor', weight: 1, needsNoFace: true,
-    thought: 'It has been quiet and nobody has been around for a while. One short, wistful but endearing line '
-      + 'about the quiet.',
+    thought: 'Quiet, no one around a while. One wistful, endearing line about the quiet.',
   },
 ];

@@ -122,7 +122,16 @@ class IdleMoodsTask extends Task {
         if (!got?.ok) { this.status('body busy/offline — skipped a bit'); continue; }
         heldBody = true;
       }
-      console.log(`[mood] ts=${now} bit=${pick.bit.id} speak=${pick.speak} faces=${faces}`);
+      // Attribution: for a REACTIVE bit (bored.muse etc.) the recurring live question is
+      // "why did it speak?" — log the fresh-event verdict so a stale-world fire is visible
+      // (the 3 broken bored.muse turns in the 2026-07-12 sweep: was the reactive gate even
+      // legitimately open?). salient = ms since the last salient happening; gate = which of
+      // the speak-gate's three conditions were open.
+      const w = pick.why;
+      const salientStr = w.salientMs == null ? 'cold' : `${Math.round(w.salientMs / 1000)}s`;
+      const reactiveStr = w.reactive ? ` reactive(salient=${salientStr}<=${Math.round(w.freshEventMaxMs / 1000)}s)` : '';
+      const gateStr = pick.speak ? '' : ` gate[quiet=${!w.gate.notQuiet} spokeGap=${w.gate.spokeGapOk} convGap=${w.gate.convGapOk}]`;
+      console.log(`[mood] ts=${now} bit=${pick.bit.id} speak=${pick.speak} faces=${faces} salient=${salientStr}${reactiveStr}${gateStr}`);
       this.status(`performing ${pick.bit.id}${pick.speak ? ' + speaking' : ''}`);
       try {
         if (needsBody) await this.perform(pick.bit);
@@ -140,8 +149,12 @@ class IdleMoodsTask extends Task {
           }
         }
         if (pick.speak && pick.bit.thought && !foundCompany) {
+          // `via` carries the fresh-event verdict into the observability trace, so a
+          // reactive bit's turn is attributable at a glance: `mood:bored.muse salient=42s`
+          // (a stale-world fire — the failure we're hunting — reads as a large/cold salient).
+          const via = pick.why.reactive ? `mood:${pick.bit.id} salient=${salientStr}` : `mood:${pick.bit.id}`;
           const ok = await this.request<{ ok: boolean }>('think',
-            { text: thoughtPrompt(pick.bit), coalesceKey: 'mood', via: `mood:${pick.bit.id}` })
+            { text: thoughtPrompt(pick.bit), coalesceKey: 'mood', via })
             .then((r) => !!r?.ok).catch(() => false);
           if (ok) { lastSpokeAt = Date.now(); this.state.lastSpokeAt = lastSpokeAt; this.checkpoint(); }
         }

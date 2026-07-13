@@ -155,3 +155,33 @@ test('reactive bits need a recent salient happening; social bids do not', () => 
   const cold = pickBit({ ...INP, msSinceSalient: null, rand: seq(0) }, CFG, bits);
   assert.equal(cold!.bit.id, 's.lonely');
 });
+
+// ── the `why` decision trace (instrumentation: attribute a spoken bit) ────────────
+test('why surfaces the fresh-event verdict + gate reasoning for the PICKED bit', () => {
+  const reactive: Bit = { id: 'r.wonder', mood: 'curious', weight: 1, reactive: true, thought: 'react' };
+  const social: Bit = { id: 's.lonely', mood: 'flavor', weight: 1, needsNoFace: true, thought: 'wistful' };
+
+  // a reactive pick on a fresh world → why.reactive true, salientMs carried through.
+  const fresh = pickBit({ ...INP, msSinceSalient: 30_000, rand: seq(0) }, CFG, [reactive, social])!;
+  assert.equal(fresh.bit.id, 'r.wonder');
+  assert.equal(fresh.why.reactive, true, 'the picked bit was reactive');
+  assert.equal(fresh.why.salientMs, 30_000, 'ms-since-salient is surfaced for attribution');
+  assert.equal(fresh.why.freshEventMaxMs, CFG.freshEventMaxMs);
+
+  // a NON-reactive pick → why.reactive false (the gate did not apply to it).
+  const stale = pickBit({ ...INP, msSinceSalient: 600_000, rand: seq(0) }, CFG, [reactive, social])!;
+  assert.equal(stale.bit.id, 's.lonely');
+  assert.equal(stale.why.reactive, false, 'the social bid is not reactive');
+  assert.equal(stale.why.salientMs, 600_000, 'the stale age is still recorded');
+
+  // the speak-gate breakdown mirrors `speak`, condition by condition. Use a motion+thought
+  // bit so the closed gate leaves it IN the pool (thought-only bits leave — see the gate
+  // test above); we want to observe the gate verdict on a bit that still gets picked.
+  const motionThought: Bit = { id: 'm.t', mood: 'curious', weight: 1, thought: 'x', gesture: 'curious' };
+  const gated = pickBit({ ...INP, msSinceLastSpoke: 0, rand: seq(0) }, CFG, [motionThought])!;
+  assert.equal(gated.speak, false);
+  assert.equal(gated.why.canSpeak, false);
+  assert.equal(gated.why.gate.spokeGapOk, false, 'the spoke-gap is the closed condition');
+  assert.equal(gated.why.gate.convGapOk, true);
+  assert.equal(gated.why.gate.notQuiet, true);
+});

@@ -295,7 +295,7 @@ export function brainModule(w: BrainWiring): StationModule {
     if (isRecording(dock)) return;
     const recent = recentSelfRemarks(dock);
     const antiRepeat = recent.length
-      ? ` Your recent unprompted remarks — do NOT repeat or resemble any of them, and do not REUSE their subjects or themes (if you have nothing genuinely different, stay silent): ${recent.map((r) => `"${r}"`).join(' · ')}`
+      ? ` Don't repeat or echo the theme of your recent lines (nothing new → stay silent): ${recent.map((r) => `"${r}"`).join(' · ')}`
       : '';
     // Attach the CURRENT camera frame (when live) so the model authors the line while
     // LOOKING at the scene, not just reading vision's one-line text description —

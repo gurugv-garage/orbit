@@ -57,12 +57,34 @@ export function inQuietHours(hour: number, start: number, end: number): boolean 
   return start < end ? hour >= start && hour < end : hour >= start || hour < end;
 }
 
+/** The eligibility reasoning behind a pick — surfaced (not consumed) so a spoken bit is
+ *  attributable in the logs + observability trace. The recurring live question is "why did
+ *  a REACTIVE bit like bored.muse speak?": `reactive`/`salientMs`/`freshEventMaxMs` answer it
+ *  (was there a genuine fresh happening, or did it fire on a stale world?). */
+export interface PickWhy {
+  quiet: boolean;
+  /** the speak-gate verdict + which of its three conditions were open. */
+  canSpeak: boolean;
+  gate: { notQuiet: boolean; spokeGapOk: boolean; convGapOk: boolean };
+  /** ms since the last salient happening (null = perception cold), and the reactive window. */
+  salientMs: number | null;
+  freshEventMaxMs: number;
+  /** did the PICKED bit require (and pass) the reactive fresh-event gate? undefined = the bit
+   *  isn't reactive, so the gate didn't apply. */
+  reactive?: boolean;
+}
+
 /** Pick a bit + whether it may speak, or null when nothing is eligible this cycle. */
-export function pickBit(inp: PickInput, cfg: MoodCfg, bits: Bit[]): { bit: Bit; speak: boolean } | null {
+export function pickBit(inp: PickInput, cfg: MoodCfg, bits: Bit[]): { bit: Bit; speak: boolean; why: PickWhy } | null {
   const quiet = inQuietHours(inp.hourLocal, cfg.quietStartHour, cfg.quietEndHour);
-  const canSpeak = !quiet
-    && inp.msSinceLastSpoke >= cfg.speakMinGapMs
-    && inp.msSinceConversation >= cfg.speakIdleMinMs;
+  const spokeGapOk = inp.msSinceLastSpoke >= cfg.speakMinGapMs;
+  const convGapOk = inp.msSinceConversation >= cfg.speakIdleMinMs;
+  const canSpeak = !quiet && spokeGapOk && convGapOk;
+  const why: PickWhy = {
+    quiet, canSpeak,
+    gate: { notQuiet: !quiet, spokeGapOk, convGapOk },
+    salientMs: inp.msSinceSalient, freshEventMaxMs: cfg.freshEventMaxMs,
+  };
 
   const w = (b: Bit) => b.weight * (cfg.weights[b.mood] ?? 1);
   let eligible = bits.filter((b) => {
@@ -91,8 +113,8 @@ export function pickBit(inp: PickInput, cfg: MoodCfg, bits: Bit[]): { bit: Bit; 
   let roll = inp.rand() * total;
   for (const b of eligible) {
     roll -= w(b);
-    if (roll < 0) return { bit: b, speak: canSpeak && !!b.thought };
+    if (roll < 0) return { bit: b, speak: canSpeak && !!b.thought, why: { ...why, reactive: !!b.reactive } };
   }
   const last = eligible[eligible.length - 1]!;   // rand() edge (roll === total)
-  return { bit: last, speak: canSpeak && !!last.thought };
+  return { bit: last, speak: canSpeak && !!last.thought, why: { ...why, reactive: !!last.reactive } };
 }
