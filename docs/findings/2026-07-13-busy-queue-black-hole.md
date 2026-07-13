@@ -30,6 +30,10 @@ stress-dock-pipeline method: instrument, many reps, honest failure classes.
   - [WI-4 — Canned wake ack (no LLM)](#wi-4--canned-wake-ack-no-llm)
   - [WI-5 — `session/end` means closed](#wi-5--sessionend-means-closed)
   - [Wave close-out (applies to the whole plan)](#wave-close-out-applies-to-the-whole-plan)
+- [Addendum 4 — 2026-07-13: pre-live code review of the wave (findings, fixes, and the calls left open)](#addendum-4--2026-07-13-pre-live-code-review-of-the-wave-findings-fixes-and-the-calls-left-open)
+  - [Fixed in this pass](#fixed-in-this-pass)
+  - [Accepted on record (not fixed, deliberate)](#accepted-on-record-not-fixed-deliberate)
+  - [⚠ CALLS TO MAKE — before or during the live session](#-calls-to-make--before-or-during-the-live-session)
 <!-- /TOC -->
 
 ## TL;DR
@@ -753,3 +757,81 @@ Addendum 4 in the same trial-table format — the RCA's own method is the exit b
 23k-prompt breakdown measurement (flagged above) rides along in that session: pull the
 per-turn prompt composition from the obs step records while it runs.
 
+
+---
+
+## Addendum 4 — 2026-07-13: pre-live code review of the wave (findings, fixes, and the calls left open)
+
+> A full adversarial review of the branch diff (`main...conv-quality-july-13`) before
+> the live session: 8 independent finder angles (line-by-line, removed-behavior,
+> cross-file tracing, reuse, simplification, efficiency, altitude, conventions) over
+> ~35 candidates, deduped, the most-refutable verified by independent verifier passes.
+> **10 findings survived; 7 are FIXED on this branch, 1 is accepted-on-record, 2 are
+> design calls left for the live session (below).** After the fixes: brain suite
+> 223/223; headless matrix grew to S4+F1–F7, **28/28**.
+
+### Fixed in this pass
+
+1. **Settle is now a single chokepoint on the conversation state machine** (was: two
+   ad-hoc call sites with different guards). Entering `followup` or `idle` fires
+   `#maybeSettle()` — which covers the two CONFIRMED stranding bugs the review found:
+   a FAILED turn that never spoke (softened failure: tool ran, then the post-tool step
+   errored) now settles instead of wedging `thinking` + stranding the queue; and held
+   items after a tap-interrupt + silence now drain at the **window-timeout** transition
+   (harness F7 proves it end-to-end). Bonus coverage for free: tap-off, reconcile, and
+   the think/speak safety prunes all settle the lane now.
+2. **`isRecording` re-checked at drain time** — a capture that starts mid-reply can no
+   longer receive a spoken drained turn (items drop traced `skip:recording`).
+3. **The mood tag no longer leaks downstream**: `stripMoodTag` (exported beside the
+   prompt that teaches the tag) is applied at the obs `MessageEnd` (console history)
+   and in `transcriptLines` — the single funnel for the close-time digest that seeds
+   the next session AND the LLM compaction input.
+4. **Held-bracket dead air fixed**: a leading `[` that never resolves into a mood tag
+   by step end is released as prose (was: a step whose whole text was `[thinks` was
+   silently dropped).
+5. **Per-delta config lookup removed** from the streaming hot path (`brainInlineMood`
+   snapshot per turn).
+6. **Face fan-out deduplicated**: `fireFace()` in tools.ts is the single owner of the
+   gesture + face-RPC dispatch, used by both the `set_face` tool and the inline mood
+   path (they had already started to diverge on gesture resolution).
+7. (With #1) **settle fires exactly once per quiet** — the noteSpeech belt only fires
+   when tts-start was lost, and the silent-turn path only double-checks the
+   already-idle edge.
+
+### Accepted on record (not fixed, deliberate)
+
+- **`set_face` reports success to the model unconditionally** (both paths): the face
+  graphic is best-effort UX and must not block or fail the reply. Cost: the model
+  can't distinguish a failed face change; errors go to the station log only.
+- **The canned wake ack has no obs turn record** (it never runs an agent). Judge wake
+  acks from the addressed ring (`wake` decision) + the speak frame, not
+  /api/observability. Revisit if wake debugging needs obs (model a zero-step turn).
+- **Refuted during verify:** the bench-runner mood-tag concern — objective scoring is
+  contains/length-based and provably insensitive to the prefix (only the cosmetic
+  Claude taste-grader sees it).
+
+### ⚠ CALLS TO MAKE — before or during the live session
+
+1. **Ambient-speech policy (the addressed-vs-overheard seam).** The drain now
+   faithfully implements the documented append-all intent: EVERYTHING heard while the
+   dock is thinking/speaking (that passes the garbage/no-words filters) is answered at
+   settle — including speech never addressed to the dock (another person, a TV). The
+   old black hole accidentally suppressed this. **Watch for spurious replies to room
+   chatter during the session**; if it bites, the fix is gating drained items on the
+   addressed seam (TODO §3.0 territory), not reverting the drain.
+2. **Self-echo check (same mechanism, sharper edge).** The STT echo-gate is
+   default-OFF (`STT_ECHO_GATE=1` to enable) because the phone's AEC is trusted to
+   cancel the dock's own voice. If dock-redmi's AEC is weak, the dock will transcribe
+   its own reply mid-turn, queue it, and ANSWER ITSELF at settle. **Early in the
+   session: say a long-reply prompt and watch the addressed ring for the dock's own
+   words as `queue:busy`. If they appear, set `STT_ECHO_GATE=1` and restart.**
+3. **`wait` / `hold on` are hard cancels** in the stop lexicon. Genuinely ambiguous
+   ("wait" often means *pause*, not *discard*). **Watch for false cancels eating real
+   replies**; the demotion (require repetition or a stop companion) is a two-line
+   change in `stop-intent.ts`.
+4. **Tap-off / dismissal behavior.** Queued mid-turn speech now drains when the
+   listening window closes — including after a deliberate tap-off. If the dock
+   answering *right after being dismissed* feels wrong live, decide whether tap-off
+   should trace-drop the queue instead (`skip:dismissed`).
+5. Unchanged from the wave close-out: acoustic reruns of the trial table, WI-3 live
+   p50 + face-artifact pass, "hey orbit" ×5, and the 23k-prompt breakdown from obs.

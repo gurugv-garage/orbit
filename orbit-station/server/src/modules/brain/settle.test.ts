@@ -198,3 +198,37 @@ test('wake mid-turn (wake-supersede): old turn cancelled, canned ack immediate',
   assert.ok(frames.some((f) => f.kind === 'cancelled'), 'the superseded turn was cancelled first');
   assert.equal(session.isListening(), true);
 });
+
+// ── code-review fixes: settle chokepoint coverage ───────────────────────────
+
+test('FAILED softened turn (tool ran, no speech) settles — was stranded pre-review', async () => {
+  const { session, settles, frames } = makeSession([
+    // step 1: a tool call, then the post-tool step errors (non-abort) → failCode,
+    // toolRanThisTurn=true → "softened" → no spoken failure line → no tts markers.
+    (s) => {
+      const m = assistant('');
+      m.content.push({ type: 'toolCall', id: 'call-1', name: 'set_face', arguments: { expression: 'happy' } } as never);
+      m.stopReason = 'toolUse';
+      s.push({ type: 'toolcall_end', contentIndex: 0, toolCall: m.content[0] as never, partial: m });
+      s.push({ type: 'done', reason: 'toolUse', message: m });
+      s.end(m);
+    },
+    // step 2 (post-tool): the provider throws → failCode 'llm_error', and the
+    // turn is "softened" (a tool ran) so no failure line is spoken.
+    () => { throw new Error('provider unreachable'); },
+  ]);
+  await session.handleTurnRequest({ turnId: 't1', trigger: { kind: 'user', text: 'wave' } });
+  await nextTick();
+  assert.equal(settles.length, 1, 'a failed-softened turn must settle (review finding #1)');
+  assert.equal(session.conversation().mode, 'idle', 'lane resolved, not wedged in thinking');
+  const last = frames.filter((f) => f.kind === 'turn-status').at(-1)!.payload as { state: string };
+  assert.equal(last.state, 'failed');
+});
+
+test('transition to idle fires the chokepoint (window close settles the lane)', async () => {
+  const { session, settles } = makeSession([]);
+  session.tap();                 // idle → listening (no settle: not idle/followup entry... listening)
+  assert.equal(settles.length, 0);
+  session.tap();                 // tap-off: listening → idle → chokepoint fires
+  assert.equal(settles.length, 1, 'entering idle settles the lane (covers window-timeout/tap-off)');
+});

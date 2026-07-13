@@ -48,7 +48,7 @@ import type { Directory } from '../docks/directory.js';
 import type { MotionExecutor } from '../bodylink/motion.js';
 import type { FaceToolsApi, PerceptionGroundingApi, MemoryApi } from '../perception/index.js';
 import { gesturesFromConfig } from '../bodylink/motion.js';
-import { buildSystemPrompt, isVisionIntent } from './prompt.js';
+import { buildSystemPrompt, isVisionIntent, MOOD_TAG_RE, stripMoodTag } from './prompt.js';
 import { decideThought, type SessionState } from './thought-router.js';
 import { ConversationState, type ConvTransition } from './conversation-state.js';
 import { MAX_HISTORY_MESSAGES, SESSION_IDLE_MIN, VISION_GATE } from './constants.js';
@@ -57,7 +57,7 @@ import { SentenceStreamer } from './sentence.js';
 import { SessionStore, type SessionMeta } from './store.js';
 import { loadDockSkills, type DockSkills } from './skills.js';
 import { buildFileTools, FILE_TOOLS_PROMPT } from './filetools.js';
-import { buildDockTools, buildGrantTools, buildSlackTools, buildWhatsAppTools, buildResearchTools, buildMemoryTools, buildFeedbackTools, buildObsTools, type ToolTurnContext } from './tools.js';
+import { buildDockTools, buildGrantTools, buildSlackTools, buildWhatsAppTools, buildResearchTools, buildMemoryTools, buildFeedbackTools, buildObsTools, fireFace, type ToolTurnContext } from './tools.js';
 import { FACES, type MoveStep } from './schemas.js';
 import type { VideoRecorderApi } from '../perception/record/recorder.js';
 import * as slack from '../../integrations/slack.js';
@@ -225,6 +225,11 @@ export class DockBrainSession {
   #moodStepChecked = false; // this step's leading text has been classified
   #moodStripLen = 0;        // chars to strip from this step's cumulative text
   #moodApplied = false;     // face already set this turn (first tag wins)
+  #moodEnabled = true;      // brainInlineMood, snapshot per turn (config() is a
+                            // registry scan — not per streaming delta)
+  #moodHeldRaw: string | null = null; // text HELD while a leading '[' may still
+                            // become a tag — released as prose at step end if it
+                            // never resolves (else '[thinks' = silent dead air)
   #toolRanThisTurn = false;
   #streamer = new SentenceStreamer();
   #speakSeq = 0;
@@ -582,15 +587,16 @@ export class DockBrainSession {
     // end → FOLLOWUP (auto re-listen). The machine bounds SPEAKING (SPEAK_MAX_MS)
     // so a lost end-frame can't wedge it, and reconcileConnected clears it on
     // reconnect — the two real recoveries (no blind latch).
+    const wasSpeaking = this.#conv.mode(Date.now()) === 'speaking';
     if (speaking) this.#conv.speakStart(Date.now());
     else this.#conv.speakEnd(Date.now());
     this.#shipObsMarker(speaking ? 'SpeakStart' : 'SpeakEnd');
     if (!speaking && !this.#turnActive) {
       this.#shipObsMarker('TurnSettled');
-      // the lane is quiet — but only if no next turn is already in flight
-      // (#running covers the supersede-wait gap where #turnActive is briefly
-      // false): a settle then would let the drained turn supersede a real one.
-      if (!this.#running) this.#d.onSettled?.(this.dock);
+      // Normally speakEnd's speaking→followup transition fires the settle
+      // chokepoint. When tts-start was LOST (mode never reached 'speaking'),
+      // speakEnd no-ops and no transition fires — settle directly instead.
+      if (!wasSpeaking) this.#maybeSettle();
     }
   }
 
@@ -656,6 +662,22 @@ export class DockBrainSession {
     } else if (!timed && this.#convTick) {
       clearInterval(this.#convTick); this.#convTick = undefined;
     }
+    // SETTLE CHOKEPOINT (code review on WI-1: the two ad-hoc settle call sites
+    // missed failed-silent turns and every passive window expiry). "The lane
+    // went quiet" IS a conversation transition: entering FOLLOWUP (tts tail
+    // drained) or IDLE (no-speech settle, window-timeout, tap-off, reconcile,
+    // think/speak safety prunes). Firing here makes the busy-queue drain follow
+    // the state machine instead of hand-picked branches. #maybeSettle re-checks
+    // in-flight turns; the drain no-ops on an empty queue — over-firing is
+    // harmless, under-firing is a black hole.
+    if (t.to === 'followup' || t.to === 'idle') this.#maybeSettle();
+  }
+
+  /** The single quiet-check before onSettled: never settle under a running or
+   *  in-flight turn (a drained turn would supersede it). */
+  #maybeSettle(): void {
+    if (this.#turnActive || this.#running) return;
+    this.#d.onSettled?.(this.dock);
   }
 
   /** Idle-close check (clock measured from last turn END — an active turn
@@ -809,6 +831,8 @@ export class DockBrainSession {
     this.#moodStepChecked = false;
     this.#moodStripLen = 0;
     this.#moodApplied = false;
+    this.#moodHeldRaw = null;
+    this.#moodEnabled = this.#d.config('brainInlineMood') !== false;
     this.#spokenSentences = [];
     this.#toolRanThisTurn = false;
     this.#streamer = new SentenceStreamer();
@@ -1040,6 +1064,7 @@ export class DockBrainSession {
 
       const completedNormally = !this.#cancelled && !this.#timedOut && failCode == null;
       if (completedNormally) {
+        this.#releaseHeldMood(); // an unresolved held '[' is prose, not silence
         const tail = this.#streamer.flush();
         if (tail != null) this.#speak(tail);
       }
@@ -1104,22 +1129,26 @@ export class DockBrainSession {
         this.#sendToVoice('turn-status', { turnId: req.turnId, state: 'done' });
       }
       this.#activeTurnId = undefined;
-      // SILENT-TURN SETTLE: a turn that completed without ever speaking gets no
-      // tts markers, so the noteSpeech settle above never fires — and the conv
+      // SILENT-TURN SETTLE: a turn that ended without ever speaking gets no
+      // tts markers, so the noteSpeech settle never fires — and the conv
       // machine would sit wedged in 'thinking' until the THINK_MAX_MS prune
       // (silently gating wakes for up to 60s after e.g. a self-thought that
-      // chose silence). Resolve the lane and fire the settle — DEFERRED one
-      // tick, because #running still points at THIS turn inside its own
-      // finally: by setImmediate time it has cleared, and if a newer turn
-      // arrived meanwhile #running/#turnActive are set again and we skip (that
-      // turn's own settle follows). A cancelled/superseded turn never gets
-      // here (completedNormally) — a tap-interrupt's queue drains at the
-      // interrupting turn's settle instead.
-      if (completedNormally && !this.#spokeThisTurn) {
+      // chose silence). This covers FAILED turns too (code review: a
+      // softened failure — tool ran, no speech — matched neither settle site
+      // and stranded the busy queue). Only cancelled/superseded turns are
+      // excluded: a tap-interrupt means the user speaks next; their queue
+      // drains at the interrupting turn's settle or the window-timeout
+      // transition. DEFERRED one tick because #running still points at THIS
+      // turn inside its own finally; by setImmediate time it has cleared, and
+      // a newer turn re-sets it (that turn's own settle follows).
+      if (!this.#cancelled && !this.#spokeThisTurn) {
         setImmediate(() => {
           if (this.#running || this.#turnActive) return;
-          this.#conv.noSpeechSettle(Date.now());
-          this.#d.onSettled?.(this.dock);
+          const wasThinking = this.#conv.mode(Date.now()) === 'thinking';
+          this.#conv.noSpeechSettle(Date.now()); // thinking→idle → the chokepoint fires
+          // already-idle edge (e.g. think-timeout pruned mid-turn): no
+          // transition happened above, settle directly.
+          if (!wasThinking) this.#maybeSettle();
         });
       }
     }
@@ -1197,6 +1226,7 @@ export class DockBrainSession {
         // from the prior step first so a step that ended without terminal
         // punctuation still gets spoken.
         if (this.#stepIndex >= 0) {
+          this.#releaseHeldMood(); // an unresolved held '[' is prose, not silence
           const tail = this.#streamer.flush();
           if (tail != null) this.#speak(tail);
         }
@@ -1248,7 +1278,9 @@ export class DockBrainSession {
       case 'message_end': {
         const m = event.message as AssistantMessage;
         if ((m as { role?: string }).role === 'assistant') {
-          this.#shipObs('MessageEnd', { text: assistantText(event.message) });
+          // strip the inline mood tag so the console/obs history shows what
+          // was actually SAID, not the control token.
+          this.#shipObs('MessageEnd', { text: stripMoodTag(assistantText(event.message)) });
         }
         break;
       }
@@ -1371,19 +1403,35 @@ export class DockBrainSession {
    *  in ("[face:ha"), output is HELD (empty) so a partial tag can't leak;
    *  a leading bracket that turns out not to be a mood tag passes through. */
   #filterMood(text: string): string {
-    if (this.#d.config('brainInlineMood') === false) return text;
+    if (!this.#moodEnabled) return text;
     if (this.#moodStripLen > 0) return text.slice(this.#moodStripLen);
     if (this.#moodStepChecked || text.length === 0) return text;
-    const m = text.match(/^\s*\[(?:face|mood)\s*:\s*([a-z_-]+)\s*\]\s*/i);
+    const m = text.match(MOOD_TAG_RE);
     if (m) {
       this.#moodStepChecked = true;
+      this.#moodHeldRaw = null;
       this.#moodStripLen = m[0].length;
       this.#applyMood(m[1]!.toLowerCase());
       return text.slice(this.#moodStripLen);
     }
-    if (/^\s*\[[^\]]*$/.test(text) && text.length < 40) return ''; // tag may still be completing
+    if (/^\s*\[[^\]]*$/.test(text) && text.length < 40) {
+      this.#moodHeldRaw = text; // tag may still be completing — hold, don't leak
+      return '';
+    }
     this.#moodStepChecked = true; // leading text is real prose (or a non-mood bracket)
+    this.#moodHeldRaw = null;
     return text;
+  }
+
+  /** A held leading '[' that never resolved into a mood tag by step end is
+   *  released as PROSE (review finding: a step whose whole text was '[thinks'
+   *  was silently dropped — dead air). Call before every streamer flush. */
+  #releaseHeldMood(): void {
+    if (this.#moodHeldRaw == null) return;
+    const text = this.#moodHeldRaw;
+    this.#moodHeldRaw = null;
+    this.#moodStepChecked = true;
+    for (const sentence of this.#streamer.push(text)) this.#speak(sentence);
   }
 
   /** Apply a parsed mood: same effects as the set_face tool (gesture in-process,
@@ -1398,16 +1446,12 @@ export class DockBrainSession {
     }
     this.#moodApplied = true;
     this.#debug('mood', { expression });
-    try {
-      this.#d.motion.playGesture(this.dock, expression,
-        gesturesFromConfig(this.#d.config('faceGestures')) as Record<string, MoveStep[]>);
-    } catch { /* body offline — face still changes */ }
-    void this.#d.rpc.call({
-      dock: this.dock, cap: 'face', turnId: this.#activeTurnId ?? '',
-      toolCallId: `mood-${this.#obsTurnId}`, name: 'set_face', args: { expression },
-    }).then((ack) => {
-      if (ack.isError) this.#d.log?.(`[brain] ${this.dock}: inline mood rpc failed: ${ack.content}`);
-    }).catch((err) => this.#d.log?.(`[brain] ${this.dock}: inline mood rpc failed: ${String(err)}`));
+    fireFace({
+      dock: this.dock, motion: this.#d.motion, rpc: this.#d.rpc,
+      gestures: gesturesFromConfig(this.#d.config('faceGestures')) as Record<string, MoveStep[]>,
+      turnId: this.#activeTurnId ?? '', toolCallId: `mood-${this.#obsTurnId}`,
+      expression, warn: (msg) => this.#d.log?.(`[brain] ${this.dock}: inline mood ${msg}`),
+    });
   }
 
   /** One spoken sentence → directed speak frame to the voice component. */
@@ -1613,7 +1657,9 @@ function transcriptLines(messages: AgentMessage[]): string[] {
             .filter((c) => c.type === 'text').map((c) => c.text ?? '').join('');
       if (t) lines.push(`user: ${t}`);
     } else if (role === 'assistant') {
-      const t = assistantText(m);
+      // the inline mood tag is a control token, not conversation — keep it out
+      // of summaries/compaction (it leaks into seeded context otherwise).
+      const t = stripMoodTag(assistantText(m));
       if (t) lines.push(`orbit: ${t}`);
     }
   }

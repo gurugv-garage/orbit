@@ -11,6 +11,16 @@
 
 import { FACES } from './schemas.js';
 
+/** The inline mood tag's shape (WI-3). Owned here beside the prompt that
+ *  teaches it. Captures the face name. */
+export const MOOD_TAG_RE = /^\s*\[(?:face|mood)\s*:\s*([a-z_-]+)\s*\]\s*/i;
+
+/** Strip a leading mood tag from assistant text. The live stream strips it
+ *  before TTS (session #filterMood); every OTHER reader of raw assistant text
+ *  (obs MessageEnd, session summaries, compaction input) must strip it too or
+ *  the tag leaks into UIs and seeded context (code-review finding). */
+export const stripMoodTag = (text: string): string => text.replace(MOOD_TAG_RE, '');
+
 /** The face paragraph, in two variants (WI-3, busy-queue-black-hole.md):
  *  - inline mood (default): the mood rides the reply text as a leading
  *    [face:NAME] tag the station strips + applies — NO extra LLM step. The RCA

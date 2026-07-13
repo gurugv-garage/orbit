@@ -132,3 +132,11 @@ test('kill-switch brainInlineMood=false: filter off, tag spoken as-is', async ()
   assert.deepEqual(spoken(frames), ['[face:happy] Hi.']);
   assert.deepEqual(faceCalls(frames), []);
 });
+
+test('an unresolved held leading bracket is released as prose at step end (no dead air)', async () => {
+  // the whole step's text is '[thinking' — starts like a tag, never closes.
+  const { session, frames } = makeSession([streams('[thi', '[thinking')]);
+  await session.handleTurnRequest({ turnId: 't1', trigger: { kind: 'user', text: 'hi' } });
+  assert.deepEqual(spoken(frames), ['[thinking'], 'held text must be released, not dropped');
+  assert.deepEqual(faceCalls(frames), []);
+});

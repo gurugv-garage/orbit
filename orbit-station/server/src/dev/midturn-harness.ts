@@ -305,6 +305,28 @@ async function f6_cannedWake(): Promise<void> {
   check('F6e', end.state === 'done', `wake+command still runs an LLM turn: ${end.state}`);
 }
 
+async function f7_tapThenSilence(): Promise<void> {
+  log('── F7 (review fix): tap-interrupt with queued speech + SILENCE → drained at window close');
+  await idle();
+  const HELD = `what is the capital of France, run ${RUN}`;
+  const mark = frames.length;
+  await say('Count from one to five, slowly, one number per sentence.');
+  await waitConv('thinking', 20_000);
+  await hear(`And ${HELD}?`); // queued while busy
+  await post('/debug/event', { event: 'tap' }); // tap-interrupt: cancel + open listening
+  await waitConv('listening', 5_000);
+  const q = decisions(await ringFor(HELD));
+  check('F7a', q.join() === 'queue:busy', `queued line held through the tap-interrupt → [${q}]`);
+  const cancelled = await waitTurnEnd(mark, 20_000); // the interrupted counting turn
+  check('F7b', cancelled.state === 'cancelled', `tap cancelled the counting turn: ${cancelled.state}`);
+  // user says NOTHING: the listening window (8s) expires → idle → the settle
+  // chokepoint fires → the held line drains (was: stranded forever, untraced)
+  const drained = await waitTurnEnd(cancelled.frameIdx + 1, 30_000);
+  const d = decisions(await ringFor(HELD));
+  check('F7c', drained.state === 'done' && d.join() === 'queue:busy,drain:ran',
+    `after window close: [${d}], drained turn ${drained.state} — nothing stranded`);
+}
+
 // ── main ────────────────────────────────────────────────────────────────────
 
 async function main(): Promise<void> {
@@ -352,7 +374,7 @@ async function main(): Promise<void> {
   const scenarios: Array<[string, () => Promise<void>]> = [
     ['S4', s4_control], ['F1', f1_coreDrain], ['F2', f2_mixedAge],
     ['F3', f3_everyTurnKind], ['F4', f4_voiceStop], ['F5', f5_stopFalsePositives],
-    ['F6', f6_cannedWake],
+    ['F6', f6_cannedWake], ['F7', f7_tapThenSilence],
   ];
   for (const [name, fn] of scenarios) {
     try { await fn(); }

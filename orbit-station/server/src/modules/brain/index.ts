@@ -582,6 +582,14 @@ export function brainModule(w: BrainWiring): StationModule {
         if (items.length === 0) return;
         const s = session(dock);
         const mode = s.conversation().mode;
+        // RECORDING re-check (code review): the skip:recording gate only ran at
+        // ENQUEUE time — a capture that started while the reply played must not
+        // get a spoken drained turn. Drop WITH trace (recording wants silence,
+        // not a deferred answer).
+        if (isRecording(dock)) {
+          for (const u of items) pushAddrTrace(u, 'skip:recording', mode);
+          return;
+        }
         // HOLD: 'listening' = the user is mid-exchange (e.g. tap-interrupt — their
         // next utterance wins; the queue joins the turn after); an active turn
         // (thinking/speaking or turnActive) = draining now would supersede it.

@@ -388,6 +388,26 @@ function resolveId(api: MemoryApi, dock: string, idArg: string): string {
   return hit?.id ?? id;
 }
 
+/** The face fan-out shared by the set_face TOOL and the inline mood tag
+ *  (session #applyMood): body gesture in-process (best-effort) + face UI via
+ *  phone RPC, fire-and-forget — the graphic is best-effort UX and must never
+ *  block a reply (WI-3); errors go to the log. Single owner so the two mood
+ *  paths can't drift (code-review finding). */
+export function fireFace(opts: {
+  dock: string; motion: MotionExecutor; rpc: RpcBroker;
+  gestures: Record<string, MoveStep[]>; turnId: string; toolCallId: string;
+  expression: string; warn: (msg: string) => void;
+}): void {
+  try { opts.motion.playGesture(opts.dock, opts.expression, opts.gestures); }
+  catch { /* body offline — face still changes */ }
+  void opts.rpc.call({
+    dock: opts.dock, cap: 'face', turnId: opts.turnId,
+    toolCallId: opts.toolCallId, name: 'set_face', args: { expression: opts.expression },
+  }).then((ack) => {
+    if (ack.isError) opts.warn(`set_face rpc failed: ${ack.content}`);
+  }).catch((err) => opts.warn(`set_face rpc failed: ${String(err)}`));
+}
+
 export function buildDockTools(deps: ToolDeps): AgentTool<any>[] {
   const faces = (): FaceToolsApi => {
     const f = deps.getFaces();
@@ -405,17 +425,11 @@ export function buildDockTools(deps: ToolDeps): AgentTool<any>[] {
       if (!S.FACES.includes(args.expression as never)) {
         throw new Error(`unknown expression "${args.expression}"`);
       }
-      // gesture choreography in-process (best-effort), face UI via phone RPC.
-      deps.motion.playGesture(deps.dock, args.expression, deps.getGestures());
-      // The face graphic is best-effort UX exactly like the gesture above — do
-      // NOT await the phone round-trip on the reply's critical path (WI-3,
-      // busy-queue-black-hole.md Addendum 1 P1). Errors go to the log.
-      void deps.rpc.call({
-        dock: deps.dock, cap: 'face', turnId: deps.getTurnContext().turnId,
-        toolCallId, name: 'set_face', args,
-      }).then((ack) => {
-        if (ack.isError) console.warn(`[brain] ${deps.dock}: set_face rpc failed: ${ack.content}`);
-      }).catch((err) => console.warn(`[brain] ${deps.dock}: set_face rpc failed: ${String(err)}`));
+      fireFace({
+        dock: deps.dock, motion: deps.motion, rpc: deps.rpc, gestures: deps.getGestures(),
+        turnId: deps.getTurnContext().turnId, toolCallId, expression: args.expression,
+        warn: (msg) => console.warn(`[brain] ${deps.dock}: ${msg}`),
+      });
       return textResult(`face set to ${args.expression}`);
     }),
 
