@@ -972,3 +972,9 @@ when testing interruption.
 > live while the user speaks — the ring will show whether their "stop" arrived at
 > all, how STT rendered it, and what decision it got (merged-with-ambient → refused,
 > mishear → not in lexicon, or never transcribed → mic/AEC during TTS).
+
+> **Re-correction (minutes later):** the user retried — **it worked with their real
+> voice** ("actually worked.. not bad"). Human-path: VALIDATED. The first-try "doesn't
+> work" was most likely the STT-finalization lag (~1.5–3.5s from speech-end to the
+> stop landing) reading as failure on a short reply — the known feel-vs-mechanism gap.
+> Voice-stop is done: state, audio, synthetic voice, and human voice all confirmed.
