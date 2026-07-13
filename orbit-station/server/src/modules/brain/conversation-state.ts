@@ -39,6 +39,12 @@ export const ConvCfg = {
   VAD_ENDPOINT_MS: Number(process.env.CONV_VAD_ENDPOINT_MS ?? 1_500),
   /** (legacy) fixed per-VAD extend — kept for back-compat / tests. */
   VAD_EXTEND_MS: Number(process.env.CONV_VAD_EXTEND_MS ?? 6_000),
+  /** Server-STT interim evidence (an utterance is mid-transcription) holds an
+   *  open window this far out, ROLLING per interim (Addendum 8: the parakeet
+   *  pipeline shapes the window now — phone-VAD frames are ignored, so the
+   *  transcriber can't be contradicted by a second ear). Bounded so a lost
+   *  final decays the window in seconds, not VAD_HOLD_MS. */
+  INTERIM_HOLD_MS: Number(process.env.CONV_INTERIM_HOLD_MS ?? 8_000),
   /** Grace for the tap↔utterance ordering race: an utterance ending this long
    *  before `now` (while a window is open) still counts (finish, then tap). */
   GRACE_MS: Number(process.env.CONV_GRACE_MS ?? 2_500),
@@ -276,6 +282,18 @@ export class ConversationState {
     }
   }
 
+  /** Server-STT evidence that an utterance is MID-FLIGHT (an interim landed):
+   *  hold an open window past it, rolling. This is the parakeet-owned
+   *  replacement for the phone-VAD hold/endpoint — the pipeline that stamps
+   *  the utterance also keeps the door open for it, so "the window closed
+   *  under an in-flight utterance" is structurally impossible. No-op when no
+   *  window is open (interims are gated on listening anyway). */
+  speechInFlight(now: number): void {
+    this.#prune(now);
+    if (this.#mode !== 'listening' && this.#mode !== 'followup') return;
+    this.#setWindow(Math.max(this.#windowUntil, now + ConvCfg.INTERIM_HOLD_MS));
+  }
+
   /**
    * A finalized utterance that ended at `endedAt`. Returns whether it's ADDRESSED.
    * Addressed iff a listening/followup window is open and the utterance ended
@@ -363,6 +381,11 @@ export class ConversationState {
       // "Can you hear this?" — startedAt ~2s before now — still passed startedWhileOpen
       // because we'd just set #lastWindowUntil=now). Pin to the real expiry instead, so
       // only an utterance that was ending AS the window closed keeps the GRACE tail.
+      // (A trailing start-grace was considered for the +400ms-late startedAt case
+      // (Addendum 8) and REJECTED — test A1h pins live numbers where a +600ms-late
+      // start was OVERHEARD speech: the two are indistinguishable by timestamp.
+      // The interim hold above fixes the real cause instead: the window can no
+      // longer close early under an in-flight utterance.)
       this.#lastWindowUntil = this.#windowUntil;
       this.#windowUntil = 0;
       this.#set('idle', now, 'window-timeout');

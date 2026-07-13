@@ -505,3 +505,28 @@ describe('ConversationState — robustness (unit; full reconnection sim separate
     assert.deepEqual(seq(), [], 'no transition emitted (already idle)');
   });
 });
+
+// ── Addendum 8: parakeet-owned window (interim hold; no trailing start-grace) ──
+
+it('speechInFlight holds an open window rolling; no-op outside windows', () => {
+  const c = new ConversationState();
+  c.tap(1_000); // listening until 9_000
+  c.speechInFlight(8_500); // interim mid-utterance → held to 16_500
+  assert.equal(c.mode(9_500), 'listening', 'window held past its base expiry by interim evidence');
+  c.speechInFlight(16_000); // rolling
+  assert.equal(c.mode(23_000), 'listening');
+  assert.equal(c.mode(24_600), 'idle', 'decays INTERIM_HOLD after the last interim');
+  c.speechInFlight(30_000); // idle → no-op (never opens a window)
+  assert.equal(c.mode(30_100), 'idle');
+});
+
+it('no trailing start-grace anywhere: late starts stay overheard (A1h holds)', () => {
+  const c = new ConversationState();
+  c.tap(1_000);
+  c.tap(3_000);            // tap-off → idle, grace clamped to now
+  assert.equal(c.utteranceEnded(4_000, 4_100, 3_400), false, 'speech after tap-off stays unaddressed');
+  const d = new ConversationState();
+  d.tap(1_000);
+  d.dismiss(3_000);        // dismissal → idle
+  assert.equal(d.utteranceEnded(4_000, 4_100, 3_400), false, 'speech after dismissal stays unaddressed');
+});

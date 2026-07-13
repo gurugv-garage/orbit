@@ -1429,6 +1429,11 @@ export class DockBrainSession {
    *  authoritative path is the endpointed final via onAddressedFinal. Gated upstream
    *  on isListening, so this only fires during an active listening/followup turn. */
   sendInterim(text: string, seq: number): void {
+    // The interim is also SPEECH-IN-FLIGHT EVIDENCE from the pipeline that owns
+    // the utterance timestamps (Addendum 8): hold the listening window while
+    // the transcriber has speech open — replaces the phone-VAD hold/endpoint,
+    // whose independent clock closed windows under in-flight utterances.
+    this.#conv.speechInFlight(Date.now());
     this.#sendToVoice('transcript-interim', { text, seq, isFinal: false });
   }
 

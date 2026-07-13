@@ -41,6 +41,7 @@ stress-dock-pipeline method: instrument, many reps, honest failure classes.
   - [Addendum 5.4 — the dock now actually SHUTS UP (app build 31 + station fix)](#addendum-54--the-dock-now-actually-shuts-up-app-build-31--station-fix)
 - [Addendum 6 — 2026-07-13: the prompt breakdown (what the ~18k tokens actually are)](#addendum-6--2026-07-13-the-prompt-breakdown-what-the-18k-tokens-actually-are)
 - [Addendum 7 — 2026-07-13: prompt caching — don't trim, stop breaking the cache](#addendum-7--2026-07-13-prompt-caching--dont-trim-stop-breaking-the-cache)
+- [Addendum 8 — 2026-07-13: one ear owns the window (RCA fix #7, done differently)](#addendum-8--2026-07-13-one-ear-owns-the-window-rca-fix-7-done-differently)
 <!-- /TOC -->
 
 ## TL;DR
@@ -1051,3 +1052,34 @@ Studio takes A/B first; no benchmark rows exist yet), (b) the enrich-trigger gat
 (already built), (c) reference-transcript tail length + maxOutputTokens (4096) if
 output cost shows up. `introspect` ($1.87/wk) calls too infrequently for implicit
 cache to ever be warm — its lever is cadence/model, not ordering.
+
+---
+
+## Addendum 8 — 2026-07-13: one ear owns the window (RCA fix #7, done differently)
+
+The "listening but ignored" class (fix direction #7) was a TWO-EAR disagreement:
+the phone's Silero VAD shaped the listening window (hold on voice, shrink to a
+1.5s endpoint on silence) while the parakeet pipeline stamped the utterance
+timestamps the addressed-check judges — and when they disagreed (a mid-sentence
+pause; a 400ms clock skew), the window closed under an in-flight utterance.
+
+**Fix: the parakeet pipeline owns the window now.** STT interims (already gated to
+open windows, already flowing for captions) are speech-in-flight evidence:
+`ConversationState.speechInFlight()` holds an open window `INTERIM_HOLD_MS` (8s,
+rolling) past each interim. Inbound phone `vad` frames are IGNORED (the app keeps
+Silero as a local UX sensor — instant face perk-up + screen wake — per the
+demote-don't-delete decision; removing it entirely would cost sub-100ms perceived
+aliveness and the future local barge-in option for ~2MB and a few % CPU).
+
+**Deliberately NOT done: trailing start-grace.** A +1s tolerance for startedAt
+after the window's close was written and REVERTED — conversation-state test A1h
+pins live numbers where a +600ms-late start was OVERHEARD speech wrongly addressed;
+a 400ms-late genuine start and a 600ms-late overheard one are indistinguishable by
+timestamp. The interim hold removes the cause (early close) instead of patching the
+symptom.
+
+**Evidence:** unit — interim hold (rolling, decays, no-op outside windows), no
+trailing grace after tap-off/dismiss; suite 207/207. Live (dock-redmi): tap + a
+continuous 14s spoken sentence with no wake word → mode stayed `listening` 14s
+(base window is 8s — interims held it), then the FULL utterance ran as one
+addressed turn and was answered.

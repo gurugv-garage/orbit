@@ -850,10 +850,13 @@ export function brainModule(w: BrainWiring): StationModule {
             break;
           }
           case 'vad':
-            // VAD edge from the phone — active=true HOLDS the window open (no ceiling
-            // while talking), active=false (a real silence end) releases to a short
-            // endpoint. Default true for old phones that only sent on speech onset.
-            session(dock).vadActivity(p?.active !== false);
+            // IGNORED (Addendum 8): the phone's Silero VAD no longer shapes the
+            // listening window — its independent clock closed windows UNDER
+            // in-flight utterances (the "listening but ignored" class). The
+            // parakeet pipeline holds the window now (speechInFlight via
+            // interims), so the transcriber can't be contradicted by a second
+            // ear. Silero stays app-side as a UX sensor (face perk-up, screen
+            // wake); current app builds still send these frames — dropped here.
             break;
           case 'face-arrival': {
             // a NEW face in view → low-priority listen (station decides; yields to
