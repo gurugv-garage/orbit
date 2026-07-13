@@ -16,6 +16,7 @@
     "smoke": "tsx src/dev/smoke-client.ts",
     "smoke:media": "tsx src/dev/fake-dock-media.ts",
     "smoke:brain": "tsx src/dev/fake-phone.ts",
+    "smoke:midturn": "tsx src/dev/midturn-harness.ts",
     "smoke:task": "tsx src/dev/smoke-task.ts",
     "slack:check": "tsx src/dev/slack-check.ts",
     "whatsapp:check": "tsx src/dev/whatsapp-check.ts",

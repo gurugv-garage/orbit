@@ -253,6 +253,12 @@ export function brainModule(w: BrainWiring): StationModule {
   const wakeCfg = new Map<string, WakeConfig>();
   // Set in init(): simulate a tapped addressed utterance (debug self-test seam).
   let injectAddressed: (dock: string, text: string) => void = () => {};
+  // Set in init(): feed a HEARD final into onAddressedFinal with NO tap — the
+  // mid-turn seam (WI-0, docs/findings/2026-07-13-busy-queue-black-hole.md
+  // Addendum 3). debug/say's tap would INTERRUPT a busy turn, so the busy-queue
+  // path is unreachable through it; this drives the exact same entrypoint the
+  // live STT final uses.
+  let injectHeard: (t: { dockId: string; text: string; startedAt: number; endedAt: number; confTier?: string }) => void = () => {};
   const tasksRoot = defaultTasksRoot();
   const userTasks = userTasksRoot();
   const taskRoots = [
@@ -684,6 +690,8 @@ export function brainModule(w: BrainWiring): StationModule {
         session(dock).tap();
         onAddressedFinal({ dockId: dock, text, startedAt: Date.now(), endedAt: Date.now() });
       };
+      // No tap: exactly what a live mic final looks like to the brain.
+      injectHeard = (t) => { onAddressedFinal(t); };
       getTranscriptApi()?.onFinal((t) => { onAddressedFinal(t); });
       // LIVE INTERIMS (caption UI): the gate — produce interims ONLY while the dock is
       // in a listening/followup turn (bounds GPU cost to active turns, not ambient
@@ -995,6 +1003,25 @@ export function brainModule(w: BrainWiring): StationModule {
         if (!text) { json(res, 400, { error: 'body.text (the utterance) is required' }); return true; }
         injectAddressed(dock, text);
         json(res, 200, { ok: true, injected: text });
+        return true;
+      }
+      // ── debug: simulate a HEARD utterance, NO tap (WI-0 mid-turn harness) ──
+      // POST /:dock/debug/hear {text, [startedAt], [endedAt], [confTier]} → feeds
+      // the final straight into the addressed decision, exactly like a live STT
+      // final. While the dock is busy this exercises the busy queue (which
+      // debug/say cannot: its tap interrupts). Response echoes the decision
+      // context so a scenario driver can assert without a second round-trip.
+      m = subPath.match(/^\/([^/]+)\/debug\/hear$/);
+      if (m && req.method === 'POST') {
+        const dock = decodeURIComponent(m[1]!);
+        const b = JSON.parse((await readBody(req)) || '{}') as
+          { text?: string; startedAt?: number; endedAt?: number; confTier?: string };
+        const text = typeof b.text === 'string' ? b.text.trim() : '';
+        if (!text) { json(res, 400, { error: 'body.text (the utterance) is required' }); return true; }
+        const endedAt = typeof b.endedAt === 'number' ? b.endedAt : Date.now();
+        const startedAt = typeof b.startedAt === 'number' ? b.startedAt : endedAt - 1_500;
+        injectHeard({ dockId: dock, text, startedAt, endedAt, confTier: b.confTier });
+        json(res, 200, { ok: true, injected: text, conversation: session(dock).conversation() });
         return true;
       }
       // POST /:dock/debug/event {event, [endedAt], [text]} — inject a RAW
