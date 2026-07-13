@@ -209,9 +209,13 @@ export async function enrichAudio(
   meta.latencyMs = Date.now() - t0;
   if (!data) return { segments: [], meta };
   try {
-    const um = data.usageMetadata as { promptTokenCount?: number; candidatesTokenCount?: number; totalTokenCount?: number } | undefined;
-    meta.promptTokens = um?.promptTokenCount; meta.outputTokens = um?.candidatesTokenCount; meta.totalTokens = um?.totalTokenCount;
-    if (dockId) reportGeminiCost(dockId, model, 'enrich', data.usageMetadata, Date.now());
+    const um = data.usageMetadata as { promptTokenCount?: number; candidatesTokenCount?: number; totalTokenCount?: number; thoughtsTokenCount?: number } | undefined;
+    meta.promptTokens = um?.promptTokenCount;
+    // output = visible + THINKING tokens (billed at the output rate; reported separately by Gemini),
+    // so the row's token count matches what the cost tab charges.
+    meta.outputTokens = (um?.candidatesTokenCount ?? 0) + (um?.thoughtsTokenCount ?? 0);
+    meta.totalTokens = um?.totalTokenCount;
+    if (dockId) reportGeminiCost(dockId, model, 'audio-enricher', data.usageMetadata, Date.now());
     const txt = data?.candidates?.[0]?.content?.parts?.[0]?.text ?? '{}';
     let raw: Array<Record<string, unknown>>;
     try { raw = (JSON.parse(txt).segments ?? []) as Array<Record<string, unknown>>; }

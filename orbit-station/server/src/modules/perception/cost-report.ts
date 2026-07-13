@@ -54,6 +54,11 @@ export interface GeminiUsage {
   promptTokenCount?: number;
   candidatesTokenCount?: number;
   totalTokenCount?: number;
+  /** THINKING tokens (2.5 models reason before answering). Google bills these at the OUTPUT rate —
+   *  "Output price (including thinking tokens)" — but reports them SEPARATELY from
+   *  candidatesTokenCount, so they must be added to output or the cost is under-counted (often
+   *  several ×, since an audio-transcribe call emits few visible tokens but real thinking tokens). */
+  thoughtsTokenCount?: number;
   /** per-modality prompt breakdown ([{modality:'AUDIO',tokenCount},…]). */
   promptTokensDetails?: Array<{ modality?: string; tokenCount?: number }>;
 }
@@ -63,7 +68,9 @@ export function geminiCost(model: string, usage: GeminiUsage): {
   inputTokens: number; outputTokens: number; cost: number;
 } {
   const inputTokens = usage.promptTokenCount ?? 0;
-  const outputTokens = usage.candidatesTokenCount ?? 0;
+  // OUTPUT = visible answer tokens + THINKING tokens. Google bills thinking at the output rate but
+  // reports it in a separate field, so it MUST be added here or output cost is under-counted.
+  const outputTokens = (usage.candidatesTokenCount ?? 0) + (usage.thoughtsTokenCount ?? 0);
   const price = priceFor(model);
   if (!price) return { inputTokens, outputTokens, cost: 0 }; // unknown model → tokens only
   const audioIn = (usage.promptTokensDetails ?? [])
