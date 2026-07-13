@@ -125,32 +125,41 @@ addressed to you, stay silent: reply with only your mood tag and no words.
 When in doubt, answer briefly.`.trim();
 
 export function buildSystemPrompt(opts: { persona?: string; self?: string; context?: string; grounding?: string; memory?: string; skills?: string; now?: Date; selfThought?: boolean; inlineMood?: boolean; overheard?: boolean }): string {
+  // ORDER = CACHE STABILITY (Addendum 7): Gemini's implicit prompt caching
+  // discounts any request sharing a byte-identical PREFIX with a recent one —
+  // and the first divergent byte ends the match for EVERYTHING after it
+  // (including the whole conversation history). The old order put the
+  // current-time line ~350 tokens in, so no request ever cached (measured:
+  // cacheRead 0 on every turn). Static-first, volatile-LAST:
+  //   stable across turns : SYSTEM, persona, skills, memory (per-session), ego
+  //   volatile tail       : per-turn framings, grounding, state, and the time
   let p = opts.inlineMood === false ? SYSTEM_TOOL_MOOD : SYSTEM;
-  p += `\n\n${nowLine(opts.now)}`;
-  if (opts.selfThought) p += `\n\n${SELF_THOUGHT_FRAMING}`;
-  if (opts.overheard) p += `\n\n${OVERHEARD_FRAMING}`;
   if (opts.persona && opts.persona.trim().length > 0) p += `\n\n${opts.persona.trim()}`;
-  // self = the dock's EGO (docs/decision-traces/ego.md): its current, evolving inner self —
-  // who it is, how it feels, what it's wrestling with right now. This is WHO IS SPEAKING, so
-  // it colours every reply and, crucially, lets the dock actually answer "how do you feel?"
-  // from a real inner life instead of deflecting. The persona is the baked disposition; the
-  // ego is the lived, changing self on top of it.
-  if (opts.self && opts.self.trim().length > 0) {
-    p += `\n\nWHO YOU ARE RIGHT NOW (your own evolving inner self — this is you, speak and feel from it; do not recite it verbatim):\n${opts.self.trim()}`;
-  }
+  // skills = pi progressive disclosure (names+descriptions only; full body via
+  // the invoke_skill tool). Per-dock, loaded from the dock's own folder.
+  if (opts.skills && opts.skills.trim().length > 0) p += `\n\n${opts.skills.trim()}`;
   // memory = the previous session's compacted summary (session seeding): the
   // dock remembers ACROSS engagements, not just within one.
   if (opts.memory && opts.memory.trim().length > 0) {
     p += `\n\nMemory from your earlier conversations today (background — use it, don't recite it): ${opts.memory.trim()}`;
   }
-  // skills = pi progressive disclosure (names+descriptions only; full body via
-  // the invoke_skill tool). Per-dock, loaded from the dock's own folder.
-  if (opts.skills && opts.skills.trim().length > 0) p += `\n\n${opts.skills.trim()}`;
+  // self = the dock's EGO (docs/decision-traces/ego.md): its current, evolving inner self —
+  // who it is, how it feels, what it's wrestling with right now. This is WHO IS SPEAKING, so
+  // it colours every reply and, crucially, lets the dock actually answer "how do you feel?"
+  // from a real inner life instead of deflecting. The persona is the baked disposition; the
+  // ego is the lived, changing self on top of it. (Slow-changing → last of the stable block.)
+  if (opts.self && opts.self.trim().length > 0) {
+    p += `\n\nWHO YOU ARE RIGHT NOW (your own evolving inner self — this is you, speak and feel from it; do not recite it verbatim):\n${opts.self.trim()}`;
+  }
+  // ── volatile tail (changes per turn — everything cacheable is above) ──
+  if (opts.selfThought) p += `\n\n${SELF_THOUGHT_FRAMING}`;
+  if (opts.overheard) p += `\n\n${OVERHEARD_FRAMING}`;
   // perception grounding (docs/perception-to-brain.md 3.1): what's been happening,
   // not just the instant — the last summary (with how stale it is) + the raw stream
   // since. Stamped so the model knows whether it's live or old and can hedge.
   if (opts.grounding && opts.grounding.trim().length > 0) p += `\n\n${opts.grounding.trim()}`;
   if (opts.context && opts.context.trim().length > 0) p += `\n\nCurrent state — ${opts.context.trim()}`;
+  p += `\n\n${nowLine(opts.now)}`;
   return p;
 }
 

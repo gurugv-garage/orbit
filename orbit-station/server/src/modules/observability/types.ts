@@ -57,7 +57,7 @@ export interface AgentEventDto {
     trigger?: { kind: string; text?: string; via?: string };
     stopReason?: string;
     /** usage if the host reports it on StepEnd / MessageEnd. */
-    usage?: { inputTokens?: number; outputTokens?: number; totalTokens?: number; cost?: number };
+    usage?: { inputTokens?: number; outputTokens?: number; totalTokens?: number; cost?: number; cacheRead?: number };
     /** rich per-step timings (StepEnd) — mirrors the live inspector. */
     ms?: number;
     ttftMs?: number;
@@ -94,7 +94,7 @@ export interface StepRecord {
    *  etc.) — shown in the inspector even when a later step recovered the turn. */
   error?: string;
   text?: string;
-  usage?: { inputTokens?: number; outputTokens?: number; totalTokens?: number; cost?: number };
+  usage?: { inputTokens?: number; outputTokens?: number; totalTokens?: number; cost?: number; cacheRead?: number };
   /** rich timings the host reports on StepEnd (mirrors the live brain-debug
    *  inspector so a resumed session renders identically). */
   ms?: number;

@@ -40,6 +40,7 @@ stress-dock-pipeline method: instrument, many reps, honest failure classes.
   - [Addendum 5.3 — pause vs dismiss (same day)](#addendum-53--pause-vs-dismiss-same-day)
   - [Addendum 5.4 — the dock now actually SHUTS UP (app build 31 + station fix)](#addendum-54--the-dock-now-actually-shuts-up-app-build-31--station-fix)
 - [Addendum 6 — 2026-07-13: the prompt breakdown (what the ~18k tokens actually are)](#addendum-6--2026-07-13-the-prompt-breakdown-what-the-18k-tokens-actually-are)
+- [Addendum 7 — 2026-07-13: prompt caching — don't trim, stop breaking the cache](#addendum-7--2026-07-13-prompt-caching--dont-trim-stop-breaking-the-cache)
 <!-- /TOC -->
 
 ## TL;DR
@@ -1008,3 +1009,45 @@ capped). The RCA's "trim the prompt" fix direction lands here, not on history:
 Grounding/ego (~800) are cheap — not worth touching.
 
 Cost check: 18k × flash pricing ≈ $0.0054/turn — matches the observed $0.46/82 turns.
+
+---
+
+## Addendum 7 — 2026-07-13: prompt caching — don't trim, stop breaking the cache
+
+**The better way (user's instinct confirmed):** instead of deleting tools, make the
+prompt prefix byte-stable so Gemini's implicit caching (~75% off cached tokens +
+ttft credit) does the work. Two cache-killers found and fixed:
+
+1. **The current-time line sat ~350 tokens into the system prompt** — a
+   minute-granular timestamp invalidated everything after it (tools, history), every
+   turn. Measured baseline: `cacheRead: 0` on EVERY turn, system-wide, forever.
+   Fix: `buildSystemPrompt` reordered static-first (SYSTEM, persona, skills, memory,
+   ego) with ALL volatile parts (framings, grounding, state, time) in a tail.
+2. **The history cap trimmed to 48 messages EVERY turn** — a long session's window
+   shifted by one turn per turn, so the message-list prefix never repeated (live
+   dock: 20k tokens, 0 cached, while under-cap smoke sessions hit 93%). Fix:
+   hysteresis — grow to 1.5×cap, cut to 0.75×cap at a user boundary; append-only
+   (cache-hitting) between cuts, one miss per chunk.
+
+Also: `cacheRead` now flows into obs step usage (it was dropped — a caching
+regression was invisible).
+
+**Measured:** smoke steady-state `in:880 cached:9948` — cost/turn $0.0032 → $0.00058
+(−82%). Live dock (full persona/ego/grounding prompt): warmed to `in:911
+cached:19573` (96% of a 20.5k prompt). Weekly brain spend ($5.68 of the $13.21
+total) should drop ~4×.
+
+**Tool-description trim (approved as #2): SKIPPED after the data came in** — the
+descriptions live inside the now-cached prefix (billed at 25%), so trimming ~2k
+tokens of prose saves pennies while risking tool-choice quality. Revisit only if
+progressive disclosure (#3) happens anyway.
+
+**Audio-enricher audit ($4.07/wk):** caching is structurally a dead end there — the
+static instruction prefix is ~600 tokens, under Gemini's 1024-token implicit-cache
+minimum, and the audio + reference transcript diverge immediately after (the parts
+order is already optimal: prompt first, audio second). Its real levers, left as
+decisions: (a) model downshift to flash-lite (~4× cheaper — needs a Perception
+Studio takes A/B first; no benchmark rows exist yet), (b) the enrich-trigger gates
+(already built), (c) reference-transcript tail length + maxOutputTokens (4096) if
+output cost shows up. `introspect` ($1.87/wk) calls too infrequently for implicit
+cache to ever be warm — its lever is cadence/model, not ordering.

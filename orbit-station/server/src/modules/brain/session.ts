@@ -1216,10 +1216,20 @@ export class DockBrainSession {
       }
     }
     let result = repaired;
+    // HYSTERESIS TRIM (Addendum 7, prompt-cache stability): trimming to the cap
+    // EVERY turn shifted the history window by one turn per turn — the request
+    // prefix (which includes the message list) never repeated, so a long
+    // session got ZERO Gemini implicit-cache hits (measured live: 20k tokens,
+    // cached:0 every turn, while an under-cap smoke session cached 93%). Trim
+    // in CHUNKS instead: let history grow to 1.5× the cap, then cut down to
+    // ~0.75× at a user boundary. Between cuts the window is append-only →
+    // prefix-stable → cached; one miss per chunk instead of per turn.
     const cap = MAX_HISTORY_MESSAGES;
-    if (result.length > cap) {
+    const high = Math.floor(cap * 1.5);
+    if (result.length > high) {
+      const keep = Math.floor(cap * 0.75);
       let boundary: number | undefined;
-      for (let i = result.length - cap; i < result.length; i++) {
+      for (let i = result.length - keep; i < result.length; i++) {
         if ((result[i] as { role?: string }).role === 'user') { boundary = i; break; }
       }
       if (boundary != null && boundary > 0) result = result.slice(boundary);
@@ -1360,6 +1370,9 @@ export class DockBrainSession {
           usage: m.usage ? {
             inputTokens: m.usage.input, outputTokens: m.usage.output,
             totalTokens: m.usage.totalTokens, cost: m.usage.cost?.total,
+            // prompt-cache hits (Addendum 7): the observable for cache-friendly
+            // prompt ordering — without it a caching regression is invisible.
+            cacheRead: m.usage.cacheRead,
           } : undefined,
         });
         this.#debug('step-end', {
