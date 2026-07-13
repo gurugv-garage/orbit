@@ -212,6 +212,18 @@ export class ConversationState {
     this.#set('speaking', now, 'tts-start');
   }
 
+  /** A turn completed WITHOUT ever speaking (e.g. a self-thought that chose
+   *  silence) → the lane is quiet NOW; don't leave 'thinking' wedged until the
+   *  THINK_MAX_MS safety prune (which also silently gated every wake for up to
+   *  60s after a silent turn). Only ever leaves 'thinking' — a turn that spoke
+   *  transitions via speakStart/speakEnd, and a tap-interrupt has already moved
+   *  to 'listening' (which this must not clobber). */
+  noSpeechSettle(now: number): void {
+    this.#prune(now);
+    if (this.#mode !== 'thinking') return;
+    this.#set('idle', now, 'no-speech');
+  }
+
   /** TTS finished → auto re-listen (FOLLOWUP, high priority — survives face-leave).
    *  No-op unless we're actually SPEAKING: a tts-end that arrives AFTER a tap-to-
    *  interrupt already moved us to a tap LISTENING window must not clobber it with a

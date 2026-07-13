@@ -116,7 +116,12 @@ test('timeout: aborts, no trailing flush, failed status with code', async () => 
     { config: { brainTurnTimeoutMs: 5_000 > 0 ? 60 : 60 } }, // 60ms ceiling
   );
   await session.handleTurnRequest({ turnId: 't1', trigger: { kind: 'user', text: 'hang' } });
-  assert.deepEqual(speakFrames(session ? frames : []), []); // half-sentence never leaks
+  // the half-sentence never leaks; the only speech is the deliberate spoken
+  // failure line ("speak the failure instead of dying silently", #runTurn's
+  // finally) — this assert predates that feature and used to expect silence.
+  const spoken = speakFrames(frames);
+  assert.ok(!spoken.some((s) => s.includes('Half a sente')), `half-sentence leaked: ${spoken}`);
+  assert.ok(spoken.length <= 1, `expected at most the failure line, got: ${spoken}`);
   const last = frames.filter((f) => f.kind === 'turn-status').at(-1)!.payload as { state: string; code?: string };
   assert.equal(last.state, 'failed');
   assert.equal(last.code, 'timeout');

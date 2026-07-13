@@ -1,33 +1,33 @@
 /**
- * midturn-harness — WI-0 of the busy-queue plan
+ * midturn-harness — WI-0/WI-1 of the busy-queue plan
  * (docs/findings/2026-07-13-busy-queue-black-hole.md, Addendum 3).
  *
- * Reproduces the RCA's mid-turn failure classes HEADLESS: no dock, no mic, no
- * speaker. Fakes the phone + body peers (like fake-phone.ts), drives turns via
- * the brain debug REST, injects speech heard WHILE BUSY via the new
- * `debug/hear` (no tap — a tap would interrupt), and judges from the same
- * ground truth the RCA used: the addressed-decision ring + the conversation
- * probe + the turn-status frames the fake phone receives.
+ * Exercises the mid-turn speech path HEADLESS: no dock, no mic, no speaker.
+ * Fakes the phone + body peers (like fake-phone.ts), drives turns via the
+ * brain debug REST, injects speech heard WHILE BUSY via `debug/hear` (no tap —
+ * a tap would interrupt), and judges from the same ground truth the RCA used:
+ * the addressed-decision ring + the conversation probe + turn-status frames.
  *
- * ⚠ BASELINE MODE: the assertions below encode the DOCUMENTED BROKEN behavior
- * of current main (the RCA's trial table). A green run means "the bugs
- * reproduce"; WI-1 flips these expectations to the fixed contract.
+ * ✅ FIXED-CONTRACT mode (WI-1): asserts the busy-queue REWORK's contract —
+ * every utterance heard while busy either RUNS in a combined turn at the next
+ * settle (`drain:ran`) or is visibly traced `skip:stale`; zero silent
+ * outcomes; every turn kind drains. The BASELINE version of this harness
+ * (asserting the pre-fix black hole reproduced) is commit 30fb164.
  *
  * Run (station up on :8099, LLM key in .env — a real model answers the turns):
  *
  *     npm run -w server smoke:midturn
  *
  * Scenarios (each self-contained, starts from idle):
- *   S4  control    — debug/hear lands in an open followup window → RAN-TURN
- *                    (proves the seam drives real turns; the B4 "working path")
- *   S1  black hole — hear during a RAN-TURN's thinking → queue:busy; bounce
- *                    re-trace at turn end; never answered; silently dropped
- *                    (no skip:stale trace) at the next drain >20s later (B2/B3)
- *   S2  ghost      — hear during an autonomous ('self') turn → queued, NO drain
- *                    at its end (the B1 ghost); the stale ghost then poisons a
- *                    fresh utterance queued with it (silent batch drop)
- *   S3  no stop    — "Stop. Never mind." during a turn → queue:busy, the turn
- *                    completes 'done', nothing cancels (D1)
+ *   S4  control    — debug/hear in an open followup window → RAN-TURN
+ *   F1  core drain — two lines heard during thinking → ONE combined turn at
+ *                    settle, both traced drain:ran (was: the black hole)
+ *   F2  mixed age  — a >20s-old item traced skip:stale while a fresh item
+ *                    queued with it still runs (was: ghost poisons the batch)
+ *   F3  every kind — speech during an autonomous ('self') turn drains at ITS
+ *                    settle (was: the ghost class — no drain outside RAN-TURN)
+ *   F4  stop       — "Stop…" mid-turn still queues + gets answered at settle;
+ *                    the turn completes (WI-2 upgrades this to a live cancel)
  */
 
 import { WebSocket } from 'ws';
@@ -45,6 +45,10 @@ const log = (msg: string) => console.log(`${at()}  ${msg}`);
 
 type Frame = { kind: string; payload: any; topic: string; at: number };
 const frames: Frame[] = []; // everything the fake phone receives, in order
+
+// TTS playback simulation: how long the fake phone "speaks" after each done.
+// Scenarios raise this to age queued items past the staleness cap.
+let ttsHoldMs = 1_200;
 
 function connect(opts: {
   id: string; component: string; kind: string; caps: string[]; topics: string[];
@@ -121,6 +125,7 @@ async function waitTurnEnd(sinceIdx: number, timeoutMs: number): Promise<{ state
 }
 
 const ringFor = async (text: string) => (await ring()).filter((e) => e.text?.includes(text));
+const decisions = (es: Array<{ decision: string }>) => es.map((e) => e.decision);
 
 // ── assertion bookkeeping ───────────────────────────────────────────────────
 
@@ -130,132 +135,130 @@ function check(id: string, ok: boolean, detail: string): void {
   else { fail++; log(`  ❌ ${id}  ${detail}`); }
 }
 
-// ── scenarios ───────────────────────────────────────────────────────────────
-
 // Unique markers so ring text-matching can't collide across scenarios/turns —
 // or across RUNS: the ring (last 50 decisions) survives on the station between
 // harness invocations, so every marker carries a per-run nonce.
 const RUN = Date.now().toString(36).slice(-4);
-const B = `what color is grass, run ${RUN}`; // S1 mid-turn line
-const G = `what day is it today, run ${RUN}`; // S2 ghost line
-const F = `what color is the sky, run ${RUN}`; // S2 fresh line poisoned by the ghost
-const STOP = `Stop. Never mind. Run ${RUN}.`;
 
 async function idle(): Promise<void> {
-  // followup expires after 8s; speaking is bounded; be generous.
-  await waitConv('idle', 30_000);
+  await waitConv('idle', 45_000);
   await sleep(1_700); // clear the autonomous settle gap (brainTaskSettleMs 1500)
 }
 
+// ── scenarios ───────────────────────────────────────────────────────────────
+
 async function s4_control(): Promise<void> {
-  log('── S4 control: debug/hear in an open followup window runs a turn (B4 path)');
+  log('── S4 control: debug/hear in an open followup window runs a turn');
   await idle();
   const mark = frames.length;
   await say('Say the word hello and nothing else.');
   const a = await waitTurnEnd(mark, 60_000);
   check('S4a', a.state === 'done', `first turn terminal state = ${a.state}`);
-  await waitConv('followup', 15_000); // phone TTS sim ran; window open
+  await waitConv('followup', 15_000);
   const mark2 = frames.length;
   const goodbye = `And now say the word goodbye, run ${RUN}.`;
   await hear(goodbye);
   const entries = await ringFor(goodbye.slice(0, -1));
   check('S4b', entries.some((e) => e.decision === 'RAN-TURN'),
-    `hear-in-followup decision(s): [${entries.map((e) => e.decision).join(', ')}] — expect RAN-TURN`);
+    `hear-in-followup → [${decisions(entries).join(', ')}] — expect RAN-TURN`);
   const b2 = await waitTurnEnd(mark2, 60_000);
   check('S4c', b2.state === 'done', `follow-up turn terminal state = ${b2.state}`);
 }
 
-async function s1_blackHole(): Promise<void> {
-  log('── S1 black hole: mid-thinking speech queues, bounces, never answers, dies silently (B2/B3)');
+async function f1_coreDrain(): Promise<void> {
+  log('── F1 core drain: two lines heard mid-thinking → ONE combined turn at settle');
   await idle();
+  const A = `what color is grass, run ${RUN}`;
+  const B = `what color is the sky, run ${RUN}`;
   const mark = frames.length;
   await say('What is two plus two? Answer in one short sentence.');
   await waitConv('thinking', 20_000);
-  await hear(`And ${B}?`);
-  let e = await ringFor(B);
-  check('S1a', e.length === 1 && e[0]!.decision === 'queue:busy',
-    `inject during thinking → [${e.map((x) => x.decision).join(', ')}] — expect single queue:busy`);
+  await hear(`And ${A}?`);
+  await hear(`Also ${B}?`);
+  const q1 = decisions(await ringFor(A)); const q2 = decisions(await ringFor(B));
+  check('F1a', q1.join() === 'queue:busy' && q2.join() === 'queue:busy',
+    `both lines queued while thinking → [${q1}], [${q2}]`);
 
-  const end = await waitTurnEnd(mark, 60_000);
-  const drainDeadline = Date.now(); // drain fires at turn end (the bug)
-  await sleep(2_000); // let the drain re-entry land
-  e = await ringFor(B);
-  check('S1b', e.filter((x) => x.decision === 'queue:busy').length >= 2,
-    `after turn ${end.state}: ${e.length} ring entries for the queued line ` +
-    `[${e.map((x) => `${x.decision}@${x.mode}`).join(', ')}] — expect a 2nd queue:busy (the bounce, mode still thinking/speaking)`);
-  check('S1c', !e.some((x) => x.decision === 'RAN-TURN'), 'queued line never ran a turn (the black hole)');
-
-  // silent stale drop: next drain >20s after the bounce → batch deleted, NO trace
-  log(`   waiting out the ${BUSY_QUEUE_MAX_AGE_MS / 1000}s staleness cap…`);
-  await sleep(BUSY_QUEUE_MAX_AGE_MS + 1_500 - (Date.now() - drainDeadline));
-  await idle();
-  const countBefore = (await ringFor(B)).length;
-  const mark2 = frames.length;
-  await say('Say the single word test.');
-  await waitTurnEnd(mark2, 60_000);
-  await sleep(2_000);
-  const after = await ringFor(B);
-  check('S1d', after.length === countBefore && !after.some((x) => x.decision.includes('stale')),
-    `after the next turn's drain: ring entries for the queued line ${countBefore}→${after.length}, ` +
-    `no skip:stale — the batch died with NO trace (the silent drop)`);
+  const end1 = await waitTurnEnd(mark, 60_000);
+  check('F1b', end1.state === 'done', `original turn completed: ${end1.state}`);
+  // settle = tts-end (~1.2s after done) → drain runs the combined turn
+  const drained = await waitTurnEnd(end1.frameIdx + 1, 60_000);
+  check('F1c', drained.state === 'done', `drained combined turn ran + completed: ${drained.state}`);
+  const d1 = decisions(await ringFor(A)); const d2 = decisions(await ringFor(B));
+  check('F1d', d1.join() === 'queue:busy,drain:ran' && d2.join() === 'queue:busy,drain:ran',
+    `terminal decisions → [${d1}], [${d2}] — expect queue:busy,drain:ran (the black hole is dead)`);
+  // ONE combined turn, not two: no third terminal frame within a settle cycle
+  const spoken = frames.slice(drained.frameIdx).filter((f) => f.kind === 'speak').map((f) => f.payload.text).join(' ');
+  log(`   combined-turn reply: "${spoken.slice(0, 120)}"`);
+  const third = frames.slice(drained.frameIdx + 1).filter(
+    (f) => f.kind === 'turn-status' && ['done', 'failed', 'cancelled'].includes(f.payload?.state));
+  check('F1e', third.length === 0, `no second drained turn (${third.length} extra terminals) — items were JOINED`);
 }
 
-async function s2_ghost(): Promise<void> {
-  log('── S2 ghost: speech during an autonomous turn is never drained, then poisons a fresh line (B1→B2)');
+async function f2_mixedAge(): Promise<void> {
+  log('── F2 mixed age: a stale item is TRACED skip:stale; a fresh item queued with it still runs');
   await idle();
+  const OLD = `what day is it today, run ${RUN}`;
+  const NEW = `say the word fresh, run ${RUN}`;
+  const mark = frames.length;
+  ttsHoldMs = BUSY_QUEUE_MAX_AGE_MS + 3_000; // the reply "speaks" for 23s — ages the early item past the cap
+  await say('What is one plus one? Answer in one short sentence.');
+  await waitConv('thinking', 20_000);
+  await hear(`And ${OLD}?`); // will be >20s old by settle
+  const end1 = await waitTurnEnd(mark, 60_000);
+  await waitConv('speaking', 15_000);
+  log(`   holding TTS ${Math.round(ttsHoldMs / 1000)}s to age the first item…`);
+  await sleep(ttsHoldMs - 4_000); // inject the fresh line near the END of the long reply
+  ttsHoldMs = 1_200; // drained turn's own TTS back to normal
+  await hear(`Please ${NEW}.`);
+  const drained = await waitTurnEnd(end1.frameIdx + 1, 60_000);
+  check('F2a', drained.state === 'done', `drained turn ran + completed: ${drained.state}`);
+  const dOld = decisions(await ringFor(OLD)); const dNew = decisions(await ringFor(NEW));
+  check('F2b', dOld.join() === 'queue:busy,skip:stale',
+    `stale item terminal decisions → [${dOld}] — VISIBLY dropped (was: silent)`);
+  check('F2c', dNew.join() === 'queue:busy,drain:ran',
+    `fresh item terminal decisions → [${dNew}] — ran despite the stale neighbor (was: poisoned)`);
+}
+
+async function f3_everyTurnKind(): Promise<void> {
+  log('── F3 every turn kind drains: speech during an autonomous (self) turn is answered at ITS settle');
+  await idle();
+  const G = `what is your name, run ${RUN}`;
   const mark = frames.length;
   await think('Say exactly: checking in. Then nothing else.');
   await waitConv('thinking', 20_000);
   await hear(`${G}?`);
-  let e = await ringFor(G);
-  check('S2a', e.length === 1 && e[0]!.decision === 'queue:busy',
-    `inject during autonomous turn → [${e.map((x) => x.decision).join(', ')}]`);
-  const ghostQueuedAt = Date.now();
-
-  const end = await waitTurnEnd(mark, 60_000);
-  await sleep(2_000);
-  e = await ringFor(G);
-  check('S2b', e.length === 1,
-    `after autonomous turn ${end.state}: still ${e.length} ring entry — NO drain re-trace ` +
-    `(contrast S1b: the autonomous lane has no drain at all — the ghost class)`);
-
-  // the parked ghost goes stale, then poisons a FRESH utterance queued with it
-  log(`   aging the ghost past the ${BUSY_QUEUE_MAX_AGE_MS / 1000}s cap…`);
-  await sleep(Math.max(0, ghostQueuedAt + BUSY_QUEUE_MAX_AGE_MS + 1_500 - Date.now()));
-  await idle();
-  const mark2 = frames.length;
-  await say('What is one plus one? Answer in one short sentence.');
-  await waitConv('thinking', 20_000);
-  await hear(`And ${F}?`);
-  let f = await ringFor(F);
-  check('S2c', f.length === 1 && f[0]!.decision === 'queue:busy', `fresh line queued with the ghost → [${f.map((x) => x.decision).join(', ')}]`);
-  await waitTurnEnd(mark2, 60_000);
-  await sleep(2_000);
-  f = await ringFor(F);
-  check('S2d', f.length === 1 && !f.some((x) => x.decision === 'RAN-TURN'),
-    `after drain: fresh line entries = ${f.length}, ran = ${f.some((x) => x.decision === 'RAN-TURN')} — ` +
-    `the 7s-old fresh line died silently because the ghost's firstAt poisoned the batch`);
+  const q = decisions(await ringFor(G));
+  check('F3a', q.join() === 'queue:busy', `queued during autonomous turn → [${q}]`);
+  const end1 = await waitTurnEnd(mark, 60_000);
+  const drained = await waitTurnEnd(end1.frameIdx + 1, 60_000);
+  check('F3b', drained.state === 'done', `drained turn after the autonomous settle: ${drained.state} (the ghost class is dead)`);
+  const d = decisions(await ringFor(G));
+  check('F3c', d.join() === 'queue:busy,drain:ran', `terminal decisions → [${d}]`);
 }
 
-async function s3_noStop(): Promise<void> {
-  log('── S3 voice cannot stop a turn (D1)');
+async function f4_stopStillQueues(): Promise<void> {
+  log('── F4 stop (pre-WI-2): "Stop…" mid-turn queues and is ANSWERED at settle; turn completes');
   await idle();
+  const STOP = `Stop. Never mind. Run ${RUN}.`;
   const mark = frames.length;
   await say('Count from one to seven, slowly, one number per sentence.');
   await waitConv('thinking', 20_000);
   await hear(STOP);
-  const e = await ringFor(STOP);
-  check('S3a', e.length === 1 && e[0]!.decision === 'queue:busy',
-    `"${STOP}" mid-turn → [${e.map((x) => x.decision).join(', ')}] — queued, not acted on`);
-  const end = await waitTurnEnd(mark, 90_000);
-  check('S3b', end.state === 'done',
-    `turn terminal state = ${end.state} — completed as if nothing was said (voice-stop impossible)`);
+  const q = decisions(await ringFor(STOP));
+  check('F4a', q.join() === 'queue:busy', `"${STOP}" mid-turn → [${q}] — queued (WI-2 will make this cancel)`);
+  const end1 = await waitTurnEnd(mark, 90_000);
+  check('F4b', end1.state === 'done', `turn completed: ${end1.state}`);
+  const drained = await waitTurnEnd(end1.frameIdx + 1, 60_000);
+  const d = decisions(await ringFor(STOP));
+  check('F4c', drained.state === 'done' && d.join() === 'queue:busy,drain:ran',
+    `stop line answered at settle → [${d}] (no longer silently swallowed)`);
 }
 
 // ── main ────────────────────────────────────────────────────────────────────
 
 async function main(): Promise<void> {
-  log(`midturn-harness → ${WS_URL} dock=${DOCK} (BASELINE mode: asserts the RCA's failures reproduce)`);
+  log(`midturn-harness → ${WS_URL} dock=${DOCK} (FIXED-CONTRACT mode: WI-1 busy-queue rework)`);
 
   // body peer: ack set_target so motion turns don't stall
   await connect({
@@ -267,7 +270,7 @@ async function main(): Promise<void> {
   });
 
   // phone peer: answers tool RPCs, records frames, simulates TTS playback
-  // (speech-status true→false after each 'done') — the markers the conversation
+  // (speech-status true→false, ttsHoldMs long) — the markers the conversation
   // state machine needs to leave 'thinking' the way the real phone does.
   await connect({
     id: `${DOCK}-phone`, component: 'phone', kind: 'dock-android-app',
@@ -286,9 +289,9 @@ async function main(): Promise<void> {
       if (kind === 'turn-status') {
         log(`  [phone] turn-status ${payload.state}`);
         if (payload.state === 'done') {
-          // simulate TTS playback: 150ms to start, 1.2s of speech
+          const hold = ttsHoldMs; // read at done-time; scenarios adjust between turns
           setTimeout(() => pub(ws, 'agent', 'speech-status', { turnId: payload.turnId, speaking: true }), 150);
-          setTimeout(() => pub(ws, 'agent', 'speech-status', { turnId: payload.turnId, speaking: false }), 1_350);
+          setTimeout(() => pub(ws, 'agent', 'speech-status', { turnId: payload.turnId, speaking: false }), 150 + hold);
         }
       }
     },
@@ -297,7 +300,8 @@ async function main(): Promise<void> {
   await sleep(500); // let presence/session settle
 
   const scenarios: Array<[string, () => Promise<void>]> = [
-    ['S4', s4_control], ['S1', s1_blackHole], ['S2', s2_ghost], ['S3', s3_noStop],
+    ['S4', s4_control], ['F1', f1_coreDrain], ['F2', f2_mixedAge],
+    ['F3', f3_everyTurnKind], ['F4', f4_stopStillQueues],
   ];
   for (const [name, fn] of scenarios) {
     try { await fn(); }
@@ -305,7 +309,7 @@ async function main(): Promise<void> {
   }
 
   console.log(`\n${fail === 0 ? 'PASS ✅' : 'FAIL ❌'}  ${pass} assertions passed, ${fail} failed ` +
-    `(baseline mode: pass = the documented bugs reproduce)`);
+    `(fixed-contract mode: pass = every queued utterance ran or was visibly traced)`);
   process.exit(fail === 0 ? 0 : 1);
 }
 

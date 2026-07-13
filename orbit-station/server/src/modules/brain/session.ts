@@ -115,6 +115,15 @@ export interface SessionDeps {
   /** effective config value by key (shared ConfigStore). */
   config: (key: string) => unknown;
   log?: (line: string) => void;
+  /** the dock's speech lane went QUIET — the whole user-perceived turn is over:
+   *  either the TTS tail drained after the loop closed (the TurnSettled moment),
+   *  or a turn completed without ever speaking. The busy-queue drain hangs off
+   *  this (WI-1, busy-queue-black-hole.md Addendum 3): it fires for EVERY turn
+   *  kind (user/wake/task/self — the old per-branch `.then(drain)` missed all
+   *  but one, the ghost class). NOT fired for cancelled/superseded turns: a
+   *  tap-interrupt means the user is about to speak (the queue holds; it drains
+   *  at the interrupting turn's settle). */
+  onSettled?: (dock: string) => void;
   /** test seam: scripted LLM transport (pi StreamFn). Default: pi-ai providers. */
   streamFn?: import('@earendil-works/pi-agent-core').StreamFn;
   /** stop every task instance running under a parent conversational session
@@ -550,7 +559,13 @@ export class DockBrainSession {
     if (speaking) this.#conv.speakStart(Date.now());
     else this.#conv.speakEnd(Date.now());
     this.#shipObsMarker(speaking ? 'SpeakStart' : 'SpeakEnd');
-    if (!speaking && !this.#turnActive) this.#shipObsMarker('TurnSettled');
+    if (!speaking && !this.#turnActive) {
+      this.#shipObsMarker('TurnSettled');
+      // the lane is quiet — but only if no next turn is already in flight
+      // (#running covers the supersede-wait gap where #turnActive is briefly
+      // false): a settle then would let the drained turn supersede a real one.
+      if (!this.#running) this.#d.onSettled?.(this.dock);
+    }
   }
 
   /** The phone (re)connected → reconcile the conversation state to idle. A fresh
@@ -1056,6 +1071,24 @@ export class DockBrainSession {
         this.#sendToVoice('turn-status', { turnId: req.turnId, state: 'done' });
       }
       this.#activeTurnId = undefined;
+      // SILENT-TURN SETTLE: a turn that completed without ever speaking gets no
+      // tts markers, so the noteSpeech settle above never fires — and the conv
+      // machine would sit wedged in 'thinking' until the THINK_MAX_MS prune
+      // (silently gating wakes for up to 60s after e.g. a self-thought that
+      // chose silence). Resolve the lane and fire the settle — DEFERRED one
+      // tick, because #running still points at THIS turn inside its own
+      // finally: by setImmediate time it has cleared, and if a newer turn
+      // arrived meanwhile #running/#turnActive are set again and we skip (that
+      // turn's own settle follows). A cancelled/superseded turn never gets
+      // here (completedNormally) — a tap-interrupt's queue drains at the
+      // interrupting turn's settle instead.
+      if (completedNormally && !this.#spokeThisTurn) {
+        setImmediate(() => {
+          if (this.#running || this.#turnActive) return;
+          this.#conv.noSpeechSettle(Date.now());
+          this.#d.onSettled?.(this.dock);
+        });
+      }
     }
   }
 

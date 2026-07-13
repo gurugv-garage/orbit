@@ -35,6 +35,7 @@ import { getSelf } from '../ego/index.js';
 import { isRecording } from '../capture/index.js';
 import type { VideoRecorderApi } from '../perception/record/recorder.js';
 import { RpcBroker } from './rpc.js';
+import { BusyQueue, splitByAge, type HeardUtterance } from './busy-queue.js';
 import { DockBrainSession, type TurnRequest, keyStatusFor } from './session.js';
 import { SessionStore } from './store.js';
 import { installDockSkill, listDockSkills, removeDockSkill, loadDockSkills } from './skills.js';
@@ -259,6 +260,9 @@ export function brainModule(w: BrainWiring): StationModule {
   // path is unreachable through it; this drives the exact same entrypoint the
   // live STT final uses.
   let injectHeard: (t: { dockId: string; text: string; startedAt: number; endedAt: number; confTier?: string }) => void = () => {};
+  // Set in init(): the busy-queue drain, invoked by each session's onSettled
+  // (declared here because the session factory below wires it before init runs).
+  let drainBusy: (dock: string) => void = () => {};
   const tasksRoot = defaultTasksRoot();
   const userTasks = userTasksRoot();
   const taskRoots = [
@@ -409,6 +413,10 @@ export function brainModule(w: BrainWiring): StationModule {
         feedbackCapture: w.feedbackCapture,
         obs: w.obs,
         log: (line) => console.log(line),
+        // the busy-queue drain (WI-1): fires when THIS dock's speech lane goes
+        // quiet, for every turn kind. Late-bound — the drain closure is
+        // assigned in init() where the queue + addressed trace live.
+        onSettled: (d) => drainBusy(d),
         stopTasksForParent: (d, parentSessionId) => { supervisor.stopForParent(d, parentSessionId); },
         hasRunningTasks: (d, parentSessionId) => supervisor.hasRunningUnder(d, parentSessionId),
         getTaskTools: (d, parentSessionId) => buildTaskTools({
@@ -544,16 +552,61 @@ export function brainModule(w: BrainWiring): StationModule {
       // BUSY QUEUE: addressed utterances that arrive while the dock is mid-turn
       // (THINKING/SPEAKING) are NOT auto-superseded (that let ambient speech abort the
       // dock's own reply — see the guard below). Instead we ACCUMULATE every utterance
-      // heard during the reply and run them TOGETHER as one turn when the reply finishes
-      // — nothing said is lost (the "only-latest + stale-drop" earlier version silently
-      // dropped a real follow-up if the reply ran long; append-all fixes that). The
-      // utterances are joined in order into one user turn ("you said A, then B"). A
-      // staleness cap on the OLDEST still guards against a fragment from long ago
-      // surfacing after an unusually long reply.
-      type AddressedFinal = { dockId: string; text: string; startedAt: number; endedAt: number; confTier?: string;
-        avgLogprob?: number | null; noSpeechProb?: number | null; compressionRatio?: number | null };
-      const pendingBusy = new Map<string, { items: AddressedFinal[]; firstAt: number }>();
-      const BUSY_QUEUE_MAX_AGE_MS = 20_000; // drop the whole batch if its OLDEST is older than this when the turn ends
+      // heard during the reply and run them TOGETHER as one combined turn when the
+      // dock's speech lane SETTLES (the session's onSettled hook — fires for EVERY
+      // turn kind, including wake/task/self; the old per-branch `.then(drain)` missed
+      // all but one and its re-entry design could never answer anything — the
+      // busy-queue black hole, docs/findings/2026-07-13-busy-queue-black-hole.md).
+      // Contract (WI-1): every queued utterance either runs at the next settle or is
+      // traced `skip:stale` — zero silent outcomes. Staleness is judged PER ITEM
+      // (its own endedAt), so an old ghost can't poison a fresh follow-up.
+      type AddressedFinal = HeardUtterance;
+      const busyQueue = new BusyQueue();
+      const BUSY_QUEUE_MAX_AGE_MS = 20_000; // per-ITEM age cap at drain time
+      // drain-side trace: same ring as the addressed decisions, so a queued
+      // utterance's TERMINAL outcome (drain:ran / skip:stale) is always visible.
+      const pushAddrTrace = (u: AddressedFinal, decision: string, mode: string) => {
+        addrTrace.push({ at: Date.now(), dock: u.dockId, text: u.text, tier: u.confTier ?? '?',
+          avgLogprob: u.avgLogprob, noSpeechProb: u.noSpeechProb, compressionRatio: u.compressionRatio,
+          decision, mode, startedAt: u.startedAt, endedAt: u.endedAt });
+        if (addrTrace.length > 50) addrTrace.shift();
+      };
+      // The drain: called from the session's onSettled (lane quiet, any turn kind).
+      // Runs the survivors DIRECTLY via handleTurnRequest — never back through
+      // onAddressedFinal: the addressed/grace window check would reject a by-now-
+      // seconds-old batch (Addendum 2's second kill mechanism) and mis-stamp it
+      // as overheard.
+      drainBusy = (dock) => {
+        const items = busyQueue.take(dock);
+        if (items.length === 0) return;
+        const s = session(dock);
+        const mode = s.conversation().mode;
+        // HOLD: 'listening' = the user is mid-exchange (e.g. tap-interrupt — their
+        // next utterance wins; the queue joins the turn after); an active turn
+        // (thinking/speaking or turnActive) = draining now would supersede it.
+        // Items go back intact and re-evaluate at the next settle — where the
+        // per-item staleness below still bounds their lifetime, WITH a trace.
+        if (s.turnActive || mode !== 'idle' && mode !== 'followup') {
+          busyQueue.putBack(dock, items);
+          return;
+        }
+        const { fresh, stale } = splitByAge(items, Date.now(), BUSY_QUEUE_MAX_AGE_MS);
+        for (const u of stale) pushAddrTrace(u, 'skip:stale', mode);
+        if (fresh.length === 0) return;
+        for (const u of fresh) {
+          pushAddrTrace(u, 'drain:ran', mode);
+          // queued speech that runs WAS addressed — stamp it for the recall record.
+          markSpeechAddressed(dock, u.endedAt, true);
+        }
+        const newest = fresh[fresh.length - 1]!;
+        void s.handleTurnRequest({
+          turnId: `addr-${randomUUID()}`,
+          trigger: { kind: 'user', text: fresh.map((u) => u.text).join(' ') }, // in order, nothing lost
+          stationOriginated: true,
+          stt: { confTier: newest.confTier, avgLogprob: newest.avgLogprob,
+            noSpeechProb: newest.noSpeechProb, compressionRatio: newest.compressionRatio },
+        }).catch((err) => console.error(`[brain] ${dock}: drained busy-queue turn crashed`, err));
+      };
       // A finalized utterance → ask the dock's conversation state if it's ADDRESSED
       // (an open listening/followup window); if so, run it as a turn. The addressed
       // decision now lives in the session's ConversationState (single owner) — no
@@ -648,9 +701,7 @@ export function brainModule(w: BrainWiring): StationModule {
         // and run it as one combined turn when the reply finishes (below). A tap can still
         // interrupt. Use the PRE snapshot (mode before utteranceAddressed() consumes it).
         if (pre.mode === 'thinking' || pre.mode === 'speaking') {
-          const q = pendingBusy.get(t.dockId);
-          if (q) q.items.push(t);
-          else pendingBusy.set(t.dockId, { items: [t], firstAt: Date.now() });
+          busyQueue.add(t);
           trace('queue:busy');
           return;
         }
@@ -663,26 +714,9 @@ export function brainModule(w: BrainWiring): StationModule {
           // STT confidence → observability turn trace (why this heard utterance ran).
           stt: { confTier: t.confTier, avgLogprob: t.avgLogprob, noSpeechProb: t.noSpeechProb,
             compressionRatio: t.compressionRatio },
-        }).then(() => {
-          // DRAIN the busy queue: everything said DURING this reply runs now that the dock
-          // is free, JOINED into one turn (nothing dropped — that was the "silently lost my
-          // follow-up" complaint). Re-enter onAddressedFinal with the combined text so it
-          // re-checks the window/filters against the NOW state (followup window open post-
-          // reply). The staleness cap on the OLDEST guards a long-ago batch after an unusually
-          // long reply; if it trips, drop the batch (a minutes-old fragment shouldn't surface).
-          const q = pendingBusy.get(t.dockId);
-          if (q) {
-            pendingBusy.delete(t.dockId);
-            const last = q.items[q.items.length - 1];
-            if (last && Date.now() - q.firstAt <= BUSY_QUEUE_MAX_AGE_MS) {
-              const combined: AddressedFinal = {
-                ...last, // carry the newest utterance's timing/conf so the window check uses the freshest
-                text: q.items.map((i) => i.text).join(' '), // "you said A, then B" — in order, nothing lost
-              };
-              onAddressedFinal(combined);
-            }
-          }
         }).catch((err) => console.error(`[brain] ${t.dockId}: addressed turn crashed`, err));
+        // (busy-queue drain: no longer here — the session's onSettled hook drains
+        // for EVERY turn kind when the speech lane goes quiet; see drainBusy above.)
       };
       // Debug self-test: tap (open the window) then feed a final utterance → a turn
       // always fires. Drives the REAL addressed→turn→adopt path with NO live mic.

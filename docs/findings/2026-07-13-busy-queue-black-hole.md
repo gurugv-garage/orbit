@@ -408,6 +408,44 @@ like `injectAddressed`; driver script + npm script; keep the RCA's acoustic scri
 
 ### WI-1 — Busy-queue rework: nothing heard is ever silently lost
 
+> **STATUS: BUILT + HEADLESS-SIGNED-OFF — 2026-07-13, branch `conv-quality-july-13`.**
+> Live-acoustic confirmation deferred to the wave close-out session (needs the dock).
+>
+> **As built:**
+> - `busy-queue.ts` — the queue extracted as a pure class (`BusyQueue` + `splitByAge`),
+>   per-item `endedAt` staleness, no batch clock (the thought-router.ts precedent:
+>   pure state so every drop/run cell is a one-line test).
+> - `SessionDeps.onSettled` — fired at the TurnSettled moment (tts-end with no
+>   active/running turn) AND at completion of a turn that never spoke, deferred one
+>   tick and guarded against newer in-flight turns. Cancelled/superseded turns never
+>   settle (tap-interrupt: the queue holds and joins the interrupting turn's settle).
+> - **Bonus fix found during implementation:** a completed turn with no speech left
+>   the conversation machine wedged in `thinking` until the 60s `THINK_MAX_MS` prune
+>   — silently gating every wake after e.g. a silent self-thought. `noSpeechSettle()`
+>   (thinking→idle, `no-speech`) resolves the lane at completion.
+> - The drain (brain `index.ts`) runs survivors DIRECTLY via `handleTurnRequest`
+>   (wake+command's pattern) — never back through `onAddressedFinal` (Addendum 2's
+>   second kill). Every item gets a terminal ring trace (`drain:ran`/`skip:stale`);
+>   drained items are stamped addressed for the recall record. Holds (items intact)
+>   when the dock is listening or a turn is active; re-evaluates at the next settle.
+> - The old RAN-TURN-only `.then(drain)` and batch `firstAt` are deleted.
+>
+> **Sign-off evidence:** unit — 12 new tests (`busy-queue.test.ts`, `settle.test.ts`:
+> settle timing, silent-turn unwedge, no-settle-under-cancel/supersede/newer-turn,
+> autonomous-lane settle); brain suite 167/167 green (one stale pre-existing
+> expectation in `session.test.ts` fixed: it predated the spoken-failure-line feature).
+> Headless matrix (`smoke:midturn`, flipped to FIXED-CONTRACT mode): S4 control +
+> F1 core drain (two mid-thinking lines → ONE combined turn, `drain:ran`) + F2 mixed
+> age (23s TTS hold: stale item `skip:stale` VISIBLY, fresh neighbor still ran) +
+> F3 autonomous-turn drain (ghost class dead) + F4 stop-line answered at settle —
+> **17/17 assertions, two consecutive runs**. Baseline harness preserved at commit
+> 30fb164. Typecheck green.
+>
+> **Locked decision (as planned):** on tap-interrupt the queue is retained and joins
+> the interrupting turn's settle. If the interrupt is followed by silence (no next
+> turn), items park until the next settle and are then stale-dropped WITH trace —
+> bounded and visible; revisit only if live trials say it feels wrong.
+
 **Covers.** The four structural defects as one coherent change:
 1. Drain hooks the **settle point** (the `TurnSettled` condition, `session.ts:553`), not
    one branch's `.then` — covering RAN-TURN, wake, wake+command, and autonomous
