@@ -119,6 +119,32 @@ export class SessionStore {
     return [...this.#index(dock)].sort((a, b) => b.openedAt - a.openedAt);
   }
 
+  /** Export a session as a pi-harness-compatible v3 session JSONL string, so it
+   *  can be opened directly with `pi --session <file>` or any pi-based tool
+   *  (SessionManager.open). We store only the `AgentMessage[]` — which is exactly
+   *  the payload of a `message` entry — so the dump wraps each message in the
+   *  entry envelope pi expects and prepends the version-3 `session` header.
+   *
+   *  The tree is a linear chain: each message's parentId = the previous entry's
+   *  id (root's is null). pi computes the active leaf as the last entry's id, so
+   *  a linear dump needs no trailing `leaf` marker. Entry ids are the first 8 hex
+   *  of a fresh UUIDv7 (matching pi's `generateEntryId`); `cwd` is best-effort
+   *  process.cwd() (metadata only — pi doesn't require it to match to open). */
+  dumpJsonl(dock: string, sessionId: string): string {
+    const messages = this.messages(dock, sessionId);
+    const iso = () => new Date().toISOString();
+    const lines: string[] = [
+      JSON.stringify({ type: 'session', version: 3, id: crypto.randomUUID(), timestamp: iso(), cwd: process.cwd() }),
+    ];
+    let parentId: string | null = null;
+    for (const message of messages) {
+      const id = crypto.randomUUID().replace(/-/g, '').slice(0, 8);
+      lines.push(JSON.stringify({ type: 'message', id, parentId, timestamp: iso(), message }));
+      parentId = id;
+    }
+    return lines.join('\n') + '\n';
+  }
+
   /** Upgrade a session's summary after the fact (the async LLM compaction
    *  lands after close() already wrote the cheap tail digest). */
   setSummary(dock: string, sessionId: string, summary: string): void {

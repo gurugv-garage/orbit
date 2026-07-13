@@ -94,6 +94,24 @@ export function Observability() {
   const [fSlow, setFSlow] = useState(false);
   const [fSearch, setFSearch] = useState('');
 
+  // Download a session's transcript as pi-harness-compatible v3 JSONL (openable
+  // with `pi --session <file>`). Streams the file from the brain module and
+  // saves it via a temporary object-URL anchor — can't use the `api` helper,
+  // which JSON-parses. Needs both the dock (session `source`) and sessionId.
+  const dumpSession = async (dock: string, sessionId: string) => {
+    const r = await fetch(`/api/brain/${encodeURIComponent(dock)}/session/${encodeURIComponent(sessionId)}/dump`);
+    if (!r.ok) { window.alert(`Dump failed (${r.status}).`); return; }
+    const blob = await r.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${sessionId}.jsonl`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  };
+
   useEffect(() => {
     let cancelled = false;
     api.get<SessionSummary[]>('/observability/sessions').then(async (list) => {
@@ -270,6 +288,18 @@ export function Observability() {
                     <span className="pill acc sm" title="feedback recorded on this session">💬 {fbBySession.get(g.sid)!.length}</span>
                   )}
                   <span className="muted sm">· {clock(g.started)}–{clock(g.last)}</span>
+                  <span className="spacer" style={{ flex: 1 }} />
+                  <span
+                    role="button"
+                    tabIndex={0}
+                    className="pill sm obs-dump"
+                    title={g.source ? 'download pi-harness JSONL (open with `pi --session`)' : 'no dock — cannot dump'}
+                    aria-disabled={!g.source}
+                    style={g.source ? { cursor: 'pointer' } : { opacity: 0.4, cursor: 'not-allowed' }}
+                    onClick={(e) => { e.stopPropagation(); if (g.source) void dumpSession(g.source, g.sid); }}
+                  >
+                    ⬇ dump
+                  </span>
                 </button>
                 {!collapsed && g.turns.map((t) => (
                   <TurnRow key={t.id} turn={t} open={expanded.has(t.id)} onToggle={() => toggleTurn(t.id)} feedback={fbByTurn.get(turnKey(t.sessionId, t.id))} />
