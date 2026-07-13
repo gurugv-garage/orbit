@@ -644,6 +644,27 @@ one).
 
 ### WI-4 — Canned wake ack (no LLM)
 
+> **STATUS: BUILT + HEADLESS-SIGNED-OFF — 2026-07-13, branch `conv-quality-july-13`.**
+> Live "hey orbit" ×5 deferred to the wave close-out.
+>
+> **Adoption pre-work check (app code, static):** `RemoteBrain.onTurnStatus`
+> adopts any `turn-status accepted` carrying `autonomous:true` (opens the local
+> turn window so `speak` frames pass the turnId gate; `done` closes it) — exactly
+> the envelope a real autonomous turn ships (`session.ts` `#runTurn`). No app
+> change needed. **As built:** `session.speakCanned(text)` ships that three-frame
+> envelope with a minted turnId and no agent run; `wake()` = `tapOpen()` +
+> `speakCanned(prompt)`. The autonomous-lane fallback was considered and
+> REJECTED: the thought gate DEFERS autonomous turns while listening — i.e. the
+> old LLM ack was additionally gated behind the very window the wake had just
+> opened (part of the measured 6–7s). Canned is safe mid-wake-supersede too:
+> tapOpen cancels the dying turn first and the phone's turnId gate drops its
+> straggler frames after adopting the canned turn.
+>
+> **Sign-off evidence:** unit — canned envelope + adopt flag + no-LLM (script-
+> exhaustion guard) + wake-supersede immediacy; harness F6: ack spoken with
+> **hear→speak = 5ms** (was 6–7s + ~20k tokens), no LLM turn for a bare wake,
+> wake+command still runs a real turn. 25/25 across the full matrix × 2 runs.
+
 **Covers.** `wake()` (`session.ts:355-362`) stops enqueueing an autonomous turn (today a
 pseudo-`'task'` turn asking the model to echo a constant) and instead speaks the
 configured prompt through the existing frame envelope: minted turnId, `turn-status
@@ -717,6 +738,14 @@ the pure function is already unit-tested in isolation, extend in place.
 ---
 
 ### Wave close-out (applies to the whole plan)
+
+> **WAVE STATUS — 2026-07-13, branch `conv-quality-july-13`: ALL FIVE work items
+> + the WI-0 harness are BUILT and headless-signed-off** (commits: WI-0 30fb164,
+> WI-1 abb3379, WI-2 057fcff, WI-5 8602bf2, WI-3 130ff28, WI-4 below). The full
+> headless matrix is S4 + F1–F6: **25/25 assertions, two consecutive runs**.
+> What remains is exactly ONE live dock session (below): acoustic reruns of the
+> trial table (WI-1/2), the p50 latency before/after + artifact check (WI-3),
+> "hey orbit" ×5 (WI-4), and the 23k-prompt breakdown measurement.
 
 After WI-1..5 land: one full acoustic **stress-dock-pipeline** session on dock-redmi
 re-running this doc's entire trial table + wake + session-end, results appended here as

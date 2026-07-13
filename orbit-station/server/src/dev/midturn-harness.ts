@@ -276,6 +276,35 @@ async function f5_stopFalsePositives(): Promise<void> {
     `content line answered at settle → [${d}]`);
 }
 
+async function f6_cannedWake(): Promise<void> {
+  log('── F6 canned wake ack (WI-4): "hey orbit" → spoken ack with NO LLM turn');
+  await idle();
+  const mark = frames.length;
+  const heardAt = Date.now();
+  await hear('Hey orbit.');
+  // the canned envelope should be near-instant: adopt (accepted+autonomous) → speak → done
+  await sleep(600);
+  const got = frames.slice(mark);
+  const speak = got.find((f) => f.kind === 'speak');
+  const accepted = got.find((f) => f.kind === 'turn-status' && f.payload?.state === 'accepted');
+  check('F6a', speak != null && String(speak.payload.text).toLowerCase().includes('did you call'),
+    `ack spoken: "${speak ? speak.payload.text : 'NONE'}"`);
+  check('F6b', speak != null && speak.at - heardAt < 500,
+    `hear→speak ${speak ? speak.at - heardAt : '∞'}ms — expect <500ms (was 6–7s via LLM)`);
+  check('F6c', accepted?.payload?.autonomous === true
+    && !got.some((f) => f.kind === 'turn-status' && f.payload?.state === 'thinking'),
+    'adopted envelope, and NO LLM turn ran for the ack');
+  const m = (await conv()).mode;
+  check('F6d', m === 'listening' || m === 'speaking' || m === 'followup',
+    `window open after wake (mode=${m})`);
+  // wake+command still runs a REAL turn
+  await idle();
+  const mark2 = frames.length;
+  await hear(`Hey orbit, say the word ping, run ${RUN}.`);
+  const end = await waitTurnEnd(mark2, 60_000);
+  check('F6e', end.state === 'done', `wake+command still runs an LLM turn: ${end.state}`);
+}
+
 // ── main ────────────────────────────────────────────────────────────────────
 
 async function main(): Promise<void> {
@@ -323,6 +352,7 @@ async function main(): Promise<void> {
   const scenarios: Array<[string, () => Promise<void>]> = [
     ['S4', s4_control], ['F1', f1_coreDrain], ['F2', f2_mixedAge],
     ['F3', f3_everyTurnKind], ['F4', f4_voiceStop], ['F5', f5_stopFalsePositives],
+    ['F6', f6_cannedWake],
   ];
   for (const [name, fn] of scenarios) {
     try { await fn(); }

@@ -169,3 +169,32 @@ test('superseded turn does not settle under its replacement', async () => {
   session.noteSpeech(false);
   assert.equal(settles.length, 1, 'the surviving turn settles normally at its tts-end');
 });
+
+// ── WI-4: canned wake ack (no LLM) ──────────────────────────────────────────
+
+test('wake while idle: canned envelope (adopt+speak+done), listening opens, NO LLM run', async () => {
+  const { session, frames } = makeSession([]); // an LLM call would throw 'script exhausted'
+  session.wake('did you call me?');
+  const statuses = frames.filter((f) => f.kind === 'turn-status')
+    .map((f) => f.payload as { state: string; turnId: string; autonomous?: boolean });
+  assert.equal(statuses[0]?.state, 'accepted');
+  assert.equal(statuses[0]?.autonomous, true, 'the phone must ADOPT the canned turn');
+  const speaks = frames.filter((f) => f.kind === 'speak').map((f) => f.payload as { text: string; turnId: string });
+  assert.deepEqual(speaks.map((s) => s.text), ['did you call me?']);
+  assert.equal(speaks[0]!.turnId, statuses[0]!.turnId, 'speak rides the adopted turnId');
+  assert.equal(statuses.at(-1)?.state, 'done');
+  assert.equal(session.isListening(), true, 'the wake window is open for the follow-up');
+});
+
+test('wake mid-turn (wake-supersede): old turn cancelled, canned ack immediate', async () => {
+  let armed: (() => void) | undefined;
+  const { session, frames } = makeSession([stalls(() => armed?.())]);
+  const turn1 = session.handleTurnRequest({ turnId: 't1', trigger: { kind: 'user', text: 'long thing' } });
+  await new Promise<void>((r) => { armed = r; });
+  session.wake('did you call me?'); // tapOpen cancels t1, then the canned envelope ships
+  await turn1;
+  const spoken = frames.filter((f) => f.kind === 'speak').map((f) => (f.payload as { text: string }).text);
+  assert.deepEqual(spoken, ['did you call me?'], 'the ack ships immediately, no LLM, no lane wait');
+  assert.ok(frames.some((f) => f.kind === 'cancelled'), 'the superseded turn was cancelled first');
+  assert.equal(session.isListening(), true);
+});

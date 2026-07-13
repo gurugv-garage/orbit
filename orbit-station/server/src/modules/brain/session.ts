@@ -369,16 +369,31 @@ export class DockBrainSession {
 
   /** WAKE (conductor `wakeUp` behaviour): the wake phrase was heard while idle. Open the
    *  listening window AND acknowledge with a short spoken prompt ("did you call me?"), so the
-   *  user knows the dock is now listening. Routed through an autonomous turn (the established
-   *  speak path: TTS + window + epoch-gating all handled) whose instruction is just to say the
-   *  prompt verbatim. Cheap + safe; no body. */
+   *  user knows the dock is now listening.
+   *
+   *  WI-4 (busy-queue-black-hole.md): the ack is a CANNED utterance through the
+   *  standard frame envelope — no LLM. It used to be an autonomous turn asking the
+   *  model to echo a constant: 6–7s of step time and ~20k input tokens billed per
+   *  "did you call me?" — and the autonomous lane DEFERS while listening (the
+   *  thought gate), so the ack was additionally gated behind the very window the
+   *  wake just opened. Canned is safe even mid-wake-supersede: tapOpen has already
+   *  cancelled the dying turn (the phone silences + drops its straggler frames by
+   *  turnId once it adopts the canned turn). */
   wake(prompt: string, now = Date.now()): void {
     this.tapOpen(now); // open the listening window first so the follow-up utterance is addressed
-    this.enqueueAutonomousTurn({
-      turnId: `wake-${randomUUID()}`,
-      trigger: { kind: 'task', text: `[wake] The user said the wake phrase. Reply with EXACTLY: "${prompt}" — nothing else.` },
-      expiresAt: now + 30_000,
-    });
+    this.speakCanned(prompt);
+  }
+
+  /** Speak a short canned line through the standard turn envelope WITHOUT an
+   *  LLM run: minted turnId, the same three frames a real autonomous turn ships
+   *  — `accepted` (+`autonomous:true`, which makes the phone ADOPT the turn so
+   *  the speak passes its turnId gate — RemoteBrain.onTurnStatus), the `speak`,
+   *  and `done`. No agent, no transcript message, no per-step obs. */
+  speakCanned(text: string): void {
+    const turnId = `canned-${randomUUID()}`;
+    this.#sendToVoice('turn-status', { turnId, state: 'accepted', autonomous: true });
+    this.#sendToVoice('speak', { turnId, seq: 0, text });
+    this.#sendToVoice('turn-status', { turnId, state: 'done' });
   }
 
   /** VAD activity from the phone — extends an open listening/followup window. */
