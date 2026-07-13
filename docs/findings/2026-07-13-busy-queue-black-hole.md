@@ -34,6 +34,7 @@ stress-dock-pipeline method: instrument, many reps, honest failure classes.
   - [Fixed in this pass](#fixed-in-this-pass)
   - [Accepted on record (not fixed, deliberate)](#accepted-on-record-not-fixed-deliberate)
   - [⚠ CALLS TO MAKE — before or during the live session](#-calls-to-make--before-or-during-the-live-session)
+- [Addendum 5 — 2026-07-13: live session, first pass (dock-redmi, interim)](#addendum-5--2026-07-13-live-session-first-pass-dock-redmi-interim)
 <!-- /TOC -->
 
 ## TL;DR
@@ -835,3 +836,30 @@ per-turn prompt composition from the obs step records while it runs.
    should trace-drop the queue instead (`skip:dismissed`).
 5. Unchanged from the wave close-out: acoustic reruns of the trial table, WI-3 live
    p50 + face-artifact pass, "hey orbit" ×5, and the 23k-prompt breakdown from obs.
+
+---
+
+## Addendum 5 — 2026-07-13: live session, first pass (dock-redmi, interim)
+
+> Driven remotely (debug/say + laptop `say`), judged from the addressed ring +
+> obs turn records — the RCA's own method. **Environment caveat: a live meeting
+> was happening near the dock throughout** — continuous ambient speech merged
+> into / superseded test utterances, which made some phases evidence-rich and others
+> infeasible. Quiet-room reruns needed for WI-2/WI-4 acoustics.
+
+| Phase | Outcome |
+|---|---|
+| Mic path | ✅ laptop `say` reaches the dock (merged with ambient speech in one utterance) |
+| **WI-3 latency** | ✅ **SIGNED OFF LIVE**: p50 turn-start→reply-audio **4.3s vs the 8.0s baseline (−46%)**, n=11, at ~17–18k input tokens (comparable to baseline conditions). Plain replies 9/9 single-step; the only 2-step turns were legit `compute` calls. Tag compliance ~100% live, faces varying (happy/curious); no tag in spoken text |
+| **Self-echo** | ✅ PASS — during a 12-count TTS, none of the dock's own words hit the ring; dock-redmi AEC is good, `STT_ECHO_GATE` stays off |
+| **WI-1 queue contract** | ✅ live in the wild: 10 `queue:busy` in the ring window, ALL reached a terminal (`drain:ran`; one verified draining seconds later). Zero silent outcomes. Note: replies are now so fast that speech ~1s into a turn lands in the followup window (direct RAN-TURN) — the busy window itself shrank; the queue engages mainly during long replies |
+| WI-2 voice-stop (acoustic) | ⏸ INCONCLUSIVE — "Stop. Never mind." kept merging with meeting speech into long utterances, which the bare-stop lexicon correctly refuses (precision guard working as designed). Needs a quiet-room rerun (headless F4/F5 remain the evidence: 20/20) |
+| WI-4 wake (acoustic) | ⏸ INCONCLUSIVE — "hey orbit" never surfaced as its own final under continuous meeting audio. Needs quiet-room rerun (headless F6: ack in 5–6ms) |
+| Prompt breakdown | interim: rep turns ran at 17.5–19k input tokens in a session only hours old — history dominates; full breakdown still pending |
+
+**The dominant live finding is call #1 made concrete:** the dock spent the session
+IN the room's meeting — ambient lines ran turns via followup windows continuously
+(one hallucinated Czech "devětnáste" from noise), and the session hit **82 turns /
+1.49M input tokens / ~$0.46** largely from answering speech never addressed to it.
+The addressed-vs-overheard seam is now the top UX+cost item, ahead of anything
+else in this doc.
