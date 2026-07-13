@@ -853,9 +853,16 @@ per-turn prompt composition from the obs step records while it runs.
 | **WI-3 latency** | ✅ **SIGNED OFF LIVE**: p50 turn-start→reply-audio **4.3s vs the 8.0s baseline (−46%)**, n=11, at ~17–18k input tokens (comparable to baseline conditions). Plain replies 9/9 single-step; the only 2-step turns were legit `compute` calls. Tag compliance ~100% live, faces varying (happy/curious); no tag in spoken text |
 | **Self-echo** | ✅ PASS — during a 12-count TTS, none of the dock's own words hit the ring; dock-redmi AEC is good, `STT_ECHO_GATE` stays off |
 | **WI-1 queue contract** | ✅ live in the wild: 10 `queue:busy` in the ring window, ALL reached a terminal (`drain:ran`; one verified draining seconds later). Zero silent outcomes. Note: replies are now so fast that speech ~1s into a turn lands in the followup window (direct RAN-TURN) — the busy window itself shrank; the queue engages mainly during long replies |
-| WI-2 voice-stop (acoustic) | ⏸ INCONCLUSIVE — "Stop. Never mind." kept merging with meeting speech into long utterances, which the bare-stop lexicon correctly refuses (precision guard working as designed). Needs a quiet-room rerun (headless F4/F5 remain the evidence: 20/20) |
-| WI-4 wake (acoustic) | ⏸ INCONCLUSIVE — "hey orbit" never surfaced as its own final under continuous meeting audio. Needs quiet-room rerun (headless F6: ack in 5–6ms) |
+| WI-2 voice-stop (acoustic) | ✅ **PASS (quiet-room rerun)** — 2/2 clean-audio reps: "Stop. Never mind." → `stop:cancel` mid-reply (once at `speaking`, once at `thinking`), counting halted, listening opened. A third rep merged with residual room speech ("I think that's never mind") and was correctly REFUSED by the precision guard — the intended behavior |
+| WI-4 wake (acoustic) | ✅ mechanism PASS / ⏸ ack-timing pending a human voice — the laptop TTS renders "orbit" poorly for far-field STT ("Any or", "Hey isn't a side pocket"). Even so: the PRIMARY path fired on the soundalike rendering ("Hey, or bit" → `wake+command`, tier=good, command ran), and the **audio-enricher fallback caught the clean mishears** ("Hey Orbit." conf 1.00, several times) — both wake paths work live. The canned ack's end-to-end timing needs one human "hey orbit" (station-side is 5–6ms headless; live is bounded by STT finalization ~1–3s either way) |
 | Prompt breakdown | interim: rep turns ran at 17.5–19k input tokens in a session only hours old — history dominates; full breakdown still pending |
+
+**Quiet-room WI-1 rerun (same session, later):** 3/3 valid acoustic reps — lines spoken
+mid-thinking and mid-TTS were queued (`queue:busy`) and ANSWERED at settle
+(`drain:ran`, combined turns), including joins with residual room speech. One rep
+discarded as a driver race: `debug/say` taps first, and a tap landing on a leftover
+followup window TOGGLES IT OFF (pre-existing tap semantics — a live-test driver must
+inject only from true idle).
 
 **The dominant live finding is call #1 made concrete:** the dock spent the session
 IN the room's meeting — ambient lines ran turns via followup windows continuously
