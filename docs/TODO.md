@@ -227,6 +227,14 @@ Legend: `[x]` done · `[~]` in progress · `[ ]` not started · `[?]` open quest
 > what superseded each.
 
 ### 3.0 orbit-station control plane
+- [x] **Conversation-quality wave (2026-07-13, branch `conv-quality-july-13`)** — the
+  busy-queue black hole fixed (settle-point drain, nothing heard is silently lost),
+  reflex voice-stop/pause/dismissal ("stop"/"wait"/"shut up" — app build 31 actually
+  silences TTS), canned wake ack (7s→ms), inline mood tag (reply p50 8.0s→4.3s),
+  session/end survives presence, overheard framing (followup chains self-terminate),
+  prompt-cache stability (82–96% of every turn cached, ~4× cheaper brain), parakeet
+  owns the listening window (Silero demoted to UX sensor). Full RCA→plan→fixes→live
+  evidence: [findings/2026-07-13-busy-queue-black-hole.md](findings/2026-07-13-busy-queue-black-hole.md)
 - [x] One WS hub + in-process bus; raw-WS protocol for all peers
 - [x] Observability: agent-core Session/Turn/Step trace ingest + live stream
 - [x] Config: defaults + push-on-change to firmware/app over WS
