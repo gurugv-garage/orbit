@@ -514,7 +514,25 @@ reach the model in the same combined turn, for free.
 
 ### WI-2 — Reflex voice-stop while busy
 
-**Covers.** A deterministic stop-intent check on speech arriving while busy (the
+> **STATUS: BUILT + HEADLESS-SIGNED-OFF — 2026-07-13, branch `conv-quality-july-13`.**
+> Live-acoustic reps deferred to the wave close-out session.
+>
+> **As built:** `stop-intent.ts` — pure matcher, deliberately narrow: fires only on
+> utterances composed of stop words (core: stop/never mind/wait/hold on/cancel/
+> enough/quiet/shut up/shh + filler like "actually/okay/it/moving/a second"; ≤8
+> tokens). Content redirects ("wait, tell me a joke instead") deliberately do NOT
+> match — they queue and are ANSWERED at settle (WI-1), the right fate for a
+> redirect. Wired in the busy branch BEFORE queueing: match → `tapOpen()` — i.e.
+> exactly a spoken tap-interrupt (aborts generation + motion, ships `cancelled`,
+> opens a listening window), traced `stop:cancel` + stamped addressed. Kill-switch:
+> config `brainVoiceStop=false`.
+>
+> **Sign-off evidence:** fixture table committed with the test (21 positives, 16
+> negatives incl. "the bus stop", "non-stop", "my watch stopped", "wait, what is
+> the capital of France?"); brain suite 169/169. Headless matrix now S4+F1–F5,
+> **20/20**: F4 — "Stop. Never mind." mid-count → ring `stop:cancel`, turn
+> terminal `cancelled`, conversation → `listening`; F5 — "tell me about the bus
+> stop" mid-turn → `queue:busy` → `drain:ran` (answered, never cancelled). A deterministic stop-intent check on speech arriving while busy (the
 `index.ts:644` branch, *before* queueing): match → `session.cancel()` (`session.ts:522-530`
 — already stops motion, aborts the agent, ships the phone `cancelled` frame), trace
 `stop:cancel`, consume the stop utterance (not queued, not replayed); other queued items

@@ -36,6 +36,7 @@ import { isRecording } from '../capture/index.js';
 import type { VideoRecorderApi } from '../perception/record/recorder.js';
 import { RpcBroker } from './rpc.js';
 import { BusyQueue, splitByAge, type HeardUtterance } from './busy-queue.js';
+import { isStopIntent } from './stop-intent.js';
 import { DockBrainSession, type TurnRequest, keyStatusFor } from './session.js';
 import { SessionStore } from './store.js';
 import { installDockSkill, listDockSkills, removeDockSkill, loadDockSkills } from './skills.js';
@@ -631,7 +632,8 @@ export function brainModule(w: BrainWiring): StationModule {
           // summarizer / fact-extraction / ego can tell "said to the dock" from room chatter.
           // ran-a-turn / wake ⇒ addressed; explicitly not-addressed ⇒ overheard. Ambiguous skips
           // (garbage/no-words/recording/busy-queue) are left unstamped — not a clean signal.
-          if (decision === 'RAN-TURN' || decision === 'wake' || decision === 'wake+command') {
+          if (decision === 'RAN-TURN' || decision === 'wake' || decision === 'wake+command'
+              || decision === 'stop:cancel') {
             markSpeechAddressed(t.dockId, t.endedAt, true);
           } else if (decision === 'skip:not-addressed') {
             markSpeechAddressed(t.dockId, t.endedAt, false);
@@ -701,6 +703,19 @@ export function brainModule(w: BrainWiring): StationModule {
         // and run it as one combined turn when the reply finishes (below). A tap can still
         // interrupt. Use the PRE snapshot (mode before utteranceAddressed() consumes it).
         if (pre.mode === 'thinking' || pre.mode === 'speaking') {
+          // REFLEX VOICE-STOP (WI-2): a bare "stop"/"never mind"/"wait" over the
+          // dock's reply or motion aborts it NOW — the only voice path that can
+          // stop a move turn (D1: only tap/wake-supersede could). Deliberately
+          // narrow (stop-intent.ts): anything with content queues instead and is
+          // ANSWERED at settle. Routed through tapOpen(), i.e. exactly a spoken
+          // tap-interrupt: aborts generation + motion, ships `cancelled`, opens a
+          // listening window (they clearly want to say something). The stop
+          // utterance itself is consumed. Config kill-switch: brainVoiceStop=false.
+          if (w.config('brainVoiceStop') !== false && isStopIntent(t.text)) {
+            trace('stop:cancel');
+            session(t.dockId).tapOpen();
+            return;
+          }
           busyQueue.add(t);
           trace('queue:busy');
           return;

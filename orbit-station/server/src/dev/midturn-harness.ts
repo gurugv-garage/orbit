@@ -26,8 +26,10 @@
  *                    queued with it still runs (was: ghost poisons the batch)
  *   F3  every kind — speech during an autonomous ('self') turn drains at ITS
  *                    settle (was: the ghost class — no drain outside RAN-TURN)
- *   F4  stop       — "Stop…" mid-turn still queues + gets answered at settle;
- *                    the turn completes (WI-2 upgrades this to a live cancel)
+ *   F4  voice-stop — "Stop. Never mind." mid-turn CANCELS the reply and opens
+ *                    a listening window (WI-2 — was: impossible by voice)
+ *   F5  precision  — content with embedded stop words ("…the bus stop…") is
+ *                    queued + answered, never cancelled (WI-2's guard)
  */
 
 import { WebSocket } from 'ws';
@@ -237,22 +239,41 @@ async function f3_everyTurnKind(): Promise<void> {
   check('F3c', d.join() === 'queue:busy,drain:ran', `terminal decisions → [${d}]`);
 }
 
-async function f4_stopStillQueues(): Promise<void> {
-  log('── F4 stop (pre-WI-2): "Stop…" mid-turn queues and is ANSWERED at settle; turn completes');
+async function f4_voiceStop(): Promise<void> {
+  log('── F4 voice-stop (WI-2): "Stop. Never mind." mid-turn CANCELS the turn + opens listening');
   await idle();
-  const STOP = `Stop. Never mind. Run ${RUN}.`;
+  const scenarioStart = Date.now();
   const mark = frames.length;
   await say('Count from one to seven, slowly, one number per sentence.');
   await waitConv('thinking', 20_000);
-  await hear(STOP);
-  const q = decisions(await ringFor(STOP));
-  check('F4a', q.join() === 'queue:busy', `"${STOP}" mid-turn → [${q}] — queued (WI-2 will make this cancel)`);
+  await hear('Stop. Never mind.');
+  // the ring entry (nonce-free text — filter by time) must be stop:cancel
+  const e = (await ring()).filter((x) => x.at >= scenarioStart && x.text.startsWith('Stop'));
+  check('F4a', decisions(e).join() === 'stop:cancel', `mid-turn stop → [${decisions(e)}]`);
   const end1 = await waitTurnEnd(mark, 90_000);
-  check('F4b', end1.state === 'done', `turn completed: ${end1.state}`);
+  check('F4b', end1.state === 'cancelled', `turn terminal state = ${end1.state} — voice stopped it (was: impossible)`);
+  const m = await waitConv(['listening', 'idle'], 10_000); // spoken tap opens a window
+  check('F4c', m === 'listening', `conversation after stop = ${m} — ready for what they say next`);
+  // let the listening window time out back to idle before the next scenario
+  await waitConv('idle', 15_000);
+}
+
+async function f5_stopFalsePositives(): Promise<void> {
+  log('── F5 stop precision: content with embedded stop words queues (never cancels)');
+  await idle();
+  const BUS = `bus stop, run ${RUN}`;
+  const mark = frames.length;
+  await say('What is three plus three? Answer in one short sentence.');
+  await waitConv('thinking', 20_000);
+  await hear(`Tell me about the ${BUS}.`);
+  const q = decisions(await ringFor(BUS));
+  check('F5a', q.join() === 'queue:busy', `"…the bus stop…" mid-turn → [${q}] — queued, NOT cancelled`);
+  const end1 = await waitTurnEnd(mark, 60_000);
+  check('F5b', end1.state === 'done', `turn completed despite the stop word: ${end1.state}`);
   const drained = await waitTurnEnd(end1.frameIdx + 1, 60_000);
-  const d = decisions(await ringFor(STOP));
-  check('F4c', drained.state === 'done' && d.join() === 'queue:busy,drain:ran',
-    `stop line answered at settle → [${d}] (no longer silently swallowed)`);
+  const d = decisions(await ringFor(BUS));
+  check('F5c', drained.state === 'done' && d.join() === 'queue:busy,drain:ran',
+    `content line answered at settle → [${d}]`);
 }
 
 // ── main ────────────────────────────────────────────────────────────────────
@@ -301,7 +322,7 @@ async function main(): Promise<void> {
 
   const scenarios: Array<[string, () => Promise<void>]> = [
     ['S4', s4_control], ['F1', f1_coreDrain], ['F2', f2_mixedAge],
-    ['F3', f3_everyTurnKind], ['F4', f4_stopStillQueues],
+    ['F3', f3_everyTurnKind], ['F4', f4_voiceStop], ['F5', f5_stopFalsePositives],
   ];
   for (const [name, fn] of scenarios) {
     try { await fn(); }
