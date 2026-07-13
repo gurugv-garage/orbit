@@ -401,7 +401,19 @@ class RemoteBrain(
             }
             "transcript-interim" -> onTranscriptInterim(payload)
             "dock-error" -> onDockError(payload)
-            "cancelled" -> trace("cancelled (station ack)")
+            "cancelled" -> {
+                // A STATION-initiated cancel (spoken "stop"/"wait", station tap,
+                // supersede). For a LOCAL stop, stop() already silenced; but when
+                // the station starts the cancel, the sound must die HERE — the TTS
+                // queue would otherwise play out every already-delivered sentence
+                // (live 2026-07-13: "stop" cancelled the turn, the dock kept
+                // talking to the end of its buffer).
+                val cid = payload.str("turnId")
+                if (cid.isEmpty() || cid == currentTurnId || cid == lastTurnId) {
+                    tools.silence()
+                    trace("cancelled by station → silenced")
+                } else trace("cancelled (stale turn ${cid.take(8)})")
+            }
             else -> Timber.d("RemoteBrain: unhandled agent frame '$kind'")
         }
     }
@@ -684,8 +696,10 @@ class RemoteBrain(
                 tools.speakSystem(diag.spoken)
             }
             "cancelled" -> {
-                // Normally we initiated this (stop() already silenced + idled);
-                // a station-initiated cancel unwinds the same way, silently.
+                // Local stop() already silenced; a STATION-initiated cancel must
+                // silence HERE too — endTurnLocally() only closes bookkeeping and
+                // lets the TTS queue drain (the "kept talking after stop" bug).
+                tools.silence()
                 endTurnLocally()
                 if (_state.value !is AgentState.Failed && !spokeThisTurn) _state.value = AgentState.Idle
             }

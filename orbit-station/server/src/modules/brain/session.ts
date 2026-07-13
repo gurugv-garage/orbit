@@ -359,7 +359,19 @@ export class DockBrainSession {
   tap(now = Date.now()): void {
     const interrupts = this.#conv.tapWouldInterrupt(now);
     this.#conv.tap(now);
-    if (interrupts) this.cancel(); // abort the turn whose reply was just interrupted
+    if (interrupts) this.#interruptSpeech(); // abort the interrupted reply (or its TTS tail)
+  }
+
+  /** Abort whatever is AUDIBLY in flight: the active turn (agent + motion +
+   *  frames), or — after the loop already ended — the phone's still-draining
+   *  TTS queue. cancel() early-returns when no turn is active, so post-turn
+   *  interrupts (the common case: TTS plays after turn end) previously sent NO
+   *  signal and the dock talked to the end of its buffer (live 2026-07-13).
+   *  The bare `cancelled` frame makes the phone silence (app build 31+; older
+   *  builds ignore it — no worse than before). */
+  #interruptSpeech(): void {
+    if (this.#turnActive) this.cancel();
+    else this.#sendToVoice('cancelled', { turnId: '' });
   }
 
   /** ADDRESS open-only (the palm gesture) — never toggles listening off. Like
@@ -369,7 +381,7 @@ export class DockBrainSession {
   tapOpen(now = Date.now()): void {
     const interrupts = this.#conv.tapWouldInterrupt(now);
     this.#conv.tapOpen(now);
-    if (interrupts) this.cancel(); // abort the interrupted reply's turn
+    if (interrupts) this.#interruptSpeech(); // abort the interrupted reply (or its TTS tail)
   }
 
   /** WAKE (conductor `wakeUp` behaviour): the wake phrase was heard while idle. Open the
@@ -407,7 +419,7 @@ export class DockBrainSession {
    *  fires the settle chokepoint; the caller clears the busy queue first so
    *  nothing drains after a dismissal. */
   dismiss(now = Date.now()): void {
-    if (this.#turnActive) this.cancel();
+    this.#interruptSpeech();
     this.#conv.dismiss(now);
   }
 

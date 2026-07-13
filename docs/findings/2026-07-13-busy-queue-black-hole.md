@@ -38,6 +38,7 @@ stress-dock-pipeline method: instrument, many reps, honest failure classes.
   - [Addendum 5.1 — the ambient call, decided + the step-3 fix (same day)](#addendum-51--the-ambient-call-decided--the-step-3-fix-same-day)
   - [Addendum 5.2 — dismissal + enricher name-gate (same day)](#addendum-52--dismissal--enricher-name-gate-same-day)
   - [Addendum 5.3 — pause vs dismiss (same day)](#addendum-53--pause-vs-dismiss-same-day)
+  - [Addendum 5.4 — the dock now actually SHUTS UP (app build 31 + station fix)](#addendum-54--the-dock-now-actually-shuts-up-app-build-31--station-fix)
 <!-- /TOC -->
 
 ## TL;DR
@@ -939,3 +940,27 @@ F9 (pause: turn cancelled, mode listening, the next question runs) — matrix
 S4+F1–F9 **36/36**. Acoustic pause rep merged with (again-active) room speech and
 was correctly refused as content — the overheard framing handled the merged line;
 clean-utterance validation stands on F9 + the earlier live dismissal reps.
+
+### Addendum 5.4 — the dock now actually SHUTS UP (app build 31 + station fix)
+
+**User caught it ("are u really testing - i don't think it will work"):** all prior
+"voice-stop works" evidence verified STATE, not AUDIO. Two stacked holes meant the
+speaker never stopped: (a) the app treated the station's `cancelled` frame as a mere
+ack — only a LOCAL tap called `tts.stop()`; a station-initiated cancel let the TTS
+queue play out every already-delivered sentence (and with the fast LLM, ALL sentences
+are delivered within seconds). (b) Station-side, `cancel()` early-returns when no turn
+is active — and TTS plays AFTER turn end, so mid-TTS dismissals sent no frame at all.
+
+**Fixes:** app build 31 (OTA'd live, ~60s: silence on the `cancelled` frame, both the
+frame kind and the turn-status branch); station `#interruptSpeech()` — used by
+tap/tapOpen/dismiss — cancels the active turn OR, post-turn, sends a bare `cancelled`
+frame to kill the draining TTS (older app builds ignore it; no worse than before).
+
+**Measured:** dismiss → audio dead in **0.061s** (was: 3.9s+, i.e. the buffer's
+natural end). Acoustic end-to-end: laptop "Stop!" mid-count → STT split the mishear
+("Come on, never mind." queued) from the clean "Stop." → `stop:dismiss` → queued
+mishear `skip:dismissed` → silence. End-to-end feel is bounded by STT finalization
+(~1.5–3.5s), not the stop path. Also on record: my earlier "count to N" latency
+props produced SHORT audio (the prompt enforces 1–2 sentences), which is why the
+audio-drain bug hid from the earlier live reps — test props must force LONG TTS
+when testing interruption.
