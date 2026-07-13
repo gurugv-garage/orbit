@@ -390,23 +390,14 @@ function costKind(triggerKind: string | undefined): string {
   return 'user';
 }
 
-/** Map a perception role tag → its human-readable use-case label. The tag is the
- *  `label` reportGeminiCost stamps (in trigger.text and the model-name suffix). */
-const USECASE_LABELS: Record<string, string> = {
-  'audio-enricher': 'Speech-to-text',
-  summary: 'Summarizer',
-  'mem-embed': 'Memory embeddings',
-};
-
-/** The cost 'usecase' axis: the human-readable role a call plays, derived from the
- *  turn's trigger and the per-call role tag perception stamps. Brain turns →
- *  'Conversation' (user) / 'Background tasks' (task). Perception turns carry their
- *  role in trigger.text; we also fall back to the legacy `model (role)` suffix so
- *  historical rows (written before the tag existed) still classify. */
+/** The cost 'usecase' axis: the role a call plays. Brain turns → 'Conversation' (user) /
+ *  'Background tasks' (task). Perception turns carry their role tag verbatim — the SAME string
+ *  reportGeminiCost stamps in code ('audio-enricher', 'summary', 'mem-embed', …) — shown as-is,
+ *  no translation table (that only drifts from the code). The tag rides in trigger.text; we fall
+ *  back to the legacy `model (role)` suffix so rows written before the tag existed still classify. */
 function costUseCase(turn: TurnRecord, model: string | undefined): string {
   if (turn.trigger?.kind === 'perception') {
-    const tag = turn.trigger.text || model?.match(/\(([^)]+)\)\s*$/)?.[1];
-    return (tag && USECASE_LABELS[tag]) || 'Perception';
+    return turn.trigger.text || model?.match(/\(([^)]+)\)\s*$/)?.[1] || 'perception';
   }
   if (turn.trigger?.kind === 'task') return 'Background tasks';
   return 'Conversation';

@@ -101,9 +101,10 @@ test('costRollup by usecase labels each call by its role', () => {
   const by = Object.fromEntries(r.groups.map((g) => [g.group, g.cost]));
   assert.ok(Math.abs(by['Conversation']! - 0.10) < 1e-9);
   assert.ok(Math.abs(by['Background tasks']! - 0.03) < 1e-9);
-  assert.ok(Math.abs(by['Speech-to-text']! - 0.02) < 1e-9);
-  assert.ok(Math.abs(by['Summarizer']! - 0.01) < 1e-9);
-  assert.ok(Math.abs(by['Memory embeddings']! - 0.005) < 1e-9);
+  // usecase = the RAW role tag from code (no translation table).
+  assert.ok(Math.abs(by['audio-enricher']! - 0.02) < 1e-9);
+  assert.ok(Math.abs(by['summary']! - 0.01) < 1e-9);
+  assert.ok(Math.abs(by['mem-embed']! - 0.005) < 1e-9);
 });
 
 test('costRollup honors the time window', () => {

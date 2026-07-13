@@ -136,8 +136,8 @@ export interface TurnRecord {
 
 /** How a cost rollup is sliced. `kind` = the turn's trigger kind (user vs task);
  *  `source` = the dock; `model` = the LLM each step ran on; `day` = UTC date;
- *  `usecase` = the human-readable role each call plays (Conversation,
- *  Speech-to-text, Summarizer, Memory, Background tasks). */
+ *  `usecase` = the role each call plays — brain: Conversation / Background tasks;
+ *  perception: the raw role tag from code (audio-enricher, summary, mem-embed, …). */
 export type CostGroupBy = 'source' | 'kind' | 'model' | 'day' | 'usecase';
 
 /** Summed usage for one group (or the grand total when `group` is absent). */
