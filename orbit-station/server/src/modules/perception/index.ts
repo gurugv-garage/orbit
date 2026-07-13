@@ -225,10 +225,11 @@ export function noteSelfRemark(dockId: string, text: string): void {
  *  arm must NOT summarize both — drop each `liveOnly` speech record whose span overlaps an ENRICHED
  *  speech record (the enriched one is the truth). Non-speech + un-superseded records pass through. */
 export function dropSupersededSpeech(records: SnapshotRecord[]): SnapshotRecord[] {
-  // ENRICHED speech = an 'enriched' record whose audioSource is real in-room speech (media/sound
-  // don't supersede a spoken utterance). Only those override a live-only parakeet 'speech' record.
+  // ENRICHED speech = a one-per-call 'enriched' record that CONTAINS real in-room speech (the
+  // hasSpeech roll-up; a pure media/sound call doesn't supersede a spoken utterance). Only those
+  // override a live-only parakeet 'speech' record whose span the enriched clip window covers.
   const enriched = records.filter((r) => r.source.kind === 'enriched'
-    && ((r.payload as { audioSource?: string }).audioSource ?? 'speech') === 'speech');
+    && (r.payload as { hasSpeech?: boolean }).hasSpeech === true);
   if (!enriched.length) return records; // no enricher speech → nothing supersedes parakeet
   const overlaps = (a: SnapshotRecord, b: SnapshotRecord) =>
     a.interval.from <= b.interval.to && b.interval.from <= a.interval.to;
@@ -653,9 +654,11 @@ export function perceptionModule(getHub: () => PerceptionProcessingHub): Station
       const want = norm(text);
       const recent = snapshots.list().filter((r) => r.dockId === dockId && r.source.kind === 'enriched'
         && (r.payload as { addressedToRobot?: boolean }).addressedToRobot);
-      // newest matching-text record (walk from the end)
+      // newest record whose ADDRESSED SEGMENT text matches the wake text (walk from the end). One
+      // fused record carries N segments; match the addressed one, not the stitched roll-up.
       for (let i = recent.length - 1; i >= 0; i--) {
-        if (norm(String((recent[i]!.payload as { text?: string }).text ?? '')) === want) {
+        const segs = (recent[i]!.payload as { segments?: Array<{ text?: string; addressedToRobot?: boolean }> }).segments ?? [];
+        if (segs.some((s) => s.addressedToRobot && norm(String(s.text ?? '')) === want)) {
           snapshots.update(recent[i]!, { wokeRobot: true });
           break;
         }
@@ -1604,18 +1607,24 @@ export function perceptionModule(getHub: () => PerceptionProcessingHub): Station
           try {
             const fs = await import('node:fs');
             const files = fs.readdirSync(dir).filter((f) => f.endsWith('.wav'));
-            // A row's time (segment `interval.from`) sits INSIDE its batch WINDOW, which can be
-            // 10-30s long — so match the WAV whose window CONTAINS `want` (started at-or-before it,
-            // and its duration reaches past it), not the nearest start. Window duration = file size:
-            // 16 kHz mono 16-bit = 32000 bytes/s (+44 header). Fall back to the nearest-earlier start.
-            let best: string | undefined; let bestStart = -Infinity;
-            for (const f of files) {
-              const t = Number(f.split('_')[0]);
-              if (t > want + 1000) continue;                 // starts after the row → not this window
-              let durMs = 30_000;
-              try { durMs = Math.round(((fs.statSync(`${dir}/${f}`).size - 44) / 32000) * 1000); } catch { /* */ }
-              const contains = want <= t + durMs + 1000;
-              if (contains && t > bestStart) { bestStart = t; best = f; }
+            // PRIMARY: the client sends the row's enrichBatchId, which IS the WAV window's startedAtMs
+            // = the filename prefix. Match it EXACTLY — this is unambiguous even when batch windows
+            // OVERLAP (adjacent 16-30s windows), which the old "window containing the time" match got
+            // wrong (a boundary time matched the wrong window → "play one plays both", raw STT from a
+            // different clip). Exact-prefix first; the containing-window scan is only a fallback for
+            // pre-batchId history that still sends a segment time.
+            let best = files.find((f) => Number(f.split('_')[0]) === want);
+            if (!best) {
+              // FALLBACK (old rows w/o enrichBatchId): the WAV whose window CONTAINS `want`, latest
+              // start. Window duration from file size: 16 kHz mono 16-bit = 32000 bytes/s (+44 hdr).
+              let bestStart = -Infinity;
+              for (const f of files) {
+                const t = Number(f.split('_')[0]);
+                if (t > want + 1000) continue;
+                let durMs = 30_000;
+                try { durMs = Math.round(((fs.statSync(`${dir}/${f}`).size - 44) / 32000) * 1000); } catch { /* */ }
+                if (want <= t + durMs + 1000 && t > bestStart) { bestStart = t; best = f; }
+              }
             }
             if (!best) { json(res, 404, { error: 'no saved audio for this row' }); return true; }
             const buf = fs.readFileSync(`${dir}/${best}`);

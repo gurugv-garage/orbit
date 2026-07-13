@@ -19,19 +19,18 @@ import { reportGeminiCost, type GeminiUsage } from '../cost-report.js';
 
 const GEMINI_BASE = 'https://generativelanguage.googleapis.com/v1beta/models';
 
-function geminiKey(): string | undefined {
-  return process.env.GEMINI_API_KEY_PAID_ACC || process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
+/** The keys to try, in order: paid account first (higher limits), then the free/default key as a
+ *  fallback. De-duped + de-blanked. A 429 on the paid key rolls over to free (and vice-versa if only
+ *  free is set), mirroring the brain's free→paid fallback but generalized to a transient-retry. */
+function geminiKeys(): string[] {
+  return [...new Set([
+    process.env.GEMINI_API_KEY_PAID_ACC,
+    process.env.GEMINI_API_KEY,
+    process.env.GOOGLE_API_KEY,
+  ].filter((k): k is string => !!k))];
 }
 
-/** True if `text` is mostly a regurgitation of the context (a fabricated re-hearing of
- *  past conversation, not a transcript of the audio). Word-overlap ≥70% = echo. */
-export function echoesContext(text: string, context: string): boolean {
-  const words = (s: string) => s.toLowerCase().replace(/s\d+:/g, ' ').replace(/[^a-z0-9 ]/g, ' ').split(/\s+/).filter((w) => w.length > 2);
-  const tw = words(text); if (tw.length < 3) return false;
-  const ctx = new Set(words(context));
-  const hit = tw.filter((w) => ctx.has(w)).length;
-  return hit / tw.length >= 0.7;
-}
+const sleep = (ms: number) => new Promise<void>((res) => { setTimeout(res, ms); });
 
 /** Build a minimal WAV (16-bit mono) around PCM-16 samples for the audio payload. */
 function wav(pcm: Int16Array, rate: number): Buffer {
@@ -67,6 +66,8 @@ export interface EnrichSegment {
   addressConf?: number;                 // 0..1 — confidence it was addressed to the robot
   directive?: string;                   // what they want of the robot ('stop', 'called its name'), if addressed
   summary?: string;                     // one short line: what this segment IS, acoustically/semantically
+  echo?: boolean;                       // the model's OWN flag: it suspects this is the reference context
+                                        // leaking (not fresh audio). KEPT + shown dimmed, never dropped.
 }
 export interface EnrichContext { recentTranscript?: string; present?: string[] }
 
@@ -79,7 +80,8 @@ const ENRICH_PROMPT_BASE =
   + '"source":"<speech|media|sound>","text":"…","transcript_conf":<0..1>,"kind":"<the acoustic type: '
   + 'speech|music|impact|laughter|alarm|ambient|animal|… >","salience":"<low|notable|startling>",'
   + '"salience_conf":<0..1>,"summary":"<one short line: what this segment IS>","addressed":<true|false>,'
-  + '"address_conf":<0..1>,"directive":"<if addressed: what they want of the robot, else empty>"}]}. '
+  + '"address_conf":<0..1>,"directive":"<if addressed: what they want of the robot, else empty>",'
+  + '"echo":<true|false — see rule 5>}]}. '
   + 'RULES: (1) ONE SEGMENT PER CONTINUOUS UTTERANCE — a full sentence or complete thought from a '
   + 'single speaker. DO NOT split per word or per short phrase; merge a run of words by the same '
   + 'speaker into one segment (e.g. "Okay, and then we can do the other one again." is ONE segment, '
@@ -89,9 +91,14 @@ const ENRICH_PROMPT_BASE =
   + 'sentence is ~1–4 s, never 0). (3) DIARIZE: a stable speaker index (0,1,2,…) per distinct person. '
   + '(4) source: "speech"=a person in the room; "media"=a TV/video/song/recording playing (never '
   + 'addressed); "sound"=a non-speech event (crash/laughter/doorbell/alarm — describe in text, type '
-  + 'in kind). (5) TRANSCRIBE IN CONTEXT using the reference transcript (spell names/terms '
-  + 'consistently, continue a cut-off thought) but only what is AUDIBLE here; never echo the reference '
-  + 'as spoken; never invent words for unintelligible audio (omit). (6) salience: routine talk=low; '
+  + 'in kind). (5) THE REFERENCE TRANSCRIPT IS PRIOR CONTEXT ONLY — it is NOT part of this audio. Use '
+  + 'it to spell names/terms consistently and to continue a cut-off thought, but transcribe ONLY what '
+  + 'is actually AUDIBLE in THIS clip. Do NOT re-output the reference as if it were just spoken. '
+  + 'IMPORTANT: if a person genuinely REPEATS something from the reference (they really said it again '
+  + 'in this audio), that IS real speech — transcribe it normally. Only if you are UNSURE whether a '
+  + 'segment is truly in this audio versus leaking from the reference, still emit it but set '
+  + '"echo":true (default false) so a human can review it — never silently drop a genuine repeat. '
+  + 'Never invent words for unintelligible audio (omit). (6) salience: routine talk=low; '
   + 'laughter/doorbell/raised voices=notable; crash/scream/alarm=startling. (7) addressed=true ONLY '
   + 'when a real in-room speaker talks TO the robot ("orbit"/a command) — never for media. '
   + '(8) transcript_conf = HOW SURE you are the text is what was REALLY said (0..1). BE HONEST: if the '
@@ -143,35 +150,72 @@ export function coalesceSegments(segs: EnrichSegment[], windowMs: number): Enric
 }
 
 /** Interpret one BATCH WINDOW: accurate in-context transcription + diarization + acoustic read.
- *  `pcm` is the window (16 kHz mono); `context` biases spelling/continuation. Returns [] on failure. */
+ *  `pcm` is the window (16 kHz mono); `context` biases spelling/continuation. Returns the segments
+ *  PLUS per-call operational metadata (model, latency, tokens, prompt) for observability. Returns
+ *  empty segments on any failure — the live path must never break. */
+export interface EnrichMeta {
+  model: string; latencyMs: number;
+  promptTokens?: number; outputTokens?: number; totalTokens?: number;
+  promptChars: number; windowMs: number; hadContext: boolean;
+  /** the FULL prompt sent (template + context) — kept so the row can show exactly what was asked. */
+  prompt: string;
+}
+export interface EnrichResult { segments: EnrichSegment[]; meta: EnrichMeta }
+
 export async function enrichAudio(
   pcm: Int16Array, sampleRate: number, model: string, context?: EnrichContext, dockId?: string,
-): Promise<EnrichSegment[]> {
-  const key = geminiKey();
-  if (!key) return [];
+): Promise<EnrichResult> {
+  const windowMs = Math.round(pcm.length / (sampleRate / 1000));
   let prompt = ENRICH_PROMPT_BASE;
   const present = context?.present?.filter(Boolean);
   if (present?.length) prompt += `\n\nPEOPLE LIKELY PRESENT (for name spelling): ${present.join(', ')}.`;
   const rt = context?.recentTranscript?.trim();
   if (rt) prompt += `\n\n--- REFERENCE TRANSCRIPT (recent, context ONLY — do not echo) ---\n${rt}`;
+  const meta: EnrichMeta = { model, latencyMs: 0, promptChars: prompt.length, windowMs, hadContext: !!rt, prompt };
+  const keys = geminiKeys();
+  if (!keys.length) return { segments: [], meta };
   const b64 = wav(pcm, sampleRate).toString('base64');
+  const body = JSON.stringify({
+    contents: [{ parts: [{ text: prompt }, { inline_data: { mime_type: 'audio/wav', data: b64 } }] }],
+    generationConfig: { responseMimeType: 'application/json', temperature: 0.1, maxOutputTokens: 4096 },
+  });
+  // RETRY across attempts on TRANSIENT failure (429 rate-limit / 5xx / timeout) — a single 429 used
+  // to silently drop a whole batch's enrichment (10-30s = several utterances), the "parakeet has it,
+  // enricher doesn't" miss. Each attempt rotates to the next key (paid→free→…), so a rate-limited
+  // account rolls over. 4xx (other than 429) is NOT retried — it won't get better. Live path stays
+  // best-effort: after all attempts, return [] rather than throw.
+  const MAX_ATTEMPTS = 3;
+  const t0 = Date.now();
+  type GeminiResp = { candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>; usageMetadata?: GeminiUsage };
+  let data: GeminiResp | null = null;
+  for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+    const key = keys[attempt % keys.length]!;
+    try {
+      const r = await fetch(`${GEMINI_BASE}/${model}:generateContent?key=${key}`, {
+        method: 'POST', headers: { 'content-type': 'application/json' }, body,
+        signal: AbortSignal.timeout(30_000),
+      });
+      if (r.ok) { data = await r.json() as GeminiResp; break; }
+      // transient (429/5xx) → back off and retry (next key); permanent 4xx → give up now.
+      const transient = r.status === 429 || r.status >= 500;
+      console.log(`[enrich] http ${r.status} on attempt ${attempt + 1}/${MAX_ATTEMPTS}${transient ? ' — retrying' : ' — giving up (non-transient)'}`);
+      if (!transient) break;
+    } catch (e) {
+      // fetch threw — timeout (AbortSignal) or network. Treat as transient.
+      console.log(`[enrich] fetch error on attempt ${attempt + 1}/${MAX_ATTEMPTS} (${(e as Error)?.name ?? 'error'}) — retrying`);
+    }
+    if (attempt < MAX_ATTEMPTS - 1) await sleep(400 * (attempt + 1)); // 400ms, 800ms backoff
+  }
+  meta.latencyMs = Date.now() - t0;
+  if (!data) return { segments: [], meta };
   try {
-    const r = await fetch(`${GEMINI_BASE}/${model}:generateContent?key=${key}`, {
-      method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        contents: [{ parts: [{ text: prompt }, { inline_data: { mime_type: 'audio/wav', data: b64 } }] }],
-        generationConfig: { responseMimeType: 'application/json', temperature: 0.1, maxOutputTokens: 4096 },
-      }),
-      signal: AbortSignal.timeout(30_000),
-    });
-    if (!r.ok) return [];
-    const data = await r.json() as { candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>; usageMetadata?: GeminiUsage };
+    const um = data.usageMetadata as { promptTokenCount?: number; candidatesTokenCount?: number; totalTokenCount?: number } | undefined;
+    meta.promptTokens = um?.promptTokenCount; meta.outputTokens = um?.candidatesTokenCount; meta.totalTokens = um?.totalTokenCount;
     if (dockId) reportGeminiCost(dockId, model, 'enrich', data.usageMetadata, Date.now());
     const txt = data?.candidates?.[0]?.content?.parts?.[0]?.text ?? '{}';
     let raw: Array<Record<string, unknown>>;
     try { raw = (JSON.parse(txt).segments ?? []) as Array<Record<string, unknown>>; }
     catch { raw = []; for (const m of txt.match(/\{[^{}]*"start"[^{}]*\}/g) ?? []) { try { raw.push(JSON.parse(m)); } catch { /* skip */ } } }
-    const windowMs = Math.round(pcm.length / (sampleRate / 1000));
     const mapped = raw
       .map((s): EnrichSegment => {
         const src = ['speech', 'media', 'sound'].includes(String(s.source)) ? s.source as EnrichSegment['source'] : 'speech';
@@ -191,13 +235,16 @@ export async function enrichAudio(
           addressConf: addressed ? conf(s.address_conf) : undefined,
           directive: addressed && s.directive ? String(s.directive).trim() : undefined,
           summary: s.summary ? String(s.summary).trim() : undefined,
+          // the model's OWN echo self-flag (rule 5). We KEEP echo segments and surface them dimmed
+          // in the Studio rather than dropping them in code — a genuine repeat must never vanish.
+          echo: s.echo === true ? true : undefined,
         };
       })
-      .filter((s) => s.text.length > 0 && !(rt && echoesContext(s.text, rt)));
+      .filter((s) => s.text.length > 0);
     // Coalesce over-split fragments (the model splits per-word despite the prompt) + fix degenerate
     // times — so one utterance becomes ONE record, not a stack of single words.
-    return coalesceSegments(mapped, windowMs);
+    return { segments: coalesceSegments(mapped, windowMs), meta };
   } catch {
-    return [];
+    return { segments: [], meta };
   }
 }

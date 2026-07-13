@@ -209,50 +209,49 @@ export function stitch(records: SnapshotRecord[], windowFromIso?: string): strin
       const label = identityLabel(r);
       if (idRun && idRun.label === label) idRun.to = t;                          // extend the run
       else { flushId(); idRun = { label, from: t, to: t, iso: r.interval.from }; }  // new run
-    } else if (r.source.kind === 'enriched' && ((r.payload as { audioSource?: string }).audioSource ?? 'speech') !== 'speech') {
-      // ENRICHER non-speech (played media / a sound): render as an ambient acoustic line, NOT as
-      // spoken conversation. The salience still rides so a crash reads as startling.
+    } else if (r.source.kind === 'enriched') {
+      // ONE fused enricher record per LLM call → iterate its SEGMENTS, each becoming its own line
+      // (a SPEECH line for real in-room speech, a SOUND line for played media / non-speech). The
+      // brain's authoritative `addressed` (if stamped on the record) applies to the whole call; the
+      // per-segment addressedToRobot is the enricher's softer guess.
       flushRuns();
-      const ps = r.payload as { salience?: string; audioKind?: string };
-      const es = ps.salience === 'startling' ? ' [STARTLING]' : ps.salience === 'notable' ? ' [notable]' : '';
-      lines.push(`${t} SOUND    ${r.payload.text}${ps.audioKind ? ` (${ps.audioKind})` : ''}${es}`);
-    } else if (r.source.kind === 'speech' || r.source.kind === 'enriched') {
+      const rp = r.payload as { addressed?: boolean; segments?: Array<{ text?: string; speaker?: number;
+        audioSource?: string; audioKind?: string; salience?: string; transcriptConf?: number;
+        addressedToRobot?: boolean; directive?: string }> };
+      for (const s of rp.segments ?? []) {
+        const text = String(s.text ?? '').trim();
+        if (!text) continue;
+        const sal = s.salience === 'startling' ? ' [STARTLING]' : s.salience === 'notable' ? ' [notable]' : '';
+        if ((s.audioSource ?? 'speech') !== 'speech') {
+          // played media / a non-speech sound → an ambient acoustic line, not conversation.
+          lines.push(`${t} SOUND    ${text}${s.audioKind ? ` (${s.audioKind})` : ''}${sal}`);
+          continue;
+        }
+        // ADDRESSED vs OVERHEARD: the brain's record-level `addressed` wins; else the enricher's guess.
+        let addr = '';
+        if (rp.addressed === true) addr = ' [→ TO YOU]';
+        else if (rp.addressed === false) addr = ' [overheard — not to you]';
+        else if (s.addressedToRobot) addr = ` [→ robot${s.directive ? `: ${s.directive}` : ''}]`;
+        const spk = s.speaker != null ? ` [speaker ${s.speaker}]` : '';
+        const unc = s.transcriptConf != null && s.transcriptConf < 0.45 ? ' [uncertain — words unclear]' : '';
+        lines.push(`${t} SPEECH  ${text}${spk}${addr}${sal}${unc}`);
+      }
+    } else if (r.source.kind === 'speech') {
       flushRuns();
-      // ACTIVE-SPEAKER (cheap diarization): who had their mouth most open during
-      // this utterance? Look at identity records overlapping the utterance time.
+      // LIVE PARAKEET (liveOnly) — kept only when NOT superseded by an enriched record (dropSupersededSpeech).
+      // ACTIVE-SPEAKER (cheap diarization): who had their mouth most open during this utterance?
       const speaker = activeSpeaker(sorted, r);
       const tag = speaker ? ` [likely ${speaker}]` : '';
       const tier = (r.payload as { confTier?: string }).confTier
         ?? ((r.payload as { lowConfidence?: boolean }).lowConfidence ? 'shaky' : 'good');
       if (tier === 'garbage') {
-        // GARBAGE tier: words unreliable (far-field mush / a Whisper repetition-loop).
-        // Do NOT present the garbled text as content — the brain must not treat it as
-        // something that was said. Render the FACT of unclear speech + its duration.
         const secs = Math.round((r.interval.durationMs ?? 0) / 1000);
         lines.push(`${t} SPEECH  [unclear speech${secs ? `, ~${secs}s` : ''}]${tag}`);
       } else {
         const conf = tier === 'shaky' ? ' [low-confidence]' : '';
-        // ADDRESSED vs OVERHEARD. `addressed` (boolean) is the BRAIN's authoritative decision
-        // (tap/wake/conversation-window latch), stamped on the record — it wins. When it's absent,
-        // fall back to the audio-interpreter's softer `addressedToRobot` guess. A line the brain
-        // marked NOT addressed is room chatter / a video / another conversation — render it so the
-        // summarizer (and the ego reading the summary) treat it as ambient, not spoken to the dock.
-        const pr = r.payload as { addressed?: boolean; addressedToRobot?: boolean; directive?: string;
-          salience?: string; audioSource?: string; speaker?: number; transcriptConf?: number };
-        let addr = '';
-        if (pr.addressed === true) addr = ' [→ TO YOU]';
-        else if (pr.addressed === false) addr = ' [overheard — not to you]';
-        else if (pr.addressedToRobot) addr = ` [→ robot${pr.directive ? `: ${pr.directive}` : ''}]`;
-        // AUDIO ENRICHER extras: a diarized speaker tag, a salience weight (so the ego reads a
-        // startling/notable moment as such, not flat text), and a MEDIA marker (played TV/video/
-        // song — not a person in the room, so the ego doesn't treat it as conversation).
-        const spk = pr.speaker != null ? ` [speaker ${pr.speaker}]` : '';
-        const sal = pr.salience === 'startling' ? ' [STARTLING]' : pr.salience === 'notable' ? ' [notable]' : '';
-        const media = pr.audioSource === 'media' ? ' [media playing — not the room]' : '';
-        // Low transcript confidence → mark it so the ego treats the words as uncertain (the enricher
-        // was guessing on unclear/far audio), rather than as something definitely said.
-        const unc = pr.transcriptConf != null && pr.transcriptConf < 0.45 ? ' [uncertain — words unclear]' : '';
-        lines.push(`${t} SPEECH  ${r.payload.text}${spk}${tag}${conf}${addr}${sal}${media}${unc}`);
+        const pr = r.payload as { addressed?: boolean };
+        const addr = pr.addressed === true ? ' [→ TO YOU]' : pr.addressed === false ? ' [overheard — not to you]' : '';
+        lines.push(`${t} SPEECH  ${r.payload.text}${tag}${conf}${addr}`);
       }
     } else {
       flushRuns();

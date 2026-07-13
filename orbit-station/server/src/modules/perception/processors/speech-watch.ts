@@ -33,7 +33,7 @@ import type { StreamContext, StreamProcessor } from '../processor.js';
 import { makeSnapshot, type SnapshotStore } from '../snapshots.js';
 import { dockConditions } from '../../../core/conditions.js';
 import { UtteranceDetector, SAMPLE_RATE } from './vad-endpoint.js';
-import type { EnrichSegment, EnrichContext } from './background-audio.js';
+import type { EnrichContext, EnrichResult } from './background-audio.js';
 import { mkdirSync, writeFileSync, readdirSync, statSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
 
@@ -336,7 +336,7 @@ export function speechWatchProcessor(
    *  it REPLACES the two `backgroundAudio` calls: it lands the authoritative durable records
    *  (one per segment); parakeet then stays live-only. Undefined ⇒ the legacy backgroundAudio
    *  path is used instead. */
-  enrich?: (pcm: Int16Array, sampleRate: number, dockId: string, context: EnrichContext) => Promise<EnrichSegment[]>,
+  enrich?: (pcm: Int16Array, sampleRate: number, dockId: string, context: EnrichContext) => Promise<EnrichResult>,
   /** Context for the enricher: recent authoritative transcript + who's present (for name
    *  spelling / continuity). Pulled live from the store/grounding by the caller. */
   enrichContext?: (dockId: string) => EnrichContext,
@@ -393,6 +393,16 @@ export function speechWatchProcessor(
         // The sidecar answered → clear any prior deaf condition (recovered).
         dockConditions.clear(ctx.dockId, 'stt_unreachable');
         const tr = res.transcription;
+        // SPEECH-vs-NONSPEECH signal for the enricher batch: parakeet is the authority, but a
+        // far-field ROOM flickers the RMS VAD and parakeet emits SPURIOUS one/two-char artifacts on
+        // those noise blips. If we treated any non-empty text as "speech" the fast path would arm on
+        // noise AND keep pushing its lull (window never closes → the 90s hard-cap windows we saw).
+        // So require a SUBSTANTIVE transcript: a non-garbage tier AND ≥2 real word-chars. A quiet
+        // whir → '' or a garbage sliver → NOT speech (only the acoustic path can arm). This makes
+        // "parakeet endpointed real words" the definition of a speech trigger.
+        const words = (tr?.text ?? '').replace(/[^a-z0-9]/gi, '');
+        const isRealSpeech = !!tr && words.length >= 2 && confidenceTier(tr) !== 'garbage';
+        detector.speechEndpoint(isRealSpeech);
         if (!tr) return;
         // Don't DROP shaky transcripts — a gasp / "oh!" / cut-off word can be
         // signal. TAG them lowConfidence (from the engine's own logprob/no-speech/
@@ -455,65 +465,100 @@ export function speechWatchProcessor(
          // calling enrichDone() — else #batchFiring stays true and the enricher wedges forever for
          // this stream. Wrap it; on any sync error, release the guard.
          try {
-          // HALLUCINATION GUARD: a window that's almost all silence but comes back as a full
-          // "conversation" is the model inventing it. If <10% of the window was voiced AND it was
-          // armed by a speech endpoint (not a real acoustic event), skip the enrich entirely — the
-          // little speech there is already covered by the previous window's tail / parakeet.
-          if (voicedPct < 10 && armedBy === 'speech') { detector.enrichDone(); return; }
-          // DEBUG: dump the exact WAV the enricher receives (PERCEPTION_ENRICH_SAVE=1), so we can
-          // LISTEN and confirm whether the enricher's text matches the actual audio or hallucinates.
-          if (process.env.PERCEPTION_ENRICH_SAVE === '1') { void saveEnrichWav(ctx.dockId, windowPcm, startedAtMs, voicedPct); }
           const windowEndMs = startedAtMs + Math.round(windowPcm.length / (SAMPLE_RATE / 1000));
-          // The raw parakeet STT that overlapped THIS window — so each enricher row can show what
-          // the live engine heard for the same audio (compare enricher vs raw STT; and if there's
-          // NO STT the window was non-speech / silence, exposing a hallucinated "conversation").
+          // The raw parakeet STT that overlapped THIS window — parakeet endpoints per real utterance,
+          // so a non-empty result is PROOF there was real speech here. Shown on the row (enricher vs
+          // raw STT compare) AND used by the hallucination guard below.
           const sttHere = store.list()
             .filter((r) => r.source.kind === 'speech' && (r.payload as { liveOnly?: boolean }).liveOnly
               && Date.parse(r.interval.from) < windowEndMs && Date.parse(r.interval.to) > startedAtMs)
             .map((r) => String((r.payload as { text?: string }).text ?? '')).filter(Boolean);
           const sttWindow = sttHere.join(' ').slice(0, 300);
+          // HALLUCINATION GUARD: a window that's almost all silence but comes back as a full
+          // "conversation" is the model inventing it. Skip the enrich when <10% voiced AND armed by a
+          // speech endpoint — BUT only if parakeet ALSO heard nothing here. If parakeet DID catch a
+          // real utterance (sttHere non-empty), there's provably real speech in this window (just
+          // quiet/far-field) and skipping would drop its enrichment — the exact "parakeet has it,
+          // enricher doesn't" loss. So run enrich when parakeet found speech, guard only true silence.
+          if (voicedPct < 10 && armedBy === 'speech' && sttHere.length === 0) {
+            console.log(`[enrich] skip: ${voicedPct}% voiced, no parakeet STT — silent window (hallucination guard)`);
+            detector.enrichDone(); return;
+          }
+          // DEBUG: dump the exact WAV the enricher receives (PERCEPTION_ENRICH_SAVE=1), so we can
+          // LISTEN and confirm whether the enricher's text matches the actual audio or hallucinates.
+          if (process.env.PERCEPTION_ENRICH_SAVE === '1') { void saveEnrichWav(ctx.dockId, windowPcm, startedAtMs, voicedPct); }
           const context = enrichContext?.(ctx.dockId) ?? {};
           void enrich(windowPcm, SAMPLE_RATE, ctx.dockId, context)
-            .then((segs) => {
+            .then(({ segments: segs, meta }) => {
+              // FIRED but produced NOTHING — Gemini 429/timeout/malformed (enrichAudio returns []),
+              // OR everything was filtered. If parakeet DID hear speech here, this is a "parakeet has
+              // it, enricher doesn't" miss — surface it so it's not silent.
+              if (segs.length === 0 && sttHere.length > 0) {
+                console.log(`[enrich] empty: fired ${meta.windowMs}ms window (${voicedPct}% voiced, ${meta.latencyMs}ms) but 0 segments — parakeet heard: "${sttWindow.slice(0, 80)}"`);
+              }
+              if (segs.length === 0) return;
+              // ADDRESSED → the brain FIRST, before the record is written — ZERO avoidable work between
+              // the enricher identifying "spoken to orbit" and the wake. Fires per addressed segment.
               for (const seg of segs) {
-                const nt = normText(seg.text);
-                if (nt.length > 3 && recentEnriched.includes(nt)) continue; // skip a cross-batch repeat
-                recentEnriched.push(nt); if (recentEnriched.length > 6) recentEnriched.shift();
-                // ADDRESSED → the brain FIRST, before we even write the record — so there is ZERO
-                // avoidable work between the enricher identifying "spoken to orbit" and the wake.
                 if (seg.addressedToRobot && seg.source === 'speech') {
                   onEnrichAddressed?.({ dockId: ctx.dockId, text: seg.text, conf: seg.addressConf ?? 0.7, directive: seg.directive ?? '' });
                 }
-                const from = new Date(startedAtMs + seg.fromMs);
-                const to = new Date(startedAtMs + Math.max(seg.fromMs, seg.toMs));
-                // ONE record kind for everything the enricher emits: 'enriched'. Same input, same
-                // output shape every time — WHAT it contains (real in-room speech vs played media
-                // vs a non-speech sound) is the `audioSource` FIELD, not a separate record kind.
-                // Consumers read the field they need (the summarizer treats media/sound as ambient,
-                // speech as conversation; the UI shows it as an emoji badge).
-                store.add(makeSnapshot({
-                  dockId: ctx.dockId,
-                  source: { id: ctx.streamId, kind: 'enriched', device: 'dock-webrtc', host: 'station' },
-                  model: { name: 'audio-enricher', endpoint: 'gemini' },
-                  from, to,
-                  payload: {
-                    text: seg.text,
-                    ...(seg.speaker != null ? { speaker: seg.speaker } : {}),
-                    audioSource: seg.source,
-                    ...(seg.kind ? { audioKind: seg.kind } : {}),
-                    ...(seg.transcriptConf != null ? { transcriptConf: seg.transcriptConf } : {}),
-                    salience: seg.salience,
-                    ...(seg.salienceConf != null ? { salienceConf: seg.salienceConf } : {}),
-                    ...(seg.summary ? { summary: seg.summary } : {}),
-                    ...(seg.addressedToRobot ? { addressedToRobot: true } : {}),
-                    ...(seg.addressConf != null ? { addressConf: seg.addressConf } : {}),
-                    ...(seg.directive ? { directive: seg.directive } : {}),
-                    // DEBUG fields: what triggered this + how much real audio + the raw STT here.
-                    enriched: true, armedBy, voicedPct,
-                    ...(sttWindow ? { sttWindow } : {}),
-                  },
-                }));
               }
+              // ONE RECORD PER LLM CALL. The call took ONE audio clip (this batch window) and produced
+              // N utterance SEGMENTS — they belong on ONE record as a `segments[]` field, NOT shattered
+              // into N bus records the UI has to reassemble (that reassembly caused the duplicate-row /
+              // wrong-audio / split-transcript bugs). The record's interval IS the real clip window
+              // [startedAtMs, +windowMs] so ▶ plays exactly this audio. Per-segment fromMs/toMs are the
+              // model's APPROXIMATE ordering hints — NOT reliable audio offsets (Gemini is not a forced
+              // aligner), so we never seek by them; the whole clip is the unit you can trust.
+              const stitched = segs.map((s) => s.text.trim()).filter(Boolean).join(' ');
+              const nt = normText(stitched);
+              if (nt.length > 3 && recentEnriched.includes(nt)) return; // cross-call repeat (finally() releases the guard)
+              recentEnriched.push(nt); if (recentEnriched.length > 6) recentEnriched.shift();
+              // roll-ups so simple consumers (isSalient / dropSuperseded / vision-gate) don't walk segments.
+              const hasSpeech = segs.some((s) => s.source === 'speech');
+              const addressedToRobot = segs.some((s) => s.addressedToRobot && s.source === 'speech');
+              const maxSalience = segs.some((s) => s.salience === 'startling') ? 'startling'
+                : segs.some((s) => s.salience === 'notable') ? 'notable' : 'low';
+              // the FIRST addressed segment's directive/conf, for the summarizer/brain convenience roll-up.
+              const addr = segs.find((s) => s.addressedToRobot && s.source === 'speech');
+              store.add(makeSnapshot({
+                dockId: ctx.dockId,
+                source: { id: ctx.streamId, kind: 'enriched', device: 'dock-webrtc', host: 'station' },
+                model: { name: 'audio-enricher', endpoint: 'gemini' },
+                from: new Date(startedAtMs), to: new Date(windowEndMs), // the REAL clip window
+                payload: {
+                  // the utterances this call produced (the expandable detail).
+                  segments: segs.map((s) => ({
+                    fromMs: s.fromMs, toMs: s.toMs, text: s.text,
+                    ...(s.speaker != null ? { speaker: s.speaker } : {}),
+                    audioSource: s.source,
+                    ...(s.kind ? { audioKind: s.kind } : {}),
+                    ...(s.transcriptConf != null ? { transcriptConf: s.transcriptConf } : {}),
+                    salience: s.salience,
+                    ...(s.salienceConf != null ? { salienceConf: s.salienceConf } : {}),
+                    ...(s.summary ? { summary: s.summary } : {}),
+                    ...(s.addressedToRobot ? { addressedToRobot: true } : {}),
+                    ...(s.addressConf != null ? { addressConf: s.addressConf } : {}),
+                    ...(s.directive ? { directive: s.directive } : {}),
+                    ...(s.echo ? { echo: true } : {}),
+                  })),
+                  // ROLL-UPS (call-level) — the whole-clip transcript + cheap flags for simple consumers.
+                  text: stitched, hasSpeech, addressedToRobot, maxSalience,
+                  ...(addr?.directive ? { directive: addr.directive } : {}),
+                  ...(addr?.addressConf != null ? { addressConf: addr.addressConf } : {}),
+                  // CALL METADATA (once) — trigger + how much real audio + the raw parakeet STT here.
+                  enriched: true, armedBy, voicedPct,
+                  ...(sttWindow ? { sttWindow } : {}),
+                  enrichBatchId: startedAtMs, // = the clip WAV's startedAtMs (▶ matches exactly by this)
+                  windowMs: meta.windowMs,
+                  enrichModel: meta.model, enrichMs: meta.latencyMs,
+                  ...(meta.promptTokens != null ? { enrichPromptTokens: meta.promptTokens } : {}),
+                  ...(meta.outputTokens != null ? { enrichOutputTokens: meta.outputTokens } : {}),
+                  ...(meta.totalTokens != null ? { enrichTotalTokens: meta.totalTokens } : {}),
+                  enrichPromptChars: meta.promptChars, enrichPrompt: meta.prompt,
+                },
+              }));
             })
             .catch(() => { /* enricher best-effort — parakeet's live path already ran */ })
             .finally(() => { detector.enrichDone(); });

@@ -7,13 +7,14 @@ import type { SnapshotRecord } from './snapshots.js';
 // writes the authoritative one for the same span. The memory arm must summarize the enricher's,
 // not both — dropSupersededSpeech drops a liveOnly speech record when an enriched record overlaps.
 function speech(from: string, to: string, text: string, flags: Partial<SnapshotRecord['payload']> = {}): SnapshotRecord {
-  // an ENRICHED record is kind:'enriched' (audioSource speech); a live parakeet record is kind:'speech'.
+  // A one-per-call ENRICHED record is kind:'enriched' with the hasSpeech roll-up + a speech segment;
+  // a live parakeet record is kind:'speech'. dropSupersededSpeech keys on hasSpeech now.
   const enriched = (flags as { enriched?: boolean }).enriched === true;
   return {
     ts: from, tz: 'IST', dockId: 'd',
     source: { id: 's', kind: enriched ? 'enriched' : 'speech', device: 'x', host: 'station' },
     model: { name: 'm', endpoint: 'e' }, interval: { from, to, durationMs: 1000 },
-    payload: { text, ...(enriched ? { audioSource: 'speech' } : {}), ...flags },
+    payload: { text, ...(enriched ? { hasSpeech: true, segments: [{ text, audioSource: 'speech' }] } : {}), ...flags },
   };
 }
 function vision(from: string, to: string): SnapshotRecord {

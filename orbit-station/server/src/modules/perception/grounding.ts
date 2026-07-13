@@ -90,18 +90,20 @@ export interface GroundingInput {
  *  Keying off the dead `change` field made vision permanently non-salient — a person walking
  *  in never woke a reactive bit or reached the coherent grounding tail (fixed 2026-07-09). */
 export function isSalient(r: SnapshotRecord): boolean {
-  const p = r.payload as { confTier?: string; salience?: string; text?: string; audioSource?: string; transcriptConf?: number };
+  const p = r.payload as { confTier?: string; salience?: string; text?: string; audioSource?: string;
+    transcriptConf?: number; hasSpeech?: boolean; maxSalience?: string;
+    segments?: Array<{ audioSource?: string; transcriptConf?: number }> };
   switch (r.source.kind) {
     case 'speech': return (p.confTier ?? 'good') === 'good';
-    // 'enriched' = the audio enricher's authoritative record (the durable audio kind now). Real
-    // in-room speech is salient (unless the transcript was a low-confidence guess); a non-speech
-    // event (media/sound) is salient only if notable/startling — mirrors vision-snapshot senseWake.
-    // (Keying only off the old speech/sound kinds made ALL enriched audio non-salient — the same
-    // regression the vision `change`-field note below warns about.)
-    case 'enriched':
-      return (p.audioSource ?? 'speech') === 'speech'
-        ? (p.transcriptConf == null || p.transcriptConf >= 0.45)
-        : p.salience === 'notable' || p.salience === 'startling';
+    // 'enriched' = the audio enricher's ONE-record-per-call authoritative record. Salient if it
+    // carries real in-room speech (any speech segment with non-low transcript_conf) OR a notable/
+    // startling non-speech event — mirrors vision-snapshot senseWake. Reads the call-level roll-ups
+    // (hasSpeech/maxSalience); the segments[] carry the per-utterance detail.
+    case 'enriched': {
+      const speechOk = (p.segments ?? []).some((s) => (s.audioSource ?? 'speech') === 'speech'
+        && (s.transcriptConf == null || s.transcriptConf >= 0.45));
+      return (p.hasSpeech ? speechOk : false) || p.maxSalience === 'notable' || p.maxSalience === 'startling';
+    }
     case 'sound': return p.salience === 'notable' || p.salience === 'startling';
     case 'vision': return !!p.text?.trim();   // change-gated → a committed record is a change
     case 'identity':

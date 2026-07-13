@@ -67,16 +67,34 @@ const PREROLL_MS = 200;
 // decoded PCM since the last fire (a DRAIN buffer, not the lossy 10s ring), and fires when
 // a trigger is ARMED and the room is quiet — cutting the window at an ENDPOINT boundary so
 // no word is split and no audio is missed between fires.
-/** Don't fire more often than this — the floor since the last fire. Also the natural
- *  window size in a chatty room. */
-const BATCH_MIN_MS = Number(process.env.PERCEPTION_BATCH_MIN_MS ?? 10_000);
-/** Quiet gap required after an endpointed utterance before the batch may fire (so we
- *  don't cut while the user is mid-thought between sentences). */
-const BATCH_SILENCE_MS = Number(process.env.PERCEPTION_BATCH_SILENCE_MS ?? 1500);
-/** Hard cap: if armed but the room never goes quiet, force-fire around here — but ONLY at
- *  an endpoint boundary. If no endpoint has occurred by the cap, keep going until one does
- *  (a true non-stop monologue) so we never split a word; the cursor picks up the remainder. */
-const BATCH_MAX_MS = Number(process.env.PERCEPTION_BATCH_MAX_MS ?? 30_000);
+// ── DUAL-PATH BATCHING ──────────────────────────────────────────────────────────────────
+// A batch fires on one of two paths, and `armedBy` records the CAUSE (not the content —
+// an acoustic-triggered clip may still contain speech, and that's fine):
+//
+//   A) SPEECH path (low latency): a parakeet STT endpoint that returned real WORDS arms it.
+//      After each endpoint we wait SPEECH_INACTIVITY_MS for new speech; if more speech starts
+//      we extend (wait for its endpoint, then wait again — repeats indefinitely); once the lull
+//      passes with no new speech, we FIRE. Chained sentences with sub-lull gaps = ONE clip.
+//
+//   B) ACOUSTIC path (ambient): an acoustic event (impulse/sustained), when no speech clip is
+//      open, opens a window ANCHORED at that event; it fires ACOUSTIC_WINDOW_MS later regardless
+//      of further acoustic events (they don't extend it). Continuous sound → back-to-back windows.
+//
+//   Speech OVERRIDES an open acoustic window: the clip START stays the acoustic marker (lead-up
+//   sound kept) but the END switches to the speech path (endpoint + lull), so it fires BEFORE the
+//   full window. armedBy stays 'acoustic' (audio was the cause; speech was found inside).
+//
+// The speech/non-speech distinction is made by PARAKEET (words vs '') via speechEndpoint(), NOT by
+// the RMS VAD — an RMS blip (a quiet whir) is not speech, so it can only ever arm the acoustic path.
+/** After a speech endpoint, wait this long for new speech before firing the speech clip. A new
+ *  utterance within the window extends the clip (one grouped clip); silence past it fires. */
+const SPEECH_INACTIVITY_MS = Number(process.env.PERCEPTION_SPEECH_INACTIVITY_MS ?? 3_000);
+/** The acoustic (ambient/non-speech) window length: an acoustic event with no speech captures
+ *  this many ms of audio, then fires. Anchored at the first event; continuous sound → back-to-back. */
+const ACOUSTIC_WINDOW_MS = Number(process.env.PERCEPTION_ACOUSTIC_WINDOW_MS ?? 30_000);
+/** Hard cap: if a clip somehow never reaches its fire condition (a true non-stop monologue with no
+ *  lull, or a runaway), force-fire around here — but ONLY at an endpoint boundary so no word splits. */
+const BATCH_MAX_MS = Number(process.env.PERCEPTION_BATCH_MAX_MS ?? 45_000);
 /** Bound the drain buffer so a wedged interpreter can't grow it without limit (frames are
  *  dropped from the FRONT past this — a degraded but bounded window, logged by the caller). */
 const BATCH_HARD_CAP_MS = Number(process.env.PERCEPTION_BATCH_HARD_CAP_MS ?? 90_000);
@@ -126,19 +144,26 @@ export class UtteranceDetector {
   #ring: Int16Array[] = [];
   #acoustic = new AudioTrigger();
 
-  // ── AUDIO ENRICHER batch state (the merged context-aware pass) ──
+  // ── AUDIO ENRICHER batch state (the dual-path context-aware pass) ──
   #batch: Int16Array[] = [];        // DRAIN buffer: all frames since the last fire (never lossy)
   #batchMs = 0;                     // ms of audio held in #batch
   #batchStartMs = 0;                // epoch ms of the batch's first frame (segment timestamps anchor here)
-  #batchArmed = false;              // a trigger (endpoint or acoustic) occurred → eligible to fire
   #lastEndpointOffMs = 0;          // #batchMs at the most recent utterance endpoint (the safe cut point)
   #batchFiring = false;             // an enricher pass is in flight — don't fire again until it returns
+  // PATH A (speech): parakeet confirmed WORDS on an endpoint → a speech clip is open. #speechDeadlineMs
+  // is the #batchMs value at which the SPEECH_INACTIVITY lull elapses (fire then, if still quiet). A
+  // new endpoint with words pushes it out; new speech onset also holds it open.
+  #speechArmed = false;
+  #speechDeadlineMs = 0;
+  // PATH B (acoustic): an acoustic window is open, anchored at #acousticStartOffMs (a #batchMs offset);
+  // it fires ACOUSTIC_WINDOW_MS of audio after that anchor. 0 = no acoustic window open.
+  #acousticOpen = false;
+  #acousticFireAtMs = 0;           // #batchMs at which the acoustic window fires (anchor + ACOUSTIC_WINDOW_MS)
   /** Fired when the batch is ready: the AUDIO ENRICHER should transcribe+interpret `windowPcm`
    *  (starting at epoch `startedAtMs`) in context and return segment records. The window is cut
    *  at an endpoint boundary; `armedBy` says what triggered (speech endpoint vs acoustic).
    *  Opt-in; the caller (speech-watch) owns the async pass and clears it via `enrichDone()`. */
   onEnrich?: (windowPcm: Int16Array, startedAtMs: number, armedBy: 'speech' | 'acoustic', voicedPct: number) => void;
-  #armedBy: 'speech' | 'acoustic' = 'speech';
 
   // Same as onUtterance but awaitable — used by flushNow so the caller knows the
   // transcript is persisted. Set alongside the constructor callback.
@@ -231,17 +256,25 @@ export class UtteranceDetector {
     }
 
     // AUDIO ENRICHER drain buffer: accumulate EVERY frame since the last fire. Unlike the
-    // 10s ring this is never lossy within a batch (bounded only by the hard cap). An acoustic
-    // trigger arms the batch; a speech endpoint arms it too (handled in #endUtterance).
+    // 10s ring this is never lossy within a batch (bounded only by the hard cap).
     if (this.onEnrich) {
       if (!this.#batch.length) this.#batchStartMs = Date.now() - FRAME_MS;
       this.#batch.push(frame);
       this.#batchMs += FRAME_MS;
-      if (acousticTrig) { this.#batchArmed = true; this.#armedBy = 'acoustic'; }
+      // PATH B arm: an acoustic event, when NO acoustic window is already open, opens one anchored
+      // HERE (fires ACOUSTIC_WINDOW_MS of audio later). Further acoustic events during the window do
+      // NOT extend it (anchored). A speech clip owns the batch instead when one is open (speech wins).
+      if (acousticTrig && !this.#acousticOpen && !this.#speechArmed) {
+        this.#acousticOpen = true;
+        this.#acousticFireAtMs = this.#batchMs + ACOUSTIC_WINDOW_MS;
+      }
       // bound the drain buffer (wedged enricher safety): drop from the FRONT past the hard cap.
       while (this.#batchMs > BATCH_HARD_CAP_MS && this.#batch.length > 1) {
         this.#batch.shift(); this.#batchMs -= FRAME_MS;
-        this.#batchStartMs += FRAME_MS; this.#lastEndpointOffMs = Math.max(0, this.#lastEndpointOffMs - FRAME_MS);
+        this.#batchStartMs += FRAME_MS;
+        this.#lastEndpointOffMs = Math.max(0, this.#lastEndpointOffMs - FRAME_MS);
+        this.#acousticFireAtMs = Math.max(0, this.#acousticFireAtMs - FRAME_MS);
+        this.#speechDeadlineMs = Math.max(0, this.#speechDeadlineMs - FRAME_MS);
       }
       this.#maybeEnrich(voiced);
     }
@@ -288,49 +321,64 @@ export class UtteranceDetector {
       .finally(() => { this.#interimInFlight = false; });
   }
 
-  /** Decide whether the AUDIO ENRICHER batch should fire this frame, and if so cut it at a
-   *  safe boundary and hand it off. Fires when: a pass isn't already in flight, the batch is
-   *  ARMED (an endpoint or acoustic trigger happened), at least BATCH_MIN_MS of audio has
-   *  accumulated (the floor), the room is currently quiet (>=BATCH_SILENCE_MS since the last
-   *  voiced frame) OR we've hit the BATCH_MAX_MS cap — AND there is an endpoint boundary to cut
-   *  at. If we're past the cap but no endpoint has occurred yet (a true non-stop monologue) we
-   *  keep going until one does, so a word is never split; the cursor picks up the remainder. */
+  /** DUAL-PATH fire decision, run per frame. Two independent ways a batch fires:
+   *   A) SPEECH: a speech clip is open (#speechArmed) and the SPEECH_INACTIVITY lull has elapsed
+   *      (#batchMs past #speechDeadlineMs) with no new utterance in progress → fire at the last
+   *      endpoint boundary. A new endpoint-with-words pushes #speechDeadlineMs out (grouping).
+   *   B) ACOUSTIC: an acoustic window is open (#acousticOpen) and #batchMs reached its anchored
+   *      fire time (#acousticFireAtMs) → fire. If a speech clip opened inside the window, path A
+   *      fires it FIRST (speech overrides — earlier), so B only fires a pure-ambient window.
+   *   Plus a hard-cap safety (BATCH_MAX_MS) so nothing buffers unboundedly. All fires cut at the
+   *   last endpoint boundary when one exists; a pure-acoustic window with no endpoint cuts at the
+   *   whole buffer (there's no word to split). */
   #maybeEnrich(voiced: boolean): void {
-    // Track trailing silence CONTINUOUSLY (any non-voiced frame extends it) — the endpoint's
-    // own ~1.3s silence counts too, so a normal "utterance ends → room goes quiet" reaches the
-    // BATCH_SILENCE_MS threshold. A voiced frame resets it. (Done regardless of arming/floor so
-    // the counter is always current.)
-    this.#batchSilenceMs = voiced ? 0 : this.#batchSilenceMs + FRAME_MS;
-    if (!this.onEnrich || this.#batchFiring || !this.#batchArmed) return;
-    if (this.#batchMs < BATCH_MIN_MS) return;
-    // fire when the room is quiet (not mid a NEW utterance) with enough trailing silence, OR
-    // we've hit the cap. #inSpeech guards against firing while a fresh utterance is underway.
-    const quiet = !this.#inSpeech && this.#batchSilenceMs >= BATCH_SILENCE_MS;
-    const capped = this.#batchMs >= BATCH_MAX_MS;
-    if (!quiet && !capped) return;
-    // cut ONLY at the last endpoint boundary (never mid-word). If none yet, wait for one.
-    const cut = this.#lastEndpointOffMs;
-    if (cut <= 0) return; // no completed utterance in the batch yet → keep accumulating
-    this.#fireEnrich(cut);
+    if (!this.onEnrich || this.#batchFiring) return;
+    const endpointCut = this.#lastEndpointOffMs; // >0 ⇒ a completed utterance boundary exists
+
+    // ── PATH A: speech clip ── fire once the SPEECH_INACTIVITY lull has elapsed since the last
+    // REAL-speech endpoint (#speechDeadlineMs). We do NOT gate on !#inSpeech: a noisy room flickers
+    // the RMS VAD in and out of #inSpeech continuously, so that gate would block firing forever. The
+    // deadline already means "3s since real speech AND no newer real speech" (a new utterance pushes
+    // it via speechEndpoint), and we cut at the last ENDPOINT boundary, which never splits a word.
+    if (this.#speechArmed && endpointCut > 0 && this.#batchMs >= this.#speechDeadlineMs) {
+      this.#fireEnrich(endpointCut, 'speech');
+      return;
+    }
+
+    // ── PATH B: acoustic window ── fire when the anchored window elapses. Cut at the last endpoint
+    // if one exists (keep whole utterances intact); else cut the whole buffer (pure non-speech).
+    // Same reasoning: don't gate on !#inSpeech (would stall in continuous sound).
+    if (this.#acousticOpen && this.#batchMs >= this.#acousticFireAtMs) {
+      this.#fireEnrich(endpointCut > 0 ? endpointCut : this.#batchMs, 'acoustic');
+      return;
+    }
+
+    // ── HARD-CAP safety ── never let the buffer grow past BATCH_MAX_MS while armed. In a noisy room
+    // the VAD can stay #inSpeech continuously (never a quiet gap), so this must fire EVEN mid-speech —
+    // but ONLY at the last endpoint boundary (a completed utterance) so no word is split. If there's
+    // no endpoint yet (a true non-stop monologue), we wait for one; the drain buffer's own hard cap
+    // (BATCH_HARD_CAP_MS) is the final backstop. This is what prevents the 90s runaway windows.
+    if ((this.#speechArmed || this.#acousticOpen) && this.#batchMs >= BATCH_MAX_MS && endpointCut > 0) {
+      this.#fireEnrich(endpointCut, this.#speechArmed ? 'speech' : 'acoustic');
+    }
   }
-  #batchSilenceMs = 0;
 
   /** Cut the batch at `cutFrames*FRAME_MS` worth of audio, hand the window to the enricher,
    *  and retain the REMAINDER (audio after the cut) as the start of the next batch so nothing
    *  is missed and windows never overlap. */
-  #fireEnrich(cutMs: number): void {
+  #fireEnrich(cutMs: number, armedBy: 'speech' | 'acoustic'): void {
     const cutFrames = Math.round(cutMs / FRAME_MS);
     const head = this.#batch.slice(0, cutFrames);
     const tail = this.#batch.slice(cutFrames);
     const startedAtMs = this.#batchStartMs;
-    const armedBy = this.#armedBy;
     // advance the cursor: the remainder becomes the new batch; timestamps continue from the cut.
     this.#batch = tail;
     this.#batchStartMs = startedAtMs + cutFrames * FRAME_MS;
     this.#batchMs = tail.length * FRAME_MS;
     this.#lastEndpointOffMs = 0;   // no endpoint boundary in the fresh remainder yet
-    this.#batchArmed = false;      // disarmed — re-arms only when a NEW endpoint/acoustic trigger occurs
-    this.#batchSilenceMs = 0;
+    // disarm BOTH paths — a new endpoint-with-words / acoustic event re-arms for the next clip.
+    this.#speechArmed = false; this.#speechDeadlineMs = 0;
+    this.#acousticOpen = false; this.#acousticFireAtMs = 0;
     this.#batchFiring = true;
     const pcm = concatFrames(head);
     // DIAG: how much of this window is actually VOICED? A window that's mostly silence but comes
@@ -359,11 +407,27 @@ export class UtteranceDetector {
                                        // under MIN_UTTERANCE_MS is dropped here — the
                                        // cause of an occasional "tapped but no reply"
                                        // when only a fragment of speech was voiced).
-    // ARM the enricher batch at THIS endpoint: it's a safe cut boundary (a completed
-    // utterance), so the batch may now fire here once the room stays quiet / the cap hits.
-    if (this.onEnrich) { this.#batchArmed = true; this.#armedBy = 'speech'; this.#lastEndpointOffMs = this.#batchMs; }
+    // Record the endpoint boundary (a safe cut point — a completed utterance). We DON'T arm the
+    // speech path here: that's PARAKEET-driven (words vs '') via speechEndpoint(), called by the
+    // owner once transcription returns. An RMS endpoint alone is not proof of speech (a whir trips
+    // it). So we just mark the cut and hand the utterance off; arming waits for the verdict.
+    if (this.onEnrich) this.#lastEndpointOffMs = this.#batchMs;
     this.#onUtterance(concatFrames(frames), this.#startedAt ?? new Date(), new Date());
     this.#startedAt = null;
+  }
+
+  /** PARAKEET's verdict on the just-endpointed utterance, from the owner (speech-watch) after STT
+   *  returns. `hasWords` = the utterance transcribed to real words → this is a SPEECH endpoint →
+   *  open/extend the speech clip (fire SPEECH_INACTIVITY_MS after this, if no new speech). `false`
+   *  (parakeet returned '') → NOT speech → leave the speech path alone (only the acoustic path can
+   *  arm). This is what makes "STT had an endpoint" the definition of a speech trigger. */
+  speechEndpoint(hasWords: boolean): void {
+    if (!this.onEnrich || !hasWords) return;
+    this.#speechArmed = true;
+    this.#speechDeadlineMs = this.#batchMs + SPEECH_INACTIVITY_MS;
+    // speech OVERRIDES an open acoustic window: keep the window's START (the acoustic marker, so the
+    // lead-up sound is in the clip) but let the SPEECH path own the END → fires before the full window.
+    // (armedBy still reports 'acoustic' when a window was open — the audio was the cause.)
   }
 
   /** Force-commit an in-progress utterance NOW (don't wait for the silence

@@ -46,6 +46,7 @@ interface Snapshot {
     // audio: dock-directed intent observed in the clip + the model's self-reported
     // confidences (a vibe, not a probability — but shown so nothing is hidden).
     addressedToRobot?: boolean; directive?: string;
+    echo?: boolean; // model's self-flag: this segment MAY be reference-context leaking, not fresh audio
     audioKindConf?: number; salienceConf?: number; addressConf?: number;
     bgTranscript?: string; gatedProbes?: number; confTier?: string;
     // summary pulses: exact lineage (the stitched input the summarizer digested).
@@ -85,7 +86,25 @@ interface Snapshot {
     voicedPct?: number; sttWindow?: string;
     // stamped by the brain when THIS addressed utterance actually WOKE the robot (a turn fired).
     wokeRobot?: boolean;
+    // ── ENRICHER CALL METADATA (the ONE Gemini call per debounced batch) ── every segment record
+    // from ONE enricher call shares enrichBatchId (the batch's startedAtMs) — the GROUPING KEY that
+    // lets the Studio collapse N per-utterance rows back into the single LLM call that produced them.
+    // enrichModel/enrichMs/tokens/enrichPrompt describe THAT call (identical across the group).
+    // Absent on pre-change history → each such record is its own single-item group; model falls back
+    // to s.model.name, latency/tokens are simply omitted.
+    enrichBatchId?: number; enrichModel?: string; enrichMs?: number; windowMs?: number;
+    enrichPromptTokens?: number; enrichOutputTokens?: number; enrichTotalTokens?: number;
+    enrichPromptChars?: number; enrichPrompt?: string;
+    // ONE fused enriched record carries the call's utterances as segments[] + roll-ups.
+    segments?: Array<{ fromMs?: number; toMs?: number; text?: string; speaker?: number;
+      audioSource?: string; audioKind?: string; transcriptConf?: number; salience?: string;
+      addressedToRobot?: boolean; addressConf?: number; directive?: string; summary?: string; echo?: boolean }>;
+    hasSpeech?: boolean; maxSalience?: string;
+    // the snapshot's own bus id (survives on records that carry one) — shown on the child as the
+    // bus-item identity. Falls back to the row key when absent.
+    id?: string;
   };
+  id?: string;
 }
 
 /** Per-kind presentation. Add an entry to give a new pipeline a curated look;
@@ -794,6 +813,11 @@ export function PerceptionStudio() {
   }
   // Reverse AFTER collapsing (collapse needs chronological adjacency) so newest is on top.
   if (newestFirst) filtered.reverse();
+
+  // ONE enricher LLM call = ONE 'enriched' record (segments[] carried inside it) = ONE row. No
+  // display-time grouping/reassembly any more — the server writes the fused record, so a row maps 1:1
+  // to a call. The row renders via <EnrichedRow>, expanding into its payload.segments[] (the utterances).
+
   const latestVision = [...ordered].reverse().find((s) => s.source.kind === 'vision');
   const istTime = (iso: string) => iso.slice(11, 19);
   // The DAY of a row (YYYY-MM-DD). Rows show TIME only (compact); a date DIVIDER is inserted
@@ -802,11 +826,11 @@ export function PerceptionStudio() {
   const istDay = (iso: string) => iso.slice(0, 10);
   const dayLabel = (iso: string) => new Date(`${iso.slice(0, 10)}T00:00:00+05:30`)
     .toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' });
-  // For each displayed row index, the day-divider label to render BEFORE it (null = same day as prev).
+  // For each displayed ROW index, the day-divider label to render BEFORE it (null = same day as prev).
   // The first row always gets its date, so the reader is never guessing the top of the list.
-  const dividerBefore: (string | null)[] = filtered.map(({ snap }, i) =>
-    (i === 0 || istDay(snap.interval.from) !== istDay(filtered[i - 1]!.snap.interval.from))
-      ? dayLabel(snap.interval.from) : null);
+  const dividerBefore: (string | null)[] = filtered.map((r, i) =>
+    (i === 0 || istDay(r.snap.interval.from) !== istDay(filtered[i - 1]!.snap.interval.from))
+      ? dayLabel(r.snap.interval.from) : null);
   const secs = (ms: number) => `${(ms / 1000).toFixed(1)}s`;
   // epoch ms → IST clock. `full` keeps milliseconds (HH:MM:SS.mmm) for the summary line;
   // default is HH:MM:SS for the small per-frame chips. IST because the whole console is IST
@@ -1260,11 +1284,10 @@ export function PerceptionStudio() {
           {filtered.length === 0
             ? <div className="empty">No snapshots yet. Start the stream — vision runs latency-bound, speech per utterance.</div>
             : filtered.map(({ snap: s, viewKind }, rowIdx) => {
-              const p = s.payload;
-              // The day-divider to render before this row (a new calendar day, or the list top).
+              // The day-divider to render before this ROW (a new calendar day, or the list top).
               const divider = dividerBefore[rowIdx];
-              const withDivider = (el: React.ReactNode) => divider
-                ? <React.Fragment key={`day-${s.interval.from}-${viewKind}`}>
+              const withDivider = (el: React.ReactNode, dividerKey: string) => divider
+                ? <React.Fragment key={`day-${dividerKey}`}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 10, margin: '8px 2px 2px',
                       color: '#5f6f8a', fontSize: 11, textTransform: 'uppercase', letterSpacing: 0.5 }}>
                       <span style={{ height: 1, flex: '0 0 14px', background: '#233048' }} />
@@ -1274,6 +1297,16 @@ export function PerceptionStudio() {
                     {el}
                   </React.Fragment>
                 : el;
+              const p = s.payload;
+              const enrichedRowKey = `${s.interval.from}|${s.source.id}|enriched`;
+              // ── ENRICHED = ONE record per LLM call → ONE row, expanding into payload.segments[]
+              // (the utterances). All enriched-specific rendering lives in <EnrichedRow>. ──
+              if (viewKind === 'enriched') {
+                return withDivider(
+                  <EnrichedRow key={enrichedRowKey} snap={s} source={source} rowIsHistory={rowIsHistory}
+                    istTime={istTime} secs={secs} />,
+                  enrichedRowKey);
+              }
               // STABLE key from the snapshot's own identity (start + stream + kind), NOT the
               // array index. With newest-first, a new row is inserted at index 0, which shifts
               // every index → index keys made React re-render the whole list ("refills
@@ -1321,7 +1354,7 @@ export function PerceptionStudio() {
                       {label}{p.gapProbes ? ` — ${p.gapProbes} probes, no inference` : ''}
                     </span>
                   </div>,
-                );
+                  rowKey);
               }
               return withDivider(
                 <div key={rowKey} title={isLiveOnly ? 'live-only (parakeet) — superseded by the audio enricher\'s record' : originTitle}
@@ -1642,7 +1675,7 @@ export function PerceptionStudio() {
                     )}
                   </span>
                 </div>,
-              );
+                rowKey);
             })}
         </div>
       </div>
@@ -1658,6 +1691,221 @@ export function PerceptionStudio() {
           <img src={`data:image/jpeg;base64,${zoomImg}`} alt="frame (original size)"
             onClick={(e) => e.stopPropagation()}
             style={{ display: 'block', margin: 'auto', borderRadius: 6, boxShadow: '0 8px 40px #000', cursor: 'default' }} />
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** Content-type emoji for ONE enriched bus item — what the record contains (in-room speech,
+ *  played media, or a non-speech sound), from audioSource + audioKind. Same logic the old
+ *  single enriched row used; now shared by the child rows. */
+function enrichedContentEmoji(audioSource?: string, audioKind?: string): { emoji: string; label: string } {
+  const src = audioSource ?? 'speech';
+  const k = (audioKind ?? '').toLowerCase();
+  const emoji = src === 'media' ? '📺' : src === 'sound'
+    ? (k.includes('music') ? '🎵' : k.includes('impact') || k.includes('crash') ? '💥'
+      : k.includes('laugh') ? '😆' : k.includes('alarm') || k.includes('bell') ? '🔔' : '🔊')
+    : '🗣';
+  const label = src === 'speech' ? 'in-room speech' : src === 'media' ? `played media${k ? ` (${k})` : ''}` : `sound${k ? ` (${k})` : ''}`;
+  return { emoji, label };
+}
+
+/** ONE enriched record = ONE enricher LLM call = ONE row. The call took one audio clip (this
+ *  record's interval) and produced N utterance SEGMENTS, carried in payload.segments[]. The row
+ *  headline is the CALL: model · latency · tokens · voiced% · trigger · N segs · ▶ the exact clip
+ *  WAV · stitched transcript. It EXPANDS into the per-utterance segments (the detail). No grouping /
+ *  reassembly — the server writes the fused record, so the row maps 1:1 to the call. */
+type EnrichSeg = NonNullable<Snapshot['payload']['segments']>[number];
+function EnrichedRow({ snap, source, rowIsHistory, istTime, secs }: {
+  snap: Snapshot;
+  source: string;
+  rowIsHistory: (r: Snapshot) => boolean;
+  istTime: (iso: string) => string;
+  secs: (ms: number) => string;
+}) {
+  const [open, setOpen] = useState(false);
+  const [showPlayer, setShowPlayer] = useState(false);
+  const [wavDur, setWavDur] = useState<number | null>(null); // real clip-WAV length, filled on load
+  const p = snap.payload as typeof snap.payload & { segments?: EnrichSeg[]; wokeRobot?: boolean };
+  const segments = p.segments ?? [];
+  const isHistoryRow = rowIsHistory(snap);
+  const originBar = { borderLeft: `2px solid ${isHistoryRow ? '#c08a2e' : '#2f7d63'}`, paddingLeft: 8, marginLeft: 2 } as const;
+
+  // The CLIP window = the record's interval (the real batch window the call ran on).
+  const clipFrom = snap.interval.from; const clipTo = snap.interval.to;
+  const clipMs = snap.interval.durationMs ?? Math.max(0, new Date(clipTo).getTime() - new Date(clipFrom).getTime());
+
+  // CALL METADATA. enrichModel/enrichMs/tokens absent on pre-change history → fall back / omit.
+  const model = MODEL_SHORT(p.enrichModel ?? snap.model.name);
+  const latency = p.enrichMs != null ? fmtMs(p.enrichMs) : null;
+  const tokens = p.enrichTotalTokens != null
+    ? `${p.enrichTotalTokens} tok`
+    : (p.enrichPromptTokens != null && p.enrichOutputTokens != null)
+      ? `${p.enrichPromptTokens}→${p.enrichOutputTokens} tok`
+      : null;
+  const voicedPct = p.voicedPct;
+  // WHAT ARMED THE BATCH. armedBy:'speech' = the VAD's energy-based endpointer fired — that is NOT a
+  // guarantee speech was there (whirring/clicks/quiet noise can trip it). Be honest: if the call found
+  // no speech (hasSpeech false), say "VAD endpoint · no speech" so the label doesn't imply speech.
+  const armedLabel = p.armedBy === 'acoustic'
+    ? 'acoustic event'
+    : p.hasSpeech === false ? 'VAD endpoint · no speech' : 'speech endpoint';
+  const armedTitle = p.armedBy === 'acoustic'
+    ? 'an impulse/sustained acoustic event armed this batch'
+    : p.hasSpeech === false
+      ? 'the VAD energy endpointer fired, but the enricher found NO speech here (just sound/quiet) — the endpointer detects energy, not speech'
+      : 'a voice-activity endpoint (speech) armed this batch';
+  const n = segments.length;
+
+  // ▶ THE EXACT CLIP WAV — server matches by enrichBatchId (the WAV's startedAtMs), so this is the
+  // precise audio this call ran on. No window-guessing, no overlap with a neighbouring batch.
+  const bid = p.enrichBatchId;
+  const wavId = (bid != null && bid > 1e12) ? bid : Date.parse(clipFrom);
+  const audioSrc = source && source !== STREAM_ID ? `/api/perception/enrich-audio/${encodeURIComponent(source)}/${wavId}` : '';
+
+  // Stitched headline transcript (roll-up if present, else join the segments). Trimmed if very long.
+  const stitchedFull = (p.text?.trim()) || segments.map((s) => (s.text ?? '').trim()).filter(Boolean).join(' ');
+  const stitched = stitchedFull.length > 240 ? `${stitchedFull.slice(0, 240)}…` : stitchedFull;
+
+  const pill = (bg: string, bd: string, col: string, title: string, children: React.ReactNode) => (
+    <span title={title} style={{ fontSize: 10, fontWeight: 700, color: col, background: bg, border: `1px solid ${bd}`, borderRadius: 4, padding: '0 6px' }}>{children}</span>
+  );
+
+  return (
+    <div style={{ ...originBar, display: 'flex', flexDirection: 'column', gap: 4, color: '#c9b6ff',
+      borderTop: '1px solid #1a1830', paddingTop: 4, marginTop: 2 }}>
+      {/* HEADER — this row IS the one LLM call. Click to expand its per-utterance segments. */}
+      <div style={{ display: 'flex', gap: 8, alignItems: 'baseline' }}>
+        <span style={{ opacity: 0.45, fontVariantNumeric: 'tabular-nums', width: 138, fontSize: 12 }}>
+          {istTime(clipFrom)}–{istTime(clipTo)}<span style={{ opacity: 0.6 }}> ({secs(clipMs)})</span>
+        </span>
+        <span style={{ width: 18, cursor: 'pointer' }} onClick={() => setOpen((v) => !v)} title={kindMeta('enriched').label}>{kindMeta('enriched').icon}</span>
+        <span style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 3 }}>
+          {/* CALL METADATA — the headline facts about the inference. */}
+          <span style={{ display: 'flex', flexWrap: 'wrap', gap: '3px 8px', alignItems: 'center', fontSize: 11 }}>
+            {n > 0 && <span onClick={() => setOpen((v) => !v)} title="expand into this call's per-utterance segments"
+              style={{ cursor: 'pointer', color: '#c9b6ff', fontWeight: 700 }}>{open ? '▾' : '▸'}</span>}
+            <span title="the model this enricher call used" style={{ color: '#b9a6ef', fontWeight: 600 }}>{model}</span>
+            {latency && <span style={{ opacity: 0.55 }} title="enricher call latency">· ⚡{latency}</span>}
+            {tokens && <span style={{ opacity: 0.55 }} title="token usage (prompt→output, or total)">· {tokens}</span>}
+            {voicedPct != null && pill(
+              'transparent',
+              voicedPct < 15 ? '#7a2c2c' : voicedPct < 40 ? '#5a4a20' : '#2c6f4a',
+              voicedPct < 15 ? '#ff8a8a' : voicedPct < 40 ? '#ffd9a0' : '#7ee0a0',
+              'how much of the clip window was actually voiced — low % + confident text = likely hallucinated',
+              <>🔊 {voicedPct}%{voicedPct < 15 ? ' ⚠' : ''}</>)}
+            <span title={armedTitle} style={{ opacity: 0.7 }}>· ⚡ {armedLabel}</span>
+            {n > 1 && pill('#171430', '#4a3f6a', '#c9b6ff', `${n} utterance segments in this one call`, <>{n} segs</>)}
+            {audioSrc && !showPlayer && (
+              <span onClick={() => setShowPlayer(true)}
+                title="load the exact clip audio this call ran on (a scrubber with a progress bar)"
+                style={{ cursor: 'pointer', color: '#7fa8d8', fontWeight: 700 }}>▶ load audio</span>
+            )}
+            {/* CLIP length: the record's window; the real WAV length (once loaded) is authoritative. */}
+            <span style={{ opacity: 0.6, fontSize: 10.5 }}
+              title={`clip window ${istTime(clipFrom)}–${istTime(clipTo)}${wavDur != null ? `; full audio ${wavDur.toFixed(1)}s` : ''}`}>
+              {wavDur != null ? `clip ${wavDur.toFixed(1)}s` : `clip ${secs(clipMs)}`}
+            </span>
+          </span>
+          {/* AUDIO WIDGET — a native player with a progress/scrubber so you SEE where playback is.
+              Lazy: only mounts (and fetches the WAV) after "▶ load audio". Each row has its OWN element
+              pointed at its EXACT clip WAV (server matches by enrichBatchId), so rows never share audio. */}
+          {audioSrc && showPlayer && (
+            <audio src={audioSrc} controls autoPlay preload="metadata"
+              onLoadedMetadata={(e) => { const d = e.currentTarget.duration; if (Number.isFinite(d)) setWavDur(d); }}
+              style={{ height: 30, width: 320, maxWidth: '100%', marginTop: 2 }} />
+          )}
+          {/* STITCHED headline transcript — the call's utterances joined, in order. */}
+          {stitched && <span style={{ color: '#dfe', fontSize: 13, lineHeight: 1.45 }}>{stitched}</span>}
+          {/* 🎙 raw parakeet STT for the clip (call-level) — shown once. */}
+          {p.sttWindow
+            ? <span style={{ fontSize: 10.5, color: '#7a8ca8' }}>🎙 raw STT: <span style={{ fontStyle: 'italic' }}>“{p.sttWindow}”</span></span>
+            : <span style={{ fontSize: 10.5, color: '#7a8ca8', opacity: 0.6, fontStyle: 'italic' }}>🎙 no raw STT for this clip</span>}
+          {/* ⛓ full JSON of the record. */}
+          <details style={{ marginTop: 1 }}>
+            <summary style={{ cursor: 'pointer', fontSize: 10, color: '#8fa8c8', listStyle: 'none' }}>⛓ full JSON</summary>
+            <pre style={{ fontSize: 10, whiteSpace: 'pre-wrap', color: '#9ab', margin: '3px 0 0', maxHeight: 300, overflow: 'auto', background: '#0d1420', padding: 6, borderRadius: 4, border: '1px solid #1c2233' }}>
+              {JSON.stringify({ ts: snap.interval.from, to: snap.interval.to, durationMs: snap.interval.durationMs, model: snap.model, payload: snap.payload }, null, 2)}
+            </pre>
+          </details>
+        </span>
+      </div>
+
+      {/* EXPAND → the per-utterance SEGMENTS (this call's diarized utterances). Segment fromMs/toMs
+          are the model's APPROXIMATE ordering hints, NOT reliable audio offsets — so no per-segment
+          seek; the whole clip (▶ above) is the audio you can trust. */}
+      {open && n > 0 && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 3, marginLeft: 26, marginTop: 2,
+          borderLeft: '1px solid #2a2648', paddingLeft: 10 }}>
+          {segments.map((s, i) => {
+            const { emoji, label } = enrichedContentEmoji(s.audioSource, s.audioKind);
+            const isMedia = s.audioSource === 'media';
+            const text = s.text ?? '';
+            return (
+              <div key={`seg-${i}`} style={{ display: 'flex', gap: 8, alignItems: 'baseline', color: '#c9b6ff' }}>
+                <span style={{ opacity: 0.35, fontVariantNumeric: 'tabular-nums', width: 42, fontSize: 10.5 }}
+                  title="approximate offset within the clip (ordering hint from the model — not exact)">
+                  ~{s.fromMs != null ? `${(s.fromMs / 1000).toFixed(0)}s` : '·'}
+                </span>
+                <span style={{ flex: 1 }}>
+                  <span title={label} style={{ marginRight: 5, fontSize: 12 }}>{emoji}</span>
+                  {s.speaker != null && (
+                    <span title="diarized speaker (audio enricher)"
+                      style={{ marginRight: 5, fontSize: 10, fontWeight: 700, color: '#c9b6ff', border: '1px solid #4a3f6a', borderRadius: 4, padding: '0 5px' }}>
+                      S{s.speaker}
+                    </span>
+                  )}
+                  {s.transcriptConf != null && (() => {
+                    const c = s.transcriptConf;
+                    const col = c >= 0.75 ? '#7ee0a0' : c >= 0.45 ? '#ffd9a0' : '#ff8a8a';
+                    const bd = c >= 0.75 ? '#2c6f4a' : c >= 0.45 ? '#5a4a20' : '#7a2c2c';
+                    return (
+                      <span title={`transcript confidence ${Math.round(c * 100)}% — the enricher's own certainty the words are what was actually said`}
+                        style={{ marginRight: 6, display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                        <span style={{ fontSize: 9.5, fontWeight: 700, color: col, border: `1px solid ${bd}`, borderRadius: 4, padding: '0 4px' }}>{Math.round(c * 100)}%</span>
+                        <span style={{ display: 'inline-block', width: 26, height: 4, borderRadius: 2, background: '#1c2233', overflow: 'hidden' }}>
+                          <span style={{ display: 'block', width: `${Math.round(c * 100)}%`, height: '100%', background: col }} />
+                        </span>
+                      </span>
+                    );
+                  })()}
+                  {isMedia && (
+                    <span title="played media (a TV/video/song), NOT a person in the room"
+                      style={{ marginRight: 5, fontSize: 10, fontWeight: 700, color: '#8fb0d8', border: '1px solid #34506a', borderRadius: 4, padding: '0 5px' }}>📺 media</span>
+                  )}
+                  {(s.salience === 'notable' || s.salience === 'startling') && (
+                    <span title="salience — would a head turn?"
+                      style={{ marginRight: 5, fontSize: 10, fontWeight: 700, color: s.salience === 'startling' ? '#ff9e6b' : '#ffd9a0',
+                        border: `1px solid ${s.salience === 'startling' ? '#7a3d20' : '#5a4a20'}`, borderRadius: 4, padding: '0 5px' }}>
+                      {s.salience}{s.salience === 'startling' ? ' ⚡' : ''}
+                    </span>
+                  )}
+                  {s.addressedToRobot && (
+                    <span title={`the enricher heard this addressed to orbit${s.addressConf != null ? ` (${Math.round(s.addressConf * 100)}% sure)` : ''} — an observation; the brain decides if it acts`}
+                      style={{ marginRight: 5, fontSize: 10, fontWeight: 700, color: '#7ec8ff', border: '1px solid #2c4a6f', borderRadius: 4, padding: '0 5px' }}>
+                      → orbit{s.directive ? `: ${s.directive}` : ''}
+                    </span>
+                  )}
+                  {s.echo && (
+                    <span title="the enricher flagged this as a POSSIBLE echo of recent context (not sure it's fresh audio) — kept for review, not dropped"
+                      style={{ marginRight: 5, fontSize: 10, fontWeight: 700, color: '#c8a86b', border: '1px solid #6a5320', borderRadius: 4, padding: '0 5px' }}>⤴ echo?</span>
+                  )}
+                  {(s.transcriptConf != null && s.transcriptConf < 0.45) || s.echo
+                    ? <span style={{ opacity: 0.5, fontStyle: 'italic' }} title={s.echo ? 'possible context echo — review' : 'low-confidence — the enricher was unsure of these words'}>{text}</span>
+                    : <span style={{ color: '#dfe' }}>{text}</span>}
+                </span>
+              </div>
+            );
+          })}
+          {/* the 🤖 woke marker rides the record (the brain stamps it after a wake). */}
+          {p.wokeRobot && (
+            <div style={{ fontSize: 10, color: '#7ee0a0', marginTop: 1 }} title="an utterance in this call WOKE the robot — a turn fired from it">🤖 woke the robot</div>
+          )}
+          {/* BUS IDENTITY — what this record put on the ring (one record = one bus item now). */}
+          <div style={{ marginTop: 2, fontSize: 9.5, color: '#5f728c', fontFamily: 'var(--mono)' }}>
+            topic: perception · kind: enriched · stream: {snap.source.id}
+          </div>
         </div>
       )}
     </div>
