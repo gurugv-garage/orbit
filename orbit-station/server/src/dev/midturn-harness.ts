@@ -385,10 +385,10 @@ async function f10_thinkingMerge(): Promise<void> {
   // a) correction folds in: ONE final answer reflecting the correction
   await idle();
   const mark = frames.length;
-  await say('What is twelve plus twelve? Answer with just the number.');
+  await say(`For run ${RUN}: what is twelve plus twelve? Answer with just the number.`);
   await waitConv('thinking', 20_000);
-  await hear('Actually, multiply them instead.');
-  const e = (await ring()).filter((x) => x.text.startsWith('Actually, multiply'));
+  await hear(`Actually, multiply them instead, run ${RUN}.`);
+  const e = await ringFor(`multiply them instead, run ${RUN}`);
   check('F10a', decisions(e).join() === 'merge:supersede', `mid-thinking correction → [${decisions(e)}]`);
   const t1 = await waitTurnEnd(mark, 60_000);
   const t2 = await waitTurnEnd(t1.frameIdx + 1, 60_000);
@@ -401,7 +401,7 @@ async function f10_thinkingMerge(): Promise<void> {
   const sid = (await (await fetch(`${HTTP}/api/brain/${DOCK}/sessions`)).json() as Array<{ sessionId: string }>)[0]!.sessionId;
   const obs = await (await fetch(`${HTTP}/api/observability/sessions/${sid}`)).json() as
     { turns: Array<{ state?: string; merges?: number; trigger?: { text?: string } }> };
-  const twelve = obs.turns.filter((t) => t.trigger?.text?.includes('twelve plus twelve'));
+  const twelve = obs.turns.filter((t) => t.trigger?.text?.includes(`For run ${RUN}:`));
   check('F10d', twelve.some((t) => t.state === 'cancelled') && twelve.some((t) => t.state === 'done' && t.merges === 1),
     `obs terminal states for the pair: [${twelve.map((t) => `${t.state}/m${t.merges ?? 0}`).join(', ')}]`);
   // b) repeated question → ONE answer, no follow-up duplicate
