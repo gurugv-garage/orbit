@@ -1048,7 +1048,8 @@ static instruction prefix is ~600 tokens, under Gemini's 1024-token implicit-cac
 minimum, and the audio + reference transcript diverge immediately after (the parts
 order is already optimal: prompt first, audio second). Its real levers, left as
 decisions: (a) model downshift to flash-lite (~4× cheaper — needs a Perception
-Studio takes A/B first; no benchmark rows exist yet), (b) the enrich-trigger gates
+Studio takes A/B first; no benchmark rows exist yet — DONE: the user moved the
+enricher to flash-lite the same day), (b) the enrich-trigger gates
 (already built), (c) reference-transcript tail length + maxOutputTokens (4096) if
 output cost shows up. `introspect` ($1.87/wk) calls too infrequently for implicit
 cache to ever be warm — its lever is cadence/model, not ordering.
