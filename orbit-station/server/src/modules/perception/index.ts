@@ -495,7 +495,7 @@ export function getMemoryStore(): MemoryStore | undefined {
  *  nonSpeech OFF — only real speech reaches Gemini; ambient sound is ignored (no value + costs a
  *  call). A disabled path never arms, so no clip of that kind is produced. Pushed live to every
  *  detector via `applyEnrichPaths()`. */
-const enricher_ = { enabled: true, model: 'gemini-2.5-flash', speech: true, nonSpeech: false };
+const enricher_ = { enabled: true, model: 'gemini-2.5-flash-lite', speech: true, nonSpeech: false };
 export function getEnricherState() { return { ...enricher_ }; }
 /** The model the live enricher should use right now (console-selectable). */
 export function currentEnrichModel(): string { return enricher_.model; }
@@ -750,7 +750,7 @@ export function perceptionModule(getHub: () => PerceptionProcessingHub): Station
   // (env set → on at boot; env unset → off, but still flippable on at runtime).
   // Seed the enricher's live-selectable model from PERCEPTION_ENRICH_MODEL.
   enricher_.model = process.env.PERCEPTION_ENRICH_MODEL
-    || 'gemini-2.5-flash';
+    || 'gemini-2.5-flash-lite';
   // CONTEXT-AWARE: assemble the recent-discussion context for a dock (rolling summary
   // + who's present) so Gemini disambiguates names/topic/homophones. Cheap (a few
   // hundred chars; audio dominates the cost).
