@@ -964,3 +964,11 @@ mishear `skip:dismissed` → silence. End-to-end feel is bounded by STT finaliza
 props produced SHORT audio (the prompt enforces 1–2 sentences), which is why the
 audio-drain bug hid from the earlier live reps — test props must force LONG TTS
 when testing interruption.
+
+> **Correction (same day):** the user tried it with their own voice — **it did not
+> work for them.** Status: NOT validated for real human speech. The injected-path
+> 61ms and the one clean synthetic-voice rep stand, but the thing that matters
+> failed. Do not re-theorize: next attempt, watch `/api/brain/dock-redmi/debug/addressed`
+> live while the user speaks — the ring will show whether their "stop" arrived at
+> all, how STT rendered it, and what decision it got (merged-with-ambient → refused,
+> mishear → not in lexicon, or never transcribed → mic/AEC during TTS).
