@@ -209,6 +209,13 @@ interface SidecarHealth {
   model?: string | null; latencyMs?: number; error?: string;
 }
 
+/** GET/POST /api/perception/enricher — the live enricher control surface. `enabled` is legacy
+ *  (the enricher is always on). `model` = the Gemini model. `speech`/`nonSpeech` are the two
+ *  TRIGGER PATHS: speech = Path A (a parakeet speech endpoint — real in-room speech); nonSpeech =
+ *  Path B (an acoustic/ambient event). Each gates whether that kind of audio reaches Gemini at
+ *  all. Default speech on / nonSpeech off. */
+interface EnricherState { enabled: boolean; model: string; speech: boolean; nonSpeech: boolean }
+
 export function PerceptionStudio() {
   const client = useStationClient();
   const [publishing, setPublishing] = useState(false);
@@ -320,7 +327,7 @@ export function PerceptionStudio() {
   // Background AUDIO interpreter (Gemini) — a live runtime toggle. enabled =
   // interpret significant acoustic windows online (kind/salience/summary + a cleaner
   // transcript; off = local Whisper only.
-  const [enricher, setEnricher] = useState<{ enabled: boolean; model: string }>({ enabled: false, model: 'gemini-2.5-flash-lite' });
+  const [enricher, setEnricher] = useState<EnricherState>({ enabled: false, model: 'gemini-2.5-flash-lite', speech: true, nonSpeech: false });
   const [enricherBusy, setEnricherBusy] = useState(false);
 
   const pcRef = useRef<RTCPeerConnection | null>(null);
@@ -333,7 +340,7 @@ export function PerceptionStudio() {
   useEffect(() => {
     api.get<{ base: string; extra: string }>('/perception/instruction')
       .then((r) => { setBase(r.base); setExtra(r.extra); }).catch(() => {});
-    api.get<{ enabled: boolean; model: string }>('/perception/enricher')
+    api.get<EnricherState>('/perception/enricher')
       .then(setEnricher).catch(() => {});
   }, []);
 
@@ -409,10 +416,10 @@ export function PerceptionStudio() {
     });
   }, [source, hiddenKinds]);
 
-  // Flip the background audio interpreter (or change its model) live.
-  const setEnricherState = useCallback(async (patch: { enabled?: boolean; model?: string }) => {
+  // Flip the enricher model or its trigger-path gates (speech / non-speech) live.
+  const setEnricherState = useCallback(async (patch: { enabled?: boolean; model?: string; speech?: boolean; nonSpeech?: boolean }) => {
     setEnricherBusy(true);
-    try { setEnricher(await api.post<{ enabled: boolean; model: string }>('/perception/enricher', patch)); }
+    try { setEnricher(await api.post<EnricherState>('/perception/enricher', patch)); }
     catch { /* leave prior state */ }
     finally { setEnricherBusy(false); }
   }, []);
@@ -977,6 +984,33 @@ export function PerceptionStudio() {
         <div style={{ fontSize: 10.5, color: '#6a7a8a', marginTop: 6 }}>
           flash-lite is cheaper but hallucinates more (repetition loops, weaker timestamps). flash gives cleaner,
           more coherent transcripts. Changes apply to the NEXT batch (no restart).
+        </div>
+
+        {/* TRIGGER PATHS — which audio starts an enrich (Gemini) call. Two independent gates; a
+            disabled path never arms, so no clip of that kind is produced (nor its call). */}
+        <div style={{ marginTop: 10, paddingTop: 10, borderTop: '1px solid #1c3325' }}>
+          <div style={{ fontSize: 11, color: '#7ee0a0', fontWeight: 600, marginBottom: 4 }}>enrich triggers</div>
+          <label style={{ display: 'flex', alignItems: 'flex-start', gap: 8, fontSize: 11.5, color: '#cfe', cursor: enricherBusy ? 'default' : 'pointer', marginBottom: 6 }}>
+            <input type="checkbox" checked={enricher.speech} disabled={enricherBusy}
+              onChange={(e) => void setEnricherState({ speech: e.target.checked })} style={{ marginTop: 2 }} />
+            <span>
+              <b>speech</b> — a parakeet speech endpoint (real in-room words) fires a clip.
+              <span style={{ color: '#7a8ca8' }}> Shows as <i>speech endpoint</i>, or <i>VAD endpoint · no speech</i> when the enricher finds no speech in a speech-armed clip.</span>
+            </span>
+          </label>
+          <label style={{ display: 'flex', alignItems: 'flex-start', gap: 8, fontSize: 11.5, color: '#cfe', cursor: enricherBusy ? 'default' : 'pointer' }}>
+            <input type="checkbox" checked={enricher.nonSpeech} disabled={enricherBusy}
+              onChange={(e) => void setEnricherState({ nonSpeech: e.target.checked })} style={{ marginTop: 2 }} />
+            <span>
+              <b>non-speech</b> — an acoustic/ambient event (a clunk, hum, music, laughter) opens a ~30 s window and fires a clip.
+              <span style={{ color: '#7a8ca8' }}> Shows as <i>acoustic event</i>.</span>
+            </span>
+          </label>
+          <div style={{ fontSize: 10.5, color: '#6a7a8a', marginTop: 6 }}>
+            Default: speech ON, non-speech OFF — only real speech reaches Gemini. Ambient sound rarely carries value and
+            each window costs a call, so it's off by default; turn it on to also enrich the room's non-speech audio.
+            Applies live (no restart).
+          </div>
         </div>
       </div>
       )}
@@ -1727,6 +1761,8 @@ function EnrichedRow({ snap, source, rowIsHistory, istTime, secs }: {
   const [open, setOpen] = useState(false);
   const [showPlayer, setShowPlayer] = useState(false);
   const [wavDur, setWavDur] = useState<number | null>(null); // real clip-WAV length, filled on load
+  const [playSec, setPlaySec] = useState(0);                 // live playhead (s) from the audio element
+  const rowAudioRef = useRef<HTMLAudioElement | null>(null); // this row's own player (for click-to-seek)
   const p = snap.payload as typeof snap.payload & { segments?: EnrichSeg[]; wokeRobot?: boolean };
   const segments = p.segments ?? [];
   const isHistoryRow = rowIsHistory(snap);
@@ -1745,18 +1781,60 @@ function EnrichedRow({ snap, source, rowIsHistory, istTime, secs }: {
       ? `${p.enrichPromptTokens}→${p.enrichOutputTokens} tok`
       : null;
   const voicedPct = p.voicedPct;
-  // WHAT ARMED THE BATCH. armedBy:'speech' = the VAD's energy-based endpointer fired — that is NOT a
-  // guarantee speech was there (whirring/clicks/quiet noise can trip it). Be honest: if the call found
-  // no speech (hasSpeech false), say "VAD endpoint · no speech" so the label doesn't imply speech.
+  // WHAT ARMED THE BATCH (dual-path — see vad-endpoint.ts). armedBy:'acoustic' = Path B: an ambient
+  // acoustic event (impulse/sustained) opened the window. armedBy:'speech' = Path A: parakeet reported
+  // real words and fired a speech endpoint. When the speech path armed but the enricher found NO speech
+  // (hasSpeech false), it's a parakeet-vs-enricher mismatch (parakeet heard words, Gemini disagreed) —
+  // label it "VAD endpoint · no speech" so the badge doesn't claim speech that isn't in the clip.
   const armedLabel = p.armedBy === 'acoustic'
     ? 'acoustic event'
     : p.hasSpeech === false ? 'VAD endpoint · no speech' : 'speech endpoint';
   const armedTitle = p.armedBy === 'acoustic'
-    ? 'an impulse/sustained acoustic event armed this batch'
+    ? 'an impulse/sustained acoustic event armed this batch (Path B — ambient)'
     : p.hasSpeech === false
-      ? 'the VAD energy endpointer fired, but the enricher found NO speech here (just sound/quiet) — the endpointer detects energy, not speech'
-      : 'a voice-activity endpoint (speech) armed this batch';
+      ? 'parakeet armed the speech path (Path A) but the enricher found NO speech here — a parakeet-vs-enricher mismatch, not a VAD event'
+      : 'a parakeet speech endpoint (real words) armed this batch (Path A)';
   const n = segments.length;
+
+  // ── APPROXIMATE SEGMENT TIMELINE ──────────────────────────────────────────────────────────────
+  // THESE TIMES ARE NOT RELIABLE. Gemini is not a forced aligner — its per-segment start/end seconds
+  // are guesses, and when they're degenerate the SERVER already discards them and spreads segments
+  // evenly across the window (audio-enricher.ts coalesceSegments). So `fromMs/toMs` here are, at best,
+  // an ordering hint and, at worst, an even division. We render a timeline + click-to-seek + a live
+  // playhead ANYWAY — deliberately inaccurate, clearly labelled — because SEEING the (wrong) mapping
+  // may itself reveal how far off it is and motivate a real aligner later. Do NOT treat these offsets
+  // as truth; the whole-clip ▶ audio is the only trustworthy playback.
+  const timelineDurS = (wavDur ?? clipMs / 1000) || 1; // real WAV length once loaded, else the window
+  const segTimes = useMemo(() => {
+    // Prefer the model's own fromMs/toMs (clamped to the clip). If the whole set looks degenerate
+    // (all zero / collapsed / out of range), fall back to an EVEN spread — mirroring the server so
+    // the picture matches the data, not a second invented layout.
+    const durMs = timelineDurS * 1000;
+    const raw = segments.map((s) => ({
+      from: typeof s.fromMs === 'number' ? s.fromMs : NaN,
+      to: typeof s.toMs === 'number' ? s.toMs : NaN,
+    }));
+    const spanOk = raw.some((r) => Number.isFinite(r.from))
+      && Math.max(...raw.map((r) => (Number.isFinite(r.to) ? r.to : 0)))
+         - Math.min(...raw.map((r) => (Number.isFinite(r.from) ? r.from : 0))) > durMs * 0.15;
+    if (spanOk) {
+      return raw.map((r, i) => {
+        const from = Math.max(0, Math.min(durMs, Number.isFinite(r.from) ? r.from : (i * durMs) / n));
+        const to = Math.max(from + 200, Math.min(durMs, Number.isFinite(r.to) ? r.to : from + durMs / n));
+        return { fromS: from / 1000, toS: to / 1000, spread: false };
+      });
+    }
+    const slot = durMs / Math.max(1, n); // even spread (the honest fallback)
+    return segments.map((_s, i) => ({ fromS: (i * slot) / 1000, toS: ((i + 1) * slot) / 1000, spread: true }));
+  }, [segments, timelineDurS, n]);
+  const anySpread = segTimes.some((t) => t.spread);
+  // which segment the playhead is currently inside (by the approximate times) — for highlight sync.
+  const activeSeg = segTimes.findIndex((t) => playSec >= t.fromS && playSec < t.toS);
+  const seekTo = (sec: number) => {
+    setShowPlayer(true); // clicking the timeline loads the player if it wasn't open yet
+    const el = rowAudioRef.current;
+    if (el) { try { el.currentTime = sec; void el.play(); } catch { /* not ready yet */ } }
+  };
 
   // ▶ THE EXACT CLIP WAV — server matches by enrichBatchId (the WAV's startedAtMs), so this is the
   // precise audio this call ran on. No window-guessing, no overlap with a neighbouring batch.
@@ -1812,9 +1890,49 @@ function EnrichedRow({ snap, source, rowIsHistory, istTime, secs }: {
               Lazy: only mounts (and fetches the WAV) after "▶ load audio". Each row has its OWN element
               pointed at its EXACT clip WAV (server matches by enrichBatchId), so rows never share audio. */}
           {audioSrc && showPlayer && (
-            <audio src={audioSrc} controls autoPlay preload="metadata"
+            <audio ref={rowAudioRef} src={audioSrc} controls autoPlay preload="metadata"
               onLoadedMetadata={(e) => { const d = e.currentTarget.duration; if (Number.isFinite(d)) setWavDur(d); }}
+              onTimeUpdate={(e) => setPlaySec(e.currentTarget.currentTime)}
+              onEnded={() => setPlaySec(0)}
               style={{ height: 30, width: 320, maxWidth: '100%', marginTop: 2 }} />
+          )}
+          {/* APPROXIMATE SEGMENT TIMELINE — click a block to seek there; the playhead tracks playback.
+              DELIBERATELY INACCURATE (see segTimes above): the offsets are the model's guesses (or an
+              even spread), NOT a real alignment. Speech vs non-speech blocks are styled differently. */}
+          {n > 0 && (
+            <div style={{ marginTop: 3 }}>
+              <div title="click a block to seek the clip to that segment's APPROXIMATE position"
+                style={{ position: 'relative', height: 16, width: 320, maxWidth: '100%', background: '#0d1420',
+                  border: '1px solid #1c2233', borderRadius: 4, overflow: 'hidden', cursor: 'pointer' }}>
+                {segTimes.map((t, i) => {
+                  const s = segments[i]!;
+                  const left = `${(t.fromS / timelineDurS) * 100}%`;
+                  const width = `${Math.max(1.5, ((t.toS - t.fromS) / timelineDurS) * 100)}%`;
+                  const speech = (s.audioSource ?? 'speech') === 'speech';
+                  const active = i === activeSeg;
+                  // speech = green-ish solid; non-speech (media/sound) = amber hatched — visually distinct.
+                  const bg = speech ? (active ? '#2f7d63' : '#1d5342') : (active ? '#7a5a20' : '#4a3a18');
+                  const bd = speech ? '#3fa07f' : '#a07a30';
+                  return (
+                    <div key={`tl-${i}`} title={`segment ${i + 1} — ${speech ? 'speech' : 'non-speech'} · ~${t.fromS.toFixed(1)}–${t.toS.toFixed(1)}s (approx)`}
+                      onClick={(e) => { e.stopPropagation(); seekTo(t.fromS); }}
+                      style={{ position: 'absolute', left, width, top: 0, bottom: 0, background: bg,
+                        borderLeft: `1px solid ${bd}`, boxSizing: 'border-box',
+                        backgroundImage: speech ? undefined : 'repeating-linear-gradient(45deg, transparent, transparent 3px, rgba(255,255,255,0.08) 3px, rgba(255,255,255,0.08) 6px)' }} />
+                  );
+                })}
+                {/* live playhead */}
+                {showPlayer && (
+                  <div style={{ position: 'absolute', left: `${Math.min(100, (playSec / timelineDurS) * 100)}%`,
+                    top: 0, bottom: 0, width: 2, background: '#e8f0ff', boxShadow: '0 0 3px #cfe' }} />
+                )}
+              </div>
+              <div style={{ fontSize: 9, color: '#6a7a8a', marginTop: 1 }}>
+                ⚠ approximate — segment positions are the model's guesses{anySpread ? ' (evenly spread; the model gave no usable times)' : ''}, not a real alignment.
+                <span style={{ color: '#3fa07f', marginLeft: 6 }}>▮ speech</span>
+                <span style={{ color: '#a07a30', marginLeft: 6 }}>▨ non-speech</span>
+              </div>
+            </div>
           )}
           {/* STITCHED headline transcript — the call's utterances joined, in order. */}
           {stitched && <span style={{ color: '#dfe', fontSize: 13, lineHeight: 1.45 }}>{stitched}</span>}
@@ -1841,12 +1959,22 @@ function EnrichedRow({ snap, source, rowIsHistory, istTime, secs }: {
           {segments.map((s, i) => {
             const { emoji, label } = enrichedContentEmoji(s.audioSource, s.audioKind);
             const isMedia = s.audioSource === 'media';
+            const isSpeech = (s.audioSource ?? 'speech') === 'speech';
             const text = s.text ?? '';
+            const t = segTimes[i];
+            const active = i === activeSeg;
+            // Non-speech (media/sound) reads differently from speech: a warm-amber left rule + tint,
+            // vs speech's neutral look. The active (currently-playing, approx) segment gets a highlight.
             return (
-              <div key={`seg-${i}`} style={{ display: 'flex', gap: 8, alignItems: 'baseline', color: '#c9b6ff' }}>
-                <span style={{ opacity: 0.35, fontVariantNumeric: 'tabular-nums', width: 42, fontSize: 10.5 }}
-                  title="approximate offset within the clip (ordering hint from the model — not exact)">
-                  ~{s.fromMs != null ? `${(s.fromMs / 1000).toFixed(0)}s` : '·'}
+              <div key={`seg-${i}`} style={{ display: 'flex', gap: 8, alignItems: 'baseline',
+                color: '#c9b6ff', borderRadius: 4, paddingLeft: 4, marginLeft: -4,
+                borderLeft: isSpeech ? '2px solid transparent' : '2px solid #a07a30',
+                background: active ? 'rgba(120,150,255,0.12)' : (isSpeech ? 'transparent' : 'rgba(160,122,48,0.06)') }}>
+                <span onClick={() => t && seekTo(t.fromS)}
+                  style={{ opacity: 0.5, fontVariantNumeric: 'tabular-nums', width: 42, fontSize: 10.5,
+                    cursor: t ? 'pointer' : 'default', color: active ? '#e8f0ff' : undefined, textDecoration: t ? 'underline dotted' : undefined }}
+                  title="APPROXIMATE offset within the clip (the model's guess, not a real alignment) — click to seek playback here">
+                  ~{t ? `${t.fromS.toFixed(0)}s` : (s.fromMs != null ? `${(s.fromMs / 1000).toFixed(0)}s` : '·')}
                 </span>
                 <span style={{ flex: 1 }}>
                   <span title={label} style={{ marginRight: 5, fontSize: 12 }}>{emoji}</span>
