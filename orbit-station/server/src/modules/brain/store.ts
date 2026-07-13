@@ -28,6 +28,13 @@ export interface SessionMeta {
   openedAt: number;
   lastTurnEndedAt: number;
   closedAt?: number;
+  /** why it closed ('idle' | 'console' | 'switched' | …). 'console' = a human
+   *  explicitly ended it — presence must NOT resume it (WI-5,
+   *  busy-queue-black-hole.md: `session/end` was undone ~2s later by the
+   *  presence path, so a fresh session was impossible while the phone was
+   *  connected). Absent on records from before this field: treated as
+   *  resumable (the old behavior). */
+  closedBy?: string;
   turns: number;
   /** short text summary written at close (compaction hook — phase 2 seeds
    *  the next session with it). */
@@ -105,11 +112,12 @@ export class SessionStore {
   /** Close a session with a summary (idle timeout / explicit end / reset). The
    *  task cascade (stopping a closed session's background tasks) is the
    *  TaskSupervisor's job — see DockBrainSession.endSession. */
-  close(dock: string, sessionId: string, summary: string): void {
+  close(dock: string, sessionId: string, summary: string, closedBy?: string): void {
     const idx = this.#index(dock);
     const meta = idx.find((s) => s.sessionId === sessionId);
     if (!meta || meta.closedAt != null) return;
     meta.closedAt = Date.now();
+    if (closedBy) meta.closedBy = closedBy;
     meta.summary = summary;
     this.#writeIndex(dock, idx);
   }
@@ -180,6 +188,7 @@ export class SessionStore {
     const meta = idx.find((s) => s.sessionId === sessionId);
     if (!meta) return false;
     delete meta.closedAt;
+    delete meta.closedBy; // it's open again; the next close records its own reason
     meta.lastTurnEndedAt = Date.now();
     this.#writeIndex(dock, idx);
     return true;

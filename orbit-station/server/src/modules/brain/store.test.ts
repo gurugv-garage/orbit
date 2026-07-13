@@ -102,3 +102,30 @@ test('presence flow: a recent closed session is resumed, not duplicated', () => 
   assert.equal(store.openSession(DOCK)?.sessionId, first.sessionId);  // SAME session, context intact
   assert.equal(store.sessions(DOCK).length, 1);              // not fragmented into two
 });
+
+// ── WI-5: `session/end` means closed (busy-queue-black-hole.md Addendum 3) ──
+
+test('resumableOnPresence: a CONSOLE close is durable — presence must not resume it', () => {
+  const now = 5_000_000;
+  assert.equal(resumableOnPresence(
+    meta({ closedAt: now - 1, lastTurnEndedAt: now - 1, closedBy: 'console' }), now), false);
+});
+
+test('resumableOnPresence: an idle close stays resumable; pre-field records (no closedBy) too', () => {
+  const now = 5_000_000;
+  assert.equal(resumableOnPresence(
+    meta({ closedAt: now - 1, lastTurnEndedAt: now - 1, closedBy: 'idle' }), now), true);
+  assert.equal(resumableOnPresence(
+    meta({ closedAt: now - 1, lastTurnEndedAt: now - 1 }), now), true); // back-compat
+});
+
+test('store round-trip: closedBy persists on close and clears on reopen', () => {
+  const store = freshStore();
+  const s = store.open(DOCK);
+  store.close(DOCK, s.sessionId, 'bye', 'console');
+  assert.equal(store.sessions(DOCK)[0]!.closedBy, 'console');
+  assert.equal(store.reopen(DOCK, s.sessionId), true); // explicit console "continue" still works
+  assert.equal(store.sessions(DOCK)[0]!.closedBy, undefined);
+  store.close(DOCK, s.sessionId, 'bye again', 'idle');
+  assert.equal(store.sessions(DOCK)[0]!.closedBy, 'idle');
+});

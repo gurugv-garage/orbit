@@ -158,6 +158,11 @@ type FailCode = 'timeout' | 'llm_error' | 'busy';
  *  Pure so the boundary is unit-tested without a full DockBrainSession. */
 export function resumableOnPresence(recent: SessionMeta | undefined, now: number): recent is SessionMeta {
   return !!recent && recent.closedAt != null
+    // a CONSOLE close is a human's explicit boundary — presence must not undo it
+    // (WI-5: observed live, `session/end` was resumed ~2s later by the presence
+    // path, making a fresh session impossible while the phone was connected).
+    // Records without closedBy (pre-field) stay resumable, as before.
+    && recent.closedBy !== 'console'
     && now - recent.lastTurnEndedAt <= SESSION_IDLE_MIN * 60_000;
 }
 
@@ -690,8 +695,10 @@ export class DockBrainSession {
     // BEFORE closing the record. The supervisor knows what's running.
     this.#d.stopTasksForParent?.(this.dock, sessionId);
     // close NOW with the cheap tail digest; the LLM compaction below upgrades
-    // it asynchronously (close must never wait on a model).
-    this.#d.store.close(this.dock, sessionId, summarize(messages));
+    // it asynchronously (close must never wait on a model). `reason` is
+    // recorded as closedBy — 'console' makes the close durable against the
+    // presence-resume path (WI-5).
+    this.#d.store.close(this.dock, sessionId, summarize(messages), reason);
     this.#d.log?.(`[brain] ${this.dock}: session ${sessionId} closed (${reason})`);
     this.#meta = undefined;
     this.#agent = undefined;

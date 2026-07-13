@@ -643,6 +643,17 @@ adoption check above.
 
 ### WI-5 — `session/end` means closed
 
+> **STATUS: BUILT + FULLY SIGNED OFF (dock-free) — 2026-07-13, branch
+> `conv-quality-july-13`.** As built: `SessionMeta.closedBy` recorded by
+> `store.close` (endSession's existing `reason` flows through — 'console' /
+> 'idle' / 'switched'); `resumableOnPresence` refuses `closedBy === 'console'`;
+> `reopen` (the console's explicit "continue") clears the field — a deliberate
+> human reopen still works. Back-compat: pre-field records resume as before.
+> **Sign-off:** unit — truth-table + store round-trip (32/32 with session suite);
+> headless integration — phone presence opened s-A, console `session/end`, phone
+> re-presence opened a FRESH session while s-A stayed closed `closedBy:console`
+> (4/4). The compounding-prompt escape hatch finally holds.
+
 **Covers.** `SessionMeta` gains `closedBy: 'console' | 'idle'`; `store.close` records it;
 `resumableOnPresence` (`session.ts:150-153`) refuses to resume console-closed sessions;
 the sessions REST exposes the field.
