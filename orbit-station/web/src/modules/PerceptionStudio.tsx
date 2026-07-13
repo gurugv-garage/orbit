@@ -34,7 +34,7 @@ interface Snapshot {
     inferMs?: number | null; confidence?: number; // perf + match confidence (all streams)
     // speech: low-confidence flag + Whisper's own metrics (for the playground)
     lowConfidence?: boolean; avgLogprob?: number | null; noSpeechProb?: number | null; compressionRatio?: number | null;
-    // background AUDIO interpretation (bg-audio-summarizer.md): the acoustic event
+    // audio enricher interpretation (bg-audio-summarizer.md): the acoustic event
     // fields patched onto a speech snapshot (or carried by a standalone 'sound'
     // snapshot). bgModel marks an upgraded record; audioModel is the interpreter
     // engine (distinct from source.model, the live STT engine). `speaker` survives
@@ -320,8 +320,8 @@ export function PerceptionStudio() {
   // Background AUDIO interpreter (Gemini) — a live runtime toggle. enabled =
   // interpret significant acoustic windows online (kind/salience/summary + a cleaner
   // transcript; off = local Whisper only.
-  const [bgAudio, setBgAudio] = useState<{ enabled: boolean; model: string }>({ enabled: false, model: 'gemini-2.5-flash-lite' });
-  const [bgAudioBusy, setBgAudioBusy] = useState(false);
+  const [enricher, setEnricher] = useState<{ enabled: boolean; model: string }>({ enabled: false, model: 'gemini-2.5-flash-lite' });
+  const [enricherBusy, setEnricherBusy] = useState(false);
 
   const pcRef = useRef<RTCPeerConnection | null>(null);
   const mediaRef = useRef<MediaStream | null>(null);
@@ -329,12 +329,12 @@ export function PerceptionStudio() {
   const meterRef = useRef<number | null>(null);
   const feedRef = useRef<HTMLDivElement>(null);
 
-  // Load instruction + bg-audio state once.
+  // Load instruction + enricher state once.
   useEffect(() => {
     api.get<{ base: string; extra: string }>('/perception/instruction')
       .then((r) => { setBase(r.base); setExtra(r.extra); }).catch(() => {});
-    api.get<{ enabled: boolean; model: string }>('/perception/bg-audio')
-      .then(setBgAudio).catch(() => {});
+    api.get<{ enabled: boolean; model: string }>('/perception/enricher')
+      .then(setEnricher).catch(() => {});
   }, []);
 
   // LIVE on-device face-track for the selected dock (the `perceive` stream): poll ~1 Hz
@@ -410,11 +410,11 @@ export function PerceptionStudio() {
   }, [source, hiddenKinds]);
 
   // Flip the background audio interpreter (or change its model) live.
-  const setBgAudioState = useCallback(async (patch: { enabled?: boolean; model?: string }) => {
-    setBgAudioBusy(true);
-    try { setBgAudio(await api.post<{ enabled: boolean; model: string }>('/perception/bg-audio', patch)); }
+  const setEnricherState = useCallback(async (patch: { enabled?: boolean; model?: string }) => {
+    setEnricherBusy(true);
+    try { setEnricher(await api.post<{ enabled: boolean; model: string }>('/perception/enricher', patch)); }
     catch { /* leave prior state */ }
-    finally { setBgAudioBusy(false); }
+    finally { setEnricherBusy(false); }
   }, []);
 
   // Poll the LIVE snapshot ring (ordered by interval.from). Paused while a take is
@@ -848,7 +848,7 @@ export function PerceptionStudio() {
         .perc-indeterminate { animation: perc-indeterminate 1s ease-in-out infinite; }
       `}</style>
       {/* ONE compact control bar. Left: SOURCE chips (the primary control — what you're
-          watching). Right (secondary): Summarize, the bg-audio toggle, and tiny
+          watching). Right (secondary): Summarize, the enricher toggle, and tiny
           sidecar status dots. Everything that expands (Summarize options, takes,
           result) drops BELOW this bar, only when opened — so the resting height is one
           row, not three stacked panels. */}
@@ -902,11 +902,11 @@ export function PerceptionStudio() {
           {/* AUDIO ENRICHER — always on (the sole authoritative audio path). Click to open its
               config panel (model select) below the bar, like the other config buttons. */}
           <button onClick={() => setShowEnricher((v) => !v)}
-            title={`audio enricher · model ${bgAudio.model} — click for config`}
+            title={`audio enricher · model ${enricher.model} — click for config`}
             style={{ display: 'flex', alignItems: 'center', gap: 5, padding: '4px 10px', borderRadius: 8, fontSize: 11, cursor: 'pointer',
               background: showEnricher ? '#1e3a5f' : '#13301f', color: '#7ee0a0', border: '1px solid #2c6f4a' }}>
             <span style={{ width: 7, height: 7, borderRadius: '50%', background: '#3ad29f' }} />
-            👂 enricher {bgAudioBusy ? '…' : bgAudio.model.includes('lite') ? '(lite)' : '(flash)'} {showEnricher ? '▾' : '▸'}
+            👂 enricher {enricherBusy ? '…' : enricher.model.includes('lite') ? '(lite)' : '(flash)'} {showEnricher ? '▾' : '▸'}
           </button>
           {/* SIDECARS — status dots + label; click for the full panel */}
           <button onClick={() => setShowSidecars((v) => !v)} title="sidecar health (vision / speech) — click for controls"
@@ -965,13 +965,13 @@ export function PerceptionStudio() {
           </span>
           <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
             <span style={{ fontSize: 11, color: '#9ab' }}>model:</span>
-            <select value={bgAudio.model} disabled={bgAudioBusy}
-              onChange={(e) => void setBgAudioState({ model: e.target.value })}
+            <select value={enricher.model} disabled={enricherBusy}
+              onChange={(e) => void setEnricherState({ model: e.target.value })}
               style={{ background: '#0b1a12', color: '#cfe', border: '1px solid #2c6f4a', borderRadius: 6, fontSize: 11, padding: '3px 6px' }}>
               <option value="gemini-2.5-flash">gemini-2.5-flash (better transcription)</option>
               <option value="gemini-2.5-flash-lite">gemini-2.5-flash-lite (cheaper, weaker)</option>
             </select>
-            {bgAudioBusy && <span style={{ fontSize: 11, color: '#7a8ca8' }}>saving…</span>}
+            {enricherBusy && <span style={{ fontSize: 11, color: '#7a8ca8' }}>saving…</span>}
           </div>
         </div>
         <div style={{ fontSize: 10.5, color: '#6a7a8a', marginTop: 6 }}>

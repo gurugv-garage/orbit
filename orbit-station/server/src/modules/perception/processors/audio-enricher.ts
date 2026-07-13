@@ -1,6 +1,6 @@
 /**
- * background-audio — the background AUDITORY SCENE INTERPRETER (successor to
- * background-stt; docs/decision-traces/bg-audio-summarizer.md). One online call
+ * audio-enricher — the AUDITORY SCENE INTERPRETER (original design trace:
+ * docs/decision-traces/bg-audio-summarizer.md). One online call
  * (default Gemini flash-lite) per SIGNIFICANT acoustic event answers "what just
  * happened acoustically, and how significant is it?" — speech, laughter, music, a
  * crash — instead of re-transcribing every utterance for diarization that never

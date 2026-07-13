@@ -92,7 +92,7 @@ function turnId(label: string): string {
 
 /**
  * Record one perception Gemini call as a synthetic Turn so it shows up in the Cost
- * tab. `dockId` is the owning dock (the rollup's `source`). `label` (e.g. 'bg-stt')
+ * tab. `dockId` is the owning dock (the rollup's `source`). `label` (e.g. 'audio-enricher')
  * is suffixed onto the model name so the by-model view separates perception spend
  * from brain turns. Best-effort: never throws into the caller (a missing obs
  * module, or a response with no usage, is silently skipped).
@@ -111,7 +111,7 @@ export function reportGeminiCost(
     ({ ...base, seq: 0, kind: 'TurnStart', ts, ...over } as AgentEventDto);
   // model name carries the call's role so the by-model breakdown is self-describing.
   const labeledModel = `${model.replace(/^models\//, '')} (${label})`;
-  // trigger.text carries the role tag (e.g. 'bg-stt') so the Cost tab's use-case
+  // trigger.text carries the role tag (e.g. 'audio-enricher') so the Cost tab's use-case
   // axis can classify it without parsing the model-name suffix.
   obs.ingest(ev({ kind: 'TurnStart', data: { trigger: { kind: 'perception', text: label } } }), dockId);
   obs.ingest(ev({ kind: 'StepStart' }), dockId);

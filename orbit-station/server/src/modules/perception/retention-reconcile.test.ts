@@ -23,7 +23,7 @@ function speechRec(text: string, fromIso: string, patch: Record<string, unknown>
 
 function cleanup() { if (existsSync(dir)) rmSync(dir, { recursive: true, force: true }); }
 
-// The bg-audio persist gap: a speech record lands (parakeet text), then the Gemini acoustic read
+// The enricher persist gap: a speech record lands (parakeet text), then the Gemini acoustic read
 // re-appends the SAME record enriched (audioKind/summary/salience). The JSONL is append-only, so
 // two lines exist for one utterance. Disk readers (the ego) must reconcile last-wins → see ONLY
 // the enriched version, not the bare pre-patch one, and not both.
@@ -37,7 +37,7 @@ test('recordsSince reconciles a re-appended (enriched) record last-wins', () => 
     const enriched = speechRec('someone is talking', fromIso, {
       audioKind: 'music', summary: 'upbeat music playing', salience: 'significant', bgModel: true,
     });
-    persistRecord(enriched);                                // re-append (the bg-audio patch)
+    persistRecord(enriched);                                // re-append (the enricher re-append)
 
     const seen = recordsSince(DOCK, '2026-07-12T00:00:00+05:30');
     const mine = seen.filter((r) => r.source.kind === 'speech');

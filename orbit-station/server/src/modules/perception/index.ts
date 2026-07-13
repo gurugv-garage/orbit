@@ -27,7 +27,7 @@ import { faceRecognitionProcessor } from './processors/face-recognition.js';
 import { visionSnapshotProcessor } from './processors/vision-snapshot.js';
 import { identitySnapshotProcessor } from './processors/identity-snapshot.js';
 import { speechWatchProcessor } from './processors/speech-watch.js';
-import { enrichAudio } from './processors/background-audio.js';
+import { enrichAudio } from './processors/audio-enricher.js';
 import { bodyMotionWatchProcessor, type MotionCommand } from './processors/bodymotion-watch.js';
 import { SnapshotStore, isoIst, sampleEvenly, makeSnapshot, type SnapshotRecord } from './snapshots.js';
 import { PerceiveStore, type PerceivePayload } from './perceive.js';
@@ -486,10 +486,10 @@ export function getMemoryStore(): MemoryStore | undefined {
 }
 
 /** RUNTIME state of the AUDIO ENRICHER (Gemini) — flippable live from the Perception Studio
- *  (GET/POST /api/perception/bg-audio; /bg-stt legacy alias). The enricher is ALWAYS ON (it's
+ *  (GET/POST /api/perception/enricher). The enricher is ALWAYS ON (it's
  *  the sole authoritative audio path now), so `enabled` is retained only for API back-compat;
  *  `model` is the live-selectable Gemini model the enricher runs. Seeded from
- *  PERCEPTION_ENRICH_MODEL (legacy PERCEPTION_BG_AUDIO_MODEL / PERCEPTION_BG_STT_MODEL). */
+ *  PERCEPTION_ENRICH_MODEL. */
 const enricher_ = { enabled: true, model: 'gemini-2.5-flash' };
 export function getEnricherState() { return { ...enricher_ }; }
 /** The model the live enricher should use right now (console-selectable). */
@@ -725,17 +725,15 @@ export function perceptionModule(getHub: () => PerceptionProcessingHub): Station
     onInterim: (fn) => { interimHandler = fn; },
     setListeningResolver: (fn) => { listeningResolver = fn; },
   };
-  // BACKGROUND STT (production split, docs/findings/recall-reliability.md): each
+  // AUDIO ENRICHER (production split, docs/findings/recall-reliability.md): each
   // VAD-gated utterance is async re-transcribed online (Gemini) to UPGRADE the
   // snapshot with a better, DIARIZED transcript for recall. The live addressed-turn
-  // path stays local Whisper. This is now a RUNTIME toggle (the Perception Studio
-  // flips it live) rather than a fixed env var: PERCEPTION_BG_STT_MODEL only seeds
+  // path stays local Whisper. This is a RUNTIME toggle (the Perception Studio
+  // flips it live) rather than a fixed env var: PERCEPTION_ENRICH_MODEL only seeds
   // the model name + the initial enabled state, so existing setups behave as before
   // (env set → on at boot; env unset → off, but still flippable on at runtime).
-  // Seed the enricher's live-selectable model. PERCEPTION_ENRICH_MODEL is the current knob;
-  // the old PERCEPTION_BG_AUDIO_MODEL / PERCEPTION_BG_STT_MODEL still seed it (back-compat).
+  // Seed the enricher's live-selectable model from PERCEPTION_ENRICH_MODEL.
   enricher_.model = process.env.PERCEPTION_ENRICH_MODEL
-    || process.env.PERCEPTION_BG_AUDIO_MODEL || process.env.PERCEPTION_BG_STT_MODEL
     || 'gemini-2.5-flash';
   // CONTEXT-AWARE: assemble the recent-discussion context for a dock (rolling summary
   // + who's present) so Gemini disambiguates names/topic/homophones. Cheap (a few
@@ -755,11 +753,11 @@ export function perceptionModule(getHub: () => PerceptionProcessingHub): Station
   };
   // ── AUDIO ENRICHER (the merged audio path) ── the debounced vad-endpoint batch window →
   // ONE context-aware call that lands the authoritative diarized transcript (+ per-segment
-  // acoustic read: source/kind/salience/addressed). This REPLACES the old two bg-audio calls
+  // acoustic read: source/kind/salience/addressed). This REPLACES the old two enricher calls
   // (speech-details patch + per-impulse sound). Always on; parakeet is live-only.
-  const enrich = (pcm: Int16Array, rate: number, dockId: string, context: import('./processors/background-audio.js').EnrichContext) =>
+  const enrich = (pcm: Int16Array, rate: number, dockId: string, context: import('./processors/audio-enricher.js').EnrichContext) =>
     enrichAudio(pcm, rate, enricher_.model, context, dockId); // model is live-selectable from the console
-  const enrichCtx = (dockId: string): import('./processors/background-audio.js').EnrichContext => {
+  const enrichCtx = (dockId: string): import('./processors/audio-enricher.js').EnrichContext => {
     const names = [...new Set(
       snapshots.list().filter((r) => r.dockId === dockId && r.source.kind === 'identity').slice(-8)
         .flatMap((r) => ((r.payload.faces as Array<{ name?: string | null }> | undefined) ?? [])
@@ -1574,12 +1572,12 @@ export function perceptionModule(getHub: () => PerceptionProcessingHub): Station
       }
       // AUDIO ENRICHER state. GET → {enabled, model}; POST {model?} picks the live Gemini model
       // (no restart). The enricher is always ON now, so `enabled` is retained for API back-compat
-      // only. '/enricher' is the current route; '/bg-audio' + '/bg-stt' are legacy aliases.
-      if (req.method === 'GET' && (subPath === '/enricher' || subPath === '/bg-audio' || subPath === '/bg-stt')) {
+      // only. The route is '/api/perception/enricher' (no legacy aliases).
+      if (req.method === 'GET' && subPath === '/enricher') {
         json(res, 200, getEnricherState());
         return true;
       }
-      if (req.method === 'POST' && (subPath === '/enricher' || subPath === '/bg-audio' || subPath === '/bg-stt')) {
+      if (req.method === 'POST' && subPath === '/enricher') {
         const body = await parseBody<{ enabled?: boolean; model?: string }>(req);
         if (typeof body.model === 'string' && body.model) enricher_.model = body.model;
         json(res, 200, getEnricherState()); // `enabled` ignored — enricher is always on

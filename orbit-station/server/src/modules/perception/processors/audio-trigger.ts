@@ -1,6 +1,6 @@
 /**
- * audio-trigger — the CHEAP, pure per-frame trigger logic for the background audio
- * processor (docs/decision-traces/bg-audio-summarizer.md §2 + §7a.3). Decides, from
+ * audio-trigger — the CHEAP, pure per-frame trigger logic for the audio-enricher
+ * triggers (docs/decision-traces/bg-audio-summarizer.md §2 + §7a.3). Decides, from
  * nothing but the per-frame RMS the VAD already computes, whether something acoustically
  * significant happened that is NOT a normal speech endpoint:
  *

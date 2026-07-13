@@ -33,7 +33,7 @@ import type { StreamContext, StreamProcessor } from '../processor.js';
 import { makeSnapshot, type SnapshotStore } from '../snapshots.js';
 import { dockConditions } from '../../../core/conditions.js';
 import { UtteranceDetector, SAMPLE_RATE } from './vad-endpoint.js';
-import type { EnrichContext, EnrichResult } from './background-audio.js';
+import type { EnrichContext, EnrichResult } from './audio-enricher.js';
 import { mkdirSync, writeFileSync, readdirSync, statSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
 

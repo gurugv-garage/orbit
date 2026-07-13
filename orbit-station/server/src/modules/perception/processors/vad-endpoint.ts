@@ -1,5 +1,5 @@
 /**
- * The audio front-end: Opus decode → VAD → utterance ENDPOINTING (+ the background-audio ring).
+ * The audio front-end: Opus decode → VAD → utterance ENDPOINTING (+ the enricher ring).
  * Extracted from the speech-watch processor (was stt-watch) so the transcription/orchestration
  * logic stays separate from the always-on audio sensor. This class IS one cohesive unit — the
  * Opus decode is fused into the VAD framing (`feed` → decode → `#process` → `#vadFrame`), and the
@@ -39,10 +39,10 @@ const FRAME_SAMPLES = (SAMPLE_RATE * FRAME_MS) / 1000;
  *  clean gap: it catches marginal-gain restart speech with margin, while staying well
  *  above comfort noise. See docs/findings/inprogress-stt-issue.md. */
 const SILENCE_RMS = Number(process.env.STT_SILENCE_RMS ?? 0.012);
-/** The background-audio payload window: a continuous never-drained PCM ring of the
+/** The enricher payload window: a continuous never-drained PCM ring of the
  *  last N ms, snapshotted at a trigger so the interpreter hears the LEAD-UP too
  *  (bg-audio-summarizer.md §2 "trigger vs payload"). */
-const BG_WINDOW_MS = Number(process.env.PERCEPTION_BG_WINDOW_MS ?? 10_000);
+const ENRICH_RING_MS = Number(process.env.PERCEPTION_ENRICH_RING_MS ?? 10_000);
 /** Silence this long after speech ends the utterance (endpoint). 1.3 s so natural
  *  mid-sentence pauses ("What time is the … meeting?") don't split a thought; the
  *  cost is ~0.6 s longer to commit after you actually stop. */
@@ -63,7 +63,7 @@ const PREROLL_MS = 200;
 
 // ─────────────────────────── MERGED ACOUSTIC BATCH (perception-to-brain merge) ───────────────────────────
 // The batch window feeds ONE context-aware interpreter call that replaces the two eager
-// bg-audio calls (per-utterance speech-details + per-impulse sound). It accumulates ALL
+// enricher calls (per-utterance speech-details + per-impulse sound). It accumulates ALL
 // decoded PCM since the last fire (a DRAIN buffer, not the lossy 10s ring), and fires when
 // a trigger is ARMED and the room is quiet — cutting the window at an ENDPOINT boundary so
 // no word is split and no audio is missed between fires.
@@ -139,7 +139,7 @@ export class UtteranceDetector {
   // decoder used to fail silently; see the post-restart STT investigation).
   #decodeOk = 0;
   #decodeFail = 0;
-  // BACKGROUND-AUDIO substrate: a continuous ring of the last BG_WINDOW_MS of frames
+  // ENRICHER substrate: a continuous ring of the last ENRICH_RING_MS of frames
   // (voiced or not — never drained, unlike #utter) + the cheap per-frame trigger.
   #ring: Int16Array[] = [];
   #acoustic = new AudioTrigger();
@@ -176,8 +176,8 @@ export class UtteranceDetector {
   // The listening gate — interims are skipped unless this returns true (or is unset,
   // in which case interims never fire: opt-in). Cheap, called per candidate tick.
   shouldInterim?: () => boolean;
-  // ACOUSTIC TRIGGER hook (background audio): fired on an impulse (crash/bang) or a
-  // sustained-energy stretch (music/alarm) with the last BG_WINDOW_MS of PCM — the
+  // ACOUSTIC TRIGGER hook (enricher): fired on an impulse (crash/bang) or a
+  // sustained-energy stretch (music/alarm) with the last ENRICH_RING_MS of PCM — the
   // lead-up included. Speech endpoints stay on the onUtterance path. Opt-in.
   onAcousticTrigger?: (kind: 'impulse' | 'sustained', windowPcm: Int16Array, at: Date) => void;
 
@@ -240,12 +240,12 @@ export class UtteranceDetector {
     const rms = Math.sqrt(sum / frame.length);
     const voiced = rms >= SILENCE_RMS;
 
-    // BACKGROUND-AUDIO ring + trigger: every frame (voiced or not) lands in the ring;
+    // ENRICHER ring + trigger: every frame (voiced or not) lands in the ring;
     // the cheap trigger runs per frame and snapshots the ring when something acoustically
     // significant that is NOT a speech endpoint happens. Sensing is never slowed — the
     // expensive interpretation downstream owns its own cooldown.
     this.#ring.push(frame);
-    const ringCap = BG_WINDOW_MS / FRAME_MS;
+    const ringCap = ENRICH_RING_MS / FRAME_MS;
     if (this.#ring.length > ringCap) this.#ring.shift();
     // The cheap acoustic trigger runs whenever EITHER consumer wants it (the legacy sound
     // path OR the merged enricher's arming). Capture its verdict once.

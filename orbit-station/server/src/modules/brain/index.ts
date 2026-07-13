@@ -535,7 +535,7 @@ export function brainModule(w: BrainWiring): StationModule {
         if (!cfg?.enabled || e.conf < 0.6 || isRecording(e.dockId)) return;
         const s2 = session(e.dockId);
         if (s2.conversation().mode !== 'idle') return; // already engaged
-        console.log(`[wake] bg-audio fallback FIRED (conf ${e.conf.toFixed(2)}): ${e.directive || e.transcript}`);
+        console.log(`[wake] audio-enricher fallback FIRED (conf ${e.conf.toFixed(2)}): ${e.directive || e.transcript}`);
         s2.wake(cfg.prompt);
         // stamp the enricher record that triggered this wake so its row shows 🤖 woke-the-robot.
         markEnrichWoke(e.dockId, e.transcript);

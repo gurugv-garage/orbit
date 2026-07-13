@@ -73,7 +73,7 @@ test('costRollup by kind gives perception its own bucket (not folded into user)'
   const store = freshStore();
   const now = Date.now();
   seedTurn(store, { source: 'deskA', sessionId: 's1', turnId: 't1', ts: now, kind: 'user', model: 'm', cost: 0.10, input: 1, output: 1 });
-  seedTurn(store, { source: 'deskA', sessionId: 'perception:deskA', turnId: 'p1', ts: now, kind: 'perception', model: 'g (bg-stt)', cost: 0.02, input: 1, output: 1 });
+  seedTurn(store, { source: 'deskA', sessionId: 'perception:deskA', turnId: 'p1', ts: now, kind: 'perception', model: 'g (audio-enricher)', cost: 0.02, input: 1, output: 1 });
 
   const r = store.costRollup(now - DAY, now + DAY, 'kind');
   assert.deepEqual(r.groups.map((g) => g.group).sort(), ['perception', 'user']);
@@ -88,8 +88,8 @@ test('costRollup by usecase labels each call by its role', () => {
   // brain user + task turns
   seedTurn(store, { source: 'deskA', sessionId: 's1', turnId: 't1', ts: now, kind: 'user', model: 'gemini-2.5-flash', cost: 0.10, input: 1, output: 1 });
   seedTurn(store, { source: 'deskA', sessionId: 'task:x', turnId: 't1', ts: now, kind: 'task', model: 'm', cost: 0.03, input: 1, output: 1 });
-  // perception roles, classified via the legacy `model (role)` suffix (no trigger.text)
-  seedTurn(store, { source: 'deskA', sessionId: 'perception:deskA', turnId: 'p1', ts: now, kind: 'perception', model: 'gemini-2.5-flash-lite (bg-stt)', cost: 0.02, input: 1, output: 1 });
+  // perception roles, classified via the `model (role)` suffix (no trigger.text)
+  seedTurn(store, { source: 'deskA', sessionId: 'perception:deskA', turnId: 'p1', ts: now, kind: 'perception', model: 'gemini-2.5-flash-lite (audio-enricher)', cost: 0.02, input: 1, output: 1 });
   seedTurn(store, { source: 'deskA', sessionId: 'perception:deskA', turnId: 'p2', ts: now, kind: 'perception', model: 'gemini-2.5-flash (summary)', cost: 0.01, input: 1, output: 1 });
   // perception role classified via trigger.text (what reportGeminiCost stamps now)
   store.ingest({ sessionId: 'perception:station', turnId: 'e1', seq: 0, kind: 'TurnStart', ts: now, data: { trigger: { kind: 'perception', text: 'mem-embed' } } }, 'station');

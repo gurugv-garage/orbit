@@ -59,7 +59,7 @@ export function persistRecord(rec: SnapshotRecord): void {
 const recKey = (r: SnapshotRecord) => `${r.interval?.from}|${r.source?.id}|${r.source?.kind}`;
 
 /** Last-wins reconcile over an append-only, time-sorted record list: a record that was ENRICHED
- *  after first write (bg-audio patch → re-append) appears twice; keep the LAST occurrence (the
+ *  after first write (enricher re-append) appears twice; keep the LAST occurrence (the
  *  patched one). Input MUST be ascending by interval.from (both readers sort before calling), so
  *  the later line for a key is the enriched one. Preserves order; O(n). */
 function dedupeLastWins(recs: SnapshotRecord[]): SnapshotRecord[] {

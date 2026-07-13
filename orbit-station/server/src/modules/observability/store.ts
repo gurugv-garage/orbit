@@ -393,7 +393,7 @@ function costKind(triggerKind: string | undefined): string {
 /** Map a perception role tag → its human-readable use-case label. The tag is the
  *  `label` reportGeminiCost stamps (in trigger.text and the model-name suffix). */
 const USECASE_LABELS: Record<string, string> = {
-  'bg-stt': 'Speech-to-text',
+  'audio-enricher': 'Speech-to-text',
   summary: 'Summarizer',
   'mem-embed': 'Memory embeddings',
 };

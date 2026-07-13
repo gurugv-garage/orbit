@@ -1,5 +1,5 @@
 /**
- * audio-trigger — truth tables for the cheap background-audio triggers (pure, injected
+ * audio-trigger — truth tables for the cheap audio-enricher triggers (pure, injected
  * time): impulse fires on a sharp jump over baseline (not from a gradual rise, not
  * mid-utterance, not twice within the refractory), sustained fires once per long
  * energetic stretch and re-arms after quiet.

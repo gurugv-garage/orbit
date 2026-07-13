@@ -32,8 +32,8 @@ export interface SnapshotSource {
   // camera is on a robot that can pan/drive, so "the view changed" may be ego-motion
   // (the robot moved) not world change (someone left). Other streams + the summarizer
   // read this to avoid mistaking one for the other.
-  // 'sound' = an interpreted NON-SPEECH acoustic event from the background audio
-  // processor (laughter, music, a crash — bg-audio-summarizer.md): an EVENT stream;
+  // 'sound' = an interpreted NON-SPEECH acoustic event from the audio enricher
+  // (laughter, music, a crash — bg-audio-summarizer.md): an EVENT stream;
   // payload carries { text: summary, audioKind, salience, … }.
   // 'enriched' = the AUDIO ENRICHER's unified record (one kind for all its output; WHAT it contains
   // — speech / played media / a non-speech sound — is the `audioSource` field, not the kind).
@@ -123,7 +123,7 @@ export class SnapshotStore {
     return added;
   }
 
-  /** Patch a record's payload in place (e.g. the background-audio upgrade enriching the live
+  /** Patch a record's payload in place (e.g. the enricher upgrade enriching the live
    *  parakeet text with the Gemini acoustic read — audioKind/summary/salience/addressed). Re-notifies
    *  listeners AND re-persists, so the enrichment reaches DISK readers (the ego reading `recordsSince`
    *  off disk), not just the in-memory ring. The JSONL is append-only, so this appends a SECOND,
@@ -134,7 +134,7 @@ export class SnapshotStore {
     const r = this.#recs.find((x) => x === rec);
     if (!r) return false;
     r.payload = { ...r.payload, ...patch };
-    persistRecord(r);   // re-append the enriched record — close the bg-audio persist gap (durable)
+    persistRecord(r);   // re-append the enriched record — close the enricher persist gap (durable)
     for (const l of this.#listeners) { try { l(r); } catch { /* */ } }
     return true;
   }
