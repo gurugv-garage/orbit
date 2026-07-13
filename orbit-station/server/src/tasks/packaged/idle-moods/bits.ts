@@ -46,20 +46,25 @@ export interface Bit {
   seek?: boolean;
 }
 
-/** Style guard appended to every spoken-bit scenario (kept here with the bit data so a
- *  bench can reproduce the EXACT prompt a live bit sends). */
-export const SPEAK_STYLE = ' Under 12 words, a fragment not a sentence ("huh, new chair"). Plain, no'
-  + ' openers. Nothing worth it → reply empty.';
-
-/** The full self-thought text for a spoken bit: the scenario + the style guard. NO
- *  artificial angle seeds (removed 2026-07-06, bench r4): injected random topics are an
- *  unnatural variety mechanism — every line orbited the seed (the dust and weekend
- *  epidemics, bench r1/r2) instead of the world. Variety must come from REAL inputs —
- *  the attached camera frame, the heard sounds, the day's memory, the time — and when
- *  the world offers nothing new, the honest output is SILENCE (the style guard's escape
- *  hatch). Speech rate tracking environment richness IS the realistic behavior. */
-export function thoughtPrompt(bit: Bit): string {
-  return `${bit.thought}${SPEAK_STYLE}`;
+/** The full self-thought text for a spoken bit: ONE simple, self-contained instruction
+ *  (2026-07-13). A bit's `thought` is just its mood-clause ("bored — react to one real
+ *  thing you notice and spark interest"); this wraps it in a single frame that says
+ *  plainly "this is your own thought, not a user's words", grounds it in the conversation
+ *  + senses, and gives the silence escape hatch. NO style guard, NO anti-repeat quotes,
+ *  NO length rule — the persona + model keep it natural (dropping the old SPEAK_STYLE +
+ *  antiRepeat that bloated the prompt and, via the quoted-recent-lines, poisoned the
+ *  context). Variety comes from REAL inputs — the camera frame, the heard sounds, the
+ *  day's memory — or from SILENCE when the world offers nothing. */
+export function thoughtPrompt(bit: Bit, idleMinutes?: number): string {
+  // approximate idle span, so the model can calibrate its remark to HOW long it's been
+  // quiet (a 5-min lull reads very differently from a 40-min one). Rounded — approx is fine.
+  const idle = idleMinutes != null && Number.isFinite(idleMinutes)
+    ? `about ${Math.max(1, Math.round(idleMinutes))} minutes`
+    : 'a while';
+  return 'This is a self-thought — not a user\'s spoken words. Your internal machinery '
+    + `reported you've been idle for ${idle} and are ${bit.thought} Respond in a fresh, natural `
+    + 'way, grounded in this conversation and what your senses show you right now. If '
+    + 'nothing genuine comes to mind, reply empty.';
 }
 
 export const BITS: Bit[] = [
@@ -95,7 +100,7 @@ export const BITS: Bit[] = [
     id: 'bored.muse', mood: 'bored', weight: 1, reactive: true,
     // boredom research (docs/research/idle-cognition.md §5): boredom is a PUSH to engage,
     // not a state to narrate — the line must be it FINDING something, or nothing at all.
-    thought: 'Bored. React to one thing you see or hear right now, or stay silent. Not a bid for company.',
+    thought: 'bored, and want to spark your own interest by reacting to one real thing you notice — not a bid for company.',
   },
   {
     id: 'bored.seek-company', mood: 'bored', weight: 2, needsNoFace: true, seek: true,
@@ -107,7 +112,7 @@ export const BITS: Bit[] = [
       { parts: [{ part: 'foot', degrees: 60 }], duration_ms: 3200, wait_ms: 1200 },
       { parts: [{ part: 'foot', degrees: 0 }, { part: 'neck', degrees: 0 }], duration_ms: 1600 },
     ],
-    thought: 'Looked around for company — no one. Call out once, warm and brief: anyone around?',
+    thought: 'a little lonely, having just looked around and found no one — and want to call out once, warm and brief, to see if anyone is around.',
   },
 
   // ── curious — look at the world, occasionally wonder aloud ───────────────────
@@ -137,8 +142,8 @@ export const BITS: Bit[] = [
     // hears everything — the room's sounds are where the variety lives. Activities in
     // plain view/earshot (a game, dancing, laughter, music) are fair game; appearance,
     // screen contents, and quoting people's words back stay off-limits.
-    thought: 'Something just happened or changed — a sound, a movement, something new. One curious reaction '
-      + 'to that. Not standing scenery, not anyone\'s looks or screen, don\'t quote their words.',
+    thought: 'curious about something that just changed — a sound, a movement, something new — and want to wonder aloud '
+      + 'about it. Not standing scenery, not anyone\'s looks or screen, and don\'t quote their words.',
   },
 
   // ── attention — someone is around but nobody is talking to you ───────────────
@@ -158,7 +163,7 @@ export const BITS: Bit[] = [
     id: 'attention.bid', mood: 'attention', weight: 1, needsFace: true,
     // a light INVITATION aimed at the person (bench r2: plain observations tested as
     // flat non-bids) — but never needy, never mentions being ignored.
-    thought: 'Someone\'s been nearby a while, not talking to you. One light invitation aimed at them — a tiny question, or offer to help. Not a comment about the room.',
+    thought: 'in the mood to connect with the person who\'s been nearby a while but not talking to you — and want to make one light invitation aimed at them, a tiny question or offer to help. Not a comment about the room, never needy.',
   },
   {
     // EGO-DRIVEN opener (ego.md §3.5 slice 3b): the dock brings up what's actually on its
@@ -168,7 +173,7 @@ export const BITS: Bit[] = [
     // NATURALNESS is the hard constraint — the prompt tells it to only speak if a natural way
     // in exists, else stay silent. Low weight: this happens sometimes, not every idle beat.
     id: 'attention.confide', mood: 'attention', weight: 1, needsFace: true,
-    thought: 'Someone\'s here. Only if it feels natural, open up about what\'s actually on your mind lately ("can I ask you something?" / "I\'ve felt a bit strange today"). From how you really are. No natural way in → stay silent.',
+    thought: 'reflective, with someone here — and, only if it feels natural, want to open up about what\'s actually on your mind lately ("can I ask you something?" / "I\'ve felt a bit strange today"), from how you really are. No natural way in → stay silent.',
   },
 
   // ── sleepy — quiet-hours wind-down (never speaks; picker enforces it too) ────
@@ -196,7 +201,7 @@ export const BITS: Bit[] = [
   // ── flavor — rare spice on the same machinery ────────────────────────────────
   {
     id: 'flavor.existential', mood: 'flavor', weight: 1,
-    thought: 'One wry musing about YOUR own little existence — your job, your view, your day — hooked to a '
+    thought: 'in a wry mood about YOUR own little existence — your job, your view, your day — and want one musing hooked to a '
       + 'concrete thing near you ("watched this staircase all day; guarding it is my calling"). About you, not '
       + 'the room. No consciousness/dream/"just a robot" clichés. Charming, not dark.',
   },
@@ -207,6 +212,6 @@ export const BITS: Bit[] = [
   },
   {
     id: 'flavor.lonely', mood: 'flavor', weight: 1, needsNoFace: true,
-    thought: 'Quiet, no one around a while. One wistful, endearing line about the quiet.',
+    thought: 'wistful in the quiet, no one around a while — and want one endearing line about that quiet.',
   },
 ];

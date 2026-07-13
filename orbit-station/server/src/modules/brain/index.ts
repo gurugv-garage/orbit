@@ -15,6 +15,7 @@
  *   GET    /api/brain/:dock/sessions       session index (incl. summaries)
  *   GET    /api/brain/:dock/history        open session transcript
  *   POST   /api/brain/:dock/session/end    close now (next turn opens fresh)
+ *   GET    /api/brain/:dock/session/:id/dump  export as pi-harness v3 JSONL (download)
  *   GET    /api/brain/:dock/skills         installed skills (name+description)
  *   POST   /api/brain/:dock/skills         install a SKILL.md ({ content })
  *   DELETE /api/brain/:dock/skills/:name   remove an installed skill
@@ -32,7 +33,6 @@ import { gesturesFromConfig } from '../bodylink/motion.js';
 import { getFaceTools, getPerceptionGrounding, getMemoryApi, getGateApi, getTranscriptApi, getPerceiveStore, getBgAddressedApi, markSpeechAddressed, markEnrichWoke, noteSelfRemark, lastSalientAt } from '../perception/index.js';
 import { getSelf } from '../ego/index.js';
 import { isRecording } from '../capture/index.js';
-import { getObsAccess } from '../observability/index.js';
 import type { VideoRecorderApi } from '../perception/record/recorder.js';
 import { RpcBroker } from './rpc.js';
 import { DockBrainSession, type TurnRequest, keyStatusFor } from './session.js';
@@ -270,33 +270,15 @@ export function brainModule(w: BrainWiring): StationModule {
   // here — the isRecording guard is a privacy invariant ("recording → dock stays silent")
   // and must never be copy-pasted per call site (a copy that forgets it speaks during a
   // recording). `session()` is the factory, so a cold dock is safe.
-  // The dock's recent UNPROMPTED remarks, derived on demand from data that already exists
-  // (the session index + the observability turn store — deliberately NO new ring or
-  // persisted structure). Injected into every self-thought so the model can't converge on
-  // one quip, and so anti-repetition survives session churn (the live failure: "cool
-  // fitness equipment" twice in 7 minutes across two sessions, 2026-07-05).
-  const recentSelfRemarks = (dock: string, limit = 6): string[] => {
-    const obs = getObsAccess();
-    if (!obs) return [];
-    const out: string[] = [];
-    for (const meta of store.sessions(dock).slice(0, 4)) {          // newest sessions first
-      const rec = obs.get(meta.sessionId);
-      for (const t of [...(rec?.turns ?? [])].reverse()) {           // newest turns first
-        if (t.trigger?.kind !== 'self') continue;
-        const said = [...(t.steps ?? [])].reverse().find((s) => s.text?.trim())?.text?.trim();
-        if (said) out.push(said);
-        if (out.length >= limit) return out;
-      }
-    }
-    return out;
-  };
-
   const raiseSelfThought = (dock: string, text: string, opts: { key?: string; ttlMs?: number; idPrefix?: string; via?: string } = {}) => {
     if (isRecording(dock)) return;
-    const recent = recentSelfRemarks(dock);
-    const antiRepeat = recent.length
-      ? ` Don't repeat or echo the theme of your recent lines (nothing new → stay silent): ${recent.map((r) => `"${r}"`).join(' · ')}`
-      : '';
+    // No anti-repeat quote-list, no style scaffolding: the self-thought prompt is ONE
+    // plain instruction (idle-moods thoughtPrompt), and we trust the model to vary its
+    // own remarks from the real inputs — the camera frame + grounding + its own history
+    // in the session. The old quoted-recent-lines tail bloated the prompt AND, by echoing
+    // prior lines verbatim into the context, actively poisoned it (2026-07-13 root-cause:
+    // a quoted code-failure line kept the model on a stale thread). Over-instructing was
+    // the disease; the fix is to instruct less and let the model do its job.
     // Attach the CURRENT camera frame (when live) so the model authors the line while
     // LOOKING at the scene, not just reading vision's one-line text description —
     // speech is the dock's one channel that reaches people who aren't watching it,
@@ -308,7 +290,7 @@ export function brainModule(w: BrainWiring): StationModule {
       turnId: `${opts.idPrefix ?? 'self'}-${randomUUID()}`,
       // `via` = WHICH source raised this (mood bit / gate key / greet / console) —
       // surfaced in the observability trace so a self turn is attributable at a glance.
-      trigger: { kind: 'self', text: text + antiRepeat, ...(opts.via ? { via: opts.via } : {}) },
+      trigger: { kind: 'self', text, ...(opts.via ? { via: opts.via } : {}) },
       ...(frame ? { imageBase64: frame } : {}),
       expiresAt: Date.now() + (opts.ttlMs ?? 60_000),
       ...(opts.key ? { coalesceKey: opts.key } : {}),
@@ -1055,6 +1037,20 @@ export function brainModule(w: BrainWiring): StationModule {
         const sid = decodeURIComponent(m[2]!);
         const r = store.delete(dock, sid);
         json(res, r === 'deleted' ? 200 : r === 'open' ? 409 : 404, { ok: r === 'deleted', reason: r });
+        return true;
+      }
+      // Export a session as pi-harness-compatible v3 JSONL (openable with
+      // `pi --session <file>`). Downloads as <sessionId>.jsonl.
+      m = subPath.match(/^\/([^/]+)\/session\/([^/]+)\/dump$/);
+      if (m && req.method === 'GET') {
+        const dock = decodeURIComponent(m[1]!);
+        const sid = decodeURIComponent(m[2]!);
+        const jsonl = store.dumpJsonl(dock, sid);
+        res.writeHead(200, {
+          'content-type': 'application/x-ndjson; charset=utf-8',
+          'content-disposition': `attachment; filename="${sid}.jsonl"`,
+        });
+        res.end(jsonl);
         return true;
       }
       m = subPath.match(/^\/([^/]+)\/session\/([^/]+)\/resume$/);

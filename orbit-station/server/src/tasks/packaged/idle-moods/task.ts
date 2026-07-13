@@ -99,11 +99,16 @@ class IdleMoodsTask extends Task {
         attentionSpent = false;            // presence lapsed → the next arrival earns a fresh offer
       }
 
+      // Approx idle span since the last conversation — a lower bound (the conductor
+      // starts us only after activateAfterMs of quiet, plus our own age). Fed to the
+      // spoken-bit prompt so the model can calibrate its remark to how long it's been
+      // quiet. Approximate by design; a lower bound only ever under-states the lull.
+      const msSinceConversation = activateAfterMs + (now - startedAt);
       const pick = pickBit({
         hourLocal: new Date().getHours(),
         facesPresent: presentSince !== 0,
         msPresentContinuous: presentSince === 0 ? 0 : now - presentSince,
-        msSinceConversation: activateAfterMs + (now - startedAt),
+        msSinceConversation,
         msSinceLastSpoke: lastSpokeAt === 0 ? Number.MAX_SAFE_INTEGER : now - lastSpokeAt,
         msSinceSalient: pulse?.msSinceSalient ?? null,
         lastBitId, attentionSpent,
@@ -154,7 +159,7 @@ class IdleMoodsTask extends Task {
           // (a stale-world fire — the failure we're hunting — reads as a large/cold salient).
           const via = pick.why.reactive ? `mood:${pick.bit.id} salient=${salientStr}` : `mood:${pick.bit.id}`;
           const ok = await this.request<{ ok: boolean }>('think',
-            { text: thoughtPrompt(pick.bit), coalesceKey: 'mood', via })
+            { text: thoughtPrompt(pick.bit, msSinceConversation / 60_000), coalesceKey: 'mood', via })
             .then((r) => !!r?.ok).catch(() => false);
           if (ok) { lastSpokeAt = Date.now(); this.state.lastSpokeAt = lastSpokeAt; this.checkpoint(); }
         }
