@@ -35,6 +35,7 @@ stress-dock-pipeline method: instrument, many reps, honest failure classes.
   - [Accepted on record (not fixed, deliberate)](#accepted-on-record-not-fixed-deliberate)
   - [⚠ CALLS TO MAKE — before or during the live session](#-calls-to-make--before-or-during-the-live-session)
 - [Addendum 5 — 2026-07-13: live session, first pass (dock-redmi, interim)](#addendum-5--2026-07-13-live-session-first-pass-dock-redmi-interim)
+  - [Addendum 5.1 — the ambient call, decided + the step-3 fix (same day)](#addendum-51--the-ambient-call-decided--the-step-3-fix-same-day)
 <!-- /TOC -->
 
 ## TL;DR
@@ -870,3 +871,27 @@ IN the room's meeting — ambient lines ran turns via followup windows continuou
 1.49M input tokens / ~$0.46** largely from answering speech never addressed to it.
 The addressed-vs-overheard seam is now the top UX+cost item, ahead of anything
 else in this doc.
+
+### Addendum 5.1 — the ambient call, decided + the step-3 fix (same day)
+
+**Decision (user):** the dock consuming background speech during a genuine engagement
+is EXPECTED behavior (cost ∝ conversation); tap-to-shut-up is the accepted recourse
+for an annoying chain. The problem reduces to the chain not being able to END on its
+own. **Fix shipped:** turns born from the followup window or the busy drain carry
+`trigger.via` ('followup-window' / 'busy-drain') and get a terse OVERHEARD_FRAMING
+prompt block — "if it's clearly not addressed to you, stay silent (mood tag only);
+when in doubt, answer briefly." Silence is mechanical disengagement: no reply → no
+new followup window → the chain dies (the settle chokepoint resolves the lane to
+idle). Deliberate turns (tap/palm/wake) never get the framing.
+
+**Live compliance (dock-redmi, real followup windows):** 5 meeting-style lines →
+**3/5 silent** (the two that answered were a question and a suggestion — the
+when-in-doubt bias, as designed); 3 genuine follow-ups → **3/3 answered, zero false
+silence**. At ~60% per-turn silence on ambient speech, a chain's survival is ~0.4^k —
+expected length ~1.7 turns vs the observed 82. User's skepticism about LLM
+instruction-following was warranted in degree (not absolute): the model follows it
+imperfectly but enough to break the chain economics.
+
+**Still open from the calls list:** the enricher wake-fallback firing on
+directive-shaped room speech ("tell me something" conf 0.95) — untouched pending a
+separate decision; 'wait'/'hold on' in the stop lexicon; tap-off drain behavior.

@@ -110,10 +110,25 @@ like you have an agenda or are reciting your thoughts. If a natural way in isn't
 there, just make an ordinary light remark, or stay silent. Better to say nothing
 than to say something that feels unnatural.`.trim();
 
-export function buildSystemPrompt(opts: { persona?: string; self?: string; context?: string; grounding?: string; memory?: string; skills?: string; now?: Date; selfThought?: boolean; inlineMood?: boolean }): string {
+/**
+ * Framing for a turn born from the FOLLOWUP window or the busy-queue drain —
+ * speech that was HEARD near the dock's reply, not deliberately addressed to it
+ * (no tap/wake). It might be a follow-up; it might be people talking to each
+ * other (the followup chain consumed a whole meeting this way — 82 turns of
+ * room chatter). Silence is mechanical disengagement: no reply → no new
+ * followup window → the chain dies. Kept terse (instruct less, trust the model).
+ */
+export const OVERHEARD_FRAMING = `
+This was heard in the open moment after you spoke — it may be a follow-up to
+you, or people in the room talking to each other. If it is clearly not
+addressed to you, stay silent: reply with only your mood tag and no words.
+When in doubt, answer briefly.`.trim();
+
+export function buildSystemPrompt(opts: { persona?: string; self?: string; context?: string; grounding?: string; memory?: string; skills?: string; now?: Date; selfThought?: boolean; inlineMood?: boolean; overheard?: boolean }): string {
   let p = opts.inlineMood === false ? SYSTEM_TOOL_MOOD : SYSTEM;
   p += `\n\n${nowLine(opts.now)}`;
   if (opts.selfThought) p += `\n\n${SELF_THOUGHT_FRAMING}`;
+  if (opts.overheard) p += `\n\n${OVERHEARD_FRAMING}`;
   if (opts.persona && opts.persona.trim().length > 0) p += `\n\n${opts.persona.trim()}`;
   // self = the dock's EGO (docs/decision-traces/ego.md): its current, evolving inner self —
   // who it is, how it feels, what it's wrestling with right now. This is WHO IS SPEAKING, so

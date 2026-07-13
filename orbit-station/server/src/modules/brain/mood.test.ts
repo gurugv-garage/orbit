@@ -140,3 +140,13 @@ test('an unresolved held leading bracket is released as prose at step end (no de
   assert.deepEqual(spoken(frames), ['[thinking'], 'held text must be released, not dropped');
   assert.deepEqual(faceCalls(frames), []);
 });
+
+// ── overheard framing (ambient-speech step-3 fix) ───────────────────────────
+
+test('followup-window turns get the overheard framing; tapped turns do not', async () => {
+  const { buildSystemPrompt, OVERHEARD_FRAMING } = await import('./prompt.js');
+  const overheard = buildSystemPrompt({ overheard: true });
+  const direct = buildSystemPrompt({});
+  assert.ok(overheard.includes(OVERHEARD_FRAMING.slice(0, 40)), 'framing present when overheard');
+  assert.ok(!direct.includes('people in the room talking'), 'absent on direct turns');
+});

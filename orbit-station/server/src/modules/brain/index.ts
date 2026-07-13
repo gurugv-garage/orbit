@@ -610,7 +610,9 @@ export function brainModule(w: BrainWiring): StationModule {
         const newest = fresh[fresh.length - 1]!;
         void s.handleTurnRequest({
           turnId: `addr-${randomUUID()}`,
-          trigger: { kind: 'user', text: fresh.map((u) => u.text).join(' ') }, // in order, nothing lost
+          // via 'busy-drain': heard DURING the reply, not deliberately addressed
+          // — same possibly-overheard framing as the followup window.
+          trigger: { kind: 'user', text: fresh.map((u) => u.text).join(' '), via: 'busy-drain' }, // in order, nothing lost
           stationOriginated: true,
           stt: { confTier: newest.confTier, avgLogprob: newest.avgLogprob,
             noSpeechProb: newest.noSpeechProb, compressionRatio: newest.compressionRatio },
@@ -732,7 +734,13 @@ export function brainModule(w: BrainWiring): StationModule {
         trace('RAN-TURN');
         void session(t.dockId).handleTurnRequest({
           turnId: `addr-${randomUUID()}`,
-          trigger: { kind: 'user', text: t.text },
+          // via 'followup-window': heard in the auto re-listen window, NOT via a
+          // deliberate signal (tap/palm/wake open 'listening', not 'followup') —
+          // the brain frames these as possibly-overheard and may stay silent,
+          // which mechanically ends the followup chain (no reply → no window).
+          trigger: pre.mode === 'followup'
+            ? { kind: 'user', text: t.text, via: 'followup-window' }
+            : { kind: 'user', text: t.text },
           stationOriginated: true, // A1.2: the phone must ADOPT this (it didn't start it)
           // STT confidence → observability turn trace (why this heard utterance ran).
           stt: { confTier: t.confTier, avgLogprob: t.avgLogprob, noSpeechProb: t.noSpeechProb,

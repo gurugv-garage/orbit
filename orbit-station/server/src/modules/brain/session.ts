@@ -920,6 +920,9 @@ export class DockBrainSession {
       // utterance — frame it so the model doesn't reply "you said…" to itself
       // and knows it may stay silent (docs/perception-to-brain.md 2.1).
       selfThought: this.#triggerKind === 'self',
+      // heard in the followup window / during the reply, not deliberately
+      // addressed — the model may stay silent, which ends the followup chain.
+      overheard: this.#triggerVia === 'followup-window' || this.#triggerVia === 'busy-drain',
       // false → the pre-WI-3 tool-mood prompt (kill-switch pairs with #filterMood)
       inlineMood: this.#d.config('brainInlineMood') !== false,
     });
