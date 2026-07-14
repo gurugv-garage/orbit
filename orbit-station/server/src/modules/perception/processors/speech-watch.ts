@@ -185,6 +185,9 @@ interface Transcription {
   noSpeechProb: number | null;    // P(silence/noise); high = likely hallucination
   compressionRatio: number | null; // gzip ratio; high = repetitive loop
   inferMs: number | null;         // sidecar-reported transcription latency
+  /** the engine's OWN utterance confidence 0..1 (parakeet: geometric mean of token
+   *  confidences — exp(mean token logprob)). Null on old sidecars / whisper. */
+  engineConf: number | null;
   /** speaker embedding (unit-norm, sidecar --embed-model) — only when requested. */
   embedding: number[] | null;
 }
@@ -226,6 +229,7 @@ async function transcribe(pcm: Int16Array, embed = false): Promise<TranscribeRes
     const j = (await r.json()) as {
       text?: string; model?: string; avg_logprob?: number | null; no_speech_prob?: number | null;
       compression_ratio?: number | null; latency_ms?: number; embedding?: number[];
+      confidence?: number | null;
     };
     const text = j.text?.trim();
     if (!text) return { ok: true, transcription: null };
@@ -240,6 +244,7 @@ async function transcribe(pcm: Int16Array, embed = false): Promise<TranscribeRes
         noSpeechProb: j.no_speech_prob ?? null,
         compressionRatio: j.compression_ratio ?? null,
         inferMs: j.latency_ms != null ? Math.round(j.latency_ms) : null,
+        engineConf: typeof j.confidence === 'number' ? j.confidence : null,
         embedding: Array.isArray(j.embedding) ? j.embedding : null,
       },
     };
@@ -299,16 +304,26 @@ const GARBAGE_LOGPROB = Number(process.env.STT_GARBAGE_LOGPROB ?? -1.0);  // Whi
 const GARBAGE_NOSPEECH = Number(process.env.STT_GARBAGE_NOSPEECH ?? 0.6); // Whisper's no_speech_threshold (combined only)
 
 export type ConfTier = 'good' | 'shaky' | 'garbage';
+// Parakeet tiering on the engine's OWN token confidence (calibrated 2026-07-14 on
+// n=75 real dock utterances): junk fragments scored <0.75, word-salad 0.75–0.85,
+// real speech 0.85+, clean 0.95+. Conservative defaults — garbage only for the
+// clearly-non-transcribable tail; the mixed band is TAGGED shaky, never dropped.
+const CONF_GARBAGE = Number(process.env.STT_CONF_GARBAGE ?? 0.72);
+const CONF_SHAKY = Number(process.env.STT_CONF_SHAKY ?? 0.85);
+
 export function confidenceTier(t: {
   avgLogprob: number | null; noSpeechProb: number | null; compressionRatio: number | null; text: string;
+  engineConf?: number | null;
 }): ConfTier {
   // GARBAGE: a repetition loop (the clearest tell), OR very-unsure AND very-non-speech
-  // together (a single bad metric isn't enough — short quiet words read as both).
+  // together (a single bad metric isn't enough — short quiet words read as both), OR
+  // the engine's own confidence in the calibrated non-transcribable tail (parakeet).
   const loop = isRepetitionLoop(t.text)
     || (t.compressionRatio != null && t.compressionRatio >= GARBAGE_COMPRESSION);
   const veryUnsure = t.avgLogprob != null && t.avgLogprob <= GARBAGE_LOGPROB
     && t.noSpeechProb != null && t.noSpeechProb >= GARBAGE_NOSPEECH;
-  if (loop || veryUnsure) return 'garbage';
+  if (loop || veryUnsure || (t.engineConf != null && t.engineConf < CONF_GARBAGE)) return 'garbage';
+  if (t.engineConf != null && t.engineConf < CONF_SHAKY) return 'shaky';
   if (isLowConfidence(t as Transcription)) return 'shaky';
   return 'good';
 }
@@ -495,6 +510,9 @@ export function speechWatchProcessor(
           from: startedAt, to: endedAt,
           payload: {
             text: tr.text, lowConfidence, confTier: tier,
+            // the engine's OWN transcription confidence (parakeet token geo-mean) —
+            // rides the generic payload.confidence so the console renders it (◷ %).
+            ...(tr.engineConf != null ? { confidence: Number(tr.engineConf.toFixed(3)) } : {}),
             // who said it (voice fingerprint) — observe-only for now; the raw score
             // stays on the record so the trial can calibrate thresholds offline.
             ...(voice ? { voice } : {}),
@@ -510,8 +528,10 @@ export function speechWatchProcessor(
         });
         store.add(rec);
         // confidence rides along so downstream sees the engine's certainty, not a constant.
-        // Whisper gives a real logprob; Parakeet has none → the 0.8 neutral default.
-        const conf = tr.avgLogprob != null ? Math.max(0, Math.min(1, 1 + tr.avgLogprob)) : 0.8;
+        // Parakeet now reports its own token confidence; Whisper maps from logprob;
+        // only an old sidecar falls back to the 0.8 neutral default.
+        const conf = tr.engineConf
+          ?? (tr.avgLogprob != null ? Math.max(0, Math.min(1, 1 + tr.avgLogprob)) : 0.8);
         ctx.emit({ kind: 'transcript', source: 'speech-watch', payload: { text: tr.text, isFinal: true }, confidence: conf });
         // A1.2: hand the final transcript + its utterance window to the brain's
         // addressed latch so a tapped utterance can become an agent turn — UNLESS

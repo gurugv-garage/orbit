@@ -197,11 +197,21 @@ class ParakeetStt:
         self.model = model
         self._m = MLX.submit(lambda: from_pretrained(model)).result()  # load on MLX thread
 
-    def _transcribe_audio(self, audio: np.ndarray) -> str:
+    def _transcribe_audio(self, audio: np.ndarray) -> tuple:
         import mlx.core as mx
         mel = self._get_logmel(mx.array(audio), self._m.preprocessor_config)
         res = self._m.generate(mel)
-        return (res[0].text if res else "").strip()
+        if not res:
+            return "", None
+        text = (res[0].text or "").strip()
+        # Parakeet's OWN confidence (parakeet-mlx ≥0.5: per-token, 0..1). Geometric
+        # mean over the utterance = exp(mean token logprob) — the TDT analog of
+        # Whisper's avg_logprob. Calibration on real dock audio (2026-07-14, n=75):
+        # junk fragments <0.75, word-salad 0.75-0.85, real speech 0.85+, clean 0.95+.
+        confs = [t.confidence for s in (res[0].sentences or []) for t in s.tokens
+                 if getattr(t, "confidence", None) is not None]
+        conf = float(np.exp(np.mean(np.log(np.array(confs) + 1e-10)))) if confs else None
+        return text, conf
 
     def transcribe(self, pcm_i16: np.ndarray, sample_rate: int) -> dict:
         audio = pcm_i16.astype(np.float32) / 32768.0
@@ -209,10 +219,11 @@ class ParakeetStt:
             n = int(len(audio) * 16000 / sample_rate)
             audio = np.interp(np.linspace(0, len(audio), n, endpoint=False),
                               np.arange(len(audio)), audio).astype(np.float32)
-        text = MLX.submit(lambda: self._transcribe_audio(audio)).result()
-        # Parakeet exposes none of Whisper's confidence tells → null (handled in TS).
+        text, conf = MLX.submit(lambda: self._transcribe_audio(audio)).result()
+        # No Whisper tells (null → their TS gates stay dormant), but `confidence`
+        # is parakeet's own token-confidence aggregate — the TS side tiers on it.
         return {"text": text, "avg_logprob": None, "no_speech_prob": None,
-                "compression_ratio": None}
+                "compression_ratio": None, "confidence": conf}
 
     def transcribe_file(self, pcm_i16, sample_rate, model=None, initial_prompt=None, job=None):
         """Whole-file path for the bench/reprocess harness. Parakeet has no

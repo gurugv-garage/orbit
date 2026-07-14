@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { UtteranceDetector } from './vad-endpoint.js';
-import { isHallucination, isLowConfBackchannel, hasNoWords } from './speech-watch.js';
+import { isHallucination, isLowConfBackchannel, hasNoWords, confidenceTier } from './speech-watch.js';
 
 // Mirrors the detector's own constants. FRAME_MS=30 @ 16 kHz → 480 samples/frame.
 // ENDPOINT_MS=1300 → ~44 silent frames commit. MIN_UTTERANCE_MS=180 → ≥6 voiced
@@ -338,4 +338,14 @@ test('detector with no onEnrich is unchanged (enricher is opt-in)', () => {
   d.feedPcm(loud(frames(9000)));
   d.feedPcm(quiet(frames(2000)));
   assert.equal(ends.length, 1, 'utterance path identical when the enricher is not wired');
+});
+
+// ── engine confidence tiers (parakeet's own token confidence, 2026-07-14 calibration) ──
+test('confidenceTier: parakeet engineConf maps to good/shaky/garbage bands', () => {
+  const base = { avgLogprob: null, noSpeechProb: null, compressionRatio: null, text: 'some ordinary words here' };
+  assert.equal(confidenceTier({ ...base, engineConf: 0.95 }), 'good');
+  assert.equal(confidenceTier({ ...base, engineConf: 0.80 }), 'shaky');   // word-salad band → tag
+  assert.equal(confidenceTier({ ...base, engineConf: 0.60 }), 'garbage'); // non-transcribable tail
+  // no engineConf (old sidecar / whisper) → unchanged legacy behavior
+  assert.equal(confidenceTier({ ...base }), 'good');
 });

@@ -306,7 +306,7 @@ export function PerceptionStudio() {
   // LIVE STT — pushed on the `perception` bus the instant the STT processor emits
   // (final on VAD endpoint, + interims during a turn), so the studio shows speech in
   // REAL TIME instead of waiting for the 1.5s snapshot poll. Keyed by dockId.
-  const [liveStt, setLiveStt] = useState<{ dockId: string; text: string; isFinal: boolean; ts: number } | null>(null);
+  const [liveStt, setLiveStt] = useState<{ dockId: string; text: string; isFinal: boolean; ts: number; conf?: number } | null>(null);
   // LIVE on-device FACE-TRACK (the `perceive` stream, §7) for the selected dock — the
   // fast MLKit signal faceFollow steers on. Polled (not bus-pushed) since it's a glance,
   // not a log. Null = nothing arrived (or this source is the browser, not a dock).
@@ -670,10 +670,10 @@ export function PerceptionStudio() {
   useStationEvents('perception', useCallback((e) => {
     if (e.kind === 'enroll-result') { loadGallery(); loadVoiceGallery(); return; }
     if (e.kind !== 'transcript') return;
-    const r = e.payload as { dockId?: string; ts?: number; payload?: { text?: string; isFinal?: boolean } } | null;
+    const r = e.payload as { dockId?: string; ts?: number; confidence?: number; payload?: { text?: string; isFinal?: boolean } } | null;
     const text = r?.payload?.text?.trim();
     if (!r?.dockId || !text) return;
-    setLiveStt({ dockId: r.dockId, text, isFinal: !!r.payload?.isFinal, ts: r.ts ?? 0 });
+    setLiveStt({ dockId: r.dockId, text, isFinal: !!r.payload?.isFinal, ts: r.ts ?? 0, conf: r.confidence });
   }, [loadGallery, loadVoiceGallery]));
 
   // SFU's producer-answer/ice for our one producer PC.
@@ -1785,8 +1785,15 @@ export function PerceptionStudio() {
                         </div>
                       </details>
                     )}
-                    {/* low-confidence is an STT (Whisper/parakeet) tell — only on the STT row. */}
-                    {isStt && p.lowConfidence && (
+                    {/* confidence tier pills — garbage = the engine itself doesn't believe these
+                        words (calibrated non-transcribable tail); shaky = tagged, still usable. */}
+                    {isStt && p.confTier === 'garbage' && (
+                      <span title="the STT engine's own confidence puts this in the non-transcribable tail — downstream renders it as [unclear speech], it can never start a turn"
+                        style={{ marginLeft: 6, fontSize: 10, color: '#ff8a8a', border: '1px solid #6f2c2c', borderRadius: 4, padding: '0 4px' }}>
+                        non-transcribable
+                      </span>
+                    )}
+                    {isStt && p.lowConfidence && p.confTier !== 'garbage' && (
                       <span title="the STT engine flagged this transcript as shaky (sent to the LLM tagged [low-confidence])"
                         style={{ marginLeft: 6, fontSize: 10, color: '#e0a060', border: '1px solid #5a3d20', borderRadius: 4, padding: '0 4px' }}>
                         low-conf
@@ -1830,7 +1837,10 @@ export function PerceptionStudio() {
                   </span>
                   {/* PERF + CONFIDENCE meta, right-aligned, tabular */}
                   <span style={{ fontVariantNumeric: 'tabular-nums', fontSize: 10, opacity: 0.5, textAlign: 'right', whiteSpace: 'nowrap', display: 'flex', gap: 8 }}>
-                    {conf && <span title="match/expression confidence">◷ {conf}</span>}
+                    {conf && <span title={isStt ? "the STT engine's own transcription confidence" : 'match/expression confidence'}
+                      style={isStt && p.confidence != null
+                        ? { color: p.confidence < 0.72 ? '#ff8a8a' : p.confidence < 0.85 ? '#ffd9a0' : '#7ee0a0' } : undefined}>
+                      ◷ {conf}</span>}
                     {p.inferMs != null && <span title="inference latency (sidecar/in-process compute)">⚡{fmtMs(p.inferMs)}</span>}
                     {viewKind === 'vision' && p.frames != null && <span title="frames sampled this window">🎞{p.frames}</span>}
                     {viewKind === 'vision' && p.reused && <span title="reused a recently-analyzed near-identical view (no VLM call)" style={{ fontSize: 10, color: '#7ee0a0', border: '1px solid #2c6f4a', borderRadius: 4, padding: '0 5px' }}>♻ reused</span>}
@@ -2237,7 +2247,7 @@ function PerceiveGlance({ frame }: { frame: PerceiveFrame }) {
 
 function LiveNow({ snaps, liveStt }: {
   snaps: Snapshot[];
-  liveStt?: { text: string; isFinal: boolean } | null;
+  liveStt?: { text: string; isFinal: boolean; conf?: number } | null;
 }) {
   // latest snapshot per view-kind (speech → both stt + its interpreted audio form).
   const latest = new Map<string, Snapshot>();
@@ -2266,6 +2276,13 @@ function LiveNow({ snaps, liveStt }: {
           <span style={{ flex: 1, opacity: liveStt.isFinal ? 1 : 0.7, fontStyle: liveStt.isFinal ? 'normal' : 'italic' }}>
             {liveStt.text}{!liveStt.isFinal && ' …'}
           </span>
+          {liveStt.isFinal && liveStt.conf != null && (
+            <span title="the STT engine's own transcription confidence for this utterance"
+              style={{ fontSize: 10, fontVariantNumeric: 'tabular-nums',
+                color: liveStt.conf < 0.72 ? '#ff8a8a' : liveStt.conf < 0.85 ? '#ffd9a0' : '#7ee0a0' }}>
+              ◷ {Math.round(liveStt.conf * 100)}%
+            </span>
+          )}
           <span style={{ fontSize: 9, opacity: 0.5, color: '#7ee0a0' }}>live</span>
         </div>
       )}
