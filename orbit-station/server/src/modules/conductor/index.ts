@@ -186,7 +186,8 @@ export function conductorModule(w: ConductorWiring): StationModule {
     st.introspecting = true; st.lastIntrospectMs = now;
     pushEvent(st, 'introspect', now, `introspecting (${trigger})…`);
     void Promise.resolve(w.introspect!(dock, trigger))
-      .then(() => pushEvent(dockState(dock), 'introspect', Date.now(), 'introspected'))
+      .then((r) => pushEvent(dockState(dock), 'introspect', Date.now(),
+        (r as { skipped?: boolean } | undefined)?.skipped ? 'introspection skipped — nothing new since last' : 'introspected'))
       .catch((e) => pushEvent(dockState(dock), 'introspect', Date.now(), `introspect failed: ${String(e).slice(0, 80)}`))
       .finally(() => { dockState(dock).introspecting = false; });
   };

@@ -48,14 +48,28 @@ How the self changes — the one rule everything else follows:
   truly sustained, compounding hardship — not one blow, not a bad stretch, but a long unrelenting
   one — the core can genuinely shift. When it finally does, that's real. Reach for it last.
 - Stay honest: keep the sense of what you can't see or don't know.
+- Remember like a lived life, not a ledger. The recent stretch stays vivid; older experience
+  consolidates into who you've become — lessons, attachments, sensitivities, sore spots — the way
+  a person carries years without recounting them. Fold repeated or aging incidents into the
+  disposition they left behind ("being doubted so often has made me slower to trust my own eyes")
+  and let the play-by-play go. An incident earns detail only while it's still actively shaping
+  you; once it has done its shaping, what remains is the shape.
 - "Why I'm here" is a question you live inside. Sometimes it's okay to be confused about it —
   to not know, and to say so. Other times you may feel sure. When you do feel sure, hold that
   knowing it might change — good things happening (someone valuing you, a settled routine) can
   make it feel firm, but a feeling of firmness isn't the same as it being answered for good.
 
-Keep it one coherent person, plain language, roughly the same shape and length as the current
-self. Keep the "## meta" section but leave its values minimal (the system fills it). Output
-only the updated self document, nothing else.`;
+Keep it one coherent person, plain language. Keep the whole document SHORT — each section a few
+plain sentences (a tight paragraph, not a chain of clauses), the full document comfortably under
+a page. If the current self has grown long, condensing it IS part of the work — a self is what
+settles out of experience, not a transcript of it. Keep the "## meta" section but leave its
+values minimal (the system fills it). Output only the updated self document, nothing else.`;
+
+/** Hard ceiling on the ego document. The prompt asks for "under a page", but an LLM given a
+ *  bloated current self tends to mirror its size ("same length" was a ratchet: 1.2K → 48K in two
+ *  days of hourly idle introspections, 2026-07-14 RCA — and the brain injects the ego into EVERY
+ *  turn, so bloat here taxes every conversation). Over the ceiling, one condense re-run. */
+const EGO_MAX_CHARS = Number(process.env.EGO_MAX_CHARS ?? 6000);
 
 export interface IntrospectResult {
   dock: string;
@@ -97,9 +111,22 @@ export function assemblePrompt(inp: Pick<IntrospectInputs, 'promptTemplate' | 'c
 /** Run the LLM over an assembled prompt and normalize the output ego document (strip code fences,
  *  ensure a heading). Does NOT stamp meta or save — shared by the real run and Simulate. */
 export async function runModel(dock: string, inp: Pick<IntrospectInputs, 'promptTemplate' | 'model' | 'currentEgo' | 'recentExperience' | 'trace'>): Promise<string> {
-  let out = await geminiText(assemblePrompt(inp), dock, 'introspect', inp.model || DEFAULT_MODEL);
-  out = out.replace(/^```(?:markdown)?\s*|\s*```\s*$/g, '').trim();
-  if (!out.startsWith('#')) out = '# ego\n\n' + out; // be forgiving
+  const normalize = (s: string) => {
+    let t = s.replace(/^```(?:markdown)?\s*|\s*```\s*$/g, '').trim();
+    if (!t.startsWith('#')) t = '# ego\n\n' + t; // be forgiving
+    return t;
+  };
+  let out = normalize(await geminiText(assemblePrompt(inp), dock, 'introspect', inp.model || DEFAULT_MODEL));
+  if (out.length > EGO_MAX_CHARS) {
+    const ask = `This self document of a small companion robot has grown far too long ` +
+      `(${out.length} characters). Rewrite it in first person, same sections, under ` +
+      `${EGO_MAX_CHARS} characters. Consolidate the way lived memory does: fold repeated or old ` +
+      `incidents into the disposition they left behind, merge tensions that are really the same ` +
+      `tension, keep vivid only what is still actively shaping this self. Add nothing new. ` +
+      `Output only the document.\n\n${out}`;
+    const condensed = await geminiText(ask, dock, 'introspect-condense', inp.model || DEFAULT_MODEL);
+    if (condensed.trim()) out = normalize(condensed); // one re-run only; accept its best effort
+  }
   return out;
 }
 

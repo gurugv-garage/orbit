@@ -123,9 +123,17 @@ async function recentExperience(dock: string, nowMs: number): Promise<string> {
 }
 
 /** Run one introspection for a dock, assembling its recent experience — the shared entry
- *  the REST handler and the conductor's idle heartbeat both call. */
+ *  the REST handler and the conductor's idle heartbeat both call.
+ *
+ *  Nothing lived since the checkpoint → skip (no LLM call, no snapshot). With no new material
+ *  the model's only possible work is re-working its own old prose, which is exactly how the ego
+ *  bloated (1.2K → 48K over two days of empty-room idle introspections, 2026-07-14 RCA). The
+ *  console's manual button still always runs — an explicit ask overrides. The conductor stamps
+ *  its gap timer before calling, so a skip quietly waits out the next full gap. */
 export async function introspectDock(dock: string, trigger: string) {
-  return introspect(dock, await recentExperience(dock, Date.now()), { trigger });
+  const experience = await recentExperience(dock, Date.now());
+  if (!experience.trim() && trigger !== 'manual') return { dock, trigger, skipped: true as const };
+  return introspect(dock, experience, { trigger });
 }
 
 /** The dock's current ego document (or undefined if it's still the bare template — nothing
@@ -168,7 +176,8 @@ export function egoModule(): StationModule {
         const [, dock] = m;
         try {
           const r = await introspectDock(dock!, 'manual');
-          json(res, 200, { ok: true, dock, fresh: r.fresh, snapshotted: r.snapshotted, trigger: r.trigger, ego: r.ego });
+          if ('skipped' in r) json(res, 200, { ok: true, dock, skipped: true, trigger: r.trigger });
+          else json(res, 200, { ok: true, dock, fresh: r.fresh, snapshotted: r.snapshotted, trigger: r.trigger, ego: r.ego });
         } catch (e) {
           json(res, 500, { ok: false, error: String((e as Error).message || e) });
         }
