@@ -47,6 +47,12 @@ const ENRICH_RING_MS = Number(process.env.PERCEPTION_ENRICH_RING_MS ?? 10_000);
  *  mid-sentence pauses ("What time is the … meeting?") don't split a thought; the
  *  cost is ~0.6 s longer to commit after you actually stop. */
 const ENDPOINT_MS = Number(process.env.STT_ENDPOINT_MS ?? 1300);
+/** POC-1 (EOU, docs/poc-plans/stt-poc.md): when the semantic end-of-utterance model
+ *  has declared the speaker DONE (hintEndpoint()), only this much residual silence
+ *  is required to commit — the 1300ms patience exists for maybe-mid-thought pauses,
+ *  which an EOU hint says this isn't. A voiced frame after the hint disarms it
+ *  (the model was premature; full patience resumes). */
+const EOU_RESIDUAL_MS = Number(process.env.STT_EOU_RESIDUAL_MS ?? 350);
 /** Ignore "utterances" shorter than this (clicks, stray noise). 180ms (was 350)
  *  so short real words — "hi", "yes", "no", "ok" — register as turns; 350 dropped
  *  a bare "hi" as noise. The engine's own confidence (no_speech_prob, Whisper only)
@@ -128,6 +134,10 @@ export class UtteranceDetector {
   #inSpeech = false;
   #silenceMs = 0;
   #utterMs = 0;
+  // POC-1 (EOU): the semantic endpointer said the speaker is done — shortens the
+  // required silence to EOU_RESIDUAL_MS. Cleared by any voiced frame (premature
+  // hint) and at utterance end.
+  #eouHinted = false;
   #onUtterance: (pcm: Int16Array, startedAt: Date, endedAt: Date) => void | Promise<void>;
   #startedAt: Date | null = null;
   // INTERIM streaming state. #lastInterimMs = utterance-ms at the last interim tick;
@@ -233,7 +243,29 @@ export class UtteranceDetector {
   feedPcm(pcm: Int16Array): void { this.#process(pcm); }
 
   /** Append decoded PCM, slice into 30 ms frames, run VAD per frame. */
+  /** POC-1 (EOU): raw 16 kHz PCM tap — every decoded sample, voiced or not, in
+   *  arrival order. The EOU link streams this to the semantic endpointer sidecar.
+   *  Optional; nothing else observes it. */
+  onPcm?: (pcm: Int16Array) => void;
+  /** POC-1 (EOU): speech onset — the EOU link resets the sidecar's buffer here so
+   *  the semantic judge sees THIS utterance, not accumulated room ambience. */
+  onSpeechStart?: () => void;
+
+  /** POC-1 (EOU): the external semantic endpointer declared the speaker DONE.
+   *  If enough residual silence has already accumulated, commit immediately;
+   *  otherwise arm the shortened endpoint (see #vadFrame). A later voiced frame
+   *  disarms — the hint was premature, full ENDPOINT_MS patience resumes. */
+  hintEndpoint(): void {
+    if (!this.#inSpeech) return;
+    this.#eouHinted = true;
+    if (this.#silenceMs >= EOU_RESIDUAL_MS) {
+      console.log(`[vad] EOU-hinted endpoint: committed at ${this.#silenceMs}ms silence (saved ~${Math.max(0, ENDPOINT_MS - this.#silenceMs)}ms)`);
+      this.#endUtterance();
+    }
+  }
+
   #process(add: Int16Array): void {
+    this.onPcm?.(add);
     const buf = new Int16Array(this.#carry.length + add.length);
     buf.set(this.#carry); buf.set(add, this.#carry.length);
     let off = 0;
@@ -291,8 +323,18 @@ export class UtteranceDetector {
     if (this.#inSpeech) {
       this.#utter.push(frame);
       this.#utterMs += FRAME_MS;
-      this.#silenceMs = voiced ? 0 : this.#silenceMs + FRAME_MS;
-      if (this.#silenceMs >= ENDPOINT_MS || this.#utterMs >= MAX_UTTERANCE_MS) { this.#endUtterance(); return; }
+      if (voiced) { this.#silenceMs = 0; this.#eouHinted = false; } // speech resumed → a prior EOU hint was premature
+      else this.#silenceMs += FRAME_MS;
+      // POC-1 (EOU): a semantic end-of-utterance hint shortens the endpoint wait to
+      // EOU_RESIDUAL_MS — the full ENDPOINT_MS patience only applies when the EOU
+      // model hasn't declared the speaker done. Fallback unchanged when no hint.
+      const effectiveEndpointMs = this.#eouHinted ? EOU_RESIDUAL_MS : ENDPOINT_MS;
+      if (this.#silenceMs >= effectiveEndpointMs || this.#utterMs >= MAX_UTTERANCE_MS) {
+        if (this.#eouHinted && this.#silenceMs < ENDPOINT_MS) {
+          console.log(`[vad] EOU-hinted endpoint: committed at ${this.#silenceMs}ms silence (saved ~${ENDPOINT_MS - this.#silenceMs}ms)`);
+        }
+        this.#endUtterance(); return;
+      }
       this.#maybeInterim();
     } else if (voiced) {
       // speech onset — start an utterance, prepend the preroll.
@@ -302,6 +344,7 @@ export class UtteranceDetector {
       this.#startedAt = new Date();
       this.#utter = [...this.#preroll, frame];
       this.#preroll = [];
+      this.onSpeechStart?.(); // POC-1: pin the EOU sidecar's buffer to this utterance
     } else {
       // keep a short trailing preroll of silence frames.
       this.#preroll.push(frame);
@@ -412,6 +455,7 @@ export class UtteranceDetector {
     const ms = this.#utterMs - this.#silenceMs; // voiced span
     this.#inSpeech = false; this.#utter = []; this.#silenceMs = 0; this.#utterMs = 0;
     this.#lastInterimMs = 0;
+    this.#eouHinted = false; // each utterance earns its own hint
     if (ms < MIN_UTTERANCE_MS) return; // too short → noise (a clipped/quiet onset
                                        // under MIN_UTTERANCE_MS is dropped here — the
                                        // cause of an occasional "tapped but no reply"

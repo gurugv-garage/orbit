@@ -33,6 +33,7 @@ import type { StreamContext, StreamProcessor } from '../processor.js';
 import { makeSnapshot, type SnapshotStore } from '../snapshots.js';
 import { dockConditions } from '../../../core/conditions.js';
 import { UtteranceDetector, SAMPLE_RATE } from './vad-endpoint.js';
+import { WebSocket as EouWebSocket } from 'ws';
 import type { EnrichContext, EnrichResult } from './audio-enricher.js';
 import { mkdirSync, writeFileSync, readdirSync, statSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
@@ -107,6 +108,11 @@ function saveUtteranceWav(dockId: string, pcm: Int16Array, startedAtMs: number):
 }
 
 const SIDECAR_URL = process.env.PERCEPTION_SIDECAR_URL ?? 'http://127.0.0.1:8078';
+/** POC-1 (EOU, docs/poc-plans/stt-poc.md): stream PCM to the semantic end-of-
+ *  utterance sidecar (models/eou-poc/sidecar_eou.py) and endpoint on its verdict.
+ *  Default OFF — the POC flag. */
+const EOU_ENABLED = process.env.STT_EOU === '1';
+const EOU_URL = process.env.STT_EOU_URL ?? 'ws://127.0.0.1:8077';
 /** A1.4: the echo-gate (drop audio while the dock speaks) is OFF by default — the
  *  A1 AEC fix cancels the dock's own voice, and the gate would block voice
  *  barge-in. Set STT_ECHO_GATE=1 to re-enable on a device with weak AEC. */
@@ -351,6 +357,8 @@ interface StreamState {
   rtpCount?: number;
   /** unregister this detector from the live enrich-path gate (called on stream end). */
   unregisterEnrichPaths?: () => void;
+  /** POC-1: close the EOU sidecar link on stream end. */
+  closeEou?: () => void;
 }
 
 /** A final transcript + its utterance window, handed to the A1.2 transcript hook. */
@@ -459,6 +467,9 @@ export function speechWatchProcessor(
       console.log(`[speech-watch] onStreamStart: dock=${ctx.dockId} streamId=${ctx.streamId} — speech detector attached`);
       // Each completed (or force-flushed) utterance → one transcription → snapshot.
       // Returns a Promise so flushNow() can await the commit before summarizing.
+      // POC-1 (EOU) link state — declared ahead of `commit` (which fires the reset).
+      let eouWs: import('ws').WebSocket | null = null;
+      const eouReset = () => { try { if (eouWs && eouWs.readyState === 1) eouWs.send(JSON.stringify({ type: 'reset' })); } catch { /* soft */ } };
       const commit = async (pcm: Int16Array, startedAt: Date, endedAt: Date): Promise<void> => {
         // Voice fingerprint: piggyback on the same sidecar call. Sub-VOICE_MIN_S
         // utterances skip it — embeddings on <0.8s far-field slivers are noise
@@ -550,7 +561,33 @@ export function speechWatchProcessor(
           });
         }
       };
-      const detector = new UtteranceDetector((pcm, startedAt, endedAt) => { void commit(pcm, startedAt, endedAt); });
+      const detector = new UtteranceDetector((pcm, startedAt, endedAt) => { eouReset(); void commit(pcm, startedAt, endedAt); });
+      // ── POC-1 (EOU, STT_EOU=1): stream this detector's decoded PCM to the semantic
+      // endpointer sidecar; its {type:'eou'} shortens the endpoint via hintEndpoint().
+      // Failure-soft everywhere: no sidecar / ws error ⇒ the silence timeout alone
+      // (today's behavior). Reset is sent on every commit so the sidecar's buffer
+      // tracks the current utterance. First station→sidecar streaming client.
+      if (EOU_ENABLED) {
+        try {
+          const ws = new EouWebSocket(EOU_URL);
+          eouWs = ws;
+          ws.on('open', () => console.log(`[speech-watch] EOU link open for ${ctx.streamId}`));
+          ws.on('message', (data: unknown) => {
+            try {
+              const j = JSON.parse(String(data)) as { type?: string };
+              if (j.type === 'eou') detector.hintEndpoint();
+            } catch { /* non-JSON — ignore */ }
+          });
+          ws.on('error', (e: Error) => { console.warn(`[speech-watch] EOU link error (${ctx.streamId}): ${e.message} — silence timeout only`); eouWs = null; });
+          ws.on('close', () => { eouWs = null; });
+          detector.onPcm = (pcm) => {
+            if (eouWs && eouWs.readyState === 1 /* OPEN */) {
+              eouWs.send(Buffer.from(pcm.buffer, pcm.byteOffset, pcm.byteLength));
+            }
+          };
+          detector.onSpeechStart = eouReset; // buffer = this utterance, not room ambience
+        } catch (e) { console.warn(`[speech-watch] EOU link init failed: ${String(e)}`); eouWs = null; }
+      }
       detector.commit = commit; // flushNow awaits this; the live path stays fire-and-forget
 
       // ── AUDIO ENRICHER (merged path) ── when wired, ONE context-aware pass over each batch
@@ -695,7 +732,8 @@ export function speechWatchProcessor(
       // Live enrich-path gates (console speech / non-speech toggles). The registrar seeds the
       // detector with current state immediately and pushes future changes; keep the unregister.
       const unregisterEnrichPaths = registerEnrichPaths?.((p) => detector.setEnrichPaths(p));
-      streams.set(ctx.streamId, { ctx, detector, muted: false, unregisterEnrichPaths });
+      streams.set(ctx.streamId, { ctx, detector, muted: false, unregisterEnrichPaths,
+        closeEou: () => { try { eouWs?.close(); } catch { /* */ } eouWs = null; } });
     },
 
     onRtp(streamId: string, _kind: MediaKind, rtp: RtpPacket) {
@@ -736,6 +774,7 @@ export function speechWatchProcessor(
       const st = streams.get(streamId);
       st?.detector.stop();
       st?.unregisterEnrichPaths?.();
+      st?.closeEou?.();
       streams.delete(streamId);
     },
   };

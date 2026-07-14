@@ -98,6 +98,86 @@ clips with cloud engines, purely to know how far the local ceiling is from SOTA:
 No ship gate — this POC produces a number (local-vs-cloud gap on OUR hard audio)
 that decides whether POC-2's local escalation is enough.
 
+## Results log (append-only)
+
+### 2026-07-14 — POC-1 A0 spike: EOU model on Mac CPU (NeMo, offline proxy)
+
+Ran `nvidia/parakeet_realtime_eou_120m-v1` via NeMo on CPU (`map_location='cpu'`,
+load 22s) over a synthesized pause set + real shaky clips. Offline decode emits the
+`<EOU>` token in-text, so it proxies streaming EOU behavior; streaming adds chunk
+overhead not measured here.
+
+- **RTF 0.03–0.15 on CPU** — far under the 0.5 gate; always-on streaming is
+  comfortably feasible on the station Mac (and plausibly the future VM). ✅
+- **EOU semantics, the good:** complete sentences get `<EOU>` ("what is the capital
+  of france\<EOU\>"); a trailing filled pause holds it OPEN ("i was thinking that
+  maybe we could" → NO EOU — the semantic judgment a silence timer can't make);
+  a 0.5s internal pause is bridged ("my favorite animal is the red panda", one text).
+- **EOU semantics, the risk:** at 0.9s and 1.2s internal pauses (flat TTS prosody)
+  the decode stops at "my favorite animal\<EOU\>" — i.e. it WOULD split there, same
+  as the rejected ENDPOINT_MS=900. Caveats: `say`-generated pauses lack human
+  thinking-pause prosody (the trailing-um result shows the model reads prosody), and
+  offline decode truncates at the first EOU, so the proxy is pessimistic/ambiguous
+  for this exact case. **Real-voice streaming test required before the A2 gate.**
+- Far-field mush clips → empty/`<EOU>`-only output: EOU won't fire on mush, the
+  silence-timeout fallback keeps handling it (no regression path).
+
+**A0 verdict: PASS to A1** (runtime feasible; semantics promising), with the 0.9s
+real-voice split-rate as the explicit A2 gate question, and a design note: commit
+on EOU + a short residual silence (~300–400ms), keeping merge-supersede as the net.
+
+### 2026-07-14 — POC-B B0 bench: cloud fixers on the shaky band (n=50)
+
+50 real clips with parakeet confidence < 0.85 (the fix candidates) sent to the
+engines with keys on hand — Deepgram nova-2 (p50 1.6s/clip) and Gemini
+2.5-flash-lite audio (paid key; p50 2.8s/clip; primary free-tier key was
+quota-dead from today's testing). ElevenLabs Scribe / Azure LLM Speech: no keys
+yet — slots exist in `bench_fixer.py`.
+
+**Headline: the cloud engines don't fix the shaky band — they ABSTAIN.** Deepgram
+returns empty on most clips (its documented high-precision/low-recall posture);
+Gemini mostly outputs `[unintelligible]` (plus occasional artifacts — stray
+timestamp headers). Interpretation: parakeet's confidence is well-calibrated —
+the sub-0.85 band is mostly AUDIO-limited, not model-limited, so "a better model
+will fix it" largely doesn't hold; the free local `non-transcribable`/shaky tags
+are the right treatment. Ear-check page for the human verdict:
+`scrap-review-fixer/index.html` (50 clips worst-first, all three texts + audio).
+
+**B0 verdict: fixer premise WEAK on today's data** — hold B1 unless the ear-check
+finds a real recoverable-but-misheard subset, or ElevenLabs Scribe (the strongest
+untested contender) earns a bench run with a provided key.
+
+### 2026-07-14 — POC-1 A1 built + first live numbers (branch poc/stt_poc_jul14)
+
+Built end-to-end behind `STT_EOU=1` (default off): `models/eou-poc/sidecar_eou.py`
+(NeMo CPU, ws://:8077, buffered re-decode every 480ms with a 400ms silence pad) ←
+station's first streaming sidecar link (speech-watch `EouWebSocket`, PCM tap via
+`detector.onPcm`, buffer pinned to the utterance via `onSpeechStart` reset) →
+`UtteranceDetector.hintEndpoint()` (commit at `STT_EOU_RESIDUAL_MS`=350 instead of
+1300; any voiced frame disarms a premature hint). 4 unit tests on the hint state
+machine; suite green.
+
+**Live (laptop TTS through the room):**
+- Complete sentences: `EOU-hinted endpoint: committed at 360–420ms silence
+  (saved ~880–940ms)` — consistent, ~4 for 4. The full second is real.
+- **The pre-registered risk fired too:** the flat-prosody 0.9s-pause clip SPLIT
+  ("My favorite animal." / "Is the red panda?") — the pad that stabilizes EOU on
+  finished sentences also helps it fire at long thinking pauses. Same failure the
+  ENDPOINT_MS=900 experiment had; merge-supersede remains the net.
+- Iterations that mattered: buffer must reset at speech ONSET (else room ambience
+  pollutes the judge); never hint on a bare `<EOU>` with no words; no one-shot EOU
+  latch (it suppressed the real end after a premature fire); EOU emission flickers
+  at the boundary without the silence pad (measured: stable at 200–400ms real tails
+  with pad, non-monotonic without).
+
+**A2 gate — remains open, needs REAL voice:** TTS pauses lack human thinking
+prosody (the model held a trailing "um" open in A0). Protocol: user speaks ~10
+natural lines including deliberate mid-sentence thinking pauses; count splits vs
+saves. Knobs if splits are real: residual 350→500ms, two-consecutive-EOU
+confirmation, or drop the pad (trade save-size for pause tolerance). Production
+path if passed: native cache-aware streaming (NeMo voice-agent / ONNX export) —
+the re-decode proxy costs ~250ms per decode and grows with utterance length.
+
 ## Watch-list (not POCs yet)
 
 - **Streaming interims from the EOU model** — if POC-1 lands, its live tokens could

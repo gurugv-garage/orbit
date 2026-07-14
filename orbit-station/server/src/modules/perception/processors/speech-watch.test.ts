@@ -349,3 +349,46 @@ test('confidenceTier: parakeet engineConf maps to good/shaky/garbage bands', () 
   // no engineConf (old sidecar / whisper) → unchanged legacy behavior
   assert.equal(confidenceTier({ ...base }), 'good');
 });
+
+// ── POC-1: EOU hint shortens the endpoint (docs/poc-plans/stt-poc.md) ──
+test('hintEndpoint: hint during trailing silence commits at the residual, not ENDPOINT_MS', () => {
+  const ends: number[] = [];
+  const d = new UtteranceDetector((pcm) => { ends.push(pcm.length / 16); });
+  d.feedPcm(loud(frames(1200)));   // speech
+  d.feedPcm(quiet(frames(120)));   // a little silence accumulates…
+  d.hintEndpoint();                // …then the EOU model declares done
+  d.feedPcm(quiet(frames(300)));   // residual (350ms total silence) elapses
+  assert.equal(ends.length, 1, 'committed on the shortened endpoint');
+  // without the hint this would still be waiting (only ~420ms of the 1300ms budget)
+});
+
+test('hintEndpoint: immediate commit when residual silence already accumulated', () => {
+  const ends: number[] = [];
+  const d = new UtteranceDetector((pcm) => { ends.push(pcm.length / 16); });
+  d.feedPcm(loud(frames(1200)));
+  d.feedPcm(quiet(frames(600)));   // 600ms silence — under 1300, over the 350 residual
+  assert.equal(ends.length, 0, 'still waiting on the normal endpoint');
+  d.hintEndpoint();
+  assert.equal(ends.length, 1, 'hint with residual already met commits at once');
+});
+
+test('hintEndpoint: resumed speech disarms the hint (premature EOU)', () => {
+  const ends: number[] = [];
+  const d = new UtteranceDetector((pcm) => { ends.push(pcm.length / 16); });
+  d.feedPcm(loud(frames(1200)));
+  d.feedPcm(quiet(frames(120)));
+  d.hintEndpoint();                // premature — the speaker was mid-thought
+  d.feedPcm(loud(frames(600)));    // …speech resumes → disarm
+  d.feedPcm(quiet(frames(600)));   // 600ms silence: below ENDPOINT_MS, above residual
+  assert.equal(ends.length, 0, 'disarmed hint does NOT shorten the endpoint');
+  d.feedPcm(quiet(frames(800)));   // full 1300ms elapses
+  assert.equal(ends.length, 1, 'normal endpoint still commits');
+});
+
+test('hintEndpoint: no-op when not in speech', () => {
+  const ends: number[] = [];
+  const d = new UtteranceDetector((pcm) => { ends.push(pcm.length / 16); });
+  d.hintEndpoint();
+  d.feedPcm(quiet(frames(2000)));
+  assert.equal(ends.length, 0);
+});
