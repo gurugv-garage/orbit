@@ -20,6 +20,9 @@ export interface VoiceSample {
   embedding: number[];
   /** what parakeet heard in the enrolled utterance, for the console. */
   text?: string;
+  /** filename of the enrolled utterance's audio clip (under the voice-clips dir),
+   *  kept until this sample is deleted — the audio twin of the face sample's photo. */
+  clip?: string;
   addedAt: number;
 }
 
@@ -70,7 +73,17 @@ export function cosine(a: number[], b: number[]): number {
   return denom > 0 ? dot / denom : 0;
 }
 
+/** Reserved DECOY profile name: "not any enrolled person" feedback lands here
+ *  (mislabeled strangers, TV voices). The service maps a best-match to this name
+ *  to `unknown` — it must never surface as a person. Owned here so the matcher,
+ *  console hints, and any future consumer share ONE definition. */
+export const RESERVED_DECOY = 'other';
+
 const SAMPLE_CAP = 8;
+/** Same-person samples closer than this are the SAME recording re-enrolled (a row
+ *  clicked twice / re-ticked in the panel) — skip them. Distinct real utterances by
+ *  one speaker measured 0.5–0.85 apart; only a byte-identical clip approaches 1.0. */
+const DUP_COSINE = 0.995;
 
 export class VoiceGallery {
   #path: string;
@@ -84,19 +97,28 @@ export class VoiceGallery {
   /**
    * Enroll an utterance under `name` (case-insensitive). append=true adds another
    * sample (capped at SAMPLE_CAP, oldest dropped); append=false replaces the
-   * person's prior samples.
+   * person's prior samples. Returns the evicted/skipped outcome:
+   *   - added: false when the same person already has a near-identical embedding
+   *     (the same clip enrolled twice) — dedup, nothing stored.
+   *   - dropped: the sample evicted by the cap (so the caller can delete its clip).
    */
-  enroll(name: string, embedding: number[], text?: string, append = true): void {
+  enroll(name: string, embedding: number[], text?: string, append = true, clip?: string):
+      { added: boolean; dropped?: VoiceSample } {
     const k = key(name);
     const prev = this.#people.get(k);
+    if (append && prev && prev.samples.some((s) => cosine(embedding, s.embedding) >= DUP_COSINE)) {
+      return { added: false }; // duplicate of an existing sample — skip
+    }
     const e: VoiceEntry = append && prev
       ? prev
       : { name: displayName(name), samples: [], enrolledAt: Date.now() };
     e.name = prev?.name ?? displayName(name);
-    e.samples.push({ embedding, text, addedAt: Date.now() });
-    if (e.samples.length > SAMPLE_CAP) e.samples.shift();
+    e.samples.push({ embedding, text, clip, addedAt: Date.now() });
+    let dropped: VoiceSample | undefined;
+    if (e.samples.length > SAMPLE_CAP) dropped = e.samples.shift();
     this.#people.set(k, e);
     this.#save();
+    return { added: true, dropped };
   }
 
   remove(name: string): boolean {
@@ -105,25 +127,31 @@ export class VoiceGallery {
     return had;
   }
 
-  /** Delete one sample by index; the person goes with their last sample. */
-  removeSample(name: string, index: number): boolean {
+  /** Delete one sample by index; the person goes with their last sample.
+   *  Returns the removed sample (so its clip file can be deleted) or null. */
+  removeSample(name: string, index: number): VoiceSample | null {
     const e = this.#people.get(key(name));
-    if (!e || index < 0 || index >= e.samples.length) return false;
-    e.samples.splice(index, 1);
+    if (!e || index < 0 || index >= e.samples.length) return null;
+    const [removed] = e.samples.splice(index, 1);
     if (e.samples.length === 0) this.#people.delete(key(name));
     this.#save();
-    return true;
+    return removed ?? null;
+  }
+
+  /** All samples of a person (for clip cleanup before remove()). */
+  samplesOf(name: string): VoiceSample[] {
+    return [...(this.#people.get(key(name))?.samples ?? [])];
   }
 
   names(): string[] { return [...this.#people.values()].map((e) => e.name); }
   has(name: string): boolean { return this.#people.has(key(name)); }
   size(): number { return this.#people.size; }
 
-  /** Per-person samples for the console (index + the enrolled transcript). */
-  people(): { name: string; samples: { index: number; text?: string; addedAt: number }[] }[] {
+  /** Per-person samples for the console (index + transcript + clip filename). */
+  people(): { name: string; samples: { index: number; text?: string; clip?: string; addedAt: number }[] }[] {
     return [...this.#people.values()].map((e) => ({
       name: e.name,
-      samples: e.samples.map((s, index) => ({ index, text: s.text, addedAt: s.addedAt })),
+      samples: e.samples.map((s, index) => ({ index, text: s.text, clip: s.clip, addedAt: s.addedAt })),
     }));
   }
 

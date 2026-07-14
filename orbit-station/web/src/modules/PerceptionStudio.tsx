@@ -90,6 +90,8 @@ interface Snapshot {
     // utterance ('unknown' only on an empty gallery). match=true means the score
     // cleared VOICE_MATCH; below the bar the pill renders "name? score" (a near-miss).
     voice?: { name: string; score?: number; match?: boolean };
+    // this speech row's utterance audio was saved (bounded dump) → the row gets a ▶.
+    clip?: boolean;
     // ── ENRICHER CALL METADATA (the ONE Gemini call per debounced batch) ── every segment record
     // from ONE enricher call shares enrichBatchId (the batch's startedAtMs) — the GROUPING KEY that
     // lets the Studio collapse N per-utterance rows back into the single LLM call that produced them.
@@ -194,8 +196,8 @@ interface TakeMeta {
 interface GallerySample { index: number; photo?: string }
 interface GalleryPerson { name: string; samples: GallerySample[] }
 /** Known-voices gallery: each person has N enrolled utterances (embedding + the
- *  transcript it came from — the audio analog of the face sample's photo). */
-interface VoicePerson { name: string; samples: { index: number; text?: string; addedAt: number }[] }
+ *  transcript + audio clip it came from — the audio analog of the face sample's photo). */
+interface VoicePerson { name: string; samples: { index: number; text?: string; clip?: string; addedAt: number }[] }
 /** A recent fingerprinted utterance offered for enrollment ("which lines were you?"). */
 interface VoiceRecent { id: number; text: string; durS: number }
 
@@ -411,18 +413,25 @@ export function PerceptionStudio() {
   // Inline enroll/correct from a speech ROW's 🎙 pill: name THAT utterance's voice.
   // Works while the utterance is still in the service's enroll ring (last ~20 with
   // an embedding); older rows can't be enrolled (the embedding isn't retained).
-  const enrollRowVoice = useCallback(async (snap: Snapshot) => {
+  // Success paints the pill "name ✓ enrolled" immediately (a UI overlay — the
+  // persisted record keeps what was believed at the time; the PROFILE changed).
+  const [rowEnrolled, setRowEnrolled] = useState<Map<string, string>>(new Map());
+  const enrollRowVoice = useCallback(async (snap: Snapshot, rowKey: string) => {
     const v = snap.payload.voice;
     const current = v && v.name !== 'unknown' ? v.name : '';
-    const name = window.prompt('This voice is… (name to enroll/correct):', current)?.trim();
+    const name = window.prompt(
+      'This voice is… (name to enroll/correct — type "other" if it\'s NOT an enrolled person, e.g. a wrong Guru match):',
+      current)?.trim();
     if (!name) return;
     try {
       const id = new Date(snap.interval.from).getTime();
-      const r = await api.post<{ ok: boolean; enrolled: number }>('/perception/voice/enroll',
+      const r = await api.post<{ ok: boolean; enrolled: number; duplicates: number }>('/perception/voice/enroll',
         { dock: source, name, ids: [id] });
-      if (!r.ok) window.alert('Could not enroll — this utterance is no longer in the enroll buffer (only the last ~20 fingerprinted utterances can be named).');
-    } catch { window.alert('Enroll failed.'); }
-  }, [source]);
+      // duplicates = this exact clip was already in the profile — honest label, not "✓ enrolled".
+      if (r.ok) { setRowEnrolled((prev) => new Map(prev).set(rowKey, r.enrolled > 0 ? name : `${name} (already known)`)); loadVoiceGallery(); }
+      else window.alert('Could not enroll — this utterance is no longer in the enroll buffer (only the last ~20 fingerprinted utterances can be named). Speak again and name the fresh row.');
+    } catch { window.alert('Enroll failed (station unreachable?).'); }
+  }, [source, loadVoiceGallery]);
   const forgetVoice = useCallback((name: string) => {
     api.post('/perception/voice/gallery/remove', { name }).then(loadVoiceGallery).catch(() => {});
   }, [loadVoiceGallery]);
@@ -1786,14 +1795,37 @@ export function PerceptionStudio() {
                     {/* voice fingerprint: best enrolled candidate + match %. Green = cleared the
                         bar; gray "name? %" = near-miss. CLICK = enroll/correct this utterance's
                         voice under a name (recent utterances only — the enroll ring). */}
-                    {isStt && p.voice && (
-                      <span onClick={() => enrollRowVoice(s)}
-                        title={`voice fingerprint — cosine similarity to the nearest enrolled sample of ${p.voice.name}${p.voice.match ? '' : ' (below the match threshold — not acted on)'}. Click to name/correct this voice.`}
-                        style={{ marginLeft: 6, fontSize: 10, borderRadius: 4, padding: '0 4px', cursor: 'pointer',
-                          color: p.voice.match ? '#7ee0a0' : '#8fa8c8',
-                          border: `1px solid ${p.voice.match ? '#2c6f4a' : '#31435f'}` }}>
-                        🎙 {p.voice.name}{p.voice.match ? '' : '?'}{p.voice.score != null ? ` ${Math.round(p.voice.score * 100)}%` : ''} ✎
-                      </span>
+                    {/* ▶ PLAY this utterance's audio (bounded dump; 404s once pruned). */}
+                    {isStt && p.clip && source && source !== STREAM_ID && (() => {
+                      const src = `/api/perception/utterance-audio/${encodeURIComponent(source)}/${Date.parse(s.interval.from)}`;
+                      const playing = playingAudio === rowKey;
+                      return <span
+                        onClick={() => {
+                          if (playing) { audioElRef.current?.pause(); setPlayingAudio(null); return; }
+                          if (audioElRef.current) { audioElRef.current.src = src; audioElRef.current.play().then(() => setPlayingAudio(rowKey)).catch(() => setPlayingAudio(null)); }
+                        }}
+                        title="play this utterance's audio"
+                        style={{ marginLeft: 6, cursor: 'pointer', fontSize: 10, fontWeight: 700,
+                          color: playing ? '#7ee0a0' : '#7fa8d8' }}>
+                        {playing ? '⏸' : '▶'}
+                      </span>;
+                    })()}
+                    {isStt && p.voice && (rowEnrolled.has(rowKey)
+                      ? <span title="enrolled into the voice profile just now (this row keeps its original label — future utterances use the updated profile)"
+                          style={{ marginLeft: 6, fontSize: 10, borderRadius: 4, padding: '0 4px',
+                            color: '#7ee0a0', border: '1px solid #2c6f4a', fontWeight: 600 }}>
+                          🎙 {rowEnrolled.get(rowKey)} ✓ enrolled
+                        </span>
+                      : <span onClick={() => enrollRowVoice(s, rowKey)}
+                          title={p.voice.name === 'unknown'
+                            ? 'no enrolled voice matched (or the "other" decoy caught it). Click to name this voice.'
+                            : `voice fingerprint — cosine similarity to the nearest enrolled sample of ${p.voice.name}${p.voice.match ? '' : ' (below the match threshold — not acted on)'}. Click to name/correct this voice.`}
+                          style={{ marginLeft: 6, fontSize: 10, borderRadius: 4, padding: '0 4px', cursor: 'pointer',
+                            color: p.voice.match ? '#7ee0a0' : '#8fa8c8',
+                            border: `1px solid ${p.voice.match ? '#2c6f4a' : '#31435f'}` }}>
+                          {/* 'unknown' is a verdict, not a candidate — no "?" / no % (a decoy score would read as a near-person). */}
+                          🎙 {p.voice.name === 'unknown' ? 'unknown' : <>{p.voice.name}{p.voice.match ? '' : '?'}{p.voice.score != null ? ` ${Math.round(p.voice.score * 100)}%` : ''}</>} ✎
+                        </span>
                     )}
                   </span>
                   {/* PERF + CONFIDENCE meta, right-aligned, tabular */}
@@ -2381,6 +2413,16 @@ function KnownVoices({ gallery, recent, sel, setSel, onRefresh, onForget, onRemo
   isDock: boolean;
 }) {
   const [open, setOpen] = useState<Set<string>>(new Set());
+  // ▶ enrolled-sample clips: which clip is playing + one shared <audio>.
+  const [playingClip, setPlayingClip] = useState<string | null>(null);
+  const clipAudioRef = useRef<HTMLAudioElement | null>(null);
+  const playClip = (clip: string) => {
+    if (playingClip === clip) { clipAudioRef.current?.pause(); setPlayingClip(null); return; }
+    if (clipAudioRef.current) {
+      clipAudioRef.current.src = `/api/perception/voice/clip/${clip}`;
+      clipAudioRef.current.play().then(() => setPlayingClip(clip)).catch(() => setPlayingClip(null));
+    }
+  };
   const toggle = (name: string) => setOpen((prev) => {
     const next = new Set(prev); if (next.has(name)) next.delete(name); else next.add(name); return next;
   });
@@ -2425,6 +2467,7 @@ function KnownVoices({ gallery, recent, sel, setSel, onRefresh, onForget, onRemo
         )
       )}
 
+      <audio ref={clipAudioRef} onEnded={() => setPlayingClip(null)} onError={() => setPlayingClip(null)} style={{ display: 'none' }} />
       {gallery.length > 0 && (
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12, borderTop: '1px solid #1c2233', paddingTop: 8 }}>
           {gallery.map((p) => (
@@ -2442,9 +2485,15 @@ function KnownVoices({ gallery, recent, sel, setSel, onRefresh, onForget, onRemo
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 2, maxWidth: 320, borderTop: '1px solid #1c2233', paddingTop: 4 }}>
                   {p.samples.map((s) => (
                     <div key={s.index} style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11 }}>
+                      {s.clip && (
+                        <span onClick={() => playClip(s.clip!)} title="play this enrolled clip"
+                          style={{ cursor: 'pointer', fontWeight: 700, color: playingClip === s.clip ? '#7ee0a0' : '#7fa8d8' }}>
+                          {playingClip === s.clip ? '⏸' : '▶'}
+                        </span>
+                      )}
                       <span style={{ opacity: 0.7, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}
                         title={s.text}>{s.text || '(no transcript)'}</span>
-                      <button onClick={() => onRemoveSample(p.name, s.index)} title="Delete this voice sample"
+                      <button onClick={() => onRemoveSample(p.name, s.index)} title="Delete this voice sample (and its stored clip)"
                         style={{ padding: '0 4px', fontSize: 10 }}>✕</button>
                     </div>
                   ))}

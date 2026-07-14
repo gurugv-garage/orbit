@@ -50,17 +50,60 @@ function saveEnrichWav(dockId: string, pcm: Int16Array, startedAtMs: number, voi
   try {
     const dir = `.data/enrich-audio/${dockId}`;
     mkdirSync(dir, { recursive: true });
-    const db = pcm.length * 2, hdr = Buffer.alloc(44);
-    hdr.write('RIFF', 0); hdr.writeUInt32LE(36 + db, 4); hdr.write('WAVE', 8); hdr.write('fmt ', 12);
-    hdr.writeUInt32LE(16, 16); hdr.writeUInt16LE(1, 20); hdr.writeUInt16LE(1, 22);
-    hdr.writeUInt32LE(SAMPLE_RATE, 24); hdr.writeUInt32LE(SAMPLE_RATE * 2, 28); hdr.writeUInt16LE(2, 32);
-    hdr.writeUInt16LE(16, 34); hdr.write('data', 36); hdr.writeUInt32LE(db, 40);
-    writeFileSync(`${dir}/${startedAtMs}_v${voicedPct}.wav`, Buffer.concat([hdr, Buffer.from(pcm.buffer, pcm.byteOffset, db)]));
+    const db = pcm.length * 2;
+    writeFileSync(`${dir}/${startedAtMs}_v${voicedPct}.wav`,
+      Buffer.concat([wavHeader(db), Buffer.from(pcm.buffer, pcm.byteOffset, db)]));
     // prune oldest until under budget (the filename prefix = startedAtMs is a natural age sort).
     const files = readdirSync(dir).filter((f) => f.endsWith('.wav')).sort();
     let total = files.reduce((n, f) => n + statSync(join(dir, f)).size, 0);
     for (const f of files) { if (total <= ENRICH_SAVE_BUDGET_BYTES) break; try { total -= statSync(join(dir, f)).size; unlinkSync(join(dir, f)); } catch { /* */ } }
   } catch { /* debug best-effort */ }
+}
+
+/** 44-byte canonical WAV header for 16 kHz mono int16 PCM (shared by the enricher
+ *  dump above and the per-utterance dump below — keep the byte layout in ONE place). */
+function wavHeader(dataBytes: number): Buffer {
+  const hdr = Buffer.alloc(44);
+  hdr.write('RIFF', 0); hdr.writeUInt32LE(36 + dataBytes, 4); hdr.write('WAVE', 8); hdr.write('fmt ', 12);
+  hdr.writeUInt32LE(16, 16); hdr.writeUInt16LE(1, 20); hdr.writeUInt16LE(1, 22);
+  hdr.writeUInt32LE(SAMPLE_RATE, 24); hdr.writeUInt32LE(SAMPLE_RATE * 2, 28); hdr.writeUInt16LE(2, 32);
+  hdr.writeUInt16LE(16, 34); hdr.write('data', 36); hdr.writeUInt32LE(dataBytes, 40);
+  return hdr;
+}
+
+/** Per-utterance audio dump (always on, self-bounded): the exact PCM each final
+ *  transcript came from, so the console can PLAY any speech row (and enrollment can
+ *  keep the clip). The path is THE shared contract between the writer (here), the
+ *  enroll clip-copy (voice/service.ts) and the HTTP reader (perception/index.ts) —
+ *  cwd-relative like the sibling enrich-audio dump. */
+export function utteranceWavPath(dockId: string, startedAtMs: number): string {
+  return `.data/utterance-audio/${dockId}/${startedAtMs}.wav`;
+}
+const UTTER_SAVE_BUDGET_BYTES = Number(process.env.PERCEPTION_UTTER_SAVE_MB ?? 200) * 1024 * 1024;
+// Prune every Nth save, not every save — readdir+stat-per-file on each utterance
+// would put hundreds of sync syscalls on the hot audio path for no benefit (the
+// budget only drifts by ~N clip sizes between prunes).
+const UTTER_PRUNE_EVERY = 20;
+let utterSavesSincePrune = 0;
+function saveUtteranceWav(dockId: string, pcm: Int16Array, startedAtMs: number): boolean {
+  try {
+    const dir = `.data/utterance-audio/${dockId}`;
+    mkdirSync(dir, { recursive: true });
+    const db = pcm.length * 2;
+    writeFileSync(utteranceWavPath(dockId, startedAtMs),
+      Buffer.concat([wavHeader(db), Buffer.from(pcm.buffer, pcm.byteOffset, db)]));
+    if (++utterSavesSincePrune >= UTTER_PRUNE_EVERY) {
+      utterSavesSincePrune = 0;
+      const sizes = new Map(readdirSync(dir).filter((f) => f.endsWith('.wav')).sort()
+        .map((f) => [f, statSync(join(dir, f)).size] as const));
+      let total = [...sizes.values()].reduce((n, s) => n + s, 0);
+      for (const [f, size] of sizes) {
+        if (total <= UTTER_SAVE_BUDGET_BYTES) break;
+        try { unlinkSync(join(dir, f)); total -= size; } catch { /* */ }
+      }
+    }
+    return true;
+  } catch { return false; }
 }
 
 const SIDECAR_URL = process.env.PERCEPTION_SIDECAR_URL ?? 'http://127.0.0.1:8078';
@@ -442,6 +485,9 @@ export function speechWatchProcessor(
         const voice = wantEmbed && tr.embedding
           ? voiceId!.handleUtterance(ctx.dockId, tr.embedding, tr.text, startedAt.getTime(), durS)
           : undefined;
+        // Keep the utterance's audio (bounded dump) so the console can play the row
+        // and enrollment can retain the clip. `clip:true` tells the UI a ▶ exists.
+        const clip = saveUtteranceWav(ctx.dockId, pcm, startedAt.getTime());
         const rec = makeSnapshot({
           dockId: ctx.dockId,
           source: { id: ctx.streamId, kind: 'speech', device: 'dock-webrtc', host: 'station' },
@@ -452,6 +498,7 @@ export function speechWatchProcessor(
             // who said it (voice fingerprint) — observe-only for now; the raw score
             // stays on the record so the trial can calibrate thresholds offline.
             ...(voice ? { voice } : {}),
+            ...(clip ? { clip: true } : {}),
             // keep the raw metrics on the record for the playground to inspect/tune
             avgLogprob: tr.avgLogprob, noSpeechProb: tr.noSpeechProb, compressionRatio: tr.compressionRatio,
             inferMs: tr.inferMs,

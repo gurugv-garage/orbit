@@ -81,6 +81,17 @@ test('persistence round-trip + case-insensitive identity', () => {
   } finally { rmSync(p, { force: true }); }
 });
 
+test('enroll DEDUPES a near-identical embedding for the same person', () => {
+  const p = tmp();
+  try {
+    const g = new VoiceGallery(p);
+    assert.equal(g.enroll('Guru', axis(0), 'first').added, true);
+    assert.equal(g.enroll('Guru', axis(0), 'same clip again').added, false); // cosine 1.0 → dup
+    assert.equal(g.people()[0]!.samples.length, 1);
+    assert.equal(g.enroll('Anne', axis(0), 'other person, same axis').added, true); // dedup is per-person
+  } finally { rmSync(p, { force: true }); }
+});
+
 test('append=false replaces prior samples; remove/removeSample', () => {
   const p = tmp();
   try {

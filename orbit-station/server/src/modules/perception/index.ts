@@ -26,7 +26,7 @@ import { presenceProcessor } from './processors/presence.js';
 import { faceRecognitionProcessor } from './processors/face-recognition.js';
 import { visionSnapshotProcessor } from './processors/vision-snapshot.js';
 import { identitySnapshotProcessor } from './processors/identity-snapshot.js';
-import { speechWatchProcessor } from './processors/speech-watch.js';
+import { speechWatchProcessor, utteranceWavPath } from './processors/speech-watch.js';
 import { enrichAudio } from './processors/audio-enricher.js';
 import { bodyMotionWatchProcessor, type MotionCommand } from './processors/bodymotion-watch.js';
 import { SnapshotStore, isoIst, sampleEvenly, makeSnapshot, type SnapshotRecord } from './snapshots.js';
@@ -117,6 +117,8 @@ import { VoiceIdService } from './voice/service.js';
 const GALLERY_PATH = fileURLToPath(new URL('../../../data/face-gallery.json', import.meta.url));
 // Voice twin of the face gallery — same data root, one file.
 const VOICE_GALLERY_PATH = fileURLToPath(new URL('../../../data/voice-gallery.json', import.meta.url));
+// Enrolled samples' audio clips — permanent (deleted only with their sample).
+const VOICE_CLIPS_DIR = fileURLToPath(new URL('../../../data/voice-clips', import.meta.url));
 
 // recollect_face frame sampling: how many of the grabber's latest frames to try
 // before declaring "no one", and the gap between tries (so we sample DIFFERENT live
@@ -722,7 +724,7 @@ export function perceptionModule(getHub: () => PerceptionProcessingHub): Station
   // the STT sidecar (--embed-model), matched against an enrolled voice gallery —
   // the audio twin of the face gallery above. Labels speech snapshots only; no
   // brain/addressed wiring yet. Kill: PERCEPTION_VOICE_ID=0.
-  const voiceId = new VoiceIdService(VOICE_GALLERY_PATH);
+  const voiceId = new VoiceIdService(VOICE_GALLERY_PATH, VOICE_CLIPS_DIR);
   // A1.2: the brain registers onFinal (via TranscriptApi) to receive each final
   // utterance; we hold the single handler and forward speech-watch's events to it.
   // It also reports `speaking` per dock (echo-gate) — speech-watch drops audio then.
@@ -1750,22 +1752,55 @@ export function perceptionModule(getHub: () => PerceptionProcessingHub): Station
           json(res, 400, { error: 'voice enroll needs dock + name + ids[]' });
           return true;
         }
-        const enrolled = voiceId.enrollFromRecent(body.dock, body.name.trim(), body.ids);
-        bus.publish({ topic: 'perception', kind: 'enroll-result', payload: { name: body.name.trim(), ok: enrolled > 0, voice: true }, source: 'station' });
-        json(res, enrolled > 0 ? 200 : 409, { ok: enrolled > 0, enrolled });
+        // Near-identical re-enrollments dedup server-side (counted, not stored).
+        const r = voiceId.enrollFromRecent(body.dock, body.name.trim(), body.ids);
+        const ok = r.enrolled > 0 || r.duplicates > 0; // a dup means "already known", not a failure
+        bus.publish({ topic: 'perception', kind: 'enroll-result', payload: { name: body.name.trim(), ok, voice: true }, source: 'station' });
+        json(res, ok ? 200 : 409, { ok, ...r });
         return true;
       }
       if (req.method === 'POST' && subPath === '/voice/gallery/remove') {
         const body = await parseBody<{ name?: string }>(req);
-        json(res, 200, { removed: body.name ? voiceId.gallery.remove(body.name) : false });
+        json(res, 200, { removed: body.name ? voiceId.removePerson(body.name) : false });
         return true;
       }
       if (req.method === 'POST' && subPath === '/voice/gallery/sample/remove') {
         const body = await parseBody<{ name?: string; index?: number }>(req);
         const removed = body.name != null && typeof body.index === 'number'
-          ? voiceId.gallery.removeSample(body.name, body.index) : false;
+          ? voiceId.removeSample(body.name, body.index) : false;
         json(res, 200, { removed });
         return true;
+      }
+      // Serve an enrolled sample's permanent clip: GET /voice/clip/<file> (flat names only).
+      {
+        const cm = subPath.match(/^\/voice\/clip\/([a-z0-9-]+\.wav)$/);
+        if (cm && req.method === 'GET') {
+          try {
+            const fs = await import('node:fs');
+            const buf = fs.readFileSync(`${VOICE_CLIPS_DIR}/${cm[1]}`);
+            res.writeHead(200, { 'content-type': 'audio/wav', 'content-length': String(buf.length) });
+            res.end(buf);
+          } catch { json(res, 404, { error: 'clip not found' }); }
+          return true;
+        }
+      }
+      // Serve a speech row's utterance audio: GET /utterance-audio/:dock/:startedAtMs
+      // (the bounded always-on dump speech-watch writes; exact filename match).
+      // The dock segment is re-validated AFTER decoding — `[^/]+` alone admits
+      // percent-encoded `../` (path traversal); dock names are plain slugs.
+      {
+        const um = subPath.match(/^\/utterance-audio\/([^/]+)\/(\d+)$/);
+        if (um && req.method === 'GET') {
+          const dock = decodeURIComponent(um[1]!);
+          if (!/^[a-zA-Z0-9_-]+$/.test(dock)) { json(res, 404, { error: 'bad dock' }); return true; }
+          try {
+            const fs = await import('node:fs');
+            const buf = fs.readFileSync(utteranceWavPath(dock, Number(um[2]!)));
+            res.writeHead(200, { 'content-type': 'audio/wav', 'content-length': String(buf.length) });
+            res.end(buf);
+          } catch { json(res, 404, { error: 'utterance audio not available (pruned?)' }); }
+          return true;
+        }
       }
       if (req.method === 'GET' && subPath.length > 1) {
         const dockId = decodeURIComponent(subPath.slice(1));

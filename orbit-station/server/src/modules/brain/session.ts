@@ -954,9 +954,13 @@ export class DockBrainSession {
       // self-thought RCA). "even off-camera" is the only clause that earned its
       // place: live turn-531f9873 deflected a matched speaker to "step into view"
       // after recollect_face saw no one.
+      // name 'unknown' = empty gallery or the "other" decoy caught it — rendering
+      // "closest: unknown, 88%" would be a self-contradictory fact in the prompt.
       const hearing = heardVoice.match
         ? `Hearing (voice-id): ${heardVoice.name}, ${pct} — your interlocutor, even if off-camera.`
-        : `Hearing (voice-id): unrecognized (closest: ${heardVoice.name}, ${pct}).`;
+        : heardVoice.name === 'unknown'
+          ? 'Hearing (voice-id): not a voice you know.'
+          : `Hearing (voice-id): unrecognized (closest: ${heardVoice.name}, ${pct}).`;
       grounding = grounding ? `${grounding}\n${hearing}` : hearing;
       this.#d.log?.(`[brain] ${this.dock}: hearing-identity → ${heardVoice.name} ${pct}${heardVoice.match ? '' : ' (below bar)'}`);
     }

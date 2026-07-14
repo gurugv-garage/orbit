@@ -9,6 +9,10 @@
  * Each wav becomes one gallery sample (embedded by the STT sidecar, which must be
  * running with --embed-model). Writes server/data/voice-gallery.json directly —
  * restart the station (or enroll before boot) so it reloads the file.
+ *
+ * BOOTSTRAP-ONLY caveats vs the Studio/REST path: no near-duplicate dedup (re-running
+ * the script re-adds the same wavs) and no clip persistence (script-seeded samples
+ * have no ▶ audio in the console). Prefer the Studio enroll flow once the station runs.
  */
 import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
