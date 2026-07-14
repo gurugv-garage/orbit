@@ -269,7 +269,7 @@ export class ObsStore {
       }
     }
     return {
-      from, to, total, groupBy,
+      from, to, currency: 'USD', total, groupBy,
       groups: [...groups.values()].sort((a, b) => b.cost - a.cost),
     };
   }

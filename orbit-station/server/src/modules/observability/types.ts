@@ -152,6 +152,8 @@ export interface CostBucket {
   /** the group's value (dock name / 'user'|'task' / model id / 'YYYY-MM-DD').
    *  Absent on the grand total. */
   group?: string;
+  /** spend in US DOLLARS (see the `currency` field on the response). A bare
+   *  number here read as "units" is a bug — it is always USD. */
   cost: number;
   inputTokens: number;
   outputTokens: number;
@@ -163,6 +165,10 @@ export interface CostSummary {
   /** window actually covered (epoch ms), echoed back for the UI. */
   from: number;
   to: number;
+  /** unit of every `cost` field below — always 'USD'. Present so any reader
+   *  (the model, the console, a future tool) knows the number is dollars
+   *  without being told out of band. */
+  currency: 'USD';
   total: CostBucket;
   groupBy: CostGroupBy;
   groups: CostBucket[];
@@ -172,7 +178,7 @@ export interface CostSummary {
 export interface CostSeriesPoint {
   /** UTC day, 'YYYY-MM-DD'. */
   day: string;
-  /** group value → summed cost for that day. */
+  /** group value → summed cost (US DOLLARS) for that day. */
   byGroup: Record<string, number>;
 }
 

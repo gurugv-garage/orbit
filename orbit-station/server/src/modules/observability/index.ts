@@ -124,6 +124,9 @@ export function observabilityModule(): StationModule {
         const g = costGroupBy(u.searchParams.get('groupBy'));
         // series only splits by the dimensions a stacked chart shows.
         const groupBy = g === 'day' ? 'kind' : g;
+        // (kept a bare array — the console chart consumes it directly; the
+        // summary endpoint carries `currency`, and the numbers are USD per the
+        // CostSeriesPoint doc. Don't reshape without updating web/Cost.tsx.)
         json(res, 200, store.costSeries(from, to, groupBy));
         return true;
       }
