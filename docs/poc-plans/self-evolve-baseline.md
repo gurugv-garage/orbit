@@ -172,11 +172,27 @@ recipe; merge-don't-replace rule for JSON config keys).
 - **P4 `explain_turn` — BUILT + verified 2026-07-14** (same session, first source change
   of the POC). One tool over `ObsToolApi.session()` returns a compact single-turn trace
   (trigger, each step's text, tool calls with args+results, timings, cost); `back:N` or
-  `match:"…"` selects the turn. Verified: seeded "fun fact about the ocean" → "why did you
-  say that?" → **1 `explain_turn` call, state=done** (run 2's same question died after 4
-  curls). Skill v1.2 routes explanation questions to the tool. Files: `schemas.ts`
-  (schema+desc), `tools.ts` (`explain_turn` in `buildObsTools` + `renderTurnExplanation`);
-  no `main.ts`/interface change (reused the existing obs accessor).
+  `match:"…"` selects the turn. Files: `schemas.ts` (schema+desc), `tools.ts`
+  (`explain_turn` in `buildObsTools` + `renderTurnExplanation`); no `main.ts`/interface
+  change (reused the existing obs accessor). Skill v1.2 routes explanation questions to it.
+
+  **What's actually fixed vs. not — be precise:**
+  - ✅ **The crash/timeout is fixed + verified.** Run 2's "why did you say that?" *failed*
+    (died after 4 obs curls hit the 60s budget, no answer). The tool returns the right
+    single-turn trace in one fast call; injected seed→"why" → **1 `explain_turn` call,
+    state=done**.
+  - ⚠ **The natural-phrasing PULL is NOT verified.** The passing injected test said "why
+    did you say that? **explain using your trace**" — that nudge forced the tool. A real
+    **voice** test (`turn-cd6ec5fe`, phone online) with the bare "why did you say that?"
+    answered *correctly but from MEMORY* — 1 step, `explain_turn` NOT called. So the F2
+    soft-fail (sounds checked, wasn't) is untouched; only the crash mode is closed. Calling
+    this "the B1 fix" outright was an over-claim — I tested it in a way that guaranteed the
+    pass instead of testing the phrasing the user would use.
+  - **Decision (user): leave it, measure first.** The memory answer was right; forcing the
+    tool on every casual "why" is pure added latency when recall is correct. Run several
+    voice "why did you…" turns, grade how often memory diverges from the real trace, THEN
+    decide whether to force the pull. Only a real-voice test surfaced this — injected runs
+    prove mechanism, not trigger behaviour.
 - Persona-write quality (E1) → skill rule added: additions only, never copy the base.
 - Re-run A4 + body stories with the phone/body online; voice sign-off of ⚑ stories
   still pending (injected runs prove mechanism only).
