@@ -169,8 +169,14 @@ recipe; merge-don't-replace rule for JSON config keys).
 
 ### Carried forward
 
-- **P4 `explain_turn` is now justified** by B1's timeout — one compact tool over the
-  obs record (or a `?turn=` slim REST view the skill can curl in one hop).
+- **P4 `explain_turn` — BUILT + verified 2026-07-14** (same session, first source change
+  of the POC). One tool over `ObsToolApi.session()` returns a compact single-turn trace
+  (trigger, each step's text, tool calls with args+results, timings, cost); `back:N` or
+  `match:"…"` selects the turn. Verified: seeded "fun fact about the ocean" → "why did you
+  say that?" → **1 `explain_turn` call, state=done** (run 2's same question died after 4
+  curls). Skill v1.2 routes explanation questions to the tool. Files: `schemas.ts`
+  (schema+desc), `tools.ts` (`explain_turn` in `buildObsTools` + `renderTurnExplanation`);
+  no `main.ts`/interface change (reused the existing obs accessor).
 - Persona-write quality (E1) → skill rule added: additions only, never copy the base.
 - Re-run A4 + body stories with the phone/body online; voice sign-off of ⚑ stories
   still pending (injected runs prove mechanism only).

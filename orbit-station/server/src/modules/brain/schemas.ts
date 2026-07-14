@@ -292,6 +292,29 @@ export const inspectObservabilitySchema = {
   required: ['aspect'],
 } as const;
 
+export const explainTurnSchema = {
+  type: 'object',
+  properties: {
+    back: {
+      type: 'number',
+      description: 'how many completed turns to look back (1 = the turn right before this one, the default; 2 = the one before that). Ignored when `match` is given.',
+    },
+    match: {
+      type: 'string',
+      description: 'optional: find the most recent completed turn whose trigger text contains this (case-insensitive), instead of counting back. Use when the user refers to a specific thing you said ("why did you mention the weather").',
+    },
+  },
+  required: [],
+} as const;
+
+export const EXPLAIN_TURN_DESC =
+  'Explain WHY I said or did something, from my own recorded trace — use for "why did you say/do that", ' +
+  '"why did you answer", "why so slow", "what did that cost". Returns ONE past turn in full: what triggered it ' +
+  '(and whether speech was addressed to me), each thinking step, every tool I called with its inputs and results, ' +
+  'timings, errors, and cost. Prefer this over reading files or curling endpoints — it is one fast call. Default ' +
+  'is the turn right before this one (back:1). Read the trace, THEN explain in your own words; never guess about ' +
+  'your past behaviour when this tool can tell you.';
+
 export const RECORD_FEEDBACK_DESC =
   "Record the user's feedback about how I'm doing for later review. Use when the user is clearly happy or unhappy, " +
   'points out something I got wrong (misheard, didn\'t move, wrong answer, too slow), or explicitly says "give feedback". ' +

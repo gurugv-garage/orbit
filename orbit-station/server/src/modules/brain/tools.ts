@@ -309,7 +309,58 @@ export function buildObsTools(dock: string, sessionId: () => string | undefined,
       if (!parts.length) parts.push('No observability data for this session yet (no completed turns).');
       return textResult(parts.join('\n\n'));
     }),
+    tool('explain_turn', S.EXPLAIN_TURN_DESC, S.explainTurnSchema, async (_id, args: { back?: number; match?: string }) => {
+      const sid = sessionId();
+      const rec = sid ? obs.session(sid) : undefined;
+      if (!rec) return textResult('No trace for this session yet — nothing to explain.');
+      // Completed turns only, newest first. The in-flight turn (this explain_turn
+      // call itself) has no endedAt, so it's naturally excluded.
+      const done = rec.turns.filter((t) => t.endedAt != null).reverse();
+      if (!done.length) return textResult('No completed turns yet — nothing to explain.');
+      let turn;
+      if (args.match) {
+        const needle = args.match.toLowerCase();
+        turn = done.find((t) => (t.trigger?.text ?? '').toLowerCase().includes(needle));
+        if (!turn) return textResult(`No completed turn matched "${args.match}". Recent triggers: ${done.slice(0, 6).map((t) => JSON.stringify(t.trigger?.text ?? t.trigger?.kind ?? '?')).join(', ')}.`);
+      } else {
+        const back = Math.max(1, Math.floor(args.back ?? 1));
+        turn = done[back - 1];
+        if (!turn) return textResult(`Only ${done.length} completed turn(s) exist — can't look back ${back}.`);
+      }
+      return textResult(renderTurnExplanation(turn));
+    }),
   ];
+}
+
+/** One compact, model-shaped rendering of a single turn's trace: trigger, each
+ *  step's assistant text + tool calls (args/results, truncated), timings, cost.
+ *  This is the whole point of explain_turn — one call returns everything the
+ *  model needs to answer "why did you do that", so it never has to spelunk raw
+ *  obs JSON over multiple slow curls (which blew the turn budget in testing). */
+function renderTurnExplanation(t: import('../observability/types.js').TurnRecord): string {
+  const clip = (s: unknown, n: number): string => {
+    const str = typeof s === 'string' ? s : JSON.stringify(s ?? '');
+    return str.length > n ? str.slice(0, n) + '…' : str;
+  };
+  const dur = t.endedAt ? t.endedAt - t.startedAt : undefined;
+  const cost = t.steps.reduce((sum, s) => sum + (s.usage?.cost ?? 0), 0);
+  const ttft = t.steps.map((s) => s.ttftMs).find((x) => x != null);
+  const lines: string[] = [];
+  lines.push(`TURN ${t.turnId} — ${t.state ?? 'unknown state'}`);
+  lines.push(`Triggered by: ${t.trigger?.kind ?? '?'}${t.trigger?.text ? ` — "${clip(t.trigger.text, 200)}"` : ''}`);
+  const timing = [dur != null ? `${dur}ms total` : null, ttft != null ? `first token ${ttft}ms` : null, `${t.steps.length} step(s)`].filter(Boolean).join(', ');
+  lines.push(`Timing/cost: ${timing}${cost ? `, $${cost.toFixed(5)}` : ''}`);
+  t.steps.forEach((s, i) => {
+    const bits: string[] = [`Step ${i + 1}${s.model ? ` [${s.model}]` : ''}${s.stopReason ? ` (${s.stopReason})` : ''}`];
+    if (s.error) bits.push(`  ERROR: ${clip(s.error, 200)}`);
+    if (s.text) bits.push(`  said/thought: "${clip(s.text, 240)}"`);
+    for (const tc of s.tools) {
+      bits.push(`  → ${tc.toolName}(${clip(tc.args, 160)})${tc.isError ? ' [FAILED]' : ''}`);
+      if (tc.result != null) bits.push(`     ⇒ ${clip(tc.result, 200)}`);
+    }
+    lines.push(bits.join('\n'));
+  });
+  return lines.join('\n');
 }
 
 /** Render a memory for the model: id (so it can inspect/update/forget), the claim,
