@@ -275,7 +275,34 @@ class Temporal:
         return MLX.submit(lambda: self._q.describe(frames_b64, p)).result()
 
 
-def make_handler(stt: Stt, vision_holder: dict, temporal_holder: dict):
+class VoiceEmbedder:
+    """Speaker-embedding extractor (voice fingerprinting) via sherpa-onnx — CPU
+    onnxruntime, so it does NOT go through the MLX thread. Validated 2026-07-14 on
+    real dock audio: TitaNet-small matched torch-ECAPA's separation (guru 0.59-0.77
+    vs non-guru ~0.0 cosine) at ~13ms/clip. A lock guards compute() because the
+    HTTP server is threaded and one extractor instance is shared."""
+
+    def __init__(self, model_path: str, threads: int = 2):
+        import sherpa_onnx  # lazy: only required when --embed-model is passed
+        self._sherpa = sherpa_onnx
+        self._ex = sherpa_onnx.SpeakerEmbeddingExtractor(
+            sherpa_onnx.SpeakerEmbeddingExtractorConfig(model=model_path, num_threads=threads))
+        self._lock = _threading.Lock()
+        self.model = model_path.rsplit("/", 1)[-1]
+
+    def embed(self, pcm: np.ndarray, sr: int) -> list:
+        """pcm: int16 mono. Returns a unit-norm embedding as a plain list."""
+        x = pcm.astype(np.float32) / 32768.0
+        with self._lock:
+            s = self._ex.create_stream()
+            s.accept_waveform(sr, x)
+            s.input_finished()
+            e = np.array(self._ex.compute(s), dtype=np.float32)
+        n = float(np.linalg.norm(e))
+        return (e / n).tolist() if n > 0 else e.tolist()
+
+
+def make_handler(stt: Stt, vision_holder: dict, temporal_holder: dict, embedder: "VoiceEmbedder | None" = None):
     def get_vision() -> Vision:
         if vision_holder.get("v") is None:
             vision_holder["v"] = Vision()
@@ -348,6 +375,16 @@ def make_handler(stt: Stt, vision_holder: dict, temporal_holder: dict):
                     self._send(500, {"error": str(e)})
                     return
                 out["latency_ms"] = (time.perf_counter() - t0) * 1e3
+                # Voice fingerprint: same PCM, one roundtrip. Requested per-call so
+                # the interim re-transcribe path never pays for it. Soft-fail: a
+                # broken embedder must never cost the transcript.
+                if req.get("embed") and embedder is not None:
+                    te = time.perf_counter()
+                    try:
+                        out["embedding"] = embedder.embed(pcm, sr)
+                        out["embed_ms"] = (time.perf_counter() - te) * 1e3
+                    except Exception as e:
+                        print(f"/transcribe embed failed: {e}", flush=True)
                 # live-test visibility: one line per utterance so we can watch what
                 # the STT engine actually hears in real conversation.
                 print(f"/transcribe [{getattr(stt,'model','?')}] "
@@ -457,6 +494,12 @@ def main():
                     help="vision-only: don't load whisper. Run STT and the MLX vision "
                          "models in SEPARATE processes — two MLX models in one process "
                          "can crash Metal.")
+    ap.add_argument("--embed-model", default=None,
+                    help="path to a speaker-embedding .onnx (voice fingerprinting; "
+                         "e.g. nemo_en_titanet_small.onnx from "
+                         "github.com/k2-fsa/sherpa-onnx/releases 'speaker-recongition-models'). "
+                         "When set, /transcribe requests with embed:true also return "
+                         "'embedding' (unit-norm) + 'embed_ms'. CPU via sherpa-onnx.")
     a = ap.parse_args()
     stt = None
     if not a.no_stt:
@@ -479,7 +522,18 @@ def main():
         tt = time.perf_counter()
         temporal_holder["t"] = Temporal()
         print(f"  ready in {time.perf_counter()-tt:.1f}s")
-    srv = ThreadingHTTPServer((a.host, a.port), make_handler(stt, vision_holder, temporal_holder))
+    embedder = None
+    if a.embed_model:
+        # Soft-load: a missing model file or missing sherpa-onnx must not take the
+        # STT sidecar down — voice fingerprinting is an optional add-on.
+        try:
+            print(f"loading voice embedder {a.embed_model} …")
+            tv2 = time.perf_counter()
+            embedder = VoiceEmbedder(a.embed_model)
+            print(f"  ready in {time.perf_counter()-tv2:.1f}s")
+        except Exception as e:
+            print(f"  voice embedder DISABLED: {e}")
+    srv = ThreadingHTTPServer((a.host, a.port), make_handler(stt, vision_holder, temporal_holder, embedder))
     print(f"perception-sidecar on http://{a.host}:{a.port}  (POST /transcribe, /api/generate, /temporal, GET /health)")
     try:
         srv.serve_forever()

@@ -142,6 +142,8 @@ interface Transcription {
   noSpeechProb: number | null;    // P(silence/noise); high = likely hallucination
   compressionRatio: number | null; // gzip ratio; high = repetitive loop
   inferMs: number | null;         // sidecar-reported transcription latency
+  /** speaker embedding (unit-norm, sidecar --embed-model) — only when requested. */
+  embedding: number[] | null;
 }
 
 /** The STT model label: the sidecar's own report wins (per-call `model`, else its
@@ -167,18 +169,20 @@ type TranscribeResult =
   | { ok: true; transcription: Transcription | null }   // ran; maybe empty (silence)
   | { ok: false; error: string };                        // sidecar unreachable / errored
 
-async function transcribe(pcm: Int16Array): Promise<TranscribeResult> {
+async function transcribe(pcm: Int16Array, embed = false): Promise<TranscribeResult> {
   try {
     const buf = Buffer.from(pcm.buffer, pcm.byteOffset, pcm.byteLength);
     const r = await fetch(`${SIDECAR_URL}/transcribe`, {
       method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ pcm_b64: buf.toString('base64'), sample_rate: SAMPLE_RATE }),
+      // embed:true only on the final-commit path (never interims) — the sidecar
+      // then also returns the utterance's speaker embedding (voice fingerprint).
+      body: JSON.stringify({ pcm_b64: buf.toString('base64'), sample_rate: SAMPLE_RATE, embed }),
       signal: AbortSignal.timeout(30_000),
     });
     if (!r.ok) return { ok: false, error: `STT sidecar returned ${r.status}` };
     const j = (await r.json()) as {
       text?: string; model?: string; avg_logprob?: number | null; no_speech_prob?: number | null;
-      compression_ratio?: number | null; latency_ms?: number;
+      compression_ratio?: number | null; latency_ms?: number; embedding?: number[];
     };
     const text = j.text?.trim();
     if (!text) return { ok: true, transcription: null };
@@ -193,6 +197,7 @@ async function transcribe(pcm: Int16Array): Promise<TranscribeResult> {
         noSpeechProb: j.no_speech_prob ?? null,
         compressionRatio: j.compression_ratio ?? null,
         inferMs: j.latency_ms != null ? Math.round(j.latency_ms) : null,
+        embedding: Array.isArray(j.embedding) ? j.embedding : null,
       },
     };
   } catch (e) {
@@ -209,6 +214,9 @@ async function transcribe(pcm: Int16Array): Promise<TranscribeResult> {
 const LOGPROB_MIN = Number(process.env.STT_LOGPROB_MIN ?? -1.0);   // below → unsure
 const NOSPEECH_MAX = Number(process.env.STT_NOSPEECH_MAX ?? 0.5);  // above → likely noise
 const COMPRESSION_MAX = Number(process.env.STT_COMPRESSION_MAX ?? 2.4); // above → repetitive loop
+/** Shortest utterance worth a voice fingerprint — embeddings on sub-second
+ *  far-field slivers matched nobody in the 2026-07-14 trial. */
+const VOICE_MIN_S = Number(process.env.VOICE_MIN_S ?? 0.8);
 
 /** Decide lowConfidence from the engine's metrics first, falling back to text heuristics
  *  (so it still works against Parakeet / an older sidecar that returns null metrics —
@@ -302,6 +310,9 @@ export interface FinalTranscriptEvent {
   avgLogprob?: number | null;
   noSpeechProb?: number | null;
   compressionRatio?: number | null;
+  /** Voice fingerprint of the utterance (best enrolled candidate + whether it cleared
+   *  the match bar) — the brain's HEARING identity, distinct from face identity. */
+  voice?: import('../voice/service.js').VoiceLabel;
 }
 
 /** A LIVE interim (partial) transcript emitted mid-utterance for the dock UI. seq is
@@ -352,6 +363,10 @@ export function speechWatchProcessor(
    *  stream teardown calls. Undefined ⇒ paths stay at the detector's defaults (speech on/non-speech
    *  off). Wired to perception's enricher_ state by the caller. */
   registerEnrichPaths?: (apply: (p: { speech: boolean; nonSpeech: boolean }) => void) => () => void,
+  /** VOICE FINGERPRINT (observe-only trial): when set + enabled, finals ≥ VOICE_MIN_S
+   *  request a speaker embedding from the sidecar and the label lands on the snapshot
+   *  as `voice: {name, score}`. voice/service.ts owns matching + the enroll ring. */
+  voiceId?: import('../voice/service.js').VoiceIdService,
 ): StreamProcessor & {
   /** Force-commit any in-progress utterance on EVERY stream now, awaiting the
    *  transcription. Used by the Summarize flush so a mid-sentence is captured. */
@@ -387,7 +402,12 @@ export function speechWatchProcessor(
       // Each completed (or force-flushed) utterance → one transcription → snapshot.
       // Returns a Promise so flushNow() can await the commit before summarizing.
       const commit = async (pcm: Int16Array, startedAt: Date, endedAt: Date): Promise<void> => {
-        const res = await transcribe(pcm);
+        // Voice fingerprint: piggyback on the same sidecar call. Sub-VOICE_MIN_S
+        // utterances skip it — embeddings on <0.8s far-field slivers are noise
+        // (trial-measured), and the enroll ring shouldn't collect them either.
+        const durS = pcm.length / SAMPLE_RATE;
+        const wantEmbed = !!voiceId && voiceId.enabled() && durS >= VOICE_MIN_S;
+        const res = await transcribe(pcm, wantEmbed);
         if (!res.ok) {
           // The sidecar is unreachable/errored → the dock is DEAF. Record it so the
           // brain can tell the user the real reason when they next try to talk
@@ -417,6 +437,11 @@ export function speechWatchProcessor(
         // is all there is under Parakeet) and let the summarizer LLM decide noise vs signal.
         const tier = confidenceTier(tr);
         const lowConfidence = tier !== 'good'; // back-compat flag (shaky OR garbage)
+        // Label the utterance's voice + feed the enroll ring. Soft path: no
+        // embedding (flag off / short clip / old sidecar) → no voice field.
+        const voice = wantEmbed && tr.embedding
+          ? voiceId!.handleUtterance(ctx.dockId, tr.embedding, tr.text, startedAt.getTime(), durS)
+          : undefined;
         const rec = makeSnapshot({
           dockId: ctx.dockId,
           source: { id: ctx.streamId, kind: 'speech', device: 'dock-webrtc', host: 'station' },
@@ -424,6 +449,9 @@ export function speechWatchProcessor(
           from: startedAt, to: endedAt,
           payload: {
             text: tr.text, lowConfidence, confTier: tier,
+            // who said it (voice fingerprint) — observe-only for now; the raw score
+            // stays on the record so the trial can calibrate thresholds offline.
+            ...(voice ? { voice } : {}),
             // keep the raw metrics on the record for the playground to inspect/tune
             avgLogprob: tr.avgLogprob, noSpeechProb: tr.noSpeechProb, compressionRatio: tr.compressionRatio,
             inferMs: tr.inferMs,
@@ -451,6 +479,7 @@ export function speechWatchProcessor(
             dockId: ctx.dockId, streamId: ctx.streamId, text: tr.text,
             startedAt: startedAt.getTime(), endedAt: endedAt.getTime(), lowConfidence, confTier: tier,
             avgLogprob: tr.avgLogprob, noSpeechProb: tr.noSpeechProb, compressionRatio: tr.compressionRatio,
+            voice, // who the voice sounded like (fingerprint) — the brain's hearing-identity
           });
         }
       };

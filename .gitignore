@@ -48,6 +48,9 @@ captures/
 
 # Big ONNX models — fetched on demand (see node-dock/app scripts).
 node-dock/app/app/src/main/assets/models/emotion_ferplus.onnx
+# Speaker-embedding model for the perception sidecar (--embed-model; wget from
+# github.com/k2-fsa/sherpa-onnx releases, tag speaker-recongition-models).
+models/perception-sidecar/*.onnx
 
 # Local debug dumps (camera frames, screenshots).
 tmp/
@@ -64,6 +67,7 @@ node-dock/app/bench/results/*.log
 
 # Scratch/dictation notes — transient thinking, not tracked.
 scrap
+scrap-*
 
 # E2E (and any) cloud provider API credentials — NEVER commit.
 ops/e2e.keys

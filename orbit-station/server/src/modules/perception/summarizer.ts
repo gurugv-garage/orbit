@@ -239,9 +239,12 @@ export function stitch(records: SnapshotRecord[], windowFromIso?: string): strin
     } else if (r.source.kind === 'speech') {
       flushRuns();
       // LIVE PARAKEET (liveOnly) — kept only when NOT superseded by an enriched record (dropSupersededSpeech).
-      // ACTIVE-SPEAKER (cheap diarization): who had their mouth most open during this utterance?
-      const speaker = activeSpeaker(sorted, r);
-      const tag = speaker ? ` [likely ${speaker}]` : '';
+      // WHO SAID IT: the voice FINGERPRINT (enrolled-gallery match, strong) wins; else fall back to
+      // the mouth-open visual heuristic (weak → "likely"). With the Gemini enricher off these
+      // records ARE the durable transcript, so the speaker attribution matters here.
+      const v = (r.payload as { voice?: { name?: string; match?: boolean } }).voice;
+      const speaker = v?.match && v.name ? v.name : activeSpeaker(sorted, r);
+      const tag = v?.match && v.name ? ` [${v.name} — voice match]` : speaker ? ` [likely ${speaker}]` : '';
       const tier = (r.payload as { confTier?: string }).confTier
         ?? ((r.payload as { lowConfidence?: boolean }).lowConfidence ? 'shaky' : 'good');
       if (tier === 'garbage') {

@@ -111,9 +111,12 @@ function presentNamesFromRecent(recent: SnapshotRecord[]): string[] {
 }
 import { makeResult, type PerceptionResult } from './result.js';
 import { classifyDistance, TENTATIVE_THRESHOLD } from './face/gallery.js';
+import { VoiceIdService } from './voice/service.js';
 
 // Gallery persists next to the server's data (alongside the db). One file.
 const GALLERY_PATH = fileURLToPath(new URL('../../../data/face-gallery.json', import.meta.url));
+// Voice twin of the face gallery — same data root, one file.
+const VOICE_GALLERY_PATH = fileURLToPath(new URL('../../../data/voice-gallery.json', import.meta.url));
 
 // recollect_face frame sampling: how many of the grabber's latest frames to try
 // before declaring "no one", and the gap between tries (so we sample DIFFERENT live
@@ -574,6 +577,9 @@ export interface FinalTranscript {
   /** graded confidence: 'good' | 'shaky' | 'garbage'. A 'garbage' addressed utterance
    *  (far-field mush / repetition-loop) should not become a confident agent turn. */
   confTier?: 'good' | 'shaky' | 'garbage';
+  /** Voice fingerprint (hearing-identity): the best enrolled candidate for this
+   *  utterance's voice + whether it cleared the match threshold. */
+  voice?: { name: string; score?: number; match?: boolean };
 }
 /** A LIVE interim (partial) transcript — emitted mid-utterance for the dock caption
  *  UI. Cosmetic: the authoritative transcript is still the endpointed FinalTranscript.
@@ -712,6 +718,11 @@ export function perceptionModule(getHub: () => PerceptionProcessingHub): Station
   let bus: Bus;
   const gallery = new Gallery(GALLERY_PATH);
   const face = faceRecognitionProcessor(gallery);
+  // VOICE FINGERPRINT (observe-only trial): per-utterance speaker embeddings from
+  // the STT sidecar (--embed-model), matched against an enrolled voice gallery —
+  // the audio twin of the face gallery above. Labels speech snapshots only; no
+  // brain/addressed wiring yet. Kill: PERCEPTION_VOICE_ID=0.
+  const voiceId = new VoiceIdService(VOICE_GALLERY_PATH);
   // A1.2: the brain registers onFinal (via TranscriptApi) to receive each final
   // utterance; we hold the single handler and forward speech-watch's events to it.
   // It also reports `speaking` per dock (echo-gate) — speech-watch drops audio then.
@@ -749,8 +760,14 @@ export function perceptionModule(getHub: () => PerceptionProcessingHub): Station
   // the model name + the initial enabled state, so existing setups behave as before
   // (env set → on at boot; env unset → off, but still flippable on at runtime).
   // Seed the enricher's live-selectable model from PERCEPTION_ENRICH_MODEL.
+  // Env UNSET ⇒ both trigger paths seed OFF (no window ever arms, zero Gemini
+  // calls) — the documented "env unset → off at boot, still flippable from the
+  // console". Set the env to re-enable at boot. (2026-07-14: unset — the voice-
+  // fingerprint stage replaces the enricher; parakeet records are the durable
+  // truth via dropSupersededSpeech's no-enricher fallback.)
   enricher_.model = process.env.PERCEPTION_ENRICH_MODEL
     || 'gemini-2.5-flash-lite';
+  if (!process.env.PERCEPTION_ENRICH_MODEL) { enricher_.speech = false; enricher_.nonSpeech = false; }
   // CONTEXT-AWARE: assemble the recent-discussion context for a dock (rolling summary
   // + who's present) so Gemini disambiguates names/topic/homophones. Cheap (a few
   // hundred chars; audio dominates the cost).
@@ -797,6 +814,7 @@ export function perceptionModule(getHub: () => PerceptionProcessingHub): Station
     // enricher's ACTUAL address confidence + directive (was hardcoded 0.7/empty — wasted signal).
     (e) => bgAddressedHandler?.({ dockId: e.dockId, directive: e.directive, transcript: e.text, conf: e.conf }),
     registerEnrichPathSink, // live speech / non-speech trigger gates → each detector
+    voiceId, // 🎙→👤 voice fingerprint on finals (observe-only)
   ); // 🎙 speech (exposes flushAll)
   const bodymotion = bodyMotionWatchProcessor(snapshots); // 🤖 ego-motion (setMotion seam)
   // Vision reuses the face processor's decoded frame (ONE ffmpeg per dock, not two). The
@@ -1711,6 +1729,42 @@ export function perceptionModule(getHub: () => PerceptionProcessingHub): Station
       if (req.method === 'POST' && subPath === '/gallery/clean') {
         const body = await parseBody<{ photoless?: boolean }>(req);
         json(res, 200, gallery.clean(!!body.photoless));
+        return true;
+      }
+      // ── VOICE gallery (fingerprints) — parallel to the face routes above. ──
+      if (req.method === 'GET' && subPath === '/voice/gallery') {
+        json(res, 200, { names: voiceId.gallery.names(), people: voiceId.gallery.people() });
+        return true;
+      }
+      // Recent fingerprinted utterances for a dock — the enroll UI's pick list
+      // ("speak a few lines, then select which were you"): ?dock=<dockId>.
+      if (req.method === 'GET' && subPath === '/voice/recent') {
+        const dock = new URL(req.url ?? '', 'http://x').searchParams.get('dock') ?? '';
+        json(res, 200, { recent: voiceId.recent(dock) });
+        return true;
+      }
+      // Enroll selected recent utterances as one person: { dock, name, ids }.
+      if (req.method === 'POST' && subPath === '/voice/enroll') {
+        const body = await parseBody<{ dock?: string; name?: string; ids?: number[] }>(req);
+        if (!body.dock || !body.name?.trim() || !Array.isArray(body.ids) || !body.ids.length) {
+          json(res, 400, { error: 'voice enroll needs dock + name + ids[]' });
+          return true;
+        }
+        const enrolled = voiceId.enrollFromRecent(body.dock, body.name.trim(), body.ids);
+        bus.publish({ topic: 'perception', kind: 'enroll-result', payload: { name: body.name.trim(), ok: enrolled > 0, voice: true }, source: 'station' });
+        json(res, enrolled > 0 ? 200 : 409, { ok: enrolled > 0, enrolled });
+        return true;
+      }
+      if (req.method === 'POST' && subPath === '/voice/gallery/remove') {
+        const body = await parseBody<{ name?: string }>(req);
+        json(res, 200, { removed: body.name ? voiceId.gallery.remove(body.name) : false });
+        return true;
+      }
+      if (req.method === 'POST' && subPath === '/voice/gallery/sample/remove') {
+        const body = await parseBody<{ name?: string; index?: number }>(req);
+        const removed = body.name != null && typeof body.index === 'number'
+          ? voiceId.gallery.removeSample(body.name, body.index) : false;
+        json(res, 200, { removed });
         return true;
       }
       if (req.method === 'GET' && subPath.length > 1) {

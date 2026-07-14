@@ -625,7 +625,8 @@ export function brainModule(w: BrainWiring): StationModule {
           trigger: { kind: 'user', text: fresh.map((u) => u.text).join(' '), via: 'busy-drain' }, // in order, nothing lost
           stationOriginated: true,
           stt: { confTier: newest.confTier, avgLogprob: newest.avgLogprob,
-            noSpeechProb: newest.noSpeechProb, compressionRatio: newest.compressionRatio },
+            noSpeechProb: newest.noSpeechProb, compressionRatio: newest.compressionRatio,
+            voice: newest.voice },
         }).catch((err) => console.error(`[brain] ${dock}: drained busy-queue turn crashed`, err));
       };
       // A finalized utterance → ask the dock's conversation state if it's ADDRESSED
@@ -685,7 +686,7 @@ export function brainModule(w: BrainWiring): StationModule {
                 trigger: { kind: 'user', text: command },
                 stationOriginated: true,
                 stt: { confTier: t.confTier, avgLogprob: t.avgLogprob, noSpeechProb: t.noSpeechProb,
-                  compressionRatio: t.compressionRatio },
+                  compressionRatio: t.compressionRatio, voice: t.voice },
               }).catch((err) => console.error(`[brain] ${t.dockId}: wake+command turn crashed`, err));
               return;
             }
@@ -772,7 +773,8 @@ export function brainModule(w: BrainWiring): StationModule {
               stationOriginated: true,
               merges: info.merges + 1,
               stt: { confTier: t.confTier, avgLogprob: t.avgLogprob,
-                noSpeechProb: t.noSpeechProb, compressionRatio: t.compressionRatio },
+                noSpeechProb: t.noSpeechProb, compressionRatio: t.compressionRatio,
+                voice: t.voice },
             }).catch((err) => console.error(`[brain] ${t.dockId}: merged turn crashed`, err));
             return;
           }
@@ -796,7 +798,7 @@ export function brainModule(w: BrainWiring): StationModule {
           stationOriginated: true, // A1.2: the phone must ADOPT this (it didn't start it)
           // STT confidence → observability turn trace (why this heard utterance ran).
           stt: { confTier: t.confTier, avgLogprob: t.avgLogprob, noSpeechProb: t.noSpeechProb,
-            compressionRatio: t.compressionRatio },
+            compressionRatio: t.compressionRatio, voice: t.voice },
         }).catch((err) => console.error(`[brain] ${t.dockId}: addressed turn crashed`, err));
         // (busy-queue drain: no longer here — the session's onSettled hook drains
         // for EVERY turn kind when the speech lane goes quiet; see drainBusy above.)

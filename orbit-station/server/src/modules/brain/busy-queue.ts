@@ -30,6 +30,8 @@ export interface HeardUtterance {
   avgLogprob?: number | null;
   noSpeechProb?: number | null;
   compressionRatio?: number | null;
+  /** voice fingerprint (hearing-identity): best enrolled candidate + match flag. */
+  voice?: { name: string; score?: number; match?: boolean };
 }
 
 export class BusyQueue {

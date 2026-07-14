@@ -88,8 +88,11 @@ export interface TurnRequest {
    *  frames the prompt as a user utterance. */
   stationOriginated?: boolean;
   /** STT confidence for an addressed (heard) turn — surfaced in observability so the
-   *  trace shows WHY a heard utterance was trusted/flagged (Whisper's own metrics). */
-  stt?: { confTier?: string; avgLogprob?: number | null; noSpeechProb?: number | null; compressionRatio?: number | null };
+   *  trace shows WHY a heard utterance was trusted/flagged (Whisper's own metrics).
+   *  `voice` = the utterance's voice fingerprint (hearing-identity): when it cleared
+   *  the match bar the turn prompt names the speaker as the interlocutor. */
+  stt?: { confTier?: string; avgLogprob?: number | null; noSpeechProb?: number | null; compressionRatio?: number | null;
+    voice?: { name: string; score?: number; match?: boolean } };
   /** How many times this turn is a MERGE-SUPERSEDE of a prior thinking turn
    *  (Addendum 10: speech heard mid-thinking cancels + re-asks with the
    *  addition folded in). Bounds the abort-restart loop (cap in brain index). */
@@ -939,6 +942,24 @@ export class DockBrainSession {
     // may reference anything just heard, including the shaky bits).
     try { grounding = this.#d.getGrounding?.()?.forDock(this.dock, { coherent: this.#triggerKind === 'self' }); }
     catch (err) { this.#d.log?.(`[brain] ${this.dock}: grounding failed (ignored): ${String(err)}`); }
+    // HEARING-IDENTITY (voice fingerprint): who the CURRENT utterance sounded like —
+    // deliberately separate from who the dock SEES (the identity/face records inside
+    // the grounding). A confident voice match names the interlocutor; an unmatched
+    // voice is stated as unknown so the agent doesn't guess (a playing video can
+    // sound like an enrolled person — the words + what it sees must corroborate).
+    const heardVoice = req.stt?.voice;
+    if (heardVoice) {
+      const pct = heardVoice.score != null ? `${Math.round(heardVoice.score * 100)}% voice match` : 'unscored';
+      // One factual line, not instructions (over-instruction backfires — the
+      // self-thought RCA). "even off-camera" is the only clause that earned its
+      // place: live turn-531f9873 deflected a matched speaker to "step into view"
+      // after recollect_face saw no one.
+      const hearing = heardVoice.match
+        ? `Hearing (voice-id): ${heardVoice.name}, ${pct} — your interlocutor, even if off-camera.`
+        : `Hearing (voice-id): unrecognized (closest: ${heardVoice.name}, ${pct}).`;
+      grounding = grounding ? `${grounding}\n${hearing}` : hearing;
+      this.#d.log?.(`[brain] ${this.dock}: hearing-identity → ${heardVoice.name} ${pct}${heardVoice.match ? '' : ' (below bar)'}`);
+    }
     // the dock's EGO — its current evolving self, injected as WHO IS SPEAKING (ego.md §3.5).
     let self: string | undefined;
     try { self = this.#d.getSelf?.(this.dock); }
@@ -1006,6 +1027,7 @@ export class DockBrainSession {
       turnId: req.turnId,
       imageBase64: req.imageBase64, // face tools may use the frame even on gated turns
       streamId,
+      voice: req.stt?.voice, // hearing-identity → face tools answer with both channels
     };
     // vision-gate bypass for task turns: the triggering frame IS the evidence,
     // and task text won't match the vision-intent regex (tasks §7a).

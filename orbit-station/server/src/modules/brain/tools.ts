@@ -48,6 +48,9 @@ export interface ToolTurnContext {
   imageBase64?: string;
   /** the dock's live camera stream id (the producing peer), if streaming. */
   streamId?: string;
+  /** the triggering utterance's voice fingerprint — lets face tools answer with
+   *  BOTH channels ("no one in view, but by voice this is Guru"). */
+  voice?: { name: string; score?: number; match?: boolean };
 }
 
 export interface ToolDeps {
@@ -537,7 +540,14 @@ export function buildDockTools(deps: ToolDeps): AgentTool<any>[] {
 
     tool('recollect_face', S.RECOLLECT_FACE_DESC, S.recollectFaceSchema, async () => {
       const r = await faces().recognize(frameOpts());
-      return textResult(describeRecognition(r));
+      // BOTH channels: the camera not seeing anyone doesn't mean the speaker is
+      // unknown — a matched voice identifies them (live turn-4400f066: the model
+      // deflected "step into view" at a 47% voice match because this result read
+      // as authoritative absence). Same for a visible-but-unrecognized face.
+      const v = deps.getTurnContext().voice;
+      const byVoice = v?.match && (r.noFace || (!r.name && r.people.length <= 1))
+        ? ` By voice, the person speaking is ${v.name}.` : '';
+      return textResult(describeRecognition(r) + byVoice);
     }),
 
     tool('confirm_face', S.CONFIRM_FACE_DESC, S.confirmFaceSchema, async (_id, args: { name: string }) => {

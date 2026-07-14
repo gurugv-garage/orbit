@@ -79,7 +79,12 @@ export const SIDECAR_SPECS: Record<'vision' | 'speech', SidecarSpec> = {
   // the dock beat whisper on speed + WER, incl. Indian loanwords; see the --engine
   // note in sidecar.py for the trade-offs (English-only; no Whisper confidence tells).
   // Swap '--engine', 'parakeet' → '--engine', 'whisper' to fall back.
-  speech: { name: 'speech', port: 8078, args: ['sidecar.py', '--port', '8078', '--engine', 'parakeet'] },
+  // --embed-model = voice fingerprinting (sherpa-onnx, CPU): /transcribe embed:true
+  // also returns a speaker embedding. Model file is gitignored — wget from the
+  // sherpa-onnx release tag 'speaker-recongition-models' if missing; a missing file
+  // soft-disables embeddings at boot (STT unaffected).
+  speech: { name: 'speech', port: 8078, args: ['sidecar.py', '--port', '8078', '--engine', 'parakeet',
+    '--embed-model', 'nemo_en_titanet_small.onnx'] },
 };
 
 /** A child this supervisor spawned (so we can stop/restart what we own). */

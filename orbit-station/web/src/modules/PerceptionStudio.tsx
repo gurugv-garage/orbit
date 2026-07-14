@@ -86,6 +86,10 @@ interface Snapshot {
     voicedPct?: number; sttWindow?: string;
     // stamped by the brain when THIS addressed utterance actually WOKE the robot (a turn fired).
     wokeRobot?: boolean;
+    // voice fingerprint (observe-only trial): the BEST enrolled candidate for this
+    // utterance ('unknown' only on an empty gallery). match=true means the score
+    // cleared VOICE_MATCH; below the bar the pill renders "name? score" (a near-miss).
+    voice?: { name: string; score?: number; match?: boolean };
     // ── ENRICHER CALL METADATA (the ONE Gemini call per debounced batch) ── every segment record
     // from ONE enricher call shares enrichBatchId (the batch's startedAtMs) — the GROUPING KEY that
     // lets the Studio collapse N per-utterance rows back into the single LLM call that produced them.
@@ -189,6 +193,11 @@ interface TakeMeta {
  *  photo). Legacy entries carry one shared photo, so most samples are photo-less. */
 interface GallerySample { index: number; photo?: string }
 interface GalleryPerson { name: string; samples: GallerySample[] }
+/** Known-voices gallery: each person has N enrolled utterances (embedding + the
+ *  transcript it came from — the audio analog of the face sample's photo). */
+interface VoicePerson { name: string; samples: { index: number; text?: string; addedAt: number }[] }
+/** A recent fingerprinted utterance offered for enrollment ("which lines were you?"). */
+interface VoiceRecent { id: number; text: string; durS: number }
 
 /** GET /api/perception/:dockId/perceive — the latest on-device MLKit face-track frame
  *  (the `perceive` stream, §7). `payload` mirrors the wire envelope; we read a glance. */
@@ -284,6 +293,14 @@ export function PerceptionStudio() {
   const [showFaces, setShowFaces] = useState(false);
   const [gallery, setGallery] = useState<GalleryPerson[]>([]);
   const [galleryOpen, setGalleryOpen] = useState<Set<string>>(new Set());
+  // Known-voices gallery (voice fingerprints) — collapsed; a bar button reveals it.
+  // Enrollment = naming recent fingerprinted utterances (same channel as matching).
+  const [showVoices, setShowVoices] = useState(false);
+  const [voiceGallery, setVoiceGallery] = useState<VoicePerson[]>([]);
+  const [voiceRecent, setVoiceRecent] = useState<VoiceRecent[]>([]);
+  const [voiceSel, setVoiceSel] = useState<Set<number>>(new Set());
+  const [voiceEnrollName, setVoiceEnrollName] = useState('');
+  const [voiceMsg, setVoiceMsg] = useState('');
   // LIVE STT — pushed on the `perception` bus the instant the STT processor emits
   // (final on VAD endpoint, + interims during a turn), so the studio shows speech in
   // REAL TIME instead of waiting for the 1.5s snapshot poll. Keyed by dockId.
@@ -365,6 +382,53 @@ export function PerceptionStudio() {
       .catch(() => {});
   }, []);
   useEffect(loadGallery, [loadGallery]);
+  // Known-voices gallery + the recent fingerprinted utterances of the SELECTED dock
+  // (the enroll pick-list). Recent refreshes on panel open + manual ⟳.
+  const loadVoiceGallery = useCallback(() => {
+    api.get<{ people?: VoicePerson[] }>('/perception/voice/gallery')
+      .then((g) => setVoiceGallery(g.people ?? []))
+      .catch(() => {});
+  }, []);
+  useEffect(loadVoiceGallery, [loadVoiceGallery]);
+  const loadVoiceRecent = useCallback(() => {
+    if (!source || source === STREAM_ID) { setVoiceRecent([]); return; }
+    api.get<{ recent?: VoiceRecent[] }>(`/perception/voice/recent?dock=${encodeURIComponent(source)}`)
+      .then((r) => setVoiceRecent(r.recent ?? []))
+      .catch(() => {});
+  }, [source]);
+  useEffect(() => { if (showVoices) loadVoiceRecent(); }, [showVoices, loadVoiceRecent]);
+  const enrollVoice = useCallback(async () => {
+    const name = voiceEnrollName.trim();
+    if (!name || !voiceSel.size) return;
+    try {
+      const r = await api.post<{ ok: boolean; enrolled: number }>('/perception/voice/enroll',
+        { dock: source, name, ids: [...voiceSel] });
+      setVoiceMsg(r.ok ? `✓ enrolled ${r.enrolled} utterance${r.enrolled === 1 ? '' : 's'} as ${name}` : '✗ enroll failed');
+      setVoiceSel(new Set());
+      loadVoiceGallery();
+    } catch { setVoiceMsg('✗ enroll failed'); }
+  }, [voiceEnrollName, voiceSel, source, loadVoiceGallery]);
+  // Inline enroll/correct from a speech ROW's 🎙 pill: name THAT utterance's voice.
+  // Works while the utterance is still in the service's enroll ring (last ~20 with
+  // an embedding); older rows can't be enrolled (the embedding isn't retained).
+  const enrollRowVoice = useCallback(async (snap: Snapshot) => {
+    const v = snap.payload.voice;
+    const current = v && v.name !== 'unknown' ? v.name : '';
+    const name = window.prompt('This voice is… (name to enroll/correct):', current)?.trim();
+    if (!name) return;
+    try {
+      const id = new Date(snap.interval.from).getTime();
+      const r = await api.post<{ ok: boolean; enrolled: number }>('/perception/voice/enroll',
+        { dock: source, name, ids: [id] });
+      if (!r.ok) window.alert('Could not enroll — this utterance is no longer in the enroll buffer (only the last ~20 fingerprinted utterances can be named).');
+    } catch { window.alert('Enroll failed.'); }
+  }, [source]);
+  const forgetVoice = useCallback((name: string) => {
+    api.post('/perception/voice/gallery/remove', { name }).then(loadVoiceGallery).catch(() => {});
+  }, [loadVoiceGallery]);
+  const removeVoiceSample = useCallback((name: string, index: number) => {
+    api.post('/perception/voice/gallery/sample/remove', { name, index }).then(loadVoiceGallery).catch(() => {});
+  }, [loadVoiceGallery]);
   const forgetFace = useCallback((name: string) => {
     api.post('/perception/gallery/remove', { name }).then(loadGallery).catch(() => {});
   }, [loadGallery]);
@@ -595,13 +659,13 @@ export function PerceptionStudio() {
   // LIVE STT push — the perception bus emits a `transcript` result the moment STT
   // produces text (no poll wait). Show it instantly in ● Now for the selected source.
   useStationEvents('perception', useCallback((e) => {
-    if (e.kind === 'enroll-result') { loadGallery(); return; }
+    if (e.kind === 'enroll-result') { loadGallery(); loadVoiceGallery(); return; }
     if (e.kind !== 'transcript') return;
     const r = e.payload as { dockId?: string; ts?: number; payload?: { text?: string; isFinal?: boolean } } | null;
     const text = r?.payload?.text?.trim();
     if (!r?.dockId || !text) return;
     setLiveStt({ dockId: r.dockId, text, isFinal: !!r.payload?.isFinal, ts: r.ts ?? 0 });
-  }, [loadGallery]));
+  }, [loadGallery, loadVoiceGallery]));
 
   // SFU's producer-answer/ice for our one producer PC.
   useStationEvents('media', useCallback((e) => {
@@ -899,6 +963,13 @@ export function PerceptionStudio() {
               background: showFaces ? '#1e3a5f' : '#13243a', color: '#cfe', border: '1px solid #2c4a6f' }}>
             👤 faces ({gallery.length}) {showFaces ? '▾' : '▸'}
           </button>
+          {/* KNOWN VOICES — voice fingerprints: enroll by naming recent utterances */}
+          <button onClick={() => setShowVoices((v) => !v)}
+            title="Enrolled voices — speak to the dock, then name your recent utterances"
+            style={{ padding: '4px 10px', borderRadius: 8, fontSize: 11, cursor: 'pointer',
+              background: showVoices ? '#1e3a5f' : '#13243a', color: '#cfe', border: '1px solid #2c4a6f' }}>
+            🎙 voices ({voiceGallery.length}) {showVoices ? '▾' : '▸'}
+          </button>
           {/* SUMMARIZE — toggles its options/result below the bar */}
           <button onClick={() => setShowSummarizer((v) => !v)} disabled={sumBusy}
             title="Summarize the recent window (expand for window/model/keyframes)"
@@ -906,14 +977,19 @@ export function PerceptionStudio() {
               background: showSummarizer ? '#1e3a5f' : '#13243a', color: '#cfe', border: '1px solid #2c4a6f' }}>
             🧠 summarize {showSummarizer ? '▾' : '▸'}
           </button>
-          {/* AUDIO ENRICHER — always on (the sole authoritative audio path). Click to open its
-              config panel (model select) below the bar, like the other config buttons. */}
+          {/* AUDIO ENRICHER — active only while a trigger path (speech/non-speech) is on;
+              with both off (the default since the voice-fingerprint cutover) it makes zero
+              Gemini calls and the pill reads OFF/gray. Click for the config panel. */}
           <button onClick={() => setShowEnricher((v) => !v)}
-            title={`audio enricher · model ${enricher.model} — click for config`}
+            title={(enricher.speech || enricher.nonSpeech)
+              ? `audio enricher · model ${enricher.model} — click for config`
+              : 'audio enricher OFF (no trigger paths — zero Gemini calls) — click for config'}
             style={{ display: 'flex', alignItems: 'center', gap: 5, padding: '4px 10px', borderRadius: 8, fontSize: 11, cursor: 'pointer',
-              background: showEnricher ? '#1e3a5f' : '#13301f', color: '#7ee0a0', border: '1px solid #2c6f4a' }}>
-            <span style={{ width: 7, height: 7, borderRadius: '50%', background: '#3ad29f' }} />
-            👂 enricher {enricherBusy ? '…' : enricher.model.includes('lite') ? '(lite)' : '(flash)'} {showEnricher ? '▾' : '▸'}
+              ...((enricher.speech || enricher.nonSpeech)
+                ? { background: showEnricher ? '#1e3a5f' : '#13301f', color: '#7ee0a0', border: '1px solid #2c6f4a' }
+                : { background: showEnricher ? '#1e3a5f' : '#10141f', color: '#7a8ca8', border: '1px solid #161c2b' }) }}>
+            <span style={{ width: 7, height: 7, borderRadius: '50%', background: (enricher.speech || enricher.nonSpeech) ? '#3ad29f' : '#5a6478' }} />
+            👂 enricher {enricherBusy ? '…' : (enricher.speech || enricher.nonSpeech) ? (enricher.model.includes('lite') ? '(lite)' : '(flash)') : '(off)'} {showEnricher ? '▾' : '▸'}
           </button>
           {/* SIDECARS — status dots + label; click for the full panel */}
           <button onClick={() => setShowSidecars((v) => !v)} title="sidecar health (vision / speech) — click for controls"
@@ -1161,6 +1237,15 @@ export function PerceptionStudio() {
           canEnroll={!!snaps.length && sourceIsLive} />
       )}
 
+      {/* KNOWN VOICES — collapsible: name recent fingerprinted utterances + manage. */}
+      {showVoices && (
+        <KnownVoices
+          gallery={voiceGallery} recent={voiceRecent} sel={voiceSel} setSel={setVoiceSel}
+          onRefresh={loadVoiceRecent} onForget={forgetVoice} onRemoveSample={removeVoiceSample}
+          enrollName={voiceEnrollName} setEnrollName={setVoiceEnrollName} onEnroll={enrollVoice} msg={voiceMsg}
+          isDock={!!source && source !== STREAM_ID} />
+      )}
+
       {/* VIDEO + ● NOW side by side — the live tile (selected dock, or this browser's
           own publish preview) on the left; the live per-stream read on the right.
           Collapsible via the ⛶ toggle in the Snapshots header (zero extra vertical space). */}
@@ -1362,7 +1447,11 @@ export function PerceptionStudio() {
               // (clean transcript + speaker + source). A 'stt' lane speech row is parakeet's
               // live-only reflex transcript → dim it so the enriched row reads as the truth.
               const isEnriched = viewKind === 'enriched';
-              const isLiveOnly = viewKind === 'stt' && p.liveOnly === true;
+              // liveOnly is only meaningful while the enricher actually enriches: with its
+              // triggers OFF nothing supersedes parakeet — these rows ARE the record, so
+              // they render at full strength (they looked "disabled" otherwise).
+              const enricherActive = enricher.speech || enricher.nonSpeech;
+              const isLiveOnly = viewKind === 'stt' && p.liveOnly === true && enricherActive;
               const isMedia = p.audioSource === 'media';
               const modelName = s.model.name;
               const conf = p.confidence != null ? `${Math.round(p.confidence * 100)}%` : null;
@@ -1692,6 +1781,18 @@ export function PerceptionStudio() {
                       <span title="the STT engine flagged this transcript as shaky (sent to the LLM tagged [low-confidence])"
                         style={{ marginLeft: 6, fontSize: 10, color: '#e0a060', border: '1px solid #5a3d20', borderRadius: 4, padding: '0 4px' }}>
                         low-conf
+                      </span>
+                    )}
+                    {/* voice fingerprint: best enrolled candidate + match %. Green = cleared the
+                        bar; gray "name? %" = near-miss. CLICK = enroll/correct this utterance's
+                        voice under a name (recent utterances only — the enroll ring). */}
+                    {isStt && p.voice && (
+                      <span onClick={() => enrollRowVoice(s)}
+                        title={`voice fingerprint — cosine similarity to the nearest enrolled sample of ${p.voice.name}${p.voice.match ? '' : ' (below the match threshold — not acted on)'}. Click to name/correct this voice.`}
+                        style={{ marginLeft: 6, fontSize: 10, borderRadius: 4, padding: '0 4px', cursor: 'pointer',
+                          color: p.voice.match ? '#7ee0a0' : '#8fa8c8',
+                          border: `1px solid ${p.voice.match ? '#2c6f4a' : '#31435f'}` }}>
+                        🎙 {p.voice.name}{p.voice.match ? '' : '?'}{p.voice.score != null ? ` ${Math.round(p.voice.score * 100)}%` : ''} ✎
                       </span>
                     )}
                   </span>
@@ -2264,6 +2365,93 @@ function KnownFaces({ gallery, open, onToggle, onForget, onRemoveSample, onClean
             display: 'grid', placeItems: 'center', cursor: 'zoom-out' }}>
           <img src={`data:image/jpeg;base64,${zoom}`} alt="zoomed face"
             style={{ maxWidth: '90vw', maxHeight: '90vh', borderRadius: 12, boxShadow: '0 8px 40px #000' }} />
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** KNOWN VOICES — voice fingerprints. Enrollment = NAMING recent utterances the dock
+ *  already fingerprinted (speak a few lines, tick the ones that were you, name them) —
+ *  same channel as matching, so the profile matches how it'll be used. */
+function KnownVoices({ gallery, recent, sel, setSel, onRefresh, onForget, onRemoveSample, enrollName, setEnrollName, onEnroll, msg, isDock }: {
+  gallery: VoicePerson[]; recent: VoiceRecent[]; sel: Set<number>; setSel: (s: Set<number>) => void;
+  onRefresh: () => void; onForget: (n: string) => void; onRemoveSample: (n: string, i: number) => void;
+  enrollName: string; setEnrollName: (s: string) => void; onEnroll: () => void; msg: string;
+  isDock: boolean;
+}) {
+  const [open, setOpen] = useState<Set<string>>(new Set());
+  const toggle = (name: string) => setOpen((prev) => {
+    const next = new Set(prev); if (next.has(name)) next.delete(name); else next.add(name); return next;
+  });
+  const tick = (id: number) => {
+    const next = new Set(sel); if (next.has(id)) next.delete(id); else next.add(id); setSel(next);
+  };
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 10, padding: '10px 12px',
+      background: '#0a0d14', border: '1px solid #1c2233', borderRadius: 10 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+        <div className="side-section-label">🎙 Known voices ({gallery.length})</div>
+        <input value={enrollName} onChange={(e) => setEnrollName(e.target.value)}
+          onKeyDown={(e) => { if (e.key === 'Enter') onEnroll(); }}
+          placeholder={isDock ? 'whose voice are the ticked lines?' : 'select a dock first'}
+          disabled={!isDock}
+          style={{ width: 220, background: '#0b0e16', color: '#cfe', border: '1px solid #1c2233', borderRadius: 6, padding: '4px 8px', fontSize: 12, opacity: isDock ? 1 : 0.5 }} />
+        <button onClick={onEnroll} disabled={!isDock || !enrollName.trim() || !sel.size}
+          style={{ padding: '4px 12px', borderRadius: 6, fontSize: 12, background: '#13243a', color: '#cfe', border: '1px solid #1c2233',
+            cursor: isDock && enrollName.trim() && sel.size ? 'pointer' : 'default', opacity: isDock && enrollName.trim() && sel.size ? 1 : 0.5 }}>
+          🪪 Enroll {sel.size ? `(${sel.size})` : ''}
+        </button>
+        <button onClick={onRefresh} title="Refresh the recent-utterances list"
+          style={{ padding: '4px 10px', borderRadius: 6, fontSize: 12, background: 'transparent', color: '#9ab', border: '1px solid #1c2233', cursor: 'pointer' }}>⟳</button>
+        {msg && <span style={{ fontSize: 12, color: msg.startsWith('✓') ? '#6f6' : '#f88' }}>{msg}</span>}
+      </div>
+
+      {/* the pick-list: recent fingerprinted utterances of the selected dock. */}
+      {isDock && (
+        recent.length === 0
+          ? <div className="empty">No fingerprinted utterances yet — speak a few full sentences near the dock, then ⟳.</div>
+          : (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 4, maxHeight: 180, overflow: 'auto' }}>
+            {recent.map((u) => (
+              <label key={u.id} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, cursor: 'pointer' }}>
+                <input type="checkbox" checked={sel.has(u.id)} onChange={() => tick(u.id)} />
+                <span style={{ opacity: 0.5, fontVariantNumeric: 'tabular-nums' }}>{new Date(u.id).toLocaleTimeString()}</span>
+                <span style={{ opacity: 0.5 }}>{u.durS.toFixed(1)}s</span>
+                <span className="mono" style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{u.text}</span>
+              </label>
+            ))}
+          </div>
+        )
+      )}
+
+      {gallery.length > 0 && (
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12, borderTop: '1px solid #1c2233', paddingTop: 8 }}>
+          {gallery.map((p) => (
+            <div key={p.name} style={{ display: 'flex', flexDirection: 'column', gap: 4, padding: 8, borderRadius: 12, background: '#0b0e16' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                <span style={{ fontSize: 16 }}>🎙</span>
+                <span className="mono" style={{ fontSize: 12 }}>{p.name}</span>
+                <button onClick={() => toggle(p.name)} title={open.has(p.name) ? 'Collapse' : 'Show enrolled utterances'}
+                  style={{ fontSize: 11, opacity: 0.6, background: 'transparent', border: 'none', color: 'inherit', cursor: 'pointer', padding: 0 }}>
+                  ×{p.samples.length} {open.has(p.name) ? '▾' : '▸'}
+                </button>
+                <button onClick={() => onForget(p.name)} title={`Forget ${p.name}'s voice entirely`} style={{ padding: '0 4px' }}>✕</button>
+              </div>
+              {open.has(p.name) && (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 2, maxWidth: 320, borderTop: '1px solid #1c2233', paddingTop: 4 }}>
+                  {p.samples.map((s) => (
+                    <div key={s.index} style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11 }}>
+                      <span style={{ opacity: 0.7, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}
+                        title={s.text}>{s.text || '(no transcript)'}</span>
+                      <button onClick={() => onRemoveSample(p.name, s.index)} title="Delete this voice sample"
+                        style={{ padding: '0 4px', fontSize: 10 }}>✕</button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          ))}
         </div>
       )}
     </div>
