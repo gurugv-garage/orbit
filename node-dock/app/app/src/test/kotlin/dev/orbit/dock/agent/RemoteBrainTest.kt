@@ -96,8 +96,12 @@ class RemoteBrainTest {
         val p = r.link.sent("turn-request").single().third
         assertThat((p["trigger"] as JsonObject)["text"]!!.jsonPrimitive.content)
             .isEqualTo("look up and say hi")
-        assertThat((p["context"] as JsonObject)["state"]!!.jsonPrimitive.content)
-            .contains("Current face:")
+        // The state line names WHOSE face and WHY. It used to read "Current face:
+        // angry" — no owner, no reason — which is how the dock ended up wearing a
+        // mirrored mood and confabulating a feeling to explain it.
+        val state = (p["context"] as JsonObject)["state"]!!.jsonPrimitive.content
+        assertThat(state).contains("YOUR face")
+        assertThat(state).contains("because")
         assertThat(r.brain.state.value).isInstanceOf(AgentState.Waiting::class.java)
     }
 

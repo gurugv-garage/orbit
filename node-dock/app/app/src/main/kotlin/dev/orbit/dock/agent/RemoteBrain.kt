@@ -600,7 +600,13 @@ class RemoteBrain(
     private fun onToolCall(p: JsonObject) {
         val reqId = p.str("reqId")
         val turnId = p.str("turnId")
-        if (turnId != currentTurnId) {
+        // TEST HOOKS are turn-LESS by nature: a probe/screenshot observes the dock
+        // between turns, while idle, or mid-turn, and invents its own turnId — so
+        // the staleness guard below would silently drop every one of them (it did:
+        // the first live probe returned "no response from dock"). They mutate no
+        // turn state, so exempt them explicitly. See docs/testing/face-harness.md.
+        val isTestHook = p.str("name") in setOf("face_probe", "face_force", "face_shot", "face_emotion")
+        if (!isTestHook && turnId != currentTurnId) {
             Timber.d("RemoteBrain: dropped stale tool-call ${p.str("name")} (turn ${turnId.take(8)})")
             return
         }
@@ -625,12 +631,36 @@ class RemoteBrain(
             return
         }
 
+        // TEST HOOK: screenshot. ASYNC — PixelCopy hops to the main looper, so
+        // it can't sit in the synchronous dispatch below without blocking it.
+        // Own early return + its own ack, exactly like `confirm`. The face state
+        // rides along so one sample is self-describing: the picture AND what the
+        // dock believed it was showing, from the same instant.
+        if (name == "face_shot") {
+            scope.launch {
+                val jpeg = dev.orbit.dock.debug.ScreenCapture.jpegBase64(
+                    maxWidth = args["maxWidth"]?.jsonPrimitive?.content?.toIntOrNull() ?: 480,
+                    quality = args["quality"]?.jsonPrimitive?.content?.toIntOrNull() ?: 70,
+                )
+                link.publishCritical("agent", "tool-result", buildJsonObject {
+                    put("reqId", reqId); put("toolCallId", p.str("toolCallId")); put("turnId", turnId)
+                    put("content", if (jpeg == null) "screenshot failed" else tools.faceProbe())
+                    if (jpeg != null) put("imageBase64", jpeg)
+                    put("isError", jpeg == null)
+                })
+            }
+            return
+        }
+
         // Fire-and-forget contract: dispatch NOW, ack instantly — the brain's
         // loop never waits on actuation, only on this dispatch ack.
         val (content, isError) = when (name) {
             "set_face" -> {
                 val expr = args["expression"]?.jsonPrimitive?.content.orEmpty()
-                val r = tools.setFace(expr)
+                // The model's own "why" (schemas.setFaceSchema.reason) — absent on
+                // inline [face:] tags, which are one token by design.
+                val reason = args["reason"]?.jsonPrimitive?.content.orEmpty()
+                val r = tools.setFace(expr, reason)
                 r to r.startsWith("unknown")
             }
             "set_face_style" -> {
@@ -644,6 +674,50 @@ class RemoteBrain(
                 // success replies start with "zoom set to"; anything else is an error
                 // (no camera bound / zoom unavailable) the brain should hear as such.
                 r to !r.startsWith("zoom set to")
+            }
+            // ── TEST HOOK (face-behavior-spec §harness) ────────────────────
+            // The phone's face state was UNOBSERVABLE from anywhere: no adb on
+            // this dock, and nothing reported up. Two bugs shipped because of it
+            // (a wake regression, a sweat bead that rendered as a tear). This is
+            // the eye: ask the phone what it is ACTUALLY showing, right now.
+            // Read-only, no side effects — safe to leave in.
+            "face_probe" -> tools.faceProbe() to false
+            // TEST HOOK: inject a camera emotion READ, so the react-don't-mirror
+            // path (EmotionGate → EmotionReaction) is drivable without a human
+            // pulling faces at the lens. Publishes onto the SAME PerceptionBus
+            // every real FER read flows through — so it exercises the true path,
+            // confidence floor and hold-time and all, not a shortcut past them.
+            // (Which means one call reacts to NOTHING: a read must persist ~2s.
+            // Send it repeatedly, like the camera does.)
+            "face_emotion" -> {
+                val kindArg = args["kind"]?.jsonPrimitive?.content.orEmpty()
+                val conf = args["confidence"]?.jsonPrimitive?.content?.toFloatOrNull() ?: 0.9f
+                val kind = dev.orbit.dock.perception.PerceptionEvent.UserEmotion.Kind.entries
+                    .firstOrNull { it.name.equals(kindArg, ignoreCase = true) }
+                if (kind == null) {
+                    "unknown emotion: $kindArg" to true
+                } else {
+                    dev.orbit.dock.perception.PerceptionBus.emit(
+                        dev.orbit.dock.perception.PerceptionEvent.UserEmotion(kind, conf),
+                    )
+                    "emitted $kind conf=$conf" to false
+                }
+            }
+            // Drive a face from the station WITHOUT the LLM, so a test can set a
+            // known mood and then probe it (the dev panel needs a human finger).
+            // The reason must say SO: routing this through setFace's default made
+            // the dock claim source=llm / "it matched what I was saying" for a
+            // mood a test hook had forced — a confabulation, planted by the very
+            // fix meant to end confabulation. The dull truth is the whole point.
+            "face_force" -> {
+                val expr = args["expression"]?.jsonPrimitive?.content.orEmpty()
+                val r = tools.setFace(
+                    expr,
+                    reason = args["reason"]?.jsonPrimitive?.content
+                        ?: "someone forced this face from a debug tool — I don't have a feeling behind it",
+                    source = "debug",
+                )
+                r to r.startsWith("unknown")
             }
             else -> "unknown tool on phone: $name" to true
         }

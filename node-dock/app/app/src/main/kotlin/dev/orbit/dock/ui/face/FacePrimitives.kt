@@ -119,7 +119,11 @@ internal fun shapeFor(e: FaceExpression): ExpressionShape = when (e) {
     FaceExpression.Concerned -> ExpressionShape(
         eyeScaleX = 1.1f, eyeScaleY = 1.1f, pupilScale = 1.25f, haloMul = 0.6f,
         gazeYBias = 0.05f,
-        browShow = 1f, browInnerY = 0.55f, browTilt = 12f, browThick = 1.15f,
+        // Inner brows UP (negative), like Sad's -0.7 — the universal WORRY brow.
+        // This was +0.55 (inner brows DOWN), which is the ANGER brow: photographed
+        // on the dock, `concerned` read as annoyed even after its tear became a
+        // sweat bead. Softer than Sad so it's worry, not grief.
+        browShow = 1f, browInnerY = -0.45f, browTilt = -6f, browThick = 1.15f,
         mouthKind = MOUTH_FROWN, mouthOpen = 0.85f,
         accent = ACCENT_SWEAT,
     )
@@ -579,8 +583,14 @@ internal fun DrawScope.drawAccent(
             drawZ(Offset(rightEye.x + eyeR * 2.2f, rightEye.y - eyeR * 3.2f), eyeR * 0.55f, color)
         }
         ACCENT_SWEAT -> {
-            val c = Offset(rightEye.x + eyeR * 1.5f, rightEye.y - eyeR * 0.4f)
-            drawTear(c, eyeR * 0.4f, palette.eyeBright.copy(alpha = 0.9f))
+            // A sweat BEAD, not a tear. These used to be the same drawTear call in
+            // the same eyeBright colour, differing only in position/size — so
+            // `concerned` (the ONLY negative face the brain actually sends: 64 of
+            // 805 inline tags; `sad`/`angry` never appear) rendered as CRYING.
+            // A bead reads as pressure: round, sitting high beside the temple,
+            // clear of the eye — a tear falls FROM the eye, this never touches it.
+            val c = Offset(rightEye.x + eyeR * 1.75f, rightEye.y - eyeR * 1.15f)
+            drawSweatBead(c, eyeR * 0.3f, palette.eyeBright.copy(alpha = 0.75f))
         }
         ACCENT_QUESTION -> {
             val c = Offset(rightEye.x + eyeR * 1.6f, rightEye.y - eyeR * 1.5f)
@@ -609,6 +619,55 @@ internal fun DrawScope.drawTear(center: Offset, size: Float, color: Color) {
         Color.White.copy(alpha = 0.5f),
         radius = size * 0.18f,
         center = Offset(center.x - size * 0.25f, center.y + size * 0.1f),
+    )
+}
+
+/**
+ * A sweat BEAD (anxiety), deliberately the visual opposite of [drawTear] (grief).
+ * The tear is a POINTED drop with the point UP — it reads as falling. The bead is
+ * ROUND with only a slight peak, sitting proud of the skin — it reads as beading
+ * up under pressure. Keep them distinguishable at a glance and across face
+ * styles: `concerned` is the only negative expression the brain sends in
+ * practice, and it must never read as crying.
+ */
+internal fun DrawScope.drawSweatBead(center: Offset, size: Float, color: Color) {
+    // NEAR-CIRCULAR body + a small top nub. Four arcs (K = the standard
+    // circle-from-beziers constant), NOT two long curves — the first cut of this
+    // used two mirrored cubics and rendered as a slightly smaller TEAR: bounds
+    // ratio w/h 0.63 vs the tear's 0.69, i.e. it was MORE pointed, not less.
+    // Rendered both offline to compare: this one measures 1.16 (round). If you
+    // change these numbers, render them — the intent is not visible in the math.
+    val k = 0.5523f * size
+    val path = Path().apply {
+        moveTo(center.x, center.y - size * 0.72f)          // small peak, not a point
+        cubicTo(
+            center.x + k * 0.92f, center.y - size * 0.60f,
+            center.x + size, center.y - k * 0.30f,
+            center.x + size, center.y + size * 0.06f,
+        )
+        cubicTo(
+            center.x + size, center.y + size * 0.06f + k,
+            center.x + k, center.y + size,
+            center.x, center.y + size,                      // round bottom
+        )
+        cubicTo(
+            center.x - k, center.y + size,
+            center.x - size, center.y + size * 0.06f + k,
+            center.x - size, center.y + size * 0.06f,
+        )
+        cubicTo(
+            center.x - size, center.y - k * 0.30f,
+            center.x - k * 0.92f, center.y - size * 0.60f,
+            center.x, center.y - size * 0.72f,
+        )
+        close()
+    }
+    drawPath(path, color)
+    // Bright catchlight, high and offset — the wet, beaded look.
+    drawCircle(
+        Color.White.copy(alpha = 0.7f),
+        radius = size * 0.24f,
+        center = Offset(center.x - size * 0.28f, center.y - size * 0.05f),
     )
 }
 

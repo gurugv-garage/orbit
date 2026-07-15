@@ -605,7 +605,15 @@ class FaceTracker(private val appContext: Context) : CameraFrameProvider, Lifecy
         }
 
         val kind = classifyEmotion()
-        if (kind != lastEmittedKind && now - lastEmotionEmitMs > 300L) {
+        // LEVEL-triggered, not edge-triggered. This used to fire only on a CHANGE
+        // of kind (`kind != lastEmittedKind`), so a sustained expression emitted
+        // exactly ONCE. The consumer (EmotionGate) debounces on persistence — it
+        // needs to see a read HELD across several samples before reacting — so a
+        // single emit could never satisfy it and the dock never reacted to a
+        // steady face. Re-emit the current read every ~700ms while a face is in
+        // frame; a change still fires immediately (the 300ms floor below).
+        val changed = kind != lastEmittedKind
+        if ((changed && now - lastEmotionEmitMs > 300L) || now - lastEmotionEmitMs > 700L) {
             lastEmittedKind = kind
             lastEmotionEmitMs = now
             val conf = when (kind) {

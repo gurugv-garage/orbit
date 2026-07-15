@@ -231,7 +231,6 @@ export class DockBrainSession {
   // face WITHOUT a separate LLM step. Per-STEP parse state (each pi step
   // streams a fresh assistant message) + a per-TURN applied latch.
   #moodStepChecked = false; // this step's leading text has been classified
-  #moodStripLen = 0;        // chars to strip from this step's cumulative text
   #moodApplied = false;     // face already set this turn (first tag wins)
   #moodEnabled = true;      // brainInlineMood, snapshot per turn (config() is a
                             // registry scan — not per streaming delta)
@@ -886,7 +885,6 @@ export class DockBrainSession {
     this.#timedOut = false;
     this.#spokeThisTurn = false;
     this.#moodStepChecked = false;
-    this.#moodStripLen = 0;
     this.#moodApplied = false;
     this.#moodHeldRaw = null;
     this.#moodEnabled = this.#d.config('brainInlineMood') !== false;
@@ -1332,7 +1330,6 @@ export class DockBrainSession {
         this.#streamer = new SentenceStreamer();
         this.#shippedStreamStart = false;
         this.#moodStepChecked = false; // a later step may lead with its own tag
-        this.#moodStripLen = 0;
         this.#stepIndex++;
         this.#stepStartedAt = Date.now();
         this.#stepTtft = undefined;
@@ -1508,26 +1505,47 @@ export class DockBrainSession {
    *  CUMULATIVE text before it enters the SentenceStreamer, so the tag is
    *  never spoken and never subtitled. While a leading tag is still streaming
    *  in ("[face:ha"), output is HELD (empty) so a partial tag can't leak;
-   *  a leading bracket that turns out not to be a mood tag passes through. */
+   *  a leading bracket that turns out not to be a mood tag passes through.
+   *
+   *  SETTING is leading-only (first tag wins); STRIPPING is global. The model
+   *  reads "start every reply with a mood tag" as PER LINE and emits one per
+   *  sentence — turn-75cb44ad spoke "face neutral" 24 times because only the
+   *  leading tag was removed.
+   *
+   *  Why global strip is SAFE against SentenceStreamer's #emittedChars offset
+   *  (this function now deletes a variable number of chars MID-string as the
+   *  cumulative text grows; the streamer indexes into that same text): a tag
+   *  contains NO terminal punctuation, so a sentence boundary can never fall
+   *  inside one, and #emittedChars therefore can never advance past a tag it
+   *  hasn't already seen removed. Stripping only ever shrinks the UNSEEN tail.
+   *  That invariant is what makes this safe — not "the streamer buffers".
+   *  Same reason a partial tag ("One! [fa") can't leak. Pinned by the
+   *  delta-by-delta test in mood.test.ts. */
   #filterMood(text: string): string {
     if (!this.#moodEnabled) return text;
-    if (this.#moodStripLen > 0) return text.slice(this.#moodStripLen);
-    if (this.#moodStepChecked || text.length === 0) return text;
-    const m = text.match(MOOD_TAG_RE);
-    if (m) {
-      this.#moodStepChecked = true;
-      this.#moodHeldRaw = null;
-      this.#moodStripLen = m[0].length;
-      this.#applyMood(m[1]!.toLowerCase());
-      return text.slice(this.#moodStripLen);
+    if (text.length === 0) return text;
+    // A LEADING tag sets the face (first wins, per turn). Only the leading one:
+    // a mid-reply tag is the model over-applying "start every reply with a tag"
+    // per line, not a considered mood change.
+    if (!this.#moodStepChecked) {
+      const m = text.match(MOOD_TAG_RE);
+      if (m) {
+        this.#moodStepChecked = true;
+        this.#moodHeldRaw = null;
+        this.#applyMood(m[1]!.toLowerCase());
+      } else if (/^\s*\[[^\]]*$/.test(text) && text.length < 40) {
+        this.#moodHeldRaw = text; // tag may still be completing — hold, don't leak
+        return '';
+      } else {
+        this.#moodStepChecked = true; // real prose (or a non-mood bracket)
+        this.#moodHeldRaw = null;
+      }
     }
-    if (/^\s*\[[^\]]*$/.test(text) && text.length < 40) {
-      this.#moodHeldRaw = text; // tag may still be completing — hold, don't leak
-      return '';
-    }
-    this.#moodStepChecked = true; // leading text is real prose (or a non-mood bracket)
-    this.#moodHeldRaw = null;
-    return text;
+    // STRIP every tag, wherever it sits. Global + idempotent, so it needs no
+    // offset bookkeeping across this step's cumulative text (the old
+    // #moodStripLen slice only ever removed the leading tag — turn-75cb44ad
+    // spoke the other 24 aloud).
+    return stripMoodTag(text);
   }
 
   /** A held leading '[' that never resolved into a mood tag by step end is

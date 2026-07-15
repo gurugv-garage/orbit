@@ -104,11 +104,30 @@ class DockTools(
      * turn-request as the brain's situational grounding (the brain composes
      * the body half itself — it owns the body link now). Recomputed per turn.
      *
-     * Example: "Current face: happy. You can see someone in front of you…"
+     * Example: "YOUR face: concerned — because you look sad, so I'm concerned
+     *           about you. You can see guru; they appear sad."
+     *
+     * TWO FACES, NAMED APART. This line carries the ROBOT's face and, right after
+     * it, the HUMAN's — and they used to arrive as "Current face: angry" beside
+     * "they appear sad", one word apart, with no hint which was whose. Result:
+     * asked "why are you angry?" the dock confabulated ("my internal feelings
+     * show up automatically") when the truth was that a camera had copied the
+     * user's anger onto it. So: say YOUR face, say WHY, and never let the two
+     * subjects share a word.
      */
     fun currentContext(): String {
         val sb = StringBuilder()
-        sb.append("Current face: ${face.expression.value.name.lowercase()}.")
+        val reason = face.moodReason.value
+        sb.append("YOUR face (the robot's, on your screen): ")
+            .append(face.expression.value.name.lowercase())
+        sb.append(" — because ").append(reason.why).append('.')
+        // A REACTION is a response to the person, not a feeling the dock arrived
+        // at on its own. Say so outright: this is the single case where the LLM
+        // would otherwise claim it as its own mood — the reported bug.
+        if (reason.source == "react") {
+            sb.append(" (That's your camera-read reaction to THEM, not a mood you chose —")
+                .append(" say so plainly if asked.)")
+        }
         // Live senses: what the camera sees right now (face present, the user's
         // read emotion, gaze). Omitted entirely when nothing is in view.
         perception?.describe()?.let { sb.append(' ').append(it) }
@@ -179,12 +198,37 @@ class DockTools(
         return "spoken"
     }
 
+    /**
+     * @param reason the brain's OWN account of why, in the dock's voice ("you
+     *   said the deploy failed"). The LLM is the one setter that actually knows
+     *   this, and it used to be discarded at the moment it existed. Passed
+     *   through, it comes back next turn in [currentContext] — so "why do you
+     *   look concerned?" is answered from the dock's own record, not invented.
+     *   Empty → a generic-but-true fallback (an inline `[face:]` tag can't carry
+     *   a reason: it's one token, and keeping it cheap is its whole purpose).
+     */
+    /**
+     * @param source who set it — `llm` (the brain), `debug` (a test hook / panel).
+     *   NOT cosmetic: it is how a reader tells the dock's own intent from a mood
+     *   someone else planted. Defaulting a forced face to "llm" made the dock
+     *   claim it had chosen a mood a debug tool pushed — the exact confabulation
+     *   this whole change exists to stop.
+     */
+    @JvmOverloads
     fun setFace(
         expression: String,
+        reason: String = "",
+        source: String = "llm",
     ): String {
-        Timber.i("tool.setFace: $expression")
+        Timber.i("tool.setFace: $expression${if (reason.isBlank()) "" else " ($reason)"}")
         onToolCall("setFace")
         TurnLog.toolCalled("setFace", expression)
+        // A blank reason from the BRAIN means it didn't say why (an inline
+        // [face:] tag can't carry one) — that's still true. A blank from any
+        // other source must not borrow the brain's voice.
+        val why = reason.ifBlank {
+            if (source == "llm") "it matched what I was saying" else "something set it without saying why"
+        }
         val e = when (expression.trim().lowercase()) {
             "neutral" -> FaceExpression.Neutral
             "happy" -> FaceExpression.Happy
@@ -197,7 +241,7 @@ class DockTools(
                 // auto-restoring helper so the face returns to its prior
                 // expression after ~700ms. (The matching BODY gesture is the
                 // station's job now — it plays the faceGestures choreography.)
-                face.wink()
+                face.wink(why = why)
                 onToolCall(null)
                 return "ok"
             }
@@ -210,9 +254,53 @@ class DockTools(
                 return "unknown expression: $expression"
             }
         }
-        face.setExpression(e)
+        face.setExpression(e, why = why, source = source)
         onToolCall(null)
         return "ok"
+    }
+
+    /**
+     * TEST HOOK — report what the face is ACTUALLY showing, right now.
+     *
+     * The phone's face state has been unobservable from off-device: this dock has
+     * no adb, and nothing reported up. Two bugs shipped straight past review
+     * because of it (a wake regression; a "sweat bead" that still rendered as a
+     * tear). Anything that can drive the dock can now also SEE it — the station
+     * calls this over the existing `face` cap (see docs/testing/face-harness.md).
+     *
+     * Read-only: touches no state, allocates nothing lasting, safe in release.
+     * Deliberately one flat line — greppable in logs and trivially parsed.
+     */
+    fun faceProbe(): String {
+        val expr = face.expression.value.name.lowercase()
+        val state = face.state.value.name.lowercase()
+        val speaker = face.speaker.value.name.lowercase()
+        val style = face.faceId.value
+        val privacy = face.privacy.value
+        val gaze = face.gaze.value
+        val sees = perception?.facts
+        return buildString {
+            append("expression=").append(expr)
+            append(" state=").append(state)
+            append(" speaker=").append(speaker)
+            append(" style=").append(style)
+            append(" privacy=").append(privacy)
+            append(" gaze=").append("%.2f,%.2f".format(gaze.x, gaze.y))
+            // The HUMAN's emotion the camera last read — the other "face" in the
+            // system. Named userEmotion, never `emotion`: this is the person's,
+            // NOT the dock's (expression=, above). Conflating them is what makes
+            // the dock claim someone else's mood as its own.
+            append(" userEmotion=").append(sees?.emotion ?: "none")
+            append(" facePresent=").append(sees?.facePresent ?: false)
+            // WHY the dock wears this face. moodSource is the filterable tag
+            // ("mirror" = it's the human's mood, borrowed); moodWhy is the
+            // speakable account. Last, and space-joined, so the flat k=v parse
+            // upstream keeps working — moodWhy may contain spaces, so it MUST
+            // stay the final field.
+            append(" moodSource=").append(face.moodReason.value.source)
+            append(" moodAgeMs=").append(System.currentTimeMillis() - face.moodReason.value.atMs)
+            append(" moodWhy=").append(face.moodReason.value.why)
+        }
     }
 
     /** Switch the dock's whole face appearance + voice (e.g. "be a cat" / Vader).

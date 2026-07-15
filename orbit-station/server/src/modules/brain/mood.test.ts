@@ -95,6 +95,54 @@ test('leading [face:NAME] is stripped from speech and fires one set_face RPC', a
   assert.deepEqual(faceCalls(frames), ['happy']);
 });
 
+// turn-75cb44ad: asked to count 1..25 with a remark each, Gemini read "start EVERY
+// reply with a mood tag" as PER LINE and emitted one per sentence. Only the leading
+// tag was stripped — the dock SPOKE "face neutral" 24 times across a 95s reply.
+// Strip is global; the face still applies once (first tag wins).
+test('mid-reply tags (one per line) are never spoken; face still set once', async () => {
+  const { session, frames } = makeSession([
+    streams('[face:neutral] One! Starting. [face:neutral] Two! A friend. [face:neutral] Three! Magic. '),
+  ]);
+  await session.handleTurnRequest({ turnId: 't1', trigger: { kind: 'user', text: 'count to three' } });
+  assert.deepEqual(spoken(frames), ['One!', 'Starting.', 'Two!', 'A friend.', 'Three!', 'Magic.']);
+  assert.deepEqual(faceCalls(frames), ['neutral']);
+});
+
+// The same reply arriving DELTA BY DELTA, which is how the wire actually behaves —
+// the test above streams it as one atomic snapshot and so can't see the ordering
+// risk. #filterMood now removes a variable number of chars MID-string as the text
+// grows, while SentenceStreamer tracks #emittedChars as an offset into that same
+// text. A tag appearing AFTER an already-emitted sentence boundary is the exact
+// shape that could double-emit or drop a sentence if the two ever disagreed.
+// (They can't: a tag contains no terminal punctuation, so no boundary can fall
+// inside one, and #emittedChars can never advance past a tag. Pin it anyway.)
+test('per-line tags arriving delta-by-delta: correct sentences, no dupes, one face', async () => {
+  const { session, frames } = makeSession([
+    streams(
+      '[face:neutral] One!',
+      '[face:neutral] One! Starting.',
+      '[face:neutral] One! Starting. [face:neu',
+      '[face:neutral] One! Starting. [face:neutral] Two!',
+      '[face:neutral] One! Starting. [face:neutral] Two! A friend.',
+      '[face:neutral] One! Starting. [face:neutral] Two! A friend. [face:neutral] Three! Magic. ',
+    ),
+  ]);
+  await session.handleTurnRequest({ turnId: 't1', trigger: { kind: 'user', text: 'count to three' } });
+  assert.deepEqual(spoken(frames), ['One!', 'Starting.', 'Two!', 'A friend.', 'Three!', 'Magic.']);
+  assert.deepEqual(faceCalls(frames), ['neutral']);
+});
+
+// The same, without a LEADING tag: the model starts with prose and only tags later
+// lines. Nothing sets the face (leading-only), but nothing leaks to TTS either.
+test('mid-reply tags with no leading tag: stripped from speech, no face set', async () => {
+  const { session, frames } = makeSession([
+    streams('One! Starting. [face:happy] Two! A friend. '),
+  ]);
+  await session.handleTurnRequest({ turnId: 't1', trigger: { kind: 'user', text: 'count to two' } });
+  assert.deepEqual(spoken(frames), ['One!', 'Starting.', 'Two!', 'A friend.']);
+  assert.deepEqual(faceCalls(frames), []);
+});
+
 test('tag split across stream deltas: held (never spoken), then applied', async () => {
   const { session, frames } = makeSession([
     streams('[fa', '[face:exc', '[face:excited] Hi', '[face:excited] Hi there. '),
@@ -149,4 +197,17 @@ test('followup-window turns get the overheard framing; tapped turns do not', asy
   const direct = buildSystemPrompt({});
   assert.ok(overheard.includes(OVERHEARD_FRAMING.slice(0, 40)), 'framing present when overheard');
   assert.ok(!direct.includes('people in the room talking'), 'absent on direct turns');
+});
+
+// A mid-reply tag streams through partial states ("One! [fa") that the global
+// strip regex can't match, and #moodHeldRaw only guards a LEADING bracket. The
+// SentenceStreamer emits at sentence boundaries, so a partial tag mid-sentence
+// is buffered until complete — but that's an invariant worth pinning, not
+// assuming: if it broke, the dock would speak "[face:hap" out loud.
+test('a mid-reply tag arriving across deltas never leaks a partial to speech', async () => {
+  const { session, frames } = makeSession([
+    streams('One! ', 'One! [fa', 'One! [face:hap', 'One! [face:happy] Two! ', 'One! [face:happy] Two! Three! '),
+  ]);
+  await session.handleTurnRequest({ turnId: 't1', trigger: { kind: 'user', text: 'count' } });
+  assert.deepEqual(spoken(frames), ['One!', 'Two!', 'Three!']);
 });

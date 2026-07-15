@@ -75,6 +75,9 @@ class PerceptionWiring(
     // Gates raw face detections into clean ARRIVE/LEAVE edges (near + centered +
     // sustained) so presence-listening doesn't flap as people move through frame.
     private val presenceGate = PresenceGate()
+    // Debounces raw FER reads into a settled REACTION (confidence + persistence).
+    // Shares the injected clock so tests drive it deterministically.
+    private val emotionGate = EmotionGate(nowMs)
     // last rendered "listening" edge, so the face/beep fire only on transitions.
     @Volatile private var listeningRendered = false
 
@@ -235,24 +238,32 @@ class PerceptionWiring(
                             sendFaceLeft()
                         }
                         perception?.onFaceLost()
+                        // Judge the next arrival fresh — not against a candidate
+                        // read left over from whoever was here minutes ago.
+                        emotionGate.onFaceLost()
                         controller.setGaze(GazeOffset())
                     }
                     is PerceptionEvent.UserEmotion -> {
-                        // Mirror the user's emotion to the dock's face while
-                        // we're idle/listening (passive). Speaking is skipped
-                        // inside setExpressionPassive() so the bot's intentional
-                        // expression isn't clobbered mid-reply.
-                        val mirrored = when (event.kind) {
-                            PerceptionEvent.UserEmotion.Kind.Happy -> FaceExpression.Happy
-                            PerceptionEvent.UserEmotion.Kind.Sleepy -> FaceExpression.Sleepy
-                            PerceptionEvent.UserEmotion.Kind.Sad -> FaceExpression.Sad
-                            PerceptionEvent.UserEmotion.Kind.Angry -> FaceExpression.Angry
-                            PerceptionEvent.UserEmotion.Kind.Surprised -> FaceExpression.Surprised
-                            PerceptionEvent.UserEmotion.Kind.Neutral -> FaceExpression.Neutral
-                        }
-                        Timber.d("user emotion: ${event.kind} conf=${"%.2f".format(event.confidence)} → ${mirrored.name}")
+                        // REACT, don't mirror. This used to copy the read emotion
+                        // straight onto the face (angry→angry), ungated: every
+                        // read won, `confidence` was ignored entirely, and a
+                        // single flickered frame reached the screen. That is the
+                        // "random emotions" AND the "it looks angry but says it
+                        // isn't" bug. EmotionGate debounces on confidence +
+                        // persistence; EmotionReaction maps to an APPROPRIATE
+                        // response (sad→concerned, angry→concerned) rather than
+                        // an echo. No LLM: it lands in a frame and works offline.
                         perception?.onEmotion(event.kind.name)
-                        controller.setExpressionPassive(mirrored)
+                        val reaction = emotionGate.onRead(event.kind, event.confidence)
+                        if (reaction == null) {
+                            Timber.d("user emotion: ${event.kind} conf=${"%.2f".format(event.confidence)} → (held)")
+                        } else {
+                            Timber.i("user emotion: ${event.kind} conf=${"%.2f".format(event.confidence)} → react ${reaction.name}")
+                            controller.setExpressionPassive(
+                                reaction,
+                                why = EmotionReaction.reasonFor(event.kind),
+                            )
+                        }
                     }
                     is PerceptionEvent.UserIdentified -> {
                         // Station recognized (or un-recognized) the user → fold the

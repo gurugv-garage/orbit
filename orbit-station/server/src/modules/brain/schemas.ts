@@ -65,6 +65,17 @@ export const setFaceSchema = {
       description: 'the mood to show',
       enum: [...FACES],
     },
+    // The model is the ONE setter that knows its own reason, and that reason used
+    // to be thrown away at the exact moment it existed — so asked "why do you look
+    // sad?" a turn later, the dock invented an answer. Captured here, it comes back
+    // in the next turn's state line and is answered from the record.
+    reason: {
+      type: 'string',
+      description:
+        'WHY you are making this face, in one short clause, addressed to the person '
+        + '(e.g. "you said the deploy failed"). You will be shown this next turn if '
+        + 'they ask why you look that way — so make it true, not poetic.',
+    },
   },
   required: ['expression'],
 } as const;
@@ -385,7 +396,9 @@ export const SET_FACE_DESC =
   "Set the dock's facial expression to match the mood of what you're saying. " +
   'The body also acts out the mood automatically — a sleepy face droops the head, excited does a happy ' +
   "wiggle, love a dreamy tilt, surprised a snap-back, etc. — so you usually DON'T need a separate `move` " +
-  'for emotion; use `move` only for deliberate, literal motions (nod yes, look left, point).';
+  'for emotion; use `move` only for deliberate, literal motions (nod yes, look left, point). ' +
+  'ALWAYS pass `reason` — you are the only one who knows why you chose this face, and you will be ' +
+  'shown it next turn if they ask why you look that way.';
 export const SET_FACE_STYLE_DESC =
   "Change the dock's WHOLE face appearance and voice — its persona skin, not just its mood. " +
   'Use ONLY when the user asks you to become / look like / sound like something (e.g. "be a puppy", ' +

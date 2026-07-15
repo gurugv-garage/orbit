@@ -808,24 +808,42 @@ fun DockScreen() {
                     )
                 }
                 Box(modifier = Modifier.fillMaxSize()) {
-                    activeFace.Render(
-                        modifier = Modifier,
-                        state = state,
-                        gaze = gaze,
-                        expression = expression,
-                        privacy = privacy,
-                        // Camera off → eyes close (we've gone blind, but
-                        // the mic/mouth/everything else stays alive).
-                        eyesClosed = camMuted && !privacy,
-                        compactFraction = 1f,
-                        staticForScreenshot = false,
-                    )
+                    // STATION DOWN → the face drains of colour and dims. Without
+                    // this a disconnected dock looks COMPLETELY NORMAL and just
+                    // silently stops answering — indistinguishable from "it's
+                    // ignoring me", the worst failure mode in the app. Draining
+                    // colour reads as "something is wrong with it", not "it's mad
+                    // at me". Saturation is this effect's exclusive channel, so it
+                    // can coexist with any mood without becoming ambiguous.
+                    dev.orbit.dock.ui.face.ConnectionFade(connected = stationConnected) {
+                        activeFace.Render(
+                            modifier = Modifier,
+                            state = state,
+                            gaze = gaze,
+                            expression = expression,
+                            privacy = privacy,
+                            // Camera off → eyes close (we've gone blind, but
+                            // the mic/mouth/everything else stays alive).
+                            eyesClosed = camMuted && !privacy,
+                            compactFraction = 1f,
+                            staticForScreenshot = false,
+                        )
+                    }
                     // LISTENING glow — a soft breathing edge halo while the dock is
                     // attending (listening/followup), tinted by the active face's eye
                     // glow so it matches every style. Pairs with the haptic + beep cues
                     // as the VISUAL "I'm listening" signal. Fades out otherwise.
                     dev.orbit.dock.ui.face.ListeningGlow(
                         listening = state == FaceState.Listening || state == FaceState.Engaged,
+                        accent = activeFace.palette.eyeGlow,
+                    )
+                    // SPEAKING — the counterpart. The dock glowed when YOU talked
+                    // and showed nothing when IT did. A centre-OUT bloom, the
+                    // deliberate inverse of listening's rim glow: two rim effects
+                    // would be confusable, and these are the two states that most
+                    // need telling apart at a glance.
+                    dev.orbit.dock.ui.face.SpeakingBloom(
+                        speaking = state == FaceState.Speaking,
                         accent = activeFace.palette.eyeGlow,
                     )
                     // LISTENING COUNTDOWN badge — unambiguous on a screenshot: shows it's

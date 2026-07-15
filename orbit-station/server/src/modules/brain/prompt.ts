@@ -12,14 +12,23 @@
 import { FACES } from './schemas.js';
 
 /** The inline mood tag's shape (WI-3). Owned here beside the prompt that
- *  teaches it. Captures the face name. */
+ *  teaches it. Captures the face name. Anchored: this is the LEADING tag, the
+ *  only one that sets the face (first-tag-wins). */
 export const MOOD_TAG_RE = /^\s*\[(?:face|mood)\s*:\s*([a-z_-]+)\s*\]\s*/i;
 
-/** Strip a leading mood tag from assistant text. The live stream strips it
- *  before TTS (session #filterMood); every OTHER reader of raw assistant text
- *  (obs MessageEnd, session summaries, compaction input) must strip it too or
- *  the tag leaks into UIs and seeded context (code-review finding). */
-export const stripMoodTag = (text: string): string => text.replace(MOOD_TAG_RE, '');
+/** The same tag ANYWHERE in the text. The prompt says "start every reply with a
+ *  mood tag"; Gemini reads that per-LINE and emits one per sentence (turn-75cb44ad:
+ *  25 lines, 24 tags at non-zero offsets — every one SPOKEN aloud, "face neutral"
+ *  ×24 across a 95s reply). Setting the face is leading-only; STRIPPING must be
+ *  global, or a tag the parser doesn't recognise as leading reaches TTS. */
+const MOOD_TAG_ANYWHERE_RE = /\[(?:face|mood)\s*:\s*[a-z_-]+\s*\]\s*/gi;
+
+/** Strip EVERY mood tag from assistant text. The live stream strips before TTS
+ *  (session #filterMood); every OTHER reader of raw assistant text (obs
+ *  MessageEnd, session summaries, compaction input) must strip too or the tag
+ *  leaks into UIs and seeded context (code-review finding). */
+export const stripMoodTag = (text: string): string =>
+  text.replace(MOOD_TAG_ANYWHERE_RE, '');
 
 /** The face paragraph, in two variants (WI-3, busy-queue-black-hole.md):
  *  - inline mood (default): the mood rides the reply text as a leading
@@ -28,10 +37,19 @@ export const stripMoodTag = (text: string): string => text.replace(MOOD_TAG_RE, 
  *    on a ~23k prompt), the dominant term in the 8s median reply latency.
  *  - tool mood (brainInlineMood=false): the original guidance. */
 const FACE_INLINE = `Start EVERY reply's text with a mood tag: [face:NAME], NAME one of
-${FACES.join(', ')}. It is the very first thing in your text, sets your facial
-expression instantly, and is never spoken — example: "[face:happy] Four! Easy
-one." Only call the set_face tool when someone explicitly asks you to change or
-hold an expression.`;
+${FACES.join(', ')}. Put it ONCE, at the very start — not per line/sentence. It
+sets your facial expression instantly and is never spoken — example:
+"[face:happy] Four! Easy one." Only call the set_face tool when someone
+explicitly asks you to change or hold an expression (that tool takes a \`reason\`;
+the tag can't, so use the tool when the WHY matters).
+
+Your face is not always your own doing: the "YOUR face" line each turn tells you
+what you're wearing AND why. When it says the face is your camera-read REACTION
+to the person (e.g. "you look sad, so I'm concerned"), that is a response to
+THEM, not a mood you chose — say so plainly if asked ("you looked upset, so I
+look concerned; I'm not upset myself"). NEVER invent a feeling to explain your
+face. If the reason given is dull ("someone set it from a debug tool"), the dull
+truth is the right answer.`;
 
 const FACE_TOOL = `To change your face call set_face — for ordinary moods use set_face.`;
 

@@ -451,12 +451,18 @@ export function fireFace(opts: {
   dock: string; motion: MotionExecutor; rpc: RpcBroker;
   gestures: Record<string, MoveStep[]>; turnId: string; toolCallId: string;
   expression: string; warn: (msg: string) => void;
+  /** The model's OWN account of why (set_face's `reason`). Carried to the phone
+   *  so the face has provenance and the dock can answer "why do you look sad?"
+   *  from its record instead of inventing one. Inline `[face:]` tags can't carry
+   *  one — they're a single token by design — so they land without it. */
+  reason?: string;
 }): void {
   try { opts.motion.playGesture(opts.dock, opts.expression, opts.gestures); }
   catch { /* body offline — face still changes */ }
   void opts.rpc.call({
     dock: opts.dock, cap: 'face', turnId: opts.turnId,
-    toolCallId: opts.toolCallId, name: 'set_face', args: { expression: opts.expression },
+    toolCallId: opts.toolCallId, name: 'set_face',
+    args: { expression: opts.expression, ...(opts.reason ? { reason: opts.reason } : {}) },
   }).then((ack) => {
     if (ack.isError) opts.warn(`set_face rpc failed: ${ack.content}`);
   }).catch((err) => opts.warn(`set_face rpc failed: ${String(err)}`));
@@ -475,13 +481,16 @@ export function buildDockTools(deps: ToolDeps): AgentTool<any>[] {
   };
 
   return [
-    tool('set_face', S.SET_FACE_DESC, S.setFaceSchema, async (toolCallId, args: { expression: string }) => {
+    tool('set_face', S.SET_FACE_DESC, S.setFaceSchema, async (
+      toolCallId, args: { expression: string; reason?: string },
+    ) => {
       if (!S.FACES.includes(args.expression as never)) {
         throw new Error(`unknown expression "${args.expression}"`);
       }
       fireFace({
         dock: deps.dock, motion: deps.motion, rpc: deps.rpc, gestures: deps.getGestures(),
         turnId: deps.getTurnContext().turnId, toolCallId, expression: args.expression,
+        reason: args.reason,
         warn: (msg) => console.warn(`[brain] ${deps.dock}: ${msg}`),
       });
       return textResult(`face set to ${args.expression}`);
