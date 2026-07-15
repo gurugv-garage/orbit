@@ -21,11 +21,16 @@ interface CostBucket { group?: string; cost: number; inputTokens: number; output
 interface CostSummary { from: number; to: number; total: CostBucket; groupBy: string; groups: CostBucket[] }
 interface CostSeriesPoint { day: string; byGroup: Record<string, number> }
 
-const WINDOWS: Array<{ label: string; days: number }> = [
-  { label: '24h', days: 1 },
-  { label: '7d', days: 7 },
-  { label: '30d', days: 30 },
+// `from(to)` lets a window be calendar-anchored rather than a rolling multiple of
+// 24h: "Today" means since local midnight, which is what someone checking the
+// day's spend expects (the rolling 24h window would fold in yesterday evening).
+const WINDOWS: Array<{ id: string; label: string; blurb: string; singleDay?: boolean; from: (to: number) => number }> = [
+  { id: 'today', label: 'Today', blurb: 'since midnight', singleDay: true, from: () => new Date().setHours(0, 0, 0, 0) },
+  { id: '24h', label: '24h', blurb: 'last 24h', singleDay: true, from: (to) => to - 24 * 3600_000 },
+  { id: '7d', label: '7d', blurb: 'last 7d', from: (to) => to - 7 * 24 * 3600_000 },
+  { id: '30d', label: '30d', blurb: 'last 30d', from: (to) => to - 30 * 24 * 3600_000 },
 ];
+const DEFAULT_WINDOW = WINDOWS.find((w) => w.id === '7d')!;
 
 const GROUPS: Array<{ value: GroupBy; label: string; noun: string }> = [
   { value: 'source', label: 'Dock', noun: 'dock' },
@@ -41,16 +46,16 @@ const COLORS = ['#6ea8ff', '#7ee0c0', '#ffb86b', '#ff7eb6', '#c98bff', '#9be36b'
 const colorFor = (key: string, keys: string[]) => COLORS[Math.max(0, keys.indexOf(key)) % COLORS.length]!;
 
 // ── URL-hash filter persistence ───────────────────────────────────────────────
-function readHashFilters(): { days: number; groupBy: GroupBy } {
+function readHashFilters(): { windowId: string; groupBy: GroupBy } {
   const q = new URLSearchParams((location.hash.split('?')[1] ?? ''));
-  const w = WINDOWS.find((x) => x.label === q.get('window'));
+  const w = WINDOWS.find((x) => x.id === q.get('window'));
   const g = GROUPS.find((x) => x.value === q.get('group'));
-  return { days: w?.days ?? 7, groupBy: g?.value ?? 'source' };
+  return { windowId: (w ?? DEFAULT_WINDOW).id, groupBy: g?.value ?? 'source' };
 }
-function writeHashFilters(days: number, groupBy: GroupBy): void {
+function writeHashFilters(windowId: string, groupBy: GroupBy): void {
   const view = (location.hash.replace('#', '').split('?')[0] || 'cost');
   const q = new URLSearchParams();
-  q.set('window', WINDOWS.find((w) => w.days === days)?.label ?? '7d');
+  q.set('window', windowId);
   q.set('group', groupBy);
   // replaceState so filter tweaks don't pile up in browser history (but survive refresh).
   history.replaceState(null, '', `#${view}?${q.toString()}`);
@@ -61,8 +66,9 @@ interface Tip { x: number; y: number; label: string; cost: number; pct: number }
 
 export function Cost() {
   const initial = readHashFilters();
-  const [days, setDays] = useState(initial.days);
+  const [windowId, setWindowId] = useState(initial.windowId);
   const [groupBy, setGroupBy] = useState<GroupBy>(initial.groupBy);
+  const win = WINDOWS.find((w) => w.id === windowId) ?? DEFAULT_WINDOW;
   const [summary, setSummary] = useState<CostSummary | null>(null);
   const [series, setSeries] = useState<CostSeriesPoint[]>([]);
   const [loading, setLoading] = useState(false);
@@ -71,7 +77,9 @@ export function Cost() {
 
   const load = useCallback(() => {
     const to = Date.now();
-    const from = to - days * 24 * 3600_000;
+    // resolved at click/refresh time, not render time — a "Today" tab left open
+    // across midnight picks up the new day on its next refresh.
+    const from = (WINDOWS.find((w) => w.id === windowId) ?? DEFAULT_WINDOW).from(to);
     const qs = `from=${from}&to=${to}&groupBy=${groupBy}`;
     setLoading(true);
     Promise.all([
@@ -82,11 +90,11 @@ export function Cost() {
       setSeries(ser ?? []);
       setLoading(false);
     });
-  }, [days, groupBy]);
+  }, [windowId, groupBy]);
 
   useEffect(() => { load(); }, [load]);
   // keep the URL in sync with the active filters (refresh- and share-safe).
-  useEffect(() => { writeHashFilters(days, groupBy); }, [days, groupBy]);
+  useEffect(() => { writeHashFilters(windowId, groupBy); }, [windowId, groupBy]);
 
   const total = summary?.total;
   const groups = useMemo(() => summary?.groups ?? [], [summary]);
@@ -100,11 +108,11 @@ export function Cost() {
   return (
     <section onMouseMove={(e) => tip && setTip((t) => (t ? { ...t, x: e.clientX, y: e.clientY } : t))}>
       <h2 className="title">Cost</h2>
-      <p className="subtitle">LLM spend across the fleet — pi list pricing, summed by the station. Last {days === 1 ? '24h' : `${days}d`}.</p>
+      <p className="subtitle">LLM spend across the fleet — pi list pricing, summed by the station. {win.id === 'today' ? 'Today, since midnight.' : `Last ${win.label}.`}</p>
 
       <div className="cost-controls">
-        <Segmented value={String(days)} onChange={(v) => setDays(Number(v))}
-          opts={WINDOWS.map((w) => ({ value: String(w.days), label: w.label }))} />
+        <Segmented value={windowId} onChange={setWindowId}
+          opts={WINDOWS.map((w) => ({ value: w.id, label: w.label, title: w.blurb }))} />
         <span className="muted cost-byline">break down by</span>
         <Segmented value={groupBy} onChange={(v) => setGroupBy(v as GroupBy)}
           opts={GROUPS.map((g) => ({ value: g.value, label: g.label }))} />
@@ -118,10 +126,17 @@ export function Cost() {
         <div className="card"><h3>Avg / call</h3><div className="stat">{total && total.calls ? fmtUsd(total.cost / total.calls) : '—'}</div><div className="muted">mean step cost</div></div>
       </div>
 
-      <h3 className="cost-h">Spend per day</h3>
-      {series.length === 0
-        ? <div className="empty">No LLM spend recorded in this window.</div>
-        : <StackedChart series={series} keys={seriesKeys} hover={hover} setHover={setHover} setTip={setTip} />}
+      {/* Single-day windows skip the per-day chart: one bar says nothing the total
+          doesn't, and the server buckets days in UTC — west of UTC a local "Today"
+          straddles two UTC buckets and would render a bar stamped yesterday. */}
+      {!win.singleDay && (
+        <>
+          <h3 className="cost-h">Spend per day</h3>
+          {series.length === 0
+            ? <div className="empty">No LLM spend recorded in this window.</div>
+            : <StackedChart series={series} keys={seriesKeys} hover={hover} setHover={setHover} setTip={setTip} />}
+        </>
+      )}
 
       <h3 className="cost-h">By {noun}</h3>
       {groups.length === 0
@@ -313,11 +328,11 @@ function StackedChart({ series, keys, hover, setHover, setTip }: {
 }
 
 // ── small segmented control ──────────────────────────────────────────────────
-function Segmented({ value, onChange, opts }: { value: string; onChange: (v: string) => void; opts: Array<{ value: string; label: string }> }) {
+function Segmented({ value, onChange, opts }: { value: string; onChange: (v: string) => void; opts: Array<{ value: string; label: string; title?: string }> }) {
   return (
     <div className="cost-seg">
       {opts.map((o) => (
-        <button key={o.value} onClick={() => onChange(o.value)} className={value === o.value ? 'on' : ''}>{o.label}</button>
+        <button key={o.value} onClick={() => onChange(o.value)} title={o.title} className={value === o.value ? 'on' : ''}>{o.label}</button>
       ))}
     </div>
   );
