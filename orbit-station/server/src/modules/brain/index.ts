@@ -889,11 +889,25 @@ export function brainModule(w: BrainWiring): StationModule {
       getTranscriptApi()?.setListeningResolver((dock) => session(dock).isListening());
       getTranscriptApi()?.onInterim((t) => { session(t.dockId).sendInterim(t.text, t.seq); });
       // SPEECH ONSET → the barge-in polite pause (see bargeHolds above).
+      // SELF-MOTION MUTE: the dock's own servos are loud enough (structure-borne
+      // into the mic) to read as a voice onset — with Fix 5 gesturing mid-story,
+      // every mood beat paused the reply it was choreographing. The station
+      // ISSUES the moves, so no acoustic cleverness: while the body moved
+      // recently (any mover — gesture, brain move, faceFollow, console; every
+      // step send stamps lastMotionAt), ignore onsets. Window = longest gesture
+      // step (1100ms) + settle + the VAD's ~240ms onset lag. A real barge during
+      // a gesture loses only the pause — the STT final + stop-intent still work.
+      const BARGE_MOTION_MUTE_MS = 1_800;
       getTranscriptApi()?.onSpeechStart(({ dockId }) => {
         if (w.config('brainBargeHold') === false) return; // kill-switch
         if (bargeHolds.has(dockId)) return;
         if (Date.now() < (bargeCooldownUntil.get(dockId) ?? 0)) return; // post-resume cooldown
         if (session(dockId).conversation().mode !== 'speaking') return; // nothing audible to yield
+        if (w.motion.recentlyMoved(dockId, BARGE_MOTION_MUTE_MS)) {
+          pushAddrTrace({ dockId, text: '(speech onset during reply)', startedAt: Date.now(), endedAt: Date.now() },
+            'barge:skip:self-motion', 'speaking');
+          return;
+        }
         session(dockId).ttsHold(true);
         const timer = setTimeout(() => resolveBargeHold(dockId, 'timeout', true), BARGE_MAX_HOLD_MS);
         bargeHolds.set(dockId, { at: Date.now(), timer });
