@@ -24,6 +24,8 @@ import timber.log.Timber
  *                                                                # inject a final transcript
  *                                                                # (drives the agent as if heard)
  *   adb shell am broadcast -a dev.orbit.dock.debug.SPEAKING -e active true|false
+ *   adb shell am broadcast -a dev.orbit.dock.debug.PAUSETTS   # hold TTS mid-reply
+ *   adb shell am broadcast -a dev.orbit.dock.debug.RESUMETTS  # continue where held
  *   adb shell am broadcast -a dev.orbit.dock.debug.FEEDBACK -e reason "head didn't move"
  *                                                                # flag feedback on the session
  *                                                                # (ships the dump up to the station)
@@ -79,6 +81,16 @@ object DebugTestReceiver {
                         // when the user talks over TTS.
                         Timber.i("DEBUG barge-in")
                         PerceptionBus.emit(PerceptionEvent.BargeIn)
+                    }
+                    "${PREFIX}PAUSETTS" -> {
+                        // Hold TTS mid-reply (polite pause) — playback silent,
+                        // turn + speaking signal stay up. RESUMETTS continues.
+                        Timber.i("DEBUG tts pause")
+                        PerceptionBus.emit(PerceptionEvent.TtsHold(hold = true))
+                    }
+                    "${PREFIX}RESUMETTS" -> {
+                        Timber.i("DEBUG tts resume")
+                        PerceptionBus.emit(PerceptionEvent.TtsHold(hold = false))
                     }
                     "${PREFIX}SPEAKING" -> {
                         val active = intent.getStringExtra("active")?.toBoolean() ?: false
@@ -174,6 +186,8 @@ object DebugTestReceiver {
             addAction("${PREFIX}SPEAKING")
             addAction("${PREFIX}FEEDBACK")
             addAction("${PREFIX}BARGE")
+            addAction("${PREFIX}PAUSETTS")
+            addAction("${PREFIX}RESUMETTS")
             addAction("${PREFIX}SETFACE")
             addAction("${PREFIX}SETFACESTYLE")
             addAction("${PREFIX}EXIT")

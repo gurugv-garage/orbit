@@ -425,6 +425,10 @@ export function speechWatchProcessor(
    *  request a speaker embedding from the sidecar and the label lands on the snapshot
    *  as `voice: {name, score}`. voice/service.ts owns matching + the enroll ring. */
   voiceId?: import('../voice/service.js').VoiceIdService,
+  /** SPEECH ONSET (barge-in "polite pause"): fired once per utterance after
+   *  ~ONSET_SUSTAIN_MS of sustained voice — long before the endpoint/transcript.
+   *  The brain holds the dock's TTS on it when the dock is mid-reply. */
+  onSpeechStart?: (e: { dockId: string; at: number }) => void,
 ): StreamProcessor & {
   /** Force-commit any in-progress utterance on EVERY stream now, awaiting the
    *  transcription. Used by the Summarize flush so a mid-sentence is captured. */
@@ -552,6 +556,9 @@ export function speechWatchProcessor(
       };
       const detector = new UtteranceDetector((pcm, startedAt, endedAt) => { void commit(pcm, startedAt, endedAt); });
       detector.commit = commit; // flushNow awaits this; the live path stays fire-and-forget
+      if (onSpeechStart) {
+        detector.onSpeechStart = (startedAt) => onSpeechStart({ dockId: ctx.dockId, at: startedAt.getTime() });
+      }
 
       // ── AUDIO ENRICHER (merged path) ── when wired, ONE context-aware pass over each batch
       // window replaces the two backgroundAudio calls: it lands the authoritative durable

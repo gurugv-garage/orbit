@@ -34,6 +34,11 @@ class DockTts(
     context: Context,
     private val face: FaceController,
     private val onSpeakingChanged: (Boolean) -> Unit = {},
+    /** Periodic re-assert while speaking (see SPEAK_KEEPALIVE_MS). Separate from
+     *  onSpeakingChanged: a keepalive is NOT an edge — routing it through the
+     *  edge callback re-emitted Speaking(true) on the PerceptionBus every tick,
+     *  resetting the barge-in grace window + counters each time. */
+    private val onSpeakingKeepalive: () -> Unit = {},
 ) : Speaker {
     private val appCtx = context.applicationContext
 
@@ -58,6 +63,40 @@ class DockTts(
     // gap between streamed sentences never reads as "stopped speaking" — that
     // false edge mid-reply is what re-armed the mic over the dock's own voice.
     private val gate = SpeakingEdgeGate()
+    // Pause/continue (the barge-in "polite pause"). Playback is held at the PCM
+    // drain (WebRtcAudio.pauseTtsRender) so resume is sample-exact. The speaking
+    // signal must NOT fall while held — the station would read SpeakEnd, settle
+    // the turn, and drain the busy queue over a reply that's still mid-flight —
+    // so every utterance-finish timer is cancelled on pause and rescheduled
+    // shifted by the held duration on resume. Synthesis completing DURING a
+    // pause is deferred (pausedFeeds) so no timer is ever scheduled while held.
+    private class FinishTimer(
+        @Volatile var endsAtMs: Long,
+        @Volatile var future: java.util.concurrent.ScheduledFuture<*>?,
+    )
+    private val finishTimers = ConcurrentHashMap<String, FinishTimer>()
+    private val pauseLock = Any()
+    @Volatile private var paused = false
+    private var pausedAtMs = 0L
+    private val pausedFeeds = mutableListOf<String>()
+    // SAFETY: a hold whose release frame never arrives (WS blip, station
+    // restart mid-hold — its bargeHolds map is in-memory, and #sendToVoice
+    // silently drops frames to an offline dock) must not wedge the dock
+    // paused forever: with the keepalive still re-asserting speaking, the
+    // station's SPEAK_MAX_MS backstop would never fire either. Auto-resume
+    // after HOLD_MAX_MS (> the station's 6s barge timeout).
+    private var holdTimeout: java.util.concurrent.ScheduledFuture<*>? = null
+    // SPEAKING KEEPALIVE: while the speaking signal is up (including a pause/hold),
+    // re-assert it every SPEAK_KEEPALIVE_MS. The station's conversation state bounds
+    // SPEAKING with a safety cap (SPEAK_MAX_MS, 30s) that a single rising edge never
+    // refreshes — a reply whose real playback runs past the cap (long story, or a
+    // hold stretching it) expired the mode mid-audio: the station settled the turn,
+    // drained the busy queue, and a NEW reply queued behind the still-playing old
+    // one (live 2026-07-15). The keepalive keeps the station's model tied to the
+    // truth: speaking lasts exactly as long as audio actually plays. (The station's
+    // STT echo-gate window, SPEAK_ON_WINDOW_MS=6s, always assumed this keepalive.)
+    @Volatile private var speakingUp = false
+    private var keepaliveTask: java.util.concurrent.ScheduledFuture<*>? = null
 
     private val tts: TextToSpeech = TextToSpeech(appCtx) { status ->
         if (status == TextToSpeech.SUCCESS) {
@@ -133,6 +172,31 @@ class DockTts(
         })
     }
 
+    /** Rising edge of the public speaking signal: assert it + start the keepalive. */
+    private fun speakingRose() {
+        synchronized(pauseLock) {
+            speakingUp = true
+            if (keepaliveTask == null) {
+                keepaliveTask = scheduler.scheduleWithFixedDelay(
+                    { if (speakingUp) onSpeakingKeepalive() },
+                    SPEAK_KEEPALIVE_MS, SPEAK_KEEPALIVE_MS, java.util.concurrent.TimeUnit.MILLISECONDS,
+                )
+            }
+        }
+        onSpeakingChanged(true)
+    }
+
+    /** Falling edge: stop the keepalive FIRST so a late tick can't re-assert
+     *  speaking after the signal fell. */
+    private fun speakingFell() {
+        synchronized(pauseLock) {
+            speakingUp = false
+            keepaliveTask?.cancel(false)
+            keepaliveTask = null
+        }
+        onSpeakingChanged(false)
+    }
+
     /**
      * Shared cleanup for an utterance ending (done / error / stopped). Removes
      * it from the active set; the speaking signal falls only when the gate
@@ -141,9 +205,12 @@ class DockTts(
      */
     private fun finishUtterance(utteranceId: String?) {
         if (utteranceId != null) synchronized(activeUtterances) { activeUtterances.remove(utteranceId) }
+        // An engine-side end (onStop/onError) may arrive while a playback finish
+        // timer is still pending — kill it so it can't re-run finish later.
+        if (utteranceId != null) finishTimers.remove(utteranceId)?.future?.cancel(false)
         if (queueDrained() && gate.onQueueDrained()) {
             face.silence()
-            onSpeakingChanged(false)
+            speakingFell()
         }
     }
 
@@ -153,6 +220,11 @@ class DockTts(
 
     /** A turn opened: sentences will stream in; gaps are not end-of-speech. */
     override fun onTurnBegin() {
+        // A stale barge hold must never leak into a NEW reply: a hold placed
+        // just as the previous reply drained (station mode lags real playback)
+        // would defer every sentence of this turn into pausedFeeds — a silent
+        // reply until the hold times out. New turn ⇒ start unpaused.
+        resume()
         gate.onTurnOpened()
     }
 
@@ -161,7 +233,7 @@ class DockTts(
     override fun onTurnEnd() {
         if (gate.onTurnClosed(queueDrained())) {
             face.silence()
-            onSpeakingChanged(false)
+            speakingFell()
         }
     }
 
@@ -178,6 +250,17 @@ class DockTts(
     override fun stop() {
         try {
             tts.stop()
+            // A pause must not survive a stop: clear the hold + every held finish
+            // timer BEFORE draining, so the next reply starts unpaused.
+            // (stopTtsRender below also releases the PCM-drain hold.)
+            synchronized(pauseLock) {
+                paused = false
+                holdTimeout?.cancel(false)
+                holdTimeout = null
+                finishTimers.values.forEach { it.future?.cancel(false) }
+                finishTimers.clear()
+                pausedFeeds.clear()
+            }
             // A1: also drop any TTS PCM still queued in the WebRTC render loopback,
             // else a barge-in/cancel would keep playing the already-synthesized tail.
             WebRtcAudio.stopTtsRender()
@@ -196,7 +279,7 @@ class DockTts(
         // long-press/barge-in, which suppressed auto-listen until the next turn.
         if (gate.onStopped()) {
             face.silence()
-            onSpeakingChanged(false)
+            speakingFell()
         }
     }
 
@@ -263,13 +346,18 @@ class DockTts(
     /** Synthesis finished for [id]: read the WAV, resample to 16k, render through
      *  WebRTC, and schedule the utterance's end based on playback duration. */
     private fun feedSynthesized(id: String) {
+        // Held mid-reply? Defer — the WAV stays in synthFiles and is fed on
+        // resume, so its finish timer is computed against the resumed clock.
+        synchronized(pauseLock) {
+            if (paused) { pausedFeeds.add(id); return }
+        }
         val file = synthFiles.remove(id) ?: return
         val pcm16 = runCatching { readWavResampledTo16k(file) }.getOrNull()
         runCatching { file.delete() }
         if (pcm16 == null || pcm16.isEmpty()) { finishUtterance(id); return }
         // playback-start edge (the real "now speaking").
         face.speak()
-        if (gate.onUtteranceStarted()) onSpeakingChanged(true)
+        if (gate.onUtteranceStarted()) speakingRose()
         WebRtcAudio.renderTtsPcm(appCtx, pcm16)
         // Schedule this utterance's end. Sentences synthesize near-simultaneously but
         // play SEQUENTIALLY from the shared render queue, so each finish must wait for
@@ -281,8 +369,85 @@ class DockTts(
             playbackEndsAt = base + playMs
             base
         }
-        val endInMs = (startAt - System.currentTimeMillis()) + playMs + 150 // + small tail
-        scheduler.schedule({ finishUtterance(id) }, endInMs.coerceAtLeast(0), java.util.concurrent.TimeUnit.MILLISECONDS)
+        scheduleFinish(id, startAt + playMs + 150) // + small tail
+    }
+
+    /** Schedule [finishUtterance] at the absolute [endsAtMs], tracked so a
+     *  pause can cancel it and a resume can reschedule it shifted. */
+    private fun scheduleFinish(id: String, endsAtMs: Long) {
+        synchronized(pauseLock) {
+            val timer = FinishTimer(endsAtMs, null)
+            finishTimers[id] = timer
+            if (!paused) timer.future = scheduleFinishRunnable(id, endsAtMs)
+        }
+    }
+
+    private fun scheduleFinishRunnable(id: String, endsAtMs: Long): java.util.concurrent.ScheduledFuture<*> {
+        val delay = (endsAtMs - System.currentTimeMillis()).coerceAtLeast(0)
+        return scheduler.schedule({
+            // RACE GUARD: pause() cancels with cancel(false), which can't stop a
+            // task that already started. Re-check under the lock — if a hold
+            // landed while this task was starting, RE-HOLD the finish (resume
+            // reschedules it) instead of dropping the speaking signal mid-pause,
+            // which would let the station settle the turn over held audio.
+            synchronized(pauseLock) {
+                if (paused) {
+                    finishTimers[id] = FinishTimer(System.currentTimeMillis(), null)
+                    return@schedule
+                }
+                finishTimers.remove(id)
+            }
+            finishUtterance(id)
+        }, delay, java.util.concurrent.TimeUnit.MILLISECONDS)
+    }
+
+    /**
+     * Hold speech mid-reply (the barge-in "polite pause"): playback goes silent
+     * within one audio buffer, but the queue, the speaking signal, and the turn
+     * all stay up — the station still sees SPEAKING, so an STT final arriving
+     * during the pause routes through the stop-intent path ("wait"/"stop"), and
+     * anything else queues for settle as usual. [resume] continues sample-exact.
+     * A [stop] (station cancel / tap) while paused tears everything down.
+     */
+    override fun pause() {
+        synchronized(pauseLock) {
+            if (paused) return
+            paused = true
+            pausedAtMs = System.currentTimeMillis()
+            WebRtcAudio.pauseTtsRender()
+            for (t in finishTimers.values) { t.future?.cancel(false); t.future = null }
+            holdTimeout = scheduler.schedule({
+                Timber.w("TTS hold exceeded ${HOLD_MAX_MS}ms with no release — auto-resuming")
+                resume()
+            }, HOLD_MAX_MS, java.util.concurrent.TimeUnit.MILLISECONDS)
+            Timber.i("TTS paused (${finishTimers.size} finish timers held)")
+        }
+    }
+
+    /** Continue speech held by [pause], shifting the playback clock and every
+     *  finish timer by the held duration, then feeding any synthesis that
+     *  completed while held. */
+    override fun resume() {
+        val deferred: List<String>
+        synchronized(pauseLock) {
+            if (!paused) return
+            val shift = System.currentTimeMillis() - pausedAtMs
+            paused = false
+            holdTimeout?.cancel(false)
+            holdTimeout = null
+            synchronized(playbackLock) { playbackEndsAt += shift }
+            for ((id, t) in finishTimers) {
+                t.endsAtMs += shift
+                t.future = scheduleFinishRunnable(id, t.endsAtMs)
+            }
+            WebRtcAudio.resumeTtsRender()
+            deferred = pausedFeeds.toList()
+            pausedFeeds.clear()
+            Timber.i("TTS resumed after ${shift}ms (${deferred.size} deferred feeds)")
+        }
+        // Feed on the scheduler, not the caller's thread — a release arrives on
+        // the WS frame path (or the UI), and each feed is a WAV read + resample.
+        deferred.forEach { id -> scheduler.execute { feedSynthesized(id) } }
     }
 
     /** Read a TTS-engine WAV (its own rate, e.g. 24k) → mono PCM-16 resampled to 16k. */
@@ -311,5 +476,16 @@ class DockTts(
             out.putShort((a + (b - a) * frac).toInt().toShort()); pos += step
         }
         return out.array()
+    }
+
+    private companion object {
+        // Re-assert speech-status while speaking. Must stay under the station's
+        // echo-gate window (SPEAK_ON_WINDOW_MS=6s) and well under its SPEAKING
+        // safety cap (SPEAK_MAX_MS=30s), both of which this keepalive refreshes.
+        const val SPEAK_KEEPALIVE_MS = 5_000L
+        // Max time a hold may sit without a release before auto-resuming.
+        // Must exceed the station's BARGE_MAX_HOLD_MS (6s) so the station's
+        // timeout normally wins and this only catches a LOST release.
+        const val HOLD_MAX_MS = 8_000L
     }
 }

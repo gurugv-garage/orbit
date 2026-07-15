@@ -267,6 +267,19 @@ object WebRtcAudio {
     // resumes smoothly with margin instead of stuttering at each boundary. The
     // start of a reply primes the same way (first sentence builds the cushion).
     private var ttsPriming = true            // true → withhold drain until prebuffered
+    // PAUSE (barge-in "polite pause"): while true, output silence WITHOUT consuming
+    // the queue — playback resumes sample-exact from where it stopped. Distinct from
+    // priming (which auto-clears once the cushion fills); this holds until released.
+    private var ttsPaused = false
+    // Reusable zero buffer for silence output (paused / priming / pad): the ADM
+    // callback must not loop per-byte puts (the grainy-voice lesson above) —
+    // one bulk copy instead. Grown lazily to the largest `want` seen.
+    private var silenceBuf = ByteArray(0)
+    private fun putSilence(dst: java.nio.ByteBuffer, n: Int) {
+        if (n <= 0) return
+        if (silenceBuf.size < n) silenceBuf = ByteArray(n)
+        dst.put(silenceBuf, 0, n)
+    }
     /** Total bytes currently queued (head remainder + all pending chunks). */
     private fun queuedBytesLocked(): Int {
         var n = (ttsHead?.size ?: 0) - ttsHeadPos
@@ -294,13 +307,14 @@ object WebRtcAudio {
      *  Bulk array copies, no per-byte boxing — smooth for the audio callback. */
     private fun drainTts(dst: java.nio.ByteBuffer, want: Int) {
         synchronized(ttsLock) {
+            if (ttsPaused) { putSilence(dst, want); return }
             // PRIMING: while withholding playback to build the jitter cushion, output
             // pure silence. Resume draining only once enough is queued (or the tail
             // is so small it's clearly the final bit — don't strand the last words).
             if (ttsPriming) {
                 val q = queuedBytesLocked()
                 if (q >= PREBUFFER_BYTES) ttsPriming = false
-                else { repeat(want) { dst.put(0) }; return }
+                else { putSilence(dst, want); return }
             }
             var filled = 0
             while (filled < want) {
@@ -321,14 +335,27 @@ object WebRtcAudio {
                 dst.put(head, ttsHeadPos, n)
                 ttsHeadPos += n; filled += n
             }
-            while (filled < want) { dst.put(0); filled++ } // pad this callback's remainder
+            putSilence(dst, want - filled) // pad this callback's remainder
         }
     }
 
     /** Drop any TTS PCM not yet rendered (barge-in / stop). Playback goes silent
      *  within one ADM buffer; the loopback PCs stay up for the next utterance. */
     fun stopTtsRender() {
-        synchronized(ttsLock) { ttsChunks.clear(); ttsHead = null; ttsHeadPos = 0; ttsPriming = true }
+        synchronized(ttsLock) {
+            ttsChunks.clear(); ttsHead = null; ttsHeadPos = 0; ttsPriming = true
+            ttsPaused = false
+        }
+    }
+
+    /** Hold TTS playback (silence within one ADM buffer) without dropping the
+     *  queue — [resumeTtsRender] continues sample-exact. See DockTts.pause(). */
+    fun pauseTtsRender() {
+        synchronized(ttsLock) { ttsPaused = true }
+    }
+
+    fun resumeTtsRender() {
+        synchronized(ttsLock) { ttsPaused = false }
     }
 
     // Jitter cushion before (re)starting TTS drain. ~120 ms @ 16 kHz mono 16-bit —

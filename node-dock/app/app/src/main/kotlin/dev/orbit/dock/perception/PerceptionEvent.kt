@@ -31,6 +31,15 @@ sealed class PerceptionEvent {
      */
     data object BargeIn : PerceptionEvent()
 
+    /**
+     * Hold (true) / release (false) TTS playback mid-reply — the barge-in
+     * "polite pause". Unlike [BargeIn] (hard cancel), the turn and the speaking
+     * signal stay up while held; release continues playback where it stopped.
+     * Emitted by the debug PAUSETTS/RESUMETTS broadcasts and (next) the
+     * loud-audio-during-TTS detector.
+     */
+    data class TtsHold(val hold: Boolean) : PerceptionEvent()
+
     /** The dock started/stopped speaking (TTS). Drives the STT echo gate:
      *  STT pauses while speaking so the mic doesn't hear the dock itself. */
     data class Speaking(val active: Boolean) : PerceptionEvent()

@@ -238,6 +238,15 @@ class DockTools(
         return r
     }
 
+    /** Hold / release TTS playback mid-reply (the barge-in "polite pause").
+     *  Unlike [silence], nothing is dropped: the queue, the speaking signal and
+     *  the turn stay up, and release continues playback where it stopped. */
+    fun holdSpeech(hold: Boolean): String {
+        Timber.i("tool.holdSpeech hold=$hold")
+        if (hold) tts.pause() else tts.resume()
+        return "ok"
+    }
+
     fun silence(): String {
         Timber.i("tool.silence")
         onToolCall("silence")

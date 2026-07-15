@@ -60,6 +60,11 @@ const MAX_UTTERANCE_MS = Number(process.env.STT_MAX_UTTERANCE_MS ?? 60_000);
 /** Keep this much leading silence/onset before the first voiced frame (so we don't
  *  clip the first phoneme). */
 const PREROLL_MS = 200;
+/** SPEECH-ONSET hook threshold (barge-in "polite pause"): fire onSpeechStart only
+ *  after this much VOICED audio inside the utterance. A single voiced frame is
+ *  often a bump/click or the dock's own AEC residual; ~a quarter second of
+ *  sustained voice is a person. Env-tunable for live iteration. */
+const ONSET_SUSTAIN_MS = Number(process.env.STT_ONSET_SUSTAIN_MS ?? 240);
 
 // ─────────────────────────── MERGED ACOUSTIC BATCH (perception-to-brain merge) ───────────────────────────
 // The batch window feeds ONE context-aware interpreter call that replaces the two eager
@@ -177,6 +182,13 @@ export class UtteranceDetector {
   // Same as onUtterance but awaitable — used by flushNow so the caller knows the
   // transcript is persisted. Set alongside the constructor callback.
   commit?: (pcm: Int16Array, startedAt: Date, endedAt: Date) => Promise<void>;
+  // SPEECH-ONSET hook (barge-in "polite pause"): fired ONCE per utterance, as soon
+  // as ONSET_SUSTAIN_MS of voiced audio has accumulated — long before the endpoint
+  // or any transcription. The consumer (brain) uses it to hold the dock's TTS the
+  // moment someone starts talking over it. Opt-in; transport-free like the others.
+  onSpeechStart?: (startedAt: Date) => void;
+  #voicedMs = 0;
+  #onsetFired = false;
   // INTERIM hook: called at ~INTERIM_INTERVAL_MS while in-speech with the partial
   // utterance PCM, ONLY when shouldInterim() returns true (the listening gate). The
   // processor wires this to transcribe()+emit; the detector stays transport-free so
@@ -292,12 +304,20 @@ export class UtteranceDetector {
       this.#utter.push(frame);
       this.#utterMs += FRAME_MS;
       this.#silenceMs = voiced ? 0 : this.#silenceMs + FRAME_MS;
+      if (voiced) {
+        this.#voicedMs += FRAME_MS;
+        if (!this.#onsetFired && this.#voicedMs >= ONSET_SUSTAIN_MS) {
+          this.#onsetFired = true;
+          this.onSpeechStart?.(this.#startedAt ?? new Date());
+        }
+      }
       if (this.#silenceMs >= ENDPOINT_MS || this.#utterMs >= MAX_UTTERANCE_MS) { this.#endUtterance(); return; }
       this.#maybeInterim();
     } else if (voiced) {
       // speech onset — start an utterance, prepend the preroll.
       this.#inSpeech = true;
       this.#silenceMs = 0; this.#utterMs = 0;
+      this.#voicedMs = FRAME_MS; this.#onsetFired = false;
       this.#lastInterimMs = 0; // fresh utterance → interim cadence restarts
       this.#startedAt = new Date();
       this.#utter = [...this.#preroll, frame];

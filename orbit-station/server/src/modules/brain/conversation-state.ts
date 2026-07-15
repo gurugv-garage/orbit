@@ -218,6 +218,19 @@ export class ConversationState {
     this.#set('speaking', now, 'tts-start');
   }
 
+  /** Playback KEEPALIVE (the phone re-asserts speaking every ~5s while audio
+   *  actually plays, or is held by a barge pause): refresh the SPEAK_MAX_MS
+   *  safety cap WITHOUT a transition. Deliberately a no-op unless already
+   *  SPEAKING — a late in-flight keepalive arriving just after a dismiss or a
+   *  tap-interrupt must never yank the mode back to 'speaking' (that would
+   *  re-gate wakes for 30s after a successful "stop", or clobber the tap's
+   *  deliberate listening window). */
+  speakRefresh(now: number): void {
+    this.#prune(now);
+    if (this.#mode !== 'speaking') return;
+    this.#speakUntil = now + ConvCfg.SPEAK_MAX_MS;
+  }
+
   /** Spoken DISMISSAL ("stop", "shut up", "I'm not talking to you") → stand
    *  down: idle from ANY mode, all windows closed, the long-utterance grace
    *  clamped to now (like tap-off) so trailing speech isn't addressed. Unlike

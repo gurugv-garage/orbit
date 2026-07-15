@@ -582,6 +582,38 @@ export function brainModule(w: BrainWiring): StationModule {
           decision, mode, startedAt: u.startedAt, endedAt: u.endedAt });
         if (addrTrace.length > 50) addrTrace.shift();
       };
+      // ── BARGE-IN "POLITE PAUSE" ── someone starts talking while the dock is
+      // mid-reply (speech ONSET from the station VAD, ~240ms of sustained voice —
+      // long before the STT final) → HOLD the dock's TTS so the rest of their
+      // utterance lands on silence. Overlapped speech wrecks STT (live 2026-07-15:
+      // "WAIT" over the dock's own story transcribed as "Hey", so stop-intent
+      // never saw it). The final then decides at the trace() chokepoint:
+      // stop/dismiss/supersede cancel outright (their `cancelled` frame kills the
+      // audio — no resume), anything else RELEASES the hold and the reply
+      // continues (content waits in the busy queue for settle, as always). If no
+      // final ever lands (a bump, brief noise), the timeout resumes playback.
+      // Kill-switch: brainBargeHold=false. Requires STT_ECHO_GATE unset (the
+      // default): the echo-gate drops mic audio while the dock speaks — the
+      // very audio that triggers and resolves the hold.
+      const bargeHolds = new Map<string, { at: number; timer: NodeJS.Timeout }>();
+      const BARGE_MAX_HOLD_MS = 6_000;
+      // After a RESUMED hold, ignore new onsets briefly: in a noisy room every
+      // ambient utterance would otherwise re-hold the reply and it plays in
+      // fragments. (A cancel doesn't set this — nothing left to protect.)
+      const bargeCooldownUntil = new Map<string, number>();
+      const BARGE_COOLDOWN_MS = 2_500;
+      const resolveBargeHold = (dock: string, why: string, resume: boolean) => {
+        const h = bargeHolds.get(dock);
+        if (!h) return;
+        bargeHolds.delete(dock);
+        clearTimeout(h.timer);
+        if (resume) {
+          session(dock).ttsHold(false);
+          bargeCooldownUntil.set(dock, Date.now() + BARGE_COOLDOWN_MS);
+        }
+        pushAddrTrace({ dockId: dock, text: `(held ${Date.now() - h.at}ms)`, startedAt: h.at, endedAt: Date.now() },
+          `barge:release:${why}`, session(dock).conversation().mode);
+      };
       // The drain: called from the session's onSettled (lane quiet, any turn kind).
       // Runs the survivors DIRECTLY via handleTurnRequest — never back through
       // onAddressedFinal: the addressed/grace window check would reject a by-now-
@@ -649,6 +681,20 @@ export function brainModule(w: BrainWiring): StationModule {
             decision, mode: pre.mode, windowUntil: pre.windowUntil, msToExpiry: pre.msToExpiry,
             lastWindowUntil: preLastWin, startedAt: t.startedAt, endedAt: t.endedAt });
           if (addrTrace.length > 50) addrTrace.shift();
+          // A pending barge hold resolves on this dock's next final — but only
+          // a final whose utterance ENDED after the hold was placed (with
+          // slack): a straggler transcription of speech that finished BEFORE
+          // the onset must not release the hold while the barging user is
+          // still mid-sentence (resuming over them re-mangles their STT — the
+          // exact failure the hold exists to prevent). Cancelling decisions
+          // (stop/dismiss/supersede) kill the audio via their own `cancelled`
+          // frame — don't resume under them; every other decision releases the
+          // hold and the reply plays on.
+          const hold = bargeHolds.get(t.dockId);
+          if (hold && t.endedAt >= hold.at - 500) {
+            const cancels = decision === 'stop:dismiss' || decision === 'stop:pause' || decision === 'merge:supersede';
+            resolveBargeHold(t.dockId, decision, !cancels);
+          }
           // STAMP the addressed decision onto the speech snapshot (docs/TODO.md §3.0), so the
           // summarizer / fact-extraction / ego can tell "said to the dock" from room chatter.
           // ran-a-turn / wake ⇒ addressed; explicitly not-addressed ⇒ overheard. Ambiguous skips
@@ -818,6 +864,18 @@ export function brainModule(w: BrainWiring): StationModule {
       // are cosmetic: interims never start or alter a turn (that's onAddressedFinal).
       getTranscriptApi()?.setListeningResolver((dock) => session(dock).isListening());
       getTranscriptApi()?.onInterim((t) => { session(t.dockId).sendInterim(t.text, t.seq); });
+      // SPEECH ONSET → the barge-in polite pause (see bargeHolds above).
+      getTranscriptApi()?.onSpeechStart(({ dockId }) => {
+        if (w.config('brainBargeHold') === false) return; // kill-switch
+        if (bargeHolds.has(dockId)) return;
+        if (Date.now() < (bargeCooldownUntil.get(dockId) ?? 0)) return; // post-resume cooldown
+        if (session(dockId).conversation().mode !== 'speaking') return; // nothing audible to yield
+        session(dockId).ttsHold(true);
+        const timer = setTimeout(() => resolveBargeHold(dockId, 'timeout', true), BARGE_MAX_HOLD_MS);
+        bargeHolds.set(dockId, { at: Date.now(), timer });
+        pushAddrTrace({ dockId, text: '(speech onset during reply)', startedAt: Date.now(), endedAt: Date.now() },
+          'barge:hold', 'speaking');
+      });
 
       bus.on('agent', (msg) => {
         if (msg.source === 'station') return;
@@ -919,7 +977,7 @@ export function brainModule(w: BrainWiring): StationModule {
             session(dock).cancel(typeof p?.turnId === 'string' ? p.turnId : undefined);
             break;
           case 'speech-status':
-            session(dock).noteSpeech(p?.speaking === true);
+            session(dock).noteSpeech(p?.speaking === true, p?.keepalive === true);
             // A1.2 echo-gate: tell the STT processor to drop audio while our TTS
             // plays, so the station doesn't transcribe the dock's own voice.
             getTranscriptApi()?.setSpeaking(dock, p?.speaking === true);
@@ -1062,6 +1120,17 @@ export function brainModule(w: BrainWiring): StationModule {
       const cm = subPath.match(/^\/([^/]+)\/conversation$/);
       if (cm && req.method === 'GET') {
         json(res, 200, session(decodeURIComponent(cm[1]!)).conversation());
+        return true;
+      }
+      // DEBUG: hold/release the dock's TTS mid-reply (the barge-in "polite pause"
+      // verification lever). POST /:dock/debug/tts-hold {hold:bool} — sends the
+      // tts-hold frame; playback pauses sample-exact (hold) / continues (release).
+      const hm = subPath.match(/^\/([^/]+)\/debug\/tts-hold$/);
+      if (hm && req.method === 'POST') {
+        const dock = decodeURIComponent(hm[1]!);
+        const body = JSON.parse((await readBody(req)) || '{}') as { hold?: boolean };
+        session(dock).ttsHold(body.hold === true);
+        json(res, 200, { ok: true, hold: body.hold === true });
         return true;
       }
       // TEMP DIAGNOSTIC: GET /:dock/debug/addressed — recent addressed-decisions ring.

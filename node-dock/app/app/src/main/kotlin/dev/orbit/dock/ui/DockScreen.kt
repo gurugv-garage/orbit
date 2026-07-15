@@ -65,15 +65,21 @@ fun DockScreen() {
     // on turn-settle (action-only turns must not leave the user's words on screen).
     val wiringRef = remember { object { var value: PerceptionWiring? = null } }
     val tts = remember {
-        DockTts(ctx, controller, onSpeakingChanged = { speaking ->
-            agentRef.value?.setSpeaking(speaking)
-            // Echo gate: tell the pipeline the dock is/ isn't speaking so STT
-            // pauses while talking (no hearing itself) and auto-resumes after
-            // — but only if a tap-listening session is still active. This is
-            // what gives "talk → I reply → it keeps listening for your next
-            // thing" without the dock transcribing its own voice.
-            PerceptionBus.emit(PerceptionEvent.Speaking(active = speaking))
-        })
+        DockTts(
+            ctx, controller,
+            onSpeakingChanged = { speaking ->
+                agentRef.value?.setSpeaking(speaking)
+                // Echo gate: tell the pipeline the dock is/ isn't speaking so STT
+                // pauses while talking (no hearing itself) and auto-resumes after
+                // — but only if a tap-listening session is still active. This is
+                // what gives "talk → I reply → it keeps listening for your next
+                // thing" without the dock transcribing its own voice.
+                PerceptionBus.emit(PerceptionEvent.Speaking(active = speaking))
+            },
+            // Keepalive is NOT an edge: station-only (refreshes its speaking cap);
+            // no bus re-emit (that reset the barge grace window every 5s).
+            onSpeakingKeepalive = { agentRef.value?.speakingKeepalive() },
+        )
     }
     // Station-synced config (faceGestures live at the STATION now; the keys left
     // here are dock-local UX). Resolves baked-default ← persisted ← live pushes;
@@ -631,10 +637,19 @@ fun DockScreen() {
         }
     }
 
-    // Voice barge-in: the pipeline emits BargeIn when the user speaks during TTS.
+    // Voice barge-in (pipeline BargeIn during TTS) + TTS pause/continue (the
+    // barge-in "polite pause": hold playback sample-exact WITHOUT dropping the
+    // speaking signal or the turn; release continues where it stopped —
+    // production driver is the station's tts-hold frame, this bus path is the
+    // debug PAUSETTS/RESUMETTS lever). One collector: bus events fan out to
+    // every collector, so rare events share one instead of adding fan-out cost.
     LaunchedEffect(Unit) {
         PerceptionBus.events.collect { event ->
-            if (event is PerceptionEvent.BargeIn) bargeIn()
+            when (event) {
+                is PerceptionEvent.BargeIn -> bargeIn()
+                is PerceptionEvent.TtsHold -> if (event.hold) tts.pause() else tts.resume()
+                else -> {}
+            }
         }
     }
 

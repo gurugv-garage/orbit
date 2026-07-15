@@ -98,6 +98,48 @@ test('STT mishear tolerance: leading "So" for "Stop" (live 2026-07-13)', () => {
   assert.equal(isStopIntent('So what is the plan for tomorrow?'), false); // content stays content
 });
 
+// ── embedded stop DIRECTIVES (2026-07-15, the polite-pause live test:
+// "I want you to stop talking" said during the barge hold queued as content
+// and the dock resumed) ──────────────────────────────────────────────────────
+
+test('directives: explicit stop commands match even inside a sentence', async () => {
+  const { classifyStopIntent } = await import('./stop-intent.js');
+  for (const s of [
+    'I want you to stop talking.', // the live miss, verbatim
+    'Hey, I want you to stop talking.',
+    'I want you to stop.',
+    'Can you please be quiet?',
+    'You can stop counting now.',
+    'Could you just stop it.',
+    "That's enough, thank you.",
+  ]) assert.equal(classifyStopIntent(s), 'dismiss', `expected DISMISS: "${s}"`);
+});
+
+test('directives: negated or noun-ish uses stay content', async () => {
+  const { classifyStopIntent } = await import('./stop-intent.js');
+  for (const s of [
+    "Don't stop talking, I like it.",
+    'Do not stop counting.',
+    'Tell me about the bus stop.',
+    'The teacher told everyone in the class to please stop talking during the entire lesson yesterday afternoon.', // > MAX_DIRECTIVE_TOKENS
+    'I was not talking to you about the budget.',
+    // the 11 confirmed misfires of the first "(to|can|…) stop" cut — each
+    // dismissed the dock mid-conversation before the second-person tightening:
+    'Is it going to stop raining today?',
+    'Can we please stop at the pharmacy on the way home?',
+    'How do I stop it?',
+    'Do you think the rain should stop soon?',
+    'he told me to stop by later',
+    "you don't have to stop",
+    'I never said you should stop talking',
+    'no need to stop the music',
+    'is it going to stop?',
+    'I need to stop for gas on the way home',
+    'my boss told me to stop working late',
+    "That's enough sugar for the recipe.", // end-anchor guard on that's-enough
+  ]) assert.equal(classifyStopIntent(s), 'none', `expected none: "${s}"`);
+});
+
 // ── pause vs dismiss classes (Addendum 5.3) ─────────────────────────────────
 
 test('classify: wait/hold-on are PAUSE; stop/shut-up family is DISMISS; dismiss wins mixed', async () => {

@@ -472,6 +472,16 @@ export class DockBrainSession {
   }
   isListening(): boolean { return this.#conv.isListening(Date.now()); }
 
+  /** Hold / release the dock's TTS playback mid-reply (the barge-in "polite
+   *  pause"). Unlike cancel, nothing is dropped: the phone silences playback
+   *  but keeps its queue + speaking signal, and hold=false continues where it
+   *  stopped. The turn/conversation state here is untouched — a paused reply
+   *  is still SPEAKING, so an STT final arriving during the hold routes
+   *  through the normal stop-intent/busy-queue paths. */
+  ttsHold(hold: boolean): void {
+    this.#sendToVoice('tts-hold', { hold });
+  }
+
   /** Pre-warm on streamed transcript partials: open/load the session and
    *  resolve the profile so the LLM call fires the instant the final lands. */
   preWarm(): void {
@@ -619,7 +629,16 @@ export class DockBrainSession {
   /** Phone TTS start/drain markers → obs SpeakStart/SpeakEnd (+ TurnSettled
    *  when the TTS tail drains after the loop closed — the end of the whole
    *  user-perceived turn). */
-  noteSpeech(speaking: boolean): void {
+  noteSpeech(speaking: boolean, keepalive = false): void {
+    // KEEPALIVE (build 34+): the phone re-asserts speaking every ~5s while
+    // audio actually plays or is held, flagged so it can NEVER be mistaken for
+    // an edge — it only refreshes the SPEAK_MAX_MS cap (2026-07-15: the cap
+    // settled the turn + drained the busy queue over a still-playing story).
+    // speakRefresh no-ops unless already SPEAKING, so a late in-flight
+    // keepalive after a dismiss/tap-interrupt can't re-enter 'speaking',
+    // re-gate wakes for 30s, or clobber the tap's listening window. No obs
+    // marker: keepalives aren't SpeakStart edges.
+    if (keepalive) { this.#conv.speakRefresh(Date.now()); return; }
     // TTS start/end drives the conversation state machine: speaking → SPEAKING;
     // end → FOLLOWUP (auto re-listen). The machine bounds SPEAKING (SPEAK_MAX_MS)
     // so a lost end-frame can't wedge it, and reconcileConnected clears it on

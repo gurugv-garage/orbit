@@ -344,6 +344,20 @@ class RemoteBrain(
         }
     }
 
+    /** Playback KEEPALIVE (~5s while audio actually plays or is held): flagged so
+     *  the station only refreshes its SPEAK_MAX_MS cap — a keepalive must never
+     *  read as a SpeakStart edge (a late in-flight one after a dismiss would
+     *  yank the conversation back to 'speaking' for 30s). */
+    internal fun speakingKeepalive() {
+        val turnId = lastTurnId
+        if (turnId.isEmpty()) return
+        scope.launch {
+            link.publishCritical("agent", "speech-status", buildJsonObject {
+                put("turnId", turnId); put("speaking", true); put("keepalive", true)
+            })
+        }
+    }
+
     fun shutdown() {
         watchdog?.cancel()
         scope.cancel()
@@ -400,6 +414,16 @@ class RemoteBrain(
                 if (to != "listening" && to != "followup") clearInterim()
             }
             "transcript-interim" -> onTranscriptInterim(payload)
+            "tts-hold" -> {
+                // Station-driven pause/continue of the reply mid-flight (the
+                // barge-in "polite pause"). hold=true silences playback but keeps
+                // the queue + speaking signal + turn up; hold=false continues
+                // sample-exact. A later `cancelled` (voice "wait"/"stop") still
+                // tears everything down via tools.silence().
+                val hold = payload.bool("hold")
+                tools.holdSpeech(hold)
+                trace("tts-hold hold=$hold")
+            }
             "dock-error" -> onDockError(payload)
             "cancelled" -> {
                 // A STATION-initiated cancel (spoken "stop"/"wait", station tap,

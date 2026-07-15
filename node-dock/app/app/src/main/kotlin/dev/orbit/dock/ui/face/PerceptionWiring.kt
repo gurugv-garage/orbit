@@ -168,6 +168,10 @@ class PerceptionWiring(
                         // status frames (RemoteBrain.setSpeaking) → it emits the
                         // conversation mode we render. Nothing to decide here.
                     }
+                    is PerceptionEvent.TtsHold -> {
+                        // Pause/continue is handled in DockScreen (tts.pause/
+                        // resume). Nothing to render here.
+                    }
                     is PerceptionEvent.BargeIn -> {
                         // Voice barge-in is handled in DockScreen (stops TTS +
                         // the turn, then re-arms). Nothing to do here; branch

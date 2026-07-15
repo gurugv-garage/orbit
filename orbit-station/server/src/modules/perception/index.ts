@@ -603,6 +603,10 @@ export interface TranscriptApi {
   /** the brain calls this once to receive LIVE interim (partial) transcripts to
    *  forward to the dock caption UI. Best-effort; decoupled from onFinal. */
   onInterim(fn: (t: InterimTranscript) => void): void;
+  /** the brain calls this once to receive SPEECH-ONSET events (someone started
+   *  talking — fired after ~240ms of sustained voice, long before the final).
+   *  Drives the barge-in "polite pause": hold TTS while the dock is mid-reply. */
+  onSpeechStart(fn: (e: { dockId: string; at: number }) => void): void;
   /** the brain registers HOW to check "is dock X in a listening/followup turn" — the
    *  gate that decides whether interims are produced at all (bounds the GPU cost to
    *  active turns, not ambient speech). Until set, NO interims fire. */
@@ -733,6 +737,7 @@ export function perceptionModule(getHub: () => PerceptionProcessingHub): Station
   // and a listening-resolver (the gate — only produce interims during an active turn).
   let interimHandler: ((t: InterimTranscript) => void) | undefined;
   let listeningResolver: ((dockId: string) => boolean) | undefined;
+  let speechStartHandler: ((e: { dockId: string; at: number }) => void) | undefined;
   // Echo-gate: a dock is "speaking" while its TTS plays AND for a short tail after
   // (TTS reverb + AEC settle still leak into the mic just after speech-status off).
   // Map dockId → epoch ms until which it counts as speaking.
@@ -752,6 +757,7 @@ export function perceptionModule(getHub: () => PerceptionProcessingHub): Station
       speakingUntil.set(dockId, Date.now() + (on ? SPEAK_ON_WINDOW_MS : SPEAK_TAIL_MS));
     },
     onInterim: (fn) => { interimHandler = fn; },
+    onSpeechStart: (fn) => { speechStartHandler = fn; },
     setListeningResolver: (fn) => { listeningResolver = fn; },
   };
   // AUDIO ENRICHER (production split, docs/findings/recall-reliability.md): each
@@ -817,6 +823,9 @@ export function perceptionModule(getHub: () => PerceptionProcessingHub): Station
     (e) => bgAddressedHandler?.({ dockId: e.dockId, directive: e.directive, transcript: e.text, conf: e.conf }),
     registerEnrichPathSink, // live speech / non-speech trigger gates → each detector
     voiceId, // 🎙→👤 voice fingerprint on finals (observe-only)
+    // SPEECH ONSET → brain (barge-in "polite pause"): someone started talking —
+    // if the dock is mid-reply the brain holds its TTS until the final decides.
+    (e) => speechStartHandler?.(e),
   ); // 🎙 speech (exposes flushAll)
   const bodymotion = bodyMotionWatchProcessor(snapshots); // 🤖 ego-motion (setMotion seam)
   // Vision reuses the face processor's decoded frame (ONE ffmpeg per dock, not two). The

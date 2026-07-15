@@ -13,6 +13,14 @@ interface Speaker {
     fun stop()
 
     /**
+     * Hold speech mid-reply without dropping anything (the barge-in "polite
+     * pause"): the queue and the speaking signal stay up; [resume] continues
+     * where playback left off. Default no-ops keep fakes unaffected.
+     */
+    fun pause() {}
+    fun resume() {}
+
+    /**
      * A turn opened/closed: between these, more sentences may still stream in,
      * so a momentarily-empty TTS queue must NOT be treated as "stopped
      * speaking" (see [SpeakingEdgeGate]). Default no-ops keep test fakes and
