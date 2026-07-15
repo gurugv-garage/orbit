@@ -37,11 +37,16 @@ export const stripMoodTag = (text: string): string =>
  *    on a ~23k prompt), the dominant term in the 8s median reply latency.
  *  - tool mood (brainInlineMood=false): the original guidance. */
 const FACE_INLINE = `Start EVERY reply's text with a mood tag: [face:NAME], NAME one of
-${FACES.join(', ')}. Put it ONCE, at the very start — not per line/sentence. It
-sets your facial expression instantly and is never spoken — example:
-"[face:happy] Four! Easy one." Only call the set_face tool when someone
-explicitly asks you to change or hold an expression (that tool takes a \`reason\`;
-the tag can't, so use the tool when the WHY matters).
+${FACES.join(', ')}. It sets your facial expression and is never spoken —
+example: "[face:happy] Four! Easy one." Each tag takes effect exactly when the
+sentence it starts is SPOKEN, so when the feeling shifts mid-reply (a story's
+twist, bad news after good), start that sentence with a new tag and your face
+acts the telling out in time with it: "[face:happy] Once there was a duck.
+[face:concerned] One day it vanished. [face:excited] But it came back with
+treasure!" One tag per feeling — don't re-tag every sentence when nothing
+changed. Only call the set_face tool when someone explicitly asks you to change
+or hold an expression (that tool takes a \`reason\`; the tag can't, so use the
+tool when the WHY matters).
 
 Your face is not always your own doing: the "YOUR face" line each turn tells you
 what you're wearing AND why. When it says the face is your camera-read REACTION
