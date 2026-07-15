@@ -187,15 +187,29 @@ class DockTools(
      * having spoken. The subtitle is driven by [onLiveText], so this doesn't
      * set it. Sanitized like [speak].
      */
-    fun speakSentence(text: String): String {
+    @JvmOverloads
+    fun speakSentence(text: String, onPlaybackStart: (() -> Unit)? = null): String {
         val clean = sanitizeForSpeech(text)
         if (clean.isBlank()) return "ok"
         Timber.i("tool.speakSentence: \"$clean\"")
         spokeThisTurn.set(true)
         lastSpoken = if (lastSpoken.isNullOrBlank()) clean else "$lastSpoken $clean"
         face.speak()
-        tts.enqueueSentence(clean)
+        tts.enqueueSentence(clean, onPlaybackStart)
         return "spoken"
+    }
+
+    /**
+     * Fix 5: a sentence's inline mood goes LIVE — called from the TTS playback
+     * clock at the exact moment that sentence's audio starts, so the face
+     * changes WITH the words (not seconds early at parse). No tool chrome
+     * (this is choreography, not a tool call); wink stays the brief overlay.
+     */
+    fun moodLive(expression: String) {
+        val why = "it fits what I'm saying right now"
+        if (expression.trim().lowercase() == "wink") { face.wink(why = why); return }
+        val e = parseExpression(expression) ?: return
+        face.setExpression(e, why = why, source = "llm")
     }
 
     /**
@@ -229,35 +243,39 @@ class DockTools(
         val why = reason.ifBlank {
             if (source == "llm") "it matched what I was saying" else "something set it without saying why"
         }
-        val e = when (expression.trim().lowercase()) {
+        if (expression.trim().lowercase() == "wink") {
+            // Wink is a brief gesture, not a sustained mood — fire the
+            // auto-restoring helper so the face returns to its prior
+            // expression after ~700ms. (The matching BODY gesture is the
+            // station's job now — it plays the faceGestures choreography.)
+            face.wink(why = why)
+            onToolCall(null)
+            return "ok"
+        }
+        val e = parseExpression(expression)
+        if (e == null) {
+            onToolCall(null)
+            return "unknown expression: $expression"
+        }
+        face.setExpression(e, why = why, source = source)
+        onToolCall(null)
+        return "ok"
+    }
+
+    private fun parseExpression(expression: String): FaceExpression? =
+        when (expression.trim().lowercase()) {
             "neutral" -> FaceExpression.Neutral
             "happy" -> FaceExpression.Happy
             "curious" -> FaceExpression.Curious
             "concerned" -> FaceExpression.Concerned
             "surprised" -> FaceExpression.Surprised
             "sleepy" -> FaceExpression.Sleepy
-            "wink" -> {
-                // Wink is a brief gesture, not a sustained mood — fire the
-                // auto-restoring helper so the face returns to its prior
-                // expression after ~700ms. (The matching BODY gesture is the
-                // station's job now — it plays the faceGestures choreography.)
-                face.wink(why = why)
-                onToolCall(null)
-                return "ok"
-            }
             "sad" -> FaceExpression.Sad
             "excited" -> FaceExpression.Excited
             "angry" -> FaceExpression.Angry
             "love" -> FaceExpression.Love
-            else -> {
-                onToolCall(null)
-                return "unknown expression: $expression"
-            }
+            else -> null
         }
-        face.setExpression(e, why = why, source = source)
-        onToolCall(null)
-        return "ok"
-    }
 
     /**
      * TEST HOOK — report what the face is ACTUALLY showing, right now.

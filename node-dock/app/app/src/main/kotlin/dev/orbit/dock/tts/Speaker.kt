@@ -9,6 +9,15 @@ interface Speaker {
     /** Queue a sentence to be spoken aloud. */
     fun enqueueSentence(text: String)
 
+    /**
+     * Queue a sentence with a hook that fires when ITS audio actually starts
+     * playing (Fix 5: a sentence's mood must land with its words, not at parse
+     * — audio lags the LLM stream by seconds). [DockTts] honours the playback
+     * clock, pause/resume shifts and stop; the default ignores the hook so
+     * fakes and simple speakers are unaffected.
+     */
+    fun enqueueSentence(text: String, onPlaybackStart: (() -> Unit)?) = enqueueSentence(text)
+
     /** Stop speaking immediately and drop anything queued. */
     fun stop()
 

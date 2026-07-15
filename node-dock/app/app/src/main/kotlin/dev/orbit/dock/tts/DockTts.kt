@@ -43,7 +43,7 @@ class DockTts(
     private val appCtx = context.applicationContext
 
     private val ready = AtomicBoolean(false)
-    private val pending = mutableListOf<String>()
+    private val pending = mutableListOf<Pair<String, (() -> Unit)?>>()
     // The active per-face voice. Buffered until the engine is ready, then
     // (re-)applied whenever the face changes. setPitch/setSpeechRate affect
     // SUBSEQUENTLY queued utterances, so a mid-stream face swap takes effect
@@ -75,6 +75,17 @@ class DockTts(
         @Volatile var future: java.util.concurrent.ScheduledFuture<*>?,
     )
     private val finishTimers = ConcurrentHashMap<String, FinishTimer>()
+    // Fix 5: per-utterance PLAYBACK-START hooks (a sentence's inline mood fires
+    // when its audio begins, not when the station parsed it). Same pause/resume
+    // discipline as the finish timers: held futures are cancelled and re-
+    // scheduled shifted by the held duration, so a mood can't land mid-pause.
+    private class StartTimer(
+        @Volatile var atMs: Long,
+        @Volatile var future: java.util.concurrent.ScheduledFuture<*>?,
+        val run: () -> Unit,
+    )
+    private val startTimers = ConcurrentHashMap<String, StartTimer>()
+    private val startHooks = ConcurrentHashMap<String, () -> Unit>()
     private val pauseLock = Any()
     @Volatile private var paused = false
     private var pausedAtMs = 0L
@@ -206,8 +217,13 @@ class DockTts(
     private fun finishUtterance(utteranceId: String?) {
         if (utteranceId != null) synchronized(activeUtterances) { activeUtterances.remove(utteranceId) }
         // An engine-side end (onStop/onError) may arrive while a playback finish
-        // timer is still pending — kill it so it can't re-run finish later.
-        if (utteranceId != null) finishTimers.remove(utteranceId)?.future?.cancel(false)
+        // timer is still pending — kill it so it can't re-run finish later. The
+        // start hook dies with it: a mood must not land for audio that never played.
+        if (utteranceId != null) {
+            finishTimers.remove(utteranceId)?.future?.cancel(false)
+            startTimers.remove(utteranceId)?.future?.cancel(false)
+            startHooks.remove(utteranceId)
+        }
         if (queueDrained() && gate.onQueueDrained()) {
             face.silence()
             speakingFell()
@@ -237,14 +253,16 @@ class DockTts(
         }
     }
 
-    override fun enqueueSentence(text: String) {
+    override fun enqueueSentence(text: String) = enqueueSentence(text, null)
+
+    override fun enqueueSentence(text: String, onPlaybackStart: (() -> Unit)?) {
         val trimmed = text.trim()
         if (trimmed.isEmpty()) return
         if (!ready.get()) {
-            synchronized(pending) { pending.add(trimmed) }
+            synchronized(pending) { pending.add(trimmed to onPlaybackStart) }
             return
         }
-        speakNow(trimmed)
+        speakNow(trimmed, onPlaybackStart)
     }
 
     override fun stop() {
@@ -259,6 +277,9 @@ class DockTts(
                 holdTimeout = null
                 finishTimers.values.forEach { it.future?.cancel(false) }
                 finishTimers.clear()
+                startTimers.values.forEach { it.future?.cancel(false) }
+                startTimers.clear()
+                startHooks.clear()
                 pausedFeeds.clear()
             }
             // A1: also drop any TTS PCM still queued in the WebRTC render loopback,
@@ -316,7 +337,7 @@ class DockTts(
 
     private fun flushPending() {
         synchronized(pending) {
-            for (chunk in pending) speakNow(chunk)
+            for ((chunk, hook) in pending) speakNow(chunk, hook)
             pending.clear()
         }
     }
@@ -328,9 +349,10 @@ class DockTts(
     // own voice. The speaking signal (face + the station gate) is driven by PLAYBACK
     // timing (PCM duration), NOT synthesis completion (synthesizeToFile's onDone
     // fires when the file is written, well before playback ends).
-    private fun speakNow(text: String) {
+    private fun speakNow(text: String, onPlaybackStart: (() -> Unit)? = null) {
         val id = UUID.randomUUID().toString()
         synchronized(activeUtterances) { activeUtterances.add(id) }
+        if (onPlaybackStart != null) startHooks[id] = onPlaybackStart
         val file = File(appCtx.cacheDir, "tts-$id.wav")
         synthFiles[id] = file
         val params = Bundle().apply {
@@ -369,7 +391,38 @@ class DockTts(
             playbackEndsAt = base + playMs
             base
         }
+        // Fix 5: this utterance's playback-start hook (its inline mood) fires
+        // when ITS audio reaches the speaker — the same clock the finish rides.
+        startHooks.remove(id)?.let { scheduleStart(id, startAt, it) }
         scheduleFinish(id, startAt + playMs + 150) // + small tail
+    }
+
+    /** Schedule an utterance's playback-start hook at the absolute [atMs],
+     *  tracked so a pause can cancel it and a resume can reschedule it shifted
+     *  (same discipline as the finish timers). */
+    private fun scheduleStart(id: String, atMs: Long, run: () -> Unit) {
+        synchronized(pauseLock) {
+            val timer = StartTimer(atMs, null, run)
+            startTimers[id] = timer
+            if (!paused) timer.future = scheduleStartRunnable(id, timer)
+        }
+    }
+
+    private fun scheduleStartRunnable(id: String, timer: StartTimer): java.util.concurrent.ScheduledFuture<*> {
+        val delay = (timer.atMs - System.currentTimeMillis()).coerceAtLeast(0)
+        return scheduler.schedule({
+            // Same race guard as the finish path: a pause landing while this
+            // task starts re-holds the hook (resume reschedules it) instead of
+            // firing a mood into a held reply.
+            synchronized(pauseLock) {
+                if (paused) {
+                    timer.future = null
+                    return@schedule
+                }
+                startTimers.remove(id)
+            }
+            runCatching(timer.run).onFailure { Timber.w(it, "playback-start hook failed") }
+        }, delay, java.util.concurrent.TimeUnit.MILLISECONDS)
     }
 
     /** Schedule [finishUtterance] at the absolute [endsAtMs], tracked so a
@@ -416,6 +469,7 @@ class DockTts(
             pausedAtMs = System.currentTimeMillis()
             WebRtcAudio.pauseTtsRender()
             for (t in finishTimers.values) { t.future?.cancel(false); t.future = null }
+            for (t in startTimers.values) { t.future?.cancel(false); t.future = null }
             holdTimeout = scheduler.schedule({
                 Timber.w("TTS hold exceeded ${HOLD_MAX_MS}ms with no release — auto-resuming")
                 resume()
@@ -439,6 +493,10 @@ class DockTts(
             for ((id, t) in finishTimers) {
                 t.endsAtMs += shift
                 t.future = scheduleFinishRunnable(id, t.endsAtMs)
+            }
+            for ((id, t) in startTimers) {
+                t.atMs += shift
+                t.future = scheduleStartRunnable(id, t)
             }
             WebRtcAudio.resumeTtsRender()
             deferred = pausedFeeds.toList()

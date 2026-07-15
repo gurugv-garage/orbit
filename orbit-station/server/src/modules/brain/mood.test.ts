@@ -1,10 +1,13 @@
 /**
- * Inline mood tag (WI-3, busy-queue-black-hole.md Addendum 3) — a leading
- * [face:NAME] in the reply text sets the face with no extra LLM step. Under
- * test: the tag is stripped from speech (even split across stream deltas),
- * fires exactly one set_face RPC, unknown names strip-but-ignore, non-mood
- * brackets pass through, and the brainInlineMood=false kill-switch disables
- * the filter entirely.
+ * Inline mood tag (WI-3 → Fix 5) — a leading [face:NAME] on a sentence is that
+ * sentence's mood, extracted at #speak and shipped ON the sentence's speak
+ * frame (the phone applies it when the utterance starts playing — parse-time
+ * firing wore a 95s story's last face from its first word). Under test: the
+ * tag is stripped from speech (even split across stream deltas), the mood
+ * rides the right sentence's frame, a tag-only reply fires set_face
+ * station-side (nothing to synchronize with), unknown names strip-but-ignore,
+ * non-mood brackets pass through, and the brainInlineMood=false kill-switch
+ * disables extraction entirely.
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -83,40 +86,48 @@ function makeSession(scripts: Script[], config: Record<string, unknown> = {}) {
 
 const spoken = (frames: BusMessage[]) =>
   frames.filter((f) => f.kind === 'speak').map((f) => (f.payload as { text: string }).text);
+/** [text, mood] per speak frame — the Fix 5 contract: the mood rides the frame. */
+const spokenWithMood = (frames: BusMessage[]) =>
+  frames.filter((f) => f.kind === 'speak')
+    .map((f) => f.payload as { text: string; mood?: string })
+    .map((p) => [p.text, p.mood] as const);
 const faceCalls = (frames: BusMessage[]) =>
   frames.filter((f) => f.kind === 'tool-call'
     && (f.payload as { name?: string }).name === 'set_face')
     .map((f) => (f.payload as { args: { expression: string } }).args.expression);
 
-test('leading [face:NAME] is stripped from speech and fires one set_face RPC', async () => {
+test('leading [face:NAME] is stripped from speech and rides the first sentence\'s frame', async () => {
   const { session, frames } = makeSession([streams('[face:happy] Four! Easy one. ')]);
   await session.handleTurnRequest({ turnId: 't1', trigger: { kind: 'user', text: 'two plus two?' } });
-  assert.deepEqual(spoken(frames), ['Four!', 'Easy one.']);
-  assert.deepEqual(faceCalls(frames), ['happy']);
+  assert.deepEqual(spokenWithMood(frames), [['Four!', 'happy'], ['Easy one.', undefined]]);
+  assert.deepEqual(faceCalls(frames), [], 'no station-side fire: the phone applies at playback');
 });
 
 // turn-75cb44ad: asked to count 1..25 with a remark each, Gemini read "start EVERY
 // reply with a mood tag" as PER LINE and emitted one per sentence. Only the leading
 // tag was stripped — the dock SPOKE "face neutral" 24 times across a 95s reply.
-// Strip is global; the face still applies once (first tag wins).
-test('mid-reply tags (one per line) are never spoken; face still set once', async () => {
+// Strip is global; each tag now rides the sentence it leads (that per-line habit
+// is exactly the storytelling choreography Fix 5 wants).
+test('mid-reply tags (one per line) are never spoken; each rides its sentence', async () => {
   const { session, frames } = makeSession([
-    streams('[face:neutral] One! Starting. [face:neutral] Two! A friend. [face:neutral] Three! Magic. '),
+    streams('[face:neutral] One! Starting. [face:happy] Two! A friend. [face:concerned] Three! Magic. '),
   ]);
   await session.handleTurnRequest({ turnId: 't1', trigger: { kind: 'user', text: 'count to three' } });
-  assert.deepEqual(spoken(frames), ['One!', 'Starting.', 'Two!', 'A friend.', 'Three!', 'Magic.']);
-  assert.deepEqual(faceCalls(frames), ['neutral']);
+  assert.deepEqual(spokenWithMood(frames), [
+    ['One!', 'neutral'], ['Starting.', undefined],
+    ['Two!', 'happy'], ['A friend.', undefined],
+    ['Three!', 'concerned'], ['Magic.', undefined],
+  ]);
+  assert.deepEqual(faceCalls(frames), []);
 });
 
 // The same reply arriving DELTA BY DELTA, which is how the wire actually behaves —
 // the test above streams it as one atomic snapshot and so can't see the ordering
-// risk. #filterMood now removes a variable number of chars MID-string as the text
-// grows, while SentenceStreamer tracks #emittedChars as an offset into that same
-// text. A tag appearing AFTER an already-emitted sentence boundary is the exact
-// shape that could double-emit or drop a sentence if the two ever disagreed.
-// (They can't: a tag contains no terminal punctuation, so no boundary can fall
-// inside one, and #emittedChars can never advance past a tag. Pin it anyway.)
-test('per-line tags arriving delta-by-delta: correct sentences, no dupes, one face', async () => {
+// risk. Tags now ride RAW through the streamer, so the safety story is simpler:
+// a tag contains no terminal punctuation, so no sentence boundary can fall inside
+// one — a partial tag stays buffered and every complete tag lands leading the
+// sentence it belongs to. Pin it anyway.
+test('per-line tags arriving delta-by-delta: correct sentences, no dupes, right moods', async () => {
   const { session, frames } = makeSession([
     streams(
       '[face:neutral] One!',
@@ -128,28 +139,45 @@ test('per-line tags arriving delta-by-delta: correct sentences, no dupes, one fa
     ),
   ]);
   await session.handleTurnRequest({ turnId: 't1', trigger: { kind: 'user', text: 'count to three' } });
-  assert.deepEqual(spoken(frames), ['One!', 'Starting.', 'Two!', 'A friend.', 'Three!', 'Magic.']);
-  assert.deepEqual(faceCalls(frames), ['neutral']);
+  assert.deepEqual(spokenWithMood(frames), [
+    ['One!', 'neutral'], ['Starting.', undefined],
+    ['Two!', 'neutral'], ['A friend.', undefined],
+    ['Three!', 'neutral'], ['Magic.', undefined],
+  ]);
+  assert.deepEqual(faceCalls(frames), []);
 });
 
-// The same, without a LEADING tag: the model starts with prose and only tags later
-// lines. Nothing sets the face (leading-only), but nothing leaks to TTS either.
-test('mid-reply tags with no leading tag: stripped from speech, no face set', async () => {
+// Without a LEADING tag: the model starts with prose and only tags later lines.
+// The later tag rides the sentence it leads; nothing leaks to TTS.
+test('mid-reply tag with no leading tag: stripped from speech, rides its own sentence', async () => {
   const { session, frames } = makeSession([
     streams('One! Starting. [face:happy] Two! A friend. '),
   ]);
   await session.handleTurnRequest({ turnId: 't1', trigger: { kind: 'user', text: 'count to two' } });
-  assert.deepEqual(spoken(frames), ['One!', 'Starting.', 'Two!', 'A friend.']);
+  assert.deepEqual(spokenWithMood(frames), [
+    ['One!', undefined], ['Starting.', undefined],
+    ['Two!', 'happy'], ['A friend.', undefined],
+  ]);
   assert.deepEqual(faceCalls(frames), []);
 });
 
-test('tag split across stream deltas: held (never spoken), then applied', async () => {
+test('tag split across stream deltas: never spoken, rides the finished sentence', async () => {
   const { session, frames } = makeSession([
     streams('[fa', '[face:exc', '[face:excited] Hi', '[face:excited] Hi there. '),
   ]);
   await session.handleTurnRequest({ turnId: 't1', trigger: { kind: 'user', text: 'hey' } });
-  assert.deepEqual(spoken(frames), ['Hi there.']);
-  assert.deepEqual(faceCalls(frames), ['excited']);
+  assert.deepEqual(spokenWithMood(frames), [['Hi there.', 'excited']]);
+  assert.deepEqual(faceCalls(frames), []);
+});
+
+// The stay-silent convention (prompt: "reply with only your mood tag and no
+// words") — there is no utterance to synchronize with, so the station applies
+// it immediately, and no empty speak frame ships.
+test('a tag-only reply fires set_face station-side and speaks nothing', async () => {
+  const { session, frames } = makeSession([streams('[face:curious] ')]);
+  await session.handleTurnRequest({ turnId: 't1', trigger: { kind: 'user', text: 'psst' } });
+  assert.deepEqual(spoken(frames), []);
+  assert.deepEqual(faceCalls(frames), ['curious']);
 });
 
 test('unknown face name: tag stripped (never spoken) but no RPC fired', async () => {
@@ -200,10 +228,9 @@ test('followup-window turns get the overheard framing; tapped turns do not', asy
 });
 
 // A mid-reply tag streams through partial states ("One! [fa") that the global
-// strip regex can't match, and #moodHeldRaw only guards a LEADING bracket. The
-// SentenceStreamer emits at sentence boundaries, so a partial tag mid-sentence
-// is buffered until complete — but that's an invariant worth pinning, not
-// assuming: if it broke, the dock would speak "[face:hap" out loud.
+// strip regex can't match. The SentenceStreamer emits at sentence boundaries,
+// so a partial tag mid-sentence is buffered until complete — an invariant worth
+// pinning, not assuming: if it broke, the dock would speak "[face:hap" out loud.
 test('a mid-reply tag arriving across deltas never leaks a partial to speech', async () => {
   const { session, frames } = makeSession([
     streams('One! ', 'One! [fa', 'One! [face:hap', 'One! [face:happy] Two! ', 'One! [face:happy] Two! Three! '),

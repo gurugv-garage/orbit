@@ -1000,6 +1000,11 @@ export function brainModule(w: BrainWiring): StationModule {
           case 'turn-cancel':
             session(dock).cancel(typeof p?.turnId === 'string' ? p.turnId : undefined);
             break;
+          case 'mood-active':
+            // Fix 5: the phone applied a sentence's mood at playback start —
+            // play the paired body gesture + trace it into the turn.
+            session(dock).moodActive((p ?? {}) as { turnId?: unknown; seq?: unknown; expression?: unknown });
+            break;
           case 'speech-status':
             session(dock).noteSpeech(p?.speaking === true, p?.keepalive === true);
             // A1.2 echo-gate: tell the STT processor to drop audio while our TTS

@@ -568,7 +568,25 @@ class RemoteBrain(
         trace("+${System.currentTimeMillis() - turnStartMs}ms SPEAK \"$text\"")
         replyAcc = if (replyAcc.isEmpty()) text else "$replyAcc $text"
         tools.onLiveText(replyAcc)
-        tools.speakSentence(text)
+        // Fix 5: the sentence's inline mood rides its speak frame; it goes LIVE
+        // when THIS utterance's audio starts (DockTts playback clock), and the
+        // station is told so it can play the paired gesture + trace it.
+        val mood = p.str("mood")
+        if (mood.isEmpty()) {
+            tools.speakSentence(text)
+        } else {
+            val turnId = p.str("turnId")
+            val seq = (p["seq"] as? JsonPrimitive)?.content?.toIntOrNull()
+            tools.speakSentence(text) {
+                tools.moodLive(mood)
+                link.publish("agent", "mood-active", buildJsonObject {
+                    put("turnId", turnId)
+                    if (seq != null) put("seq", seq)
+                    put("expression", mood)
+                })
+                trace("MOOD live: $mood (seq ${seq ?: "?"})")
+            }
+        }
     }
 
     /** Station's running-tasks digest → the debug surface (left side) + an event
