@@ -221,6 +221,23 @@ export function Observability() {
     return m;
   }, [feedback]);
 
+  // LIVE brain lanes — which session each dock has OPEN right now, so the trace
+  // can badge the live session and offer the end-session control in place.
+  interface BrainLane { dock: string; sessionId: string; turnActive?: boolean; state?: string }
+  const [lanes, setLanes] = useState<BrainLane[]>([]);
+  const refreshLanes = useCallback(() => {
+    api.get<BrainLane[]>('/brain/docks').then((l) => setLanes(Array.isArray(l) ? l : [])).catch(() => {});
+  }, []);
+  useEffect(() => {
+    refreshLanes();
+    const iv = setInterval(refreshLanes, 10_000); // keep the badge honest (idle closes are lazy)
+    return () => clearInterval(iv);
+  }, [refreshLanes]);
+  const endSession = async (dock: string) => {
+    await fetch(`/api/brain/${encodeURIComponent(dock)}/session/end`, { method: 'POST' }).catch(() => {});
+    refreshLanes();
+  };
+
   // LIVE perception models — what the dock is actually perceiving with right now
   // (the two MLX sidecars + their up/down state). Shown atop the perception lane.
   const [percModels, setPercModels] = useState<Array<{ name: string; kind: string; up: boolean }>>([]);
@@ -343,12 +360,30 @@ export function Observability() {
         <div className="obs-sessions">
           {groups.map((g) => {
             const collapsed = collapsedSessions.has(g.sid);
+            const live = lanes.find((l) => l.dock === g.source && l.sessionId === g.sid);
             return (
               <div key={g.sid} className="obs-session">
                 <button className="obs-session-head" onClick={() => toggleSession(g.sid)}>
                   <span className="obs-caret">{collapsed ? '▸' : '▾'}</span>
                   <CopyChip value={g.sid} className="mono obs-session-id" label={g.sid} />
                   <span className="pill acc sm">{g.source ?? '—'}</span>
+                  {live && (
+                    <>
+                      <span className="pill good sm" title={`the dock's OPEN brain session — state: ${live.state ?? 'idle'}`}>
+                        ● open{live.turnActive ? ' · turn running' : ''}
+                      </span>
+                      <span
+                        role="button"
+                        tabIndex={0}
+                        className="pill bad sm obs-endsess"
+                        title="end this session now — it compacts to a memory note and the next turn opens fresh"
+                        onClick={(e) => { e.stopPropagation(); void endSession(live.dock); }}
+                        onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.stopPropagation(); void endSession(live.dock); } }}
+                      >
+                        ✖ end session
+                      </span>
+                    </>
+                  )}
                   <span className="muted sm">{g.turns.length} turns</span>
                   <UsageChip u={sumUsage(g.turns)} title="session total" />
                   {(fbBySession.get(g.sid)?.length ?? 0) > 0 && (
