@@ -58,7 +58,7 @@ import { SentenceStreamer } from './sentence.js';
 import { SessionStore, type SessionMeta } from './store.js';
 import { loadDockSkills, type DockSkills } from './skills.js';
 import { buildFileTools, FILE_TOOLS_PROMPT } from './filetools.js';
-import { buildDockTools, buildGrantTools, buildSlackTools, buildWhatsAppTools, buildResearchTools, buildMemoryTools, buildFeedbackTools, buildObsTools, fireFace, type ToolTurnContext } from './tools.js';
+import { buildDockTools, buildGrantTools, buildSlackTools, buildWhatsAppTools, buildResearchTools, buildMemoryTools, buildFeedbackTools, buildObsTools, buildSessionTools, fireFace, type ToolTurnContext } from './tools.js';
 import { FACES, type MoveStep } from './schemas.js';
 import type { VideoRecorderApi } from '../perception/record/recorder.js';
 import * as slack from '../../integrations/slack.js';
@@ -246,6 +246,9 @@ export class DockBrainSession {
   #shippedStreamStart = false;
   #turnCtx: ToolTurnContext = { turnId: '' };
   #turnActive = false;
+  /** set by the end_session tool: close the session at the NEXT settle (an
+   *  in-turn close would cancel the turn that asked for it — see buildSessionTools). */
+  #endRequested = false;
   // debug-stream timing (the console's turn inspector — kind 'brain-debug' on obs)
   #turnStartedAt = 0;
   #stepIndex = -1;
@@ -740,6 +743,10 @@ export class DockBrainSession {
    *  in-flight turn (a drained turn would supersede it). */
   #maybeSettle(): void {
     if (this.#turnActive || this.#running) return;
+    // deferred self-close (end_session tool): the sign-off has drained — close
+    // BEFORE the drain so a queued utterance opens the fresh session instead
+    // of landing in the dying one.
+    if (this.#endRequested) this.endSession('requested');
     this.#d.onSettled?.(this.dock);
   }
 
@@ -791,6 +798,7 @@ export class DockBrainSession {
   /** Close the open session (idle / console / reset): summary persisted, the
    *  next turn opens fresh. */
   endSession(reason: string): void {
+    this.#endRequested = false; // any close path satisfies/voids a pending self-close
     if (!this.#meta) return;
     if (this.#turnActive) this.cancel();
     // session boundary → conversation back to idle (clears windows + the tick).
@@ -1041,6 +1049,12 @@ export class DockBrainSession {
       // the same traces the console shows). Both built only when wired.
       ...buildFeedbackTools(this.dock, () => this.#meta?.sessionId, this.#d.feedbackCapture, () => this.#obsTurnId || undefined),
       ...buildObsTools(this.dock, () => this.#meta?.sessionId, this.#d.obs),
+      // end_session — "start a new session" / "kill this session", spoken.
+      // Deferred to settle so the sign-off gets said (see buildSessionTools).
+      ...buildSessionTools(
+        () => { this.#endRequested = true; },
+        () => (this.#meta ? this.#d.hasRunningTasks?.(this.dock, this.#meta.sessionId) === true : false),
+      ),
     ];
     this.#debug('turn-start', {
       text: req.trigger.text,

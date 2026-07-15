@@ -266,6 +266,26 @@ export function buildFeedbackTools(dock: string, sessionId: () => string | undef
   ];
 }
 
+/** end_session — the spoken "start over" / "kill this session". The tool only
+ *  MARKS the end (requestEnd): an immediate close would cancel the very turn
+ *  it's running in and eat the model's sign-off. The lane closes the session
+ *  at turn-settle (the same chokepoint the busy-queue drain uses), so the
+ *  goodbye drains first; transitions may look quirky but always recover. */
+export function buildSessionTools(requestEnd: () => void, hasTasks: () => boolean): AgentTool<any>[] {
+  return [
+    tool('end_session', S.END_SESSION_DESC, S.endSessionSchema, async () => {
+      const tasks = hasTasks();
+      requestEnd();
+      return textResult(
+        'Session end is scheduled: it closes as soon as you finish speaking this turn. '
+        + 'Say a brief sign-off; the next thing anyone says opens a fresh session '
+        + '(a short memory note of this conversation carries over).'
+        + (tasks ? ' HEADS UP: background tasks running under this session will be STOPPED by the close — mention that.' : ''),
+      );
+    }),
+  ];
+}
+
 /** Read-only observability access for the inspect tool. */
 export interface ObsToolApi {
   /** the enriched session record (turns + enrichment) for a session id. */

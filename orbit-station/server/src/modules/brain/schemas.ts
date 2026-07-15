@@ -291,6 +291,19 @@ export const recordFeedbackSchema = {
   required: ['reason'],
 } as const;
 
+export const END_SESSION_DESC =
+  'End the current conversation session and start fresh. Use ONLY when the person '
+  + 'explicitly asks — "start a new session", "kill this session", "start over", '
+  + '"reset" / "forget this conversation". The close is DEFERRED: it happens right '
+  + 'after you finish speaking this turn, so say a brief sign-off (e.g. "okay, fresh '
+  + 'start!"). A short memory note of this conversation carries into the next '
+  + 'session automatically.';
+
+export const endSessionSchema = {
+  type: 'object',
+  properties: {},
+} as const;
+
 export const inspectObservabilitySchema = {
   type: 'object',
   properties: {
