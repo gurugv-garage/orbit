@@ -9,13 +9,13 @@ interface FeedbackMeta { id: string; sessionId?: string; turnId?: string; source
 
 // ── view models (mirror the server store) ────────────────────────────────────
 interface ToolVM { id: string; name: string; args?: unknown; result?: string; isError?: boolean; startedAt?: number; endedAt?: number }
-interface StepVM { idx: number; model?: string; stopReason?: string; text?: string; tools: ToolVM[]; inTok?: number; outTok?: number; startedAt?: number; streamStartedAt?: number; endedAt?: number }
+interface StepVM { idx: number; model?: string; stopReason?: string; text?: string; tools: ToolVM[]; inTok?: number; outTok?: number; cacheRead?: number; cost?: number; thinkTok?: number; thinkingMs?: number; startedAt?: number; streamStartedAt?: number; endedAt?: number }
 interface SpeechVM { startedAt: number; endedAt?: number }
 interface TriggerVM { kind: string; text?: string; via?: string }
 interface TurnVM { id: string; sessionId: string; source?: string; trigger?: TriggerVM; startedAt: number; endedAt?: number; ended: boolean; steps: StepVM[]; speech: SpeechVM[] }
 
 interface StoredTool { toolCallId: string; toolName: string; args?: unknown; result?: string; isError?: boolean; startedAt?: number; endedAt?: number }
-interface StoredStep { index: number; model?: string; stopReason?: string; text?: string; tools: StoredTool[]; usage?: { inputTokens?: number; outputTokens?: number }; startedAt?: number; streamStartedAt?: number; endedAt?: number }
+interface StoredStep { index: number; model?: string; stopReason?: string; text?: string; tools: StoredTool[]; usage?: { inputTokens?: number; outputTokens?: number; totalTokens?: number; cost?: number; cacheRead?: number; thinkingTokens?: number }; thinkingMs?: number; startedAt?: number; streamStartedAt?: number; endedAt?: number }
 interface StoredTurn { turnId: string; sessionId: string; trigger?: { kind: string; text?: string }; speech?: { startedAt: number; endedAt?: number }[]; startedAt: number; endedAt?: number; steps: StoredStep[] }
 interface StoredSession { sessionId: string; source?: string; turns: StoredTurn[] }
 interface SessionSummary { sessionId: string; source?: string }
@@ -77,6 +77,72 @@ function CopyIco({ value }: { value: string }) {
     >
       {copied ? ' ✓' : ' ⧉'}
     </span>
+  );
+}
+
+// ── exact-request viewer ─────────────────────────────────────────────────────
+// What one LLM step ACTUALLY sent (systemPrompt + message window + tool names),
+// recorded at the brain's streamFn seam into a bounded ring — fetched lazily on
+// first expand (the blobs are ~50 KB and must not ride the live obs stream).
+interface RecordedRequest { systemPrompt?: string; tools?: string[]; messages?: Array<{ role?: string; content?: unknown }> }
+
+function msgPreview(content: unknown): string {
+  if (typeof content === 'string') return content;
+  if (Array.isArray(content)) {
+    return content.map((p) => {
+      const item = p as { type?: string; text?: string; toolName?: string; omitted?: string };
+      if (item.type === 'text') return item.text ?? '';
+      if (item.type === 'toolCall') return `⚙ ${item.toolName ?? 'tool'}`;
+      if (item.type === 'image') return item.omitted ?? '[image]';
+      return `[${item.type ?? '?'}]`;
+    }).join(' ');
+  }
+  return '';
+}
+
+function RequestPeek({ sessionId, turnId, stepIdx }: { sessionId: string; turnId: string; stepIdx: number }) {
+  const [state, setState] = useState<'idle' | 'loading' | 'ok' | 'missing'>('idle');
+  const [reqData, setReqData] = useState<RecordedRequest | null>(null);
+  const load = () => {
+    if (state !== 'idle') return;
+    setState('loading');
+    fetch(`/api/observability/requests/${encodeURIComponent(sessionId)}/${encodeURIComponent(turnId)}/${stepIdx}`)
+      .then(async (r) => {
+        if (!r.ok) { setState('missing'); return; }
+        setReqData(await r.json() as RecordedRequest);
+        setState('ok');
+      })
+      .catch(() => setState('missing'));
+  };
+  return (
+    <details className="obs-ev-tool obs-req" onToggle={(e) => { if ((e.target as HTMLDetailsElement).open) load(); }}>
+      <summary className="muted sm">📨 request</summary>
+      {state === 'loading' && <div className="muted sm">loading…</div>}
+      {state === 'missing' && <div className="muted sm">not recorded (pre-dates capture, or evicted from the ring)</div>}
+      {state === 'ok' && reqData && (
+        <div className="obs-req-body">
+          {reqData.tools && reqData.tools.length > 0 && (
+            <div className="obs-kv"><span>tools ({reqData.tools.length})</span><pre>{reqData.tools.join(', ')}</pre></div>
+          )}
+          {reqData.systemPrompt != null && (
+            <details className="obs-req-msg">
+              <summary className="muted sm">system prompt · {fmtTok(Math.round(reqData.systemPrompt.length / 4))} tok est · {reqData.systemPrompt.length.toLocaleString()} chars</summary>
+              <pre className="obs-req-pre">{reqData.systemPrompt}</pre>
+            </details>
+          )}
+          <div className="muted sm" style={{ margin: '4px 0 2px' }}>{reqData.messages?.length ?? 0} messages in window</div>
+          {reqData.messages?.map((m, i) => (
+            <details key={i} className="obs-req-msg">
+              <summary className="muted sm">
+                <span className="mono">{i}</span> · <strong>{m.role ?? '?'}</strong>
+                <span className="obs-ev-peek mono"> {msgPreview(m.content).slice(0, 140)}</span>
+              </summary>
+              <pre className="obs-req-pre">{pretty(m)}</pre>
+            </details>
+          ))}
+        </div>
+      )}
+    </details>
   );
 }
 
@@ -284,6 +350,7 @@ export function Observability() {
                   <CopyChip value={g.sid} className="mono obs-session-id" label={g.sid} />
                   <span className="pill acc sm">{g.source ?? '—'}</span>
                   <span className="muted sm">{g.turns.length} turns</span>
+                  <UsageChip u={sumUsage(g.turns)} title="session total" />
                   {(fbBySession.get(g.sid)?.length ?? 0) > 0 && (
                     <span className="pill acc sm" title="feedback recorded on this session">💬 {fbBySession.get(g.sid)!.length}</span>
                   )}
@@ -334,6 +401,7 @@ export function Observability() {
                     <CopyChip value={g.sid} className="mono obs-session-id" label={g.sid} />
                     <span className="pill sm">{g.source ?? '—'}</span>
                     <span className="muted sm">{g.turns.length} calls</span>
+                    <UsageChip u={sumUsage(g.turns)} title="session total" />
                     <span className="muted sm">· {clock(g.started)}–{clock(g.last)}</span>
                   </button>
                   {!collapsed && g.turns.map((t) => (
@@ -369,6 +437,7 @@ function TurnRow({ turn, open, onToggle, feedback }: { turn: TurnVM; open: boole
         {turn.trigger?.text && <span className="obs-turn-prompt" title={turn.trigger.text}>“{turn.trigger.text}”</span>}
         <span className={`obs-turn-dur${dur(turn) > 4000 ? ' slow' : ''}`}>{fmtMs(dur(turn))}</span>
         <span className="muted sm">{turn.steps.length} step{turn.steps.length !== 1 ? 's' : ''}</span>
+        <UsageChip u={turnUsage(turn)} title="turn total" />
         {turn.steps.flatMap((s) => s.tools).map((tc) => (
           <span key={tc.id} className={`pill sm ${tc.isError ? 'bad' : 'acc'}`}>{tc.name}</span>
         ))}
@@ -402,7 +471,7 @@ function TurnTimeline({ turn }: { turn: TurnVM }) {
     const stream = s.streamStartedAt != null ? s.streamStartedAt - t0 : e; // wait→stream boundary
     evs.push({
       lane: 'llm', cls: 'gen', label: `step ${s.idx} · WaitForToken`, start: a, end: stream,
-      detail: <>{s.model && <span className="pill acc sm">{s.model.split('/').pop()}</span>}{s.stopReason && <span className="muted sm mono">{s.stopReason}</span>}<span className="muted sm">tok {tok(s.inTok)}→{tok(s.outTok)}</span></>,
+      detail: <>{s.model && <span className="pill acc sm">{s.model.split('/').pop()}</span>}{s.stopReason && <span className="muted sm mono">{s.stopReason}</span>}<span className="muted sm">tok {tok(s.inTok)}→{tok(s.outTok)}</span>{s.cacheRead != null && s.cacheRead > 0 && <span className="muted sm" title="input tokens served from prompt cache">⚡ {fmtTok(s.cacheRead)} cached</span>}{(s.thinkTok ?? 0) > 0 && <span className="muted sm" title="thinking tokens (estimated from streamed thoughts; billed inside output)">🧠 ~{fmtTok(s.thinkTok!)}{s.thinkingMs != null ? ` · ${fmtMs(s.thinkingMs)}` : ''}</span>}{s.cost != null && s.cost > 0 && <span className="muted sm mono">{fmtCost(s.cost)}</span>}<RequestPeek sessionId={turn.sessionId} turnId={turn.id} stepIdx={s.idx} /></>,
     });
     if (stream < e) {
       evs.push({
@@ -481,6 +550,42 @@ function turnSpan(t: TurnVM): number {
 }
 function fmtMs(ms: number): string { return ms >= 1000 ? `${(ms / 1000).toFixed(2)}s` : `${Math.round(ms)}ms`; }
 function tok(n?: number): string { return n != null && n > 0 ? String(n) : 'n/a'; }
+function fmtTok(n: number): string { return n >= 10_000 ? `${Math.round(n / 1000)}k` : n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n); }
+function fmtCost(c: number): string { return c >= 0.1 ? `$${c.toFixed(2)}` : c >= 0.001 ? `$${c.toFixed(3)}` : c > 0 ? `$${c.toFixed(4)}` : '$0'; }
+
+/** Sum usage across a turn's steps (steps without usage = no LLM call → skipped). */
+interface UsageAgg { inTok: number; outTok: number; cacheRead: number; cost: number; thinkTok: number; calls: number }
+function turnUsage(t: TurnVM): UsageAgg {
+  const u: UsageAgg = { inTok: 0, outTok: 0, cacheRead: 0, cost: 0, thinkTok: 0, calls: 0 };
+  for (const s of t.steps) {
+    if (s.inTok == null && s.outTok == null && s.cost == null) continue;
+    u.inTok += s.inTok ?? 0; u.outTok += s.outTok ?? 0;
+    u.cacheRead += s.cacheRead ?? 0; u.cost += s.cost ?? 0;
+    u.thinkTok += s.thinkTok ?? 0; u.calls += 1;
+  }
+  return u;
+}
+function sumUsage(turns: TurnVM[]): UsageAgg {
+  return turns.map(turnUsage).reduce((a, b) => ({
+    inTok: a.inTok + b.inTok, outTok: a.outTok + b.outTok,
+    cacheRead: a.cacheRead + b.cacheRead, cost: a.cost + b.cost,
+    thinkTok: a.thinkTok + b.thinkTok, calls: a.calls + b.calls,
+  }), { inTok: 0, outTok: 0, cacheRead: 0, cost: 0, thinkTok: 0, calls: 0 });
+}
+
+/** Compact `tokens · cache% · cost` chip used on turn + session headers. */
+function UsageChip({ u, title }: { u: UsageAgg; title: string }) {
+  if (u.calls === 0) return null;
+  const cachePct = u.inTok > 0 && u.cacheRead > 0 ? Math.round((u.cacheRead / u.inTok) * 100) : 0;
+  return (
+    <span className="muted sm mono" title={`${title}: ${u.inTok.toLocaleString()} in → ${u.outTok.toLocaleString()} out · ${u.cacheRead.toLocaleString()} cached · ~${u.thinkTok.toLocaleString()} thinking (est, billed inside out) · ${u.calls} LLM call${u.calls !== 1 ? 's' : ''}`}>
+      {fmtTok(u.inTok)}→{fmtTok(u.outTok)}
+      {cachePct > 0 && <span title={`${u.cacheRead.toLocaleString()} input tokens served from prompt cache`}> ⚡{cachePct}%</span>}
+      {u.thinkTok > 0 && <span title={`~${u.thinkTok.toLocaleString()} thinking tokens (estimated from streamed thoughts; billed inside output)`}> 🧠~{fmtTok(u.thinkTok)}</span>}
+      {u.cost > 0 && <> · {fmtCost(u.cost)}</>}
+    </span>
+  );
+}
 function clock(ts: number): string { return new Date(ts).toLocaleTimeString('en-GB', { timeZone: IST, hour: '2-digit', minute: '2-digit', second: '2-digit' }); }
 function clockMs(ts: number): string { return `${clock(ts)}.${String(ts % 1000).padStart(3, '0')}`; }
 function fullTime(ts: number): string { return new Date(ts).toLocaleString('en-GB', { timeZone: IST, hour12: false }) + ' IST'; }
@@ -505,7 +610,7 @@ function storedToVM(t: StoredTurn, source?: string): TurnVM {
     speech: t.speech ?? [],
     steps: t.steps.map((s) => ({
       idx: s.index, model: s.model, stopReason: s.stopReason, text: s.text,
-      inTok: s.usage?.inputTokens, outTok: s.usage?.outputTokens, startedAt: s.startedAt, streamStartedAt: s.streamStartedAt, endedAt: s.endedAt,
+      inTok: s.usage?.inputTokens, outTok: s.usage?.outputTokens, cacheRead: s.usage?.cacheRead, cost: s.usage?.cost, thinkTok: s.usage?.thinkingTokens, thinkingMs: s.thinkingMs, startedAt: s.startedAt, streamStartedAt: s.streamStartedAt, endedAt: s.endedAt,
       tools: s.tools.map((tc) => ({ id: tc.toolCallId, name: tc.toolName, args: tc.args, result: tc.result, isError: tc.isError, startedAt: tc.startedAt, endedAt: tc.endedAt })),
     })),
   };
@@ -521,6 +626,8 @@ function applyEvent(turn: TurnVM, ev: AgentEventDto): void {
       if (last) {
         last.endedAt = ev.ts; last.model = ev.data?.model; last.stopReason = ev.data?.stopReason;
         last.inTok = ev.data?.usage?.inputTokens; last.outTok = ev.data?.usage?.outputTokens;
+        last.cacheRead = ev.data?.usage?.cacheRead; last.cost = ev.data?.usage?.cost;
+        last.thinkTok = ev.data?.usage?.thinkingTokens; last.thinkingMs = ev.data?.thinkingMs;
       }
       break;
     case 'MessageUpdate': if (last && last.streamStartedAt == null) last.streamStartedAt = ev.ts; break;

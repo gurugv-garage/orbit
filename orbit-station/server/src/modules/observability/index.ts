@@ -10,6 +10,8 @@
  *   - GET /api/observability/sessions/:id        full Session/Turn/Step tree
  *   - GET /api/observability/cost/summary        LLM spend totals + breakdown
  *   - GET /api/observability/cost/series         per-day spend (stacked chart)
+ *   - GET /api/observability/requests/:sessionId/:turnId/:stepIndex
+ *         the exact request that LLM step sent (systemPrompt+messages+tools)
  *
  * Live: every ingested event is re-published on the bus (topic 'obs', kind
  * 'event') so the browser UI's WS subscription streams it in real time, and so
@@ -35,6 +37,10 @@ export interface ObsAccess {
    *  non-brain LLM callers (e.g. perception's Gemini calls) to record their
    *  spend as a Turn so it rolls up in the Cost tab. `source` is the owning dock. */
   ingest(ev: AgentEventDto, source: string): void;
+  /** Record the exact request one LLM step sent (JSON: systemPrompt + messages
+   *  + tool names). Stored gzipped in a byte-budget ring, read back via
+   *  GET /api/observability/requests/:sessionId/:turnId/:stepIndex. */
+  recordRequest(sessionId: string, turnId: string, stepIndex: number, json: string): void;
 }
 const obsRef: { current?: ObsAccess } = {};
 /** The live obs store reader/writer (set when the observability module inits). */
@@ -68,6 +74,7 @@ export function observabilityModule(): StationModule {
         get: (id) => store.get(id),
         enrich: (id, source, patch) => { store.enrich(id, source, patch); },
         ingest: (ev, source) => { ingest(ev, source); },
+        recordRequest: (id, turnId, stepIndex, json) => { store.putRequest(id, turnId, stepIndex, json); },
       };
       // WS ingest: peers publishing obs events feed the store too.
       bus.on('obs', (msg) => {
@@ -128,6 +135,19 @@ export function observabilityModule(): StationModule {
         // summary endpoint carries `currency`, and the numbers are USD per the
         // CostSeriesPoint doc. Don't reshape without updating web/Cost.tsx.)
         json(res, 200, store.costSeries(from, to, groupBy));
+        return true;
+      }
+
+      // the exact request an LLM step sent (recorded at the streamFn seam).
+      const rq = subPath.match(/^\/requests\/([^/]+)\/([^/]+)\/(\d+)$/);
+      if (rq && req.method === 'GET') {
+        const body = store.getRequest(decodeURIComponent(rq[1]!), decodeURIComponent(rq[2]!), Number(rq[3]));
+        if (body == null) {
+          json(res, 404, { error: 'request not recorded (or evicted from the ring)' });
+          return true;
+        }
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(body); // already a JSON document — pass through verbatim
         return true;
       }
 

@@ -261,6 +261,8 @@ export interface BrainWiring {
   feedbackCapture?: import('./tools.js').FeedbackCaptureFn;
   /** observability read access (inspect_observability tool). Undefined → tool off. */
   obs?: import('./tools.js').ObsToolApi;
+  /** record the exact request an LLM step sent (obs request ring). Undefined → off. */
+  recordRequest?: (sessionId: string, turnId: string, stepIndex: number, json: string) => void;
 }
 
 export function brainModule(w: BrainWiring): StationModule {
@@ -437,6 +439,7 @@ export function brainModule(w: BrainWiring): StationModule {
       onSelfRemark: (dock, text) => noteSelfRemark(dock, text),
         feedbackCapture: w.feedbackCapture,
         obs: w.obs,
+        recordRequest: w.recordRequest,
         log: (line) => console.log(line),
         // the busy-queue drain (WI-1): fires when THIS dock's speech lane goes
         // quiet, for every turn kind. Late-bound — the drain closure is

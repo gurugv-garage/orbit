@@ -36,6 +36,7 @@ import {
   getModel,
   streamSimple,
   type AssistantMessage,
+  type Context,
   type ImageContent,
   type Model,
   type TextContent,
@@ -154,6 +155,8 @@ export interface SessionDeps {
   feedbackCapture?: import('./tools.js').FeedbackCaptureFn;
   /** observability read access (inspect_observability tool). Undefined → tool off. */
   obs?: import('./tools.js').ObsToolApi;
+  /** record the exact request an LLM step sent (obs request ring). Undefined → off. */
+  recordRequest?: (sessionId: string, turnId: string, stepIndex: number, json: string) => void;
 }
 
 type FailCode = 'timeout' | 'llm_error' | 'busy';
@@ -247,10 +250,17 @@ export class DockBrainSession {
   #turnStartedAt = 0;
   #stepIndex = -1;
   #stepStartedAt = 0;
+  /** the serialized request the in-flight step sent (captured in the streamFn
+   *  wrapper, persisted to the obs request ring on its StepEnd). */
+  #pendingRequest: string | undefined;
   #stepTtft: number | undefined;
   /** wall-clock of the step's first thinking / first answer-text token —
    *  thinkingMs = the span between them (the model's reasoning phase). */
   #stepThinkAt: number | undefined;
+  /** streamed thinking-text chars this step → the thinkingTokens estimate on
+   *  StepEnd (providers fold billed thought tokens into `output`; pi keeps no
+   *  split, so chars/4 on the streamed thoughts is the best observable). */
+  #stepThinkChars = 0;
   #stepTextAt: number | undefined;
   #toolStarts = new Map<string, number>();
 
@@ -858,7 +868,14 @@ export class DockBrainSession {
       // reads #usePaidKey at call time, so flipping it mid-turn (quota fallback)
       // takes effect on the very next provider request — no agent rebuild.
       getApiKey: (provider) => apiKeyFor(provider, this.#usePaidKey),
-      ...(this.#d.streamFn ? { streamFn: this.#d.streamFn } : {}),
+      // capture-what-was-sent seam: the context arg IS the request, byte-for-
+      // byte. Snapshot it here (persisted on the matching StepEnd, which is the
+      // first point that knows the step's identity) and defer to the injected
+      // transport — or pi's own default when none is injected.
+      streamFn: ((model, context, options) => {
+        this.#pendingRequest = serializeRequest(context);
+        return (this.#d.streamFn ?? streamSimple)(model, context, options);
+      }) as import('@earendil-works/pi-agent-core').StreamFn,
     });
     agent.subscribe((event) => this.#onAgentEvent(event));
     this.#agent = agent;
@@ -1327,6 +1344,7 @@ export class DockBrainSession {
         this.#stepTtft = undefined;
         this.#stepThinkAt = undefined;
         this.#stepTextAt = undefined;
+        this.#stepThinkChars = 0;
         this.#shipObs('StepStart');
         this.#debug('step-start', { step: this.#stepIndex });
         break;
@@ -1348,6 +1366,7 @@ export class DockBrainSession {
             this.#stepThinkAt = Date.now();
             this.#debug('thinking-start', { step: this.#stepIndex, ms: this.#stepThinkAt - this.#stepStartedAt });
           }
+          this.#stepThinkChars += ame.delta?.length ?? 0;
           this.#debug('thinking-delta', { delta: ame.delta });
         }
         // Tags ride RAW through the streamer (a tag contains no terminal
@@ -1429,8 +1448,22 @@ export class DockBrainSession {
             // prompt-cache hits (Addendum 7): the observable for cache-friendly
             // prompt ordering — without it a caching regression is invisible.
             cacheRead: m.usage.cacheRead,
+            // ESTIMATE (chars/4 of the streamed thoughts): providers bill
+            // thinking inside `output` and pi keeps no split — this shows how
+            // much of that output was reasoning, not reply.
+            ...(this.#stepThinkChars > 0 ? { thinkingTokens: Math.round(this.#stepThinkChars / 4) } : {}),
           } : undefined,
         });
+        // persist the captured request under the ids the obs tree uses, so the
+        // console's step row can show exactly what this step sent.
+        if (this.#pendingRequest && this.#meta) {
+          try {
+            this.#d.recordRequest?.(this.#meta.sessionId, this.#obsTurnId, this.#stepIndex, this.#pendingRequest);
+          } catch (err) {
+            this.#d.log?.(`[brain] ${this.dock}: request-record failed (trace unaffected): ${String(err)}`);
+          }
+          this.#pendingRequest = undefined;
+        }
         this.#debug('step-end', {
           step: this.#stepIndex,
           ms: stepMs,
@@ -1673,6 +1706,32 @@ export function resolveModel(spec: string): Model<any> {
  * into every request's options, the only reliable seam.
  */
 export const DOCK_MAX_TOKENS = 2048;
+
+/** Serialize one LLM request (the streamFn `context` arg — literally what goes
+ *  to the provider) for the obs request ring. Images are replaced with a size
+ *  marker: a vision frame is ~100 KB of base64 that's already observable via
+ *  perception, and it would triple the row for zero debug value. Tool SCHEMAS
+ *  are static per build — names alone identify what the model saw. */
+export function serializeRequest(context: Context): string {
+  const messages = context.messages.map((m) => {
+    const content = (m as { content?: unknown }).content;
+    if (!Array.isArray(content)) return m;
+    return {
+      ...m,
+      content: content.map((part) => {
+        const p = part as { type?: string; data?: string };
+        return p.type === 'image'
+          ? { type: 'image', omitted: `[image stripped, ${p.data?.length ?? 0} base64 chars]` }
+          : part;
+      }),
+    };
+  });
+  return JSON.stringify({
+    systemPrompt: context.systemPrompt,
+    tools: context.tools?.map((t) => t.name),
+    messages,
+  });
+}
 
 /** Wrap pi's default transport to cap max_tokens on every request (see
  *  [DOCK_MAX_TOKENS]). `cap` lets the grader use a larger budget. */

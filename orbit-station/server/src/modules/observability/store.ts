@@ -8,6 +8,7 @@
  * Hydrates the recent set from SQLite on boot. Reads serve from memory.
  */
 
+import { gzipSync, gunzipSync } from 'node:zlib';
 import type Database from 'better-sqlite3';
 import { orbitDb } from '../../core/db.js';
 import type {
@@ -25,6 +26,13 @@ import type {
 
 const MAX_SESSIONS = 200;
 const HYDRATE_TURNS = 2000; // most-recent turns loaded into memory on boot
+
+/** Byte budget for recorded LLM requests (gzipped, obs_requests). A ring, not a
+ *  toggle: always-on capture is the point (debug behaviors AFTER they happened),
+ *  the budget keeps orbit.db bounded — oldest requests evict first. Measured
+ *  live: ~28 KB gzipped per request (~2.4×), ~17 MB/day at average traffic →
+ *  roughly a week of history; raise this if you want a longer window. */
+const REQUESTS_MAX_BYTES = 128 * 1024 * 1024;
 
 export class ObsStore {
   #sessions = new Map<string, SessionRecord>();
@@ -159,6 +167,14 @@ export class ObsStore {
       -- FTS over the searchable text (trigger, step text, tool args/results),
       -- keyed by the same composite identity packed into one column.
       CREATE VIRTUAL TABLE IF NOT EXISTS obs_fts USING fts5(turn_key, body);
+      -- the EXACT request each LLM step sent (systemPrompt+messages+tools),
+      -- gzipped JSON; a byte-budget ring (see REQUESTS_MAX_BYTES).
+      CREATE TABLE IF NOT EXISTS obs_requests (
+        session_id TEXT, turn_id TEXT, step_index INTEGER,
+        ts INTEGER, raw_bytes INTEGER, gz BLOB,
+        PRIMARY KEY (session_id, turn_id, step_index)
+      );
+      CREATE INDEX IF NOT EXISTS obs_requests_ts ON obs_requests(ts);
     `);
     // MIGRATION: add the per-session enrichment column to tables created before
     // it existed (CREATE TABLE IF NOT EXISTS won't add a column to an old table).
@@ -329,6 +345,37 @@ export class ObsStore {
     return s;
   }
 
+  // ── recorded LLM requests (what each step ACTUALLY sent) ─────────────────
+
+  /** Record the exact request one LLM step sent (JSON string: systemPrompt +
+   *  messages + tool names). Gzipped at rest; evicts oldest rows past the byte
+   *  budget so orbit.db stays bounded no matter the traffic. */
+  putRequest(sessionId: string, turnId: string, stepIndex: number, json: string): void {
+    const gz = gzipSync(Buffer.from(json, 'utf8'));
+    this.#db.prepare(
+      `INSERT INTO obs_requests(session_id,turn_id,step_index,ts,raw_bytes,gz)
+       VALUES(?,?,?,?,?,?)
+       ON CONFLICT(session_id,turn_id,step_index) DO UPDATE SET ts=excluded.ts, raw_bytes=excluded.raw_bytes, gz=excluded.gz`,
+    ).run(sessionId, turnId, stepIndex, Date.now(), Buffer.byteLength(json, 'utf8'), gz);
+    // ring eviction: drop oldest rows (in small batches) until under budget.
+    for (;;) {
+      const { total } = this.#db.prepare(`SELECT COALESCE(SUM(LENGTH(gz)),0) AS total FROM obs_requests`).get() as { total: number };
+      if (total <= REQUESTS_MAX_BYTES) break;
+      this.#db.prepare(
+        `DELETE FROM obs_requests WHERE rowid IN (SELECT rowid FROM obs_requests ORDER BY ts LIMIT 50)`,
+      ).run();
+    }
+  }
+
+  /** The recorded request for one step, as the original JSON string —
+   *  undefined if never recorded or already evicted. */
+  getRequest(sessionId: string, turnId: string, stepIndex: number): string | undefined {
+    const row = this.#db.prepare(
+      `SELECT gz FROM obs_requests WHERE session_id=? AND turn_id=? AND step_index=?`,
+    ).get(sessionId, turnId, stepIndex) as { gz: Buffer } | undefined;
+    return row ? gunzipSync(row.gz).toString('utf8') : undefined;
+  }
+
   /** Permanently delete a session's trace (in-memory + SQLite + FTS). */
   delete(sessionId: string): boolean {
     const had = this.#sessions.delete(sessionId);
@@ -339,6 +386,7 @@ export class ObsStore {
     }
     const info = this.#db.prepare(`DELETE FROM obs_turns WHERE session_id=?`).run(sessionId);
     this.#db.prepare(`DELETE FROM obs_sessions WHERE session_id=?`).run(sessionId);
+    this.#db.prepare(`DELETE FROM obs_requests WHERE session_id=?`).run(sessionId);
     return had || info.changes > 0;
   }
 

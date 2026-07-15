@@ -37,7 +37,8 @@ export interface AgentEventDto {
     isError?: boolean;
     text?: string;
     stopReason?: string;
-    usage?: { inputTokens?: number; outputTokens?: number };
+    usage?: { inputTokens?: number; outputTokens?: number; totalTokens?: number; cost?: number; cacheRead?: number; thinkingTokens?: number };
+    thinkingMs?: number;
     model?: string;
     [k: string]: unknown;
   };

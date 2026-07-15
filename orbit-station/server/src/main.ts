@@ -192,6 +192,9 @@ async function main() {
       health: (turns) => healthSummary(turns),
       provenance: (dock) => provenanceFor(dock),
     },
+    // exact-request capture (obs request ring): what each LLM step sent.
+    recordRequest: (sessionId, turnId, stepIndex, json) =>
+      getObsAccess()?.recordRequest(sessionId, turnId, stepIndex, json),
   }));
   // conductor: one cheap per-dock governor that arms/runs the conducted things —
   // BEHAVIOURS (faceFollow's body-grant gate is a task; wakeUp is a hardcoded in-brain
