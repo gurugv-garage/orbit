@@ -22,6 +22,10 @@ import type { Directory } from '../docks/directory.js';
 export interface RpcResult {
   content: string;
   isError: boolean;
+  /** Optional base64 image a device tool returned (the `face_shot` test hook —
+   *  the dock has no adb, so a screenshot is the only way to SEE the face; see
+   *  docs/testing/face-harness.md). Ignored by every normal tool path. */
+  imageBase64?: string;
 }
 
 interface Pending {
@@ -42,7 +46,8 @@ export class RpcBroker {
     this.#directory = directory;
     bus.on('agent', (msg) => {
       if (msg.kind !== 'tool-result' || msg.source === 'station') return;
-      const p = msg.payload as { reqId?: string; content?: string; isError?: boolean } | null;
+      const p = msg.payload as
+        { reqId?: string; content?: string; isError?: boolean; imageBase64?: string } | null;
       if (!p?.reqId) return;
       const pending = this.#pending.get(p.reqId);
       if (!pending) {
@@ -52,6 +57,7 @@ export class RpcBroker {
       this.#settle(p.reqId, {
         content: typeof p.content === 'string' ? p.content : '',
         isError: p.isError === true,
+        ...(typeof p.imageBase64 === 'string' ? { imageBase64: p.imageBase64 } : {}),
       });
     });
   }

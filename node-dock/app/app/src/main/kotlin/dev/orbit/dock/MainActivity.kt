@@ -86,6 +86,11 @@ class MainActivity : ComponentActivity() {
             }
         }
 
+        // TEST HOOK: let the station screenshot this window over the `face` cap.
+        // No adb on this dock (OTA deploys), so this is the ONLY way to see what
+        // the face actually renders — see debug/ScreenCapture.kt.
+        dev.orbit.dock.debug.ScreenCapture.activity = this
+
         setContent {
             NodeDockTheme {
                 DockScreen()
@@ -94,6 +99,9 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onDestroy() {
+        if (dev.orbit.dock.debug.ScreenCapture.activity === this) {
+            dev.orbit.dock.debug.ScreenCapture.activity = null
+        }
         try { unregisterReceiver(forceFinishReceiver) } catch (_: Throwable) {}
         if (BuildConfig.DEBUG) {
             try { unregisterReceiver(aecTestReceiver) } catch (_: Throwable) {}

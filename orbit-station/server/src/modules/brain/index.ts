@@ -26,6 +26,8 @@ import { json } from '../../core/http.js';
 import type { WebSocketGateway } from '../../core/websocket-gateway.js';
 import { dockConditions } from '../../core/conditions.js';
 import { readFileSync } from 'node:fs';
+import { mkdir, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
 import type { RouteContext, StationModule } from '../../core/module.js';
 import type { Directory } from '../docks/directory.js';
 import type { MotionExecutor } from '../bodylink/motion.js';
@@ -64,6 +66,28 @@ export interface BrainAccess {
   addressed(dock: string): unknown[];
   dockOf(peerId: string): string | undefined;
 }
+/**
+ * Parse the phone's flat `k=v k=v` face probe (DockTools.faceProbe).
+ *
+ * `moodWhy` is free PROSE and contains spaces ("I'm mirroring the expression I
+ * see on your face"), so a naive split(' ') shreds it into junk keys. The phone
+ * emits it LAST for exactly this reason: split the fixed keys off the front,
+ * then take the rest of the line verbatim. Any future prose field must also go
+ * last — or come with a real encoding.
+ */
+function parseProbe(content: string): Record<string, string> {
+  const out: Record<string, string> = {};
+  if (!content) return out;
+  const at = content.indexOf(' moodWhy=');
+  const head = at >= 0 ? content.slice(0, at) : content;
+  if (at >= 0) out.moodWhy = content.slice(at + ' moodWhy='.length);
+  for (const kv of head.split(' ')) {
+    const i = kv.indexOf('=');
+    if (i > 0) out[kv.slice(0, i)] = kv.slice(i + 1);
+  }
+  return out;
+}
+
 const brainRef: { current?: BrainAccess } = {};
 /** The live BrainAccess (set when the brain module inits). */
 export function getBrainAccess(): BrainAccess | undefined {
@@ -1194,6 +1218,117 @@ export function brainModule(w: BrainWiring): StationModule {
         if (!text) { json(res, 400, { error: 'body.text (the utterance) is required' }); return true; }
         injectAddressed(dock, text);
         json(res, 200, { ok: true, injected: text });
+        return true;
+      }
+      // ── debug: FACE probe/force (face-behavior-spec harness) ───────────────
+      // The phone's face was unobservable off-device: this dock has no adb, and
+      // the phone reported no state up. Two bugs shipped past review because of
+      // it (a wake regression; a "sweat bead" that still drew a tear). These two
+      // give the face an EYE and a HAND over the existing `face` cap:
+      //
+      //   GET  /:dock/debug/face          → what the phone is ACTUALLY showing
+      //   POST /:dock/debug/face {expression} → force a mood, no LLM involved
+      //
+      // Read/actuate only, no turn, no session — usable while the dock is idle,
+      // mid-turn, or offline (offline → isError, never a hang). See
+      // docs/testing/face-harness.md.
+      m = subPath.match(/^\/([^/]+)\/debug\/face$/);
+      if (m && req.method === 'GET') {
+        const dock = decodeURIComponent(m[1]!);
+        const r = await rpc.call({
+          dock, cap: 'face', turnId: `probe-${Date.now()}`,
+          toolCallId: `probe-${Date.now()}`, name: 'face_probe', args: {},
+        });
+        // Flat "k=v k=v" from the phone → an object, so a driver can assert on
+        // fields instead of regexing a string.
+        json(res, 200, { ok: !r.isError, raw: r.content, face: parseProbe(r.isError ? '' : r.content) });
+        return true;
+      }
+      m = subPath.match(/^\/([^/]+)\/debug\/face$/);
+      if (m && req.method === 'POST') {
+        const dock = decodeURIComponent(m[1]!);
+        const b = JSON.parse((await readBody(req)) || '{}') as { expression?: string };
+        const expression = typeof b.expression === 'string' ? b.expression.trim() : '';
+        if (!expression) { json(res, 400, { error: 'body.expression is required' }); return true; }
+        const r = await rpc.call({
+          dock, cap: 'face', turnId: `force-${Date.now()}`,
+          toolCallId: `force-${Date.now()}`, name: 'face_force', args: { expression },
+        });
+        json(res, 200, { ok: !r.isError, result: r.content });
+        return true;
+      }
+      // ── debug: inject a camera EMOTION read ────────────────────────────────
+      // POST /:dock/debug/face/emotion {kind, [confidence=0.9], [times=4], [everyMs=700]}
+      //   → publishes UserEmotion onto the phone's PerceptionBus, the same seam
+      //     every real FER read flows through.
+      //
+      // Sent REPEATEDLY by default because the gate is a DEBOUNCE: a read must
+      // persist (~2s for a strong emotion) before the dock reacts, so a single
+      // injection correctly does nothing. That is the anti-flicker behaviour
+      // under test, not an obstacle to it — the camera streams at ~1 Hz and so
+      // does this.
+      m = subPath.match(/^\/([^/]+)\/debug\/face\/emotion$/);
+      if (m && req.method === 'POST') {
+        const dock = decodeURIComponent(m[1]!);
+        const b = JSON.parse((await readBody(req)) || '{}') as
+          { kind?: string; confidence?: number; times?: number; everyMs?: number };
+        const kind = typeof b.kind === 'string' ? b.kind.trim() : '';
+        if (!kind) { json(res, 400, { error: 'body.kind (Happy|Sad|Angry|Surprised|Neutral|Sleepy) is required' }); return true; }
+        const times = Math.min(Math.max(Number(b.times) || 4, 1), 20);
+        const everyMs = Math.min(Math.max(Number(b.everyMs) || 700, 100), 5_000);
+        const confidence = String(b.confidence ?? 0.9);
+        let last = '';
+        for (let i = 0; i < times; i++) {
+          if (i > 0) await new Promise((r) => setTimeout(r, everyMs));
+          const r = await rpc.call({
+            dock, cap: 'face', turnId: `emo-${Date.now()}`, toolCallId: `emo-${i}`,
+            name: 'face_emotion', args: { kind, confidence },
+          });
+          last = r.content;
+          if (r.isError) { json(res, 200, { ok: false, error: r.content }); return true; }
+        }
+        json(res, 200, { ok: true, sent: times, last, face: parseProbe('') });
+        return true;
+      }
+      // ── debug: FACE FILMSTRIP — sample the face over TIME ──────────────────
+      // POST /:dock/debug/face/film {count=5, everyMs=1000, [maxWidth], [quality]}
+      //   → writes JPEGs + a state line per sample to var/debug/face/<runId>/
+      //
+      // A single probe shows a moment; the bugs here are all about TIME (a mood
+      // that won't decay, a face that won't wake, a transition that flickers).
+      // One shot cannot see a transition. This films it.
+      //
+      // Samples are SEQUENTIAL, not a burst: each waits for the previous result,
+      // so `everyMs` is a floor (a slow RTT stretches it) and the phone is never
+      // asked for two screenshots at once. Timestamps are recorded per sample —
+      // trust those, not the nominal interval.
+      m = subPath.match(/^\/([^/]+)\/debug\/face\/film$/);
+      if (m && req.method === 'POST') {
+        const dock = decodeURIComponent(m[1]!);
+        const b = JSON.parse((await readBody(req)) || '{}') as
+          { count?: number; everyMs?: number; maxWidth?: number; quality?: number; label?: string };
+        const count = Math.min(Math.max(Number(b.count) || 5, 1), 60);
+        const everyMs = Math.min(Math.max(Number(b.everyMs) || 1_000, 200), 60_000);
+        const runId = `${new Date().toISOString().replace(/[:.]/g, '-')}${b.label ? `-${b.label}` : ''}`;
+        const dir = join(process.cwd(), 'var', 'debug', 'face', runId);
+        await mkdir(dir, { recursive: true });
+        const t0 = Date.now();
+        const samples: Array<Record<string, unknown>> = [];
+        for (let i = 0; i < count; i++) {
+          if (i > 0) await new Promise((r) => setTimeout(r, everyMs));
+          const at = Date.now();
+          const r = await rpc.call({
+            dock, cap: 'face', turnId: `film-${runId}`, toolCallId: `film-${i}`,
+            name: 'face_shot',
+            args: { maxWidth: String(b.maxWidth ?? 480), quality: String(b.quality ?? 70) },
+          });
+          const file = `${String(i).padStart(2, '0')}.jpg`;
+          if (r.imageBase64) await writeFile(join(dir, file), Buffer.from(r.imageBase64, 'base64'));
+          const parsed = parseProbe(r.isError ? '' : r.content);
+          samples.push({ i, tMs: at - t0, file: r.imageBase64 ? file : null, ok: !r.isError, ...parsed });
+        }
+        await writeFile(join(dir, 'film.json'), JSON.stringify({ dock, runId, count, everyMs, samples }, null, 2));
+        json(res, 200, { ok: true, runId, dir, samples });
         return true;
       }
       // ── debug: simulate a HEARD utterance, NO tap (WI-0 mid-turn harness) ──
