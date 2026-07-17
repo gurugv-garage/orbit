@@ -35,6 +35,18 @@ object BeepPlayer {
         pip(ON_HZ, PIP_MS)
     }
 
+    /** HEARD-AND-WORKING: your words were captured and a turn is running — a
+     *  rising DOUBLE pip, deliberately more noticeable than the on/off pips
+     *  (the user is often across the room; "did it hear me?" needed an
+     *  unmistakable answer — UX ask 2026-07-17). Still short enough that STT
+     *  can never read it as speech. */
+    fun heard() {
+        Timber.i("BeepPlayer: HEARD cue")
+        pip(1750.0, 45)
+        Thread.sleep(60)
+        pip(2300.0, 55)
+    }
+
     /** Listening turned OFF (sentence-end / timeout). A slightly higher, shorter blip. */
     fun listeningOff() {
         Timber.i("BeepPlayer: listening OFF")

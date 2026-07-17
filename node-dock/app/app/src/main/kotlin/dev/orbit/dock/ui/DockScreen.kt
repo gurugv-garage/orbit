@@ -64,6 +64,16 @@ fun DockScreen() {
     // photo floats over the face until its expiry, then clears itself. Pair =
     // bitmap + absolute expiry epoch-ms.
     var shownImage by remember { mutableStateOf<Pair<android.graphics.Bitmap, Long>?>(null) }
+    // HEARD flash: a one-shot bright pulse over the whole face, big enough to
+    // read across the room ("did it hear me?" — UX ask 2026-07-17). The value
+    // is a nonce; each bump replays the pulse.
+    var heardPulse by remember { mutableStateOf(0L) }
+    val heardAlpha = remember { androidx.compose.animation.core.Animatable(0f) }
+    LaunchedEffect(heardPulse) {
+        if (heardPulse == 0L) return@LaunchedEffect
+        heardAlpha.snapTo(0.55f)
+        heardAlpha.animateTo(0f, androidx.compose.animation.core.tween(durationMillis = 700))
+    }
     // construction order: brain depends on tools+link; tts callback updates brain state.
     val agentRef = remember { object { var value: RemoteBrain? = null } }
     // Forward ref: tools is built before wiring but needs to clear the transcript
@@ -145,6 +155,7 @@ fun DockScreen() {
                 shownImage = bmp?.let { it to (System.currentTimeMillis() + ttlMs) }
             },
             captureStill = { maxEdge, quality -> faceTracker.captureRecognitionJpegBase64(maxEdge, quality) },
+            onHeard = { heardPulse = System.currentTimeMillis() },
         ).also { dev.orbit.dock.agent.ToolsTestController.tools = it }
     }
     // OTA self-update (docs/ota.md §5). Holds a forward ref so onOtaOffer below
@@ -862,6 +873,14 @@ fun DockScreen() {
                         speaking = state == FaceState.Speaking,
                         accent = activeFace.palette.eyeGlow,
                     )
+                    // HEARD pulse — full-face tinted flash, decaying ~700ms.
+                    if (heardAlpha.value > 0.01f) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .background(activeFace.palette.eyeGlow.copy(alpha = heardAlpha.value * 0.5f)),
+                        )
+                    }
                     // Found-view photo — floats top-right over the face for its
                     // TTL ("here's what I saw when I said gotcha"), then fades.
                     shownImage?.let { (bmp, _) ->

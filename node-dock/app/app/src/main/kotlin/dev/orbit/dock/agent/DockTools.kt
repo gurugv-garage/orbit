@@ -62,6 +62,9 @@ class DockTools(
      *  identity escalation: stream frames can't identify across a room. null =
      *  no camera / capture failed. */
     val captureStill: suspend (Int, Int) -> String? = { _, _ -> null },
+    /** Fires the visible HEARD flash on the face (the audible pip is played
+     *  here in [heardCue]). Default no-op for headless docks. */
+    private val onHeard: () -> Unit = {},
 ) {
 
     private val spokeThisTurn = AtomicBoolean(false)
@@ -225,6 +228,14 @@ class DockTools(
         } catch (e: Exception) {
             Timber.w(e, "showImage failed")
         }
+    }
+
+    /** Your words were captured and the brain is on it — the unmistakable
+     *  across-the-room acknowledgment: rising double pip + face flash. Fired
+     *  at endpoint→turn-send and on the station's heard-during-turn frame. */
+    fun heardCue() {
+        runCatching { dev.orbit.dock.ui.face.BeepPlayer.heard() }
+        onHeard()
     }
 
     fun moodLive(expression: String) {

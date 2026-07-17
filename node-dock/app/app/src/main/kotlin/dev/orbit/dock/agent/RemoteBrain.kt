@@ -398,6 +398,12 @@ class RemoteBrain(
             "task-digest" -> onTaskDigest(payload)
             "tool-call" -> onToolCall(payload)
             "speak" -> onSpeak(payload)
+            "heard-during-turn" -> {
+                // mid-turn speech got captured (merge/queue) — acknowledge it
+                // visibly+audibly; without this the user talks to a silent robot.
+                tools.heardCue()
+                trace("HEARD-DURING-TURN (${payload.str("via")})")
+            }
             "show-image" -> {
                 // visual_search's found-view reveal: float the station-sent JPEG
                 // over the face for ttlMs (default 10s), then it fades on its own.
@@ -515,6 +521,9 @@ class RemoteBrain(
         trace("TURN_REQUEST \"$userText\"" + if (image != null) " (+frame)" else "")
         TurnLog.startTurn(userText)
         _state.value = AgentState.Waiting(BRAIN_LABEL)
+        // the HEARD cue: your endpoint fired and the turn is shipping — the
+        // across-the-room "I got you, working on it" (double pip + face flash).
+        tools.heardCue()
         val sent = link.publishCritical("agent", "turn-request", buildJsonObject {
             put("turnId", turnId)
             put("trigger", buildJsonObject { put("kind", "user"); put("text", userText) })
