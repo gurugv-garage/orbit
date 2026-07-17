@@ -56,6 +56,29 @@ const pub = (ws: WebSocket, topic: string, kind: string, payload: unknown) =>
 const t0 = Date.now();
 const at = () => `+${String(Date.now() - t0).padStart(5)}ms`;
 
+// The fake TTS lane: ~40ms/char (a bit faster than real speech so smokes stay
+// quick), serialized like a real phone's TTS queue.
+const TTS_MS_PER_CHAR = 40;
+const ttsQueue: Array<{ turnId: string; seq: number; text: string; ack: boolean }> = [];
+let ttsPlaying = false;
+
+async function playTts(ws: WebSocket): Promise<void> {
+  if (ttsPlaying) return;
+  ttsPlaying = true;
+  pub(ws, 'agent', 'speech-status', { turnId: ttsQueue[0]?.turnId, speaking: true });
+  while (ttsQueue.length > 0) {
+    const u = ttsQueue.shift()!;
+    if (u.ack) {
+      pub(ws, 'agent', 'utterance-active', { turnId: u.turnId, seq: u.seq });
+      console.log(`${at()}  [phone] tts-active  #${u.seq} (playback start acked)`);
+    }
+    await new Promise((r) => setTimeout(r, u.text.length * TTS_MS_PER_CHAR));
+  }
+  pub(ws, 'agent', 'speech-status', { turnId: undefined, speaking: false });
+  console.log(`${at()}  [phone] tts-quiet   (queue drained)`);
+  ttsPlaying = false;
+}
+
 async function main() {
   let turnStartedAt = 0;
   let firstSpeakAt = 0;
@@ -103,7 +126,14 @@ async function main() {
       if (kind === 'speak') {
         if (firstSpeakAt === 0) firstSpeakAt = Date.now();
         speakCount++;
-        console.log(`${at()}  [phone] speak #${payload.seq}    "${payload.text}"`);
+        console.log(`${at()}  [phone] speak #${payload.seq}    "${payload.text}"${payload.ack ? ' [ack]' : ''}`);
+        // TTS EMULATION (motion-speech-timing): play utterances SERIALLY at a
+        // realistic-ish rate, reporting the same signals a real phone sends —
+        // speech-status speaking:true/false around the batch, utterance-active
+        // at each ack:true sentence's playback start. This is what releases a
+        // move gated on "after my words" / a [move] anchor in the smoke.
+        ttsQueue.push({ turnId: payload.turnId, seq: payload.seq, text: payload.text, ack: payload.ack === true });
+        void playTts(ws);
         return;
       }
       if (kind === 'turn-status') {

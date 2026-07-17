@@ -8,9 +8,10 @@
  * per-part idempotency, clamping, hold-pose-on-disconnect — re-hosted from
  * the retired phone↔ESP32 link, see node-dock/bodylink/DESIGN.md banner).
  *
- *   runSteps(dock, steps)      timed choreography (the `move` tool) — returns
- *                              its status string IMMEDIATELY (fire-and-forget;
- *                              the loop never waits on servo travel)
+ *   runSteps(dock, steps)      timed choreography — returns its status string
+ *                              IMMEDIATELY (fire-and-forget)
+ *   runStepsAwaited(...)       same + a completion promise (the brain's `move`
+ *                              tool awaits real servo travel — motion-speech-timing)
  *   playGesture(dock, expr)    faceGestures choreography for set_face — the
  *                              config-registry copy is the ONLY copy now
  *   stop(dock)                 cancel the running sequence (turn start / cancel)
@@ -156,6 +157,18 @@ export class MotionExecutor {
    * tool results — the model narrates, the turn continues).
    */
   runSteps(dock: string, steps: MoveStep[], source = 'station'): string {
+    return this.runStepsAwaited(dock, steps, source).status;
+  }
+
+  /**
+   * Same as runSteps, but also hands back the sequence's COMPLETION promise so
+   * a caller can know when the body actually finished (the brain's move tool:
+   * "did I shake it well?" must come after the shake, not during — see
+   * docs/decision-traces/motion-speech-timing.md). `done` resolves when the
+   * sequence finishes OR is cancelled/superseded; it never rejects. The
+   * fire-and-forget contract stays the default for every other caller.
+   */
+  runStepsAwaited(dock: string, steps: MoveStep[], source = 'station'): { status: string; done: Promise<void> } {
     if (!this.isOnline(dock)) throw new Error(`the body of ${dock} is not responding (offline)`);
     if (!Array.isArray(steps) || steps.length === 0) throw new Error('move needs at least one step');
     // LEASE: a higher-priority holder owns the body → this move can't run. THROW (like the
@@ -202,8 +215,8 @@ export class MotionExecutor {
     if (commandsAnyJoint && !anyTravel) {
       throw new Error(`already there — ${described.join(', ')} is where the body already is (can't move further that way)`);
     }
-    void this.#runSequence(dock, resolved, source);
-    return `moving: ${described.join(', ') || 'pausing'}`;
+    const done = this.#runSequence(dock, resolved, source);
+    return { status: `moving: ${described.join(', ') || 'pausing'}`, done };
   }
 
   /**

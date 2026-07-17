@@ -1022,6 +1022,11 @@ export function brainModule(w: BrainWiring): StationModule {
             // play the paired body gesture + trace it into the turn.
             session(dock).moodActive((p ?? {}) as { turnId?: unknown; seq?: unknown; expression?: unknown });
             break;
+          case 'utterance-active':
+            // Motion-speech timing: an ack:true sentence started PLAYING —
+            // releases a move gated on its [move] anchor.
+            session(dock).utteranceActive((p ?? {}) as { turnId?: unknown; seq?: unknown });
+            break;
           case 'speech-status':
             session(dock).noteSpeech(p?.speaking === true, p?.keepalive === true);
             // A1.2 echo-gate: tell the STT processor to drop audio while our TTS

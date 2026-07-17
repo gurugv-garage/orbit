@@ -19,15 +19,16 @@ import type { AgentTool, AgentToolResult } from '@earendil-works/pi-agent-core';
 import type { FaceToolsApi, PerceptionGroundingApi, MemoryApi, RecognizeOut } from '../perception/index.js';
 import type { MemoryRow } from '../perception/memory/store.js';
 import type { MotionExecutor } from '../bodylink/motion.js';
-import type { MoveStep } from './schemas.js';
+import type { GateOutcome } from './speech-gate.js';
+import type { MoveStep, MoveTiming } from './schemas.js';
 import type { RpcBroker } from './rpc.js';
 import { SafeCompute } from './safe-compute.js';
 import * as S from './schemas.js';
 import * as slack from '../../integrations/slack.js';
 import * as whatsapp from '../../integrations/whatsapp.js';
 import * as last30days from '../../integrations/last30days.js';
-
 import * as websearch from '../../integrations/websearch.js';
+
 /** force_get_current summarizes only this tight window around its fresh capture, so
  *  "right now" means now — not the 60s background window (which the LLM already has
  *  passively via grounding). Small enough that the just-captured frame dominates. */
@@ -65,6 +66,20 @@ export interface ToolDeps {
   getTurnContext: () => ToolTurnContext;
   /** live video recording (record_video). Undefined → the tool isn't offered. */
   recordVideo?: RecordVideoDeps;
+  /** Motion-speech timing (docs/decision-traces/motion-speech-timing.md): the
+   *  session's audio-clock barriers the move tool awaits so the body acts in
+   *  step with the spoken words. Undefined (tests, bare harnesses) → moves
+   *  dispatch immediately, the old behavior. */
+  speech?: {
+    /** did this STEP emit spoken text before the tool call? (the part-order default) */
+    textThisStep(): boolean;
+    /** consume the pending [move] tag's sentence seq, if the reply carried one. */
+    takeAnchor(): number | undefined;
+    /** resolves when everything spoken so far has finished playing. */
+    waitQuiet(): Promise<GateOutcome>;
+    /** resolves when sentence `seq` starts playing. */
+    waitAnchor(seq: number): Promise<GateOutcome>;
+  };
 }
 
 const compute = new SafeCompute();
@@ -217,21 +232,6 @@ export function buildWhatsAppTools(): AgentTool<any>[] {
 }
 
 /**
- * The `research_recent` tool — only offered when the last30days CLI is wired
- * (script path configured + a Python 3.12+ on PATH), so the model never claims
- * an ability it can't perform. Appended conditionally next to Slack/WhatsApp.
- */
-export function buildResearchTools(): AgentTool<any>[] {
-  if (!last30days.last30daysEnabled()) return [];
-  return [
-    tool('research_recent', S.RESEARCH_RECENT_DESC, S.researchRecentSchema, async (_id, args: { topic: string; context?: string; depth?: 'quick' | 'deep'; days?: number }) => {
-      try {
-        const brief = await last30days.research({ topic: args.topic, context: args.context, depth: args.depth, days: args.days });
-        return textResult(brief);
-      } catch (err) {
-        // A timeout / bad topic / CLI failure surfaces here; hand the reason to
-        // the brain to narrate rather than failing the whole turn silently.
-/**
  * The `web_search` tool — Gemini google_search grounding (integrations/websearch.ts).
  * Only offered when a Gemini key is present. Exists because headless-browser
  * searches are bot-blocked by every engine; the browse skill defers to this.
@@ -249,6 +249,21 @@ export function buildWebSearchTools(dock: string): AgentTool<any>[] {
   ];
 }
 
+/**
+ * The `research_recent` tool — only offered when the last30days CLI is wired
+ * (script path configured + a Python 3.12+ on PATH), so the model never claims
+ * an ability it can't perform. Appended conditionally next to Slack/WhatsApp.
+ */
+export function buildResearchTools(): AgentTool<any>[] {
+  if (!last30days.last30daysEnabled()) return [];
+  return [
+    tool('research_recent', S.RESEARCH_RECENT_DESC, S.researchRecentSchema, async (_id, args: { topic: string; context?: string; depth?: 'quick' | 'deep'; days?: number }) => {
+      try {
+        const brief = await last30days.research({ topic: args.topic, context: args.context, depth: args.depth, days: args.days });
+        return textResult(brief);
+      } catch (err) {
+        // A timeout / bad topic / CLI failure surfaces here; hand the reason to
+        // the brain to narrate rather than failing the whole turn silently.
         return textResult(`Couldn't research that right now: ${err instanceof Error ? err.message : String(err)}`);
       }
     }),
@@ -561,8 +576,35 @@ export function buildDockTools(deps: ToolDeps): AgentTool<any>[] {
       return textResult(ack.content || `zoom set to ${args.ratio}×`);
     }),
 
-    tool('move', S.MOVE_DESC, S.moveSchema, async (_toolCallId, args: { steps: MoveStep[] }) => {
-      return textResult(deps.motion.runSteps(deps.dock, args.steps ?? [], 'brain-turn'));
+    tool('move', S.MOVE_DESC, S.moveSchema, async (_toolCallId, args: { steps: MoveStep[]; timing?: MoveTiming }) => {
+      // Motion-speech timing (motion-speech-timing.md). Three constructs, in
+      // precedence order:
+      //   [move] tag in the reply → start when THAT sentence starts playing;
+      //   timing:"after_speech"   → start when everything said has been spoken;
+      //   default (no timing)     → part order: spoke first this step → after
+      //                             those words; tool-first → immediately;
+      //   timing:"now"            → immediately (gesture WHILE talking).
+      // Every gate falls back to a TTS-length timeout — a lost frame delays a
+      // move, never wedges the turn. 'cancelled' means a barge-in/abort won:
+      // do NOT move into the interruption.
+      const sp = deps.speech;
+      const timing = args.timing ?? 'auto';
+      if (sp && timing !== 'now') {
+        const anchor = timing === 'after_speech' ? undefined : sp.takeAnchor();
+        let outcome: GateOutcome | undefined;
+        if (anchor != null) outcome = await sp.waitAnchor(anchor);
+        else if (timing === 'after_speech' || timing === 'at_tag' || sp.textThisStep()) {
+          outcome = await sp.waitQuiet(); // at_tag with no tag → the nearest honest gate
+        }
+        if (outcome === 'cancelled') {
+          return textResult('move skipped — the turn was interrupted before the body started moving');
+        }
+      }
+      // Await ACTUAL servo travel, so the next step's words land after the
+      // motion they follow ("did I shake it well?" comes after the shake).
+      const { status, done } = deps.motion.runStepsAwaited(deps.dock, args.steps ?? [], 'brain-turn');
+      await done;
+      return textResult(status.replace(/^moving:/, 'moved:'));
     }),
 
     tool('compute', S.COMPUTE_DESC, S.computeSchema, async (_toolCallId, args: { expression: string }) => {

@@ -241,3 +241,34 @@ test('gesture: unknown expression or offline body is a silent no-op', async () =
   assert.equal(sent.length, 1);
   motion.shutdown();
 });
+
+test('runStepsAwaited: done resolves only after the sequence actually finishes', async () => {
+  const { motion, sent } = setup();
+  const t0 = Date.now();
+  const { status, done } = motion.runStepsAwaited(DOCK, [
+    { part: 'foot', degrees: 30, duration_ms: 300 },
+    { part: 'foot', degrees: 0, duration_ms: 300 },
+  ]);
+  assert.match(status, /moving/);
+  await done;
+  const elapsed = Date.now() - t0;
+  // two 300ms steps (both above the comfort floor for their travel) → ≥600ms
+  assert.ok(elapsed >= 550, `done resolved too early (${elapsed}ms)`);
+  assert.ok(sent.length >= 2, 'both steps dispatched');
+  motion.shutdown();
+});
+
+test('runStepsAwaited: done resolves early when a new sequence supersedes it', async () => {
+  const { motion } = setup();
+  const { done } = motion.runStepsAwaited(DOCK, [
+    { part: 'foot', degrees: 60, duration_ms: 400 },
+    { part: 'foot', degrees: -60, duration_ms: 400 },
+    { part: 'foot', degrees: 0, duration_ms: 400 },
+  ]);
+  await sleep(50);
+  motion.stop(DOCK); // turn cancel — the sequence dies mid-flight
+  const t0 = Date.now();
+  await done;        // must not wait out the remaining ~1100ms
+  assert.ok(Date.now() - t0 < 500, 'done resolved promptly after stop');
+  motion.shutdown();
+});

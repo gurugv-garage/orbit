@@ -571,20 +571,33 @@ class RemoteBrain(
         // Fix 5: the sentence's inline mood rides its speak frame; it goes LIVE
         // when THIS utterance's audio starts (DockTts playback clock), and the
         // station is told so it can play the paired gesture + trace it.
+        // ack:true (motion-speech timing): the station wants a playback-start
+        // report for this sentence — it releases a [move]-anchored body motion
+        // on the same audio clock the moods ride.
         val mood = p.str("mood")
-        if (mood.isEmpty()) {
+        val wantsAck = p.bool("ack")
+        if (mood.isEmpty() && !wantsAck) {
             tools.speakSentence(text)
         } else {
             val turnId = p.str("turnId")
             val seq = (p["seq"] as? JsonPrimitive)?.content?.toIntOrNull()
             tools.speakSentence(text) {
-                tools.moodLive(mood)
-                link.publish("agent", "mood-active", buildJsonObject {
-                    put("turnId", turnId)
-                    if (seq != null) put("seq", seq)
-                    put("expression", mood)
-                })
-                trace("MOOD live: $mood (seq ${seq ?: "?"})")
+                if (mood.isNotEmpty()) {
+                    tools.moodLive(mood)
+                    link.publish("agent", "mood-active", buildJsonObject {
+                        put("turnId", turnId)
+                        if (seq != null) put("seq", seq)
+                        put("expression", mood)
+                    })
+                    trace("MOOD live: $mood (seq ${seq ?: "?"})")
+                }
+                if (wantsAck) {
+                    link.publish("agent", "utterance-active", buildJsonObject {
+                        put("turnId", turnId)
+                        if (seq != null) put("seq", seq)
+                    })
+                    trace("UTTERANCE live (seq ${seq ?: "?"})")
+                }
             }
         }
     }

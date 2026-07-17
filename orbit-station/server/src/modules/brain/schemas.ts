@@ -175,9 +175,24 @@ export const moveSchema = {
         // a step needs EITHER part+degrees OR parts; validated in code.
       },
     },
+    timing: {
+      type: 'string',
+      enum: ['now', 'after_speech', 'at_tag'],
+      description:
+        'WHEN the motion starts, relative to your spoken words. Omit for the natural default: ' +
+        'if your reply text comes BEFORE this call, the body waits until those words are spoken ' +
+        '(announce → then act); if you call with no text first, it moves immediately. ' +
+        '"now" = move WHILE talking (gesturing along with a story). ' +
+        '"after_speech" = explicitly wait for everything you said to finish. ' +
+        '"at_tag" = start exactly where you placed a [move] tag in your text (see the tool description).',
+    },
   },
   required: ['steps'],
 } as const;
+
+/** The move tool's timing modes (motion-speech-timing). 'auto' is the unset
+ *  default — part order decides (text first → after those words). */
+export type MoveTiming = 'now' | 'after_speech' | 'at_tag' | 'auto';
 
 export const computeSchema = {
   type: 'object',
@@ -453,7 +468,13 @@ export const MOVE_DESC =
   'moves from wherever the joint is now and clamps at the limit — so you never need to know or track the ' +
   'current angle, and repeated turns keep going until they can\'t. Use absolute degrees to go to a SPECIFIC pose. ' +
   'The "Current state" line reports the pose you are in now (facing + angles) — read it before an absolute move. ' +
-  'You choose the angle, speed (duration_ms) and beats (wait_ms).';
+  'You choose the angle, speed (duration_ms) and beats (wait_ms). ' +
+  'TIMING vs your words: by default, text you wrote before this call is SPOKEN FIRST, then the body moves ' +
+  '(announce → act: "Watch this!" plays, THEN the dance starts), and the tool returns when the motion has ' +
+  'actually finished — so words in your NEXT step land after the move. To gesture WHILE talking pass ' +
+  'timing:"now". For an exact mid-speech moment, put a [move] tag in your text where the motion belongs and ' +
+  'pass timing:"at_tag" — the tag is never spoken: "Ready? [move] Here I go!" starts the move as "Here I go!" ' +
+  'begins. The move performed is always THIS call\'s steps; the tag only picks its moment.';
 export const COMPUTE_DESC =
   'Evaluate a SAFE arithmetic or random-number expression and get the result back ' +
   '(e.g. math, or "random(1,10)", or "random(1,10) > 5"). Use this whenever you\'d otherwise want to ' +

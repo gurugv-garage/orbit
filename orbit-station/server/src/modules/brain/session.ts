@@ -49,7 +49,8 @@ import type { Directory } from '../docks/directory.js';
 import type { MotionExecutor } from '../bodylink/motion.js';
 import type { FaceToolsApi, PerceptionGroundingApi, MemoryApi } from '../perception/index.js';
 import { gesturesFromConfig } from '../bodylink/motion.js';
-import { buildSystemPrompt, isVisionIntent, MOOD_TAG_RE, stripMoodTag } from './prompt.js';
+import { buildSystemPrompt, isVisionIntent, MOOD_TAG_RE, MOVE_TAG_RE, stripMoodTag } from './prompt.js';
+import { SpeechGate } from './speech-gate.js';
 import { decideThought, type SessionState } from './thought-router.js';
 import { ConversationState, type ConvTransition } from './conversation-state.js';
 import { MAX_HISTORY_MESSAGES, SESSION_IDLE_MIN, VISION_GATE } from './constants.js';
@@ -241,6 +242,11 @@ export class DockBrainSession {
   #toolRanThisTurn = false;
   #streamer = new SentenceStreamer();
   #speakSeq = 0;
+  // Motion-speech timing: the audio-clock gate the move tool awaits, plus the
+  // step-start seq snapshot that tells it "did I speak before this call?"
+  // (docs/decision-traces/motion-speech-timing.md).
+  #speechGate = new SpeechGate();
+  #stepStartSpeakSeq = 0;
   #obsSeq = 0;
   #obsTurnId = '';
   #shippedStreamStart = false;
@@ -278,6 +284,12 @@ export class DockBrainSession {
       getGrounding: deps.getGrounding,
       getGestures: () => gesturesFromConfig(deps.config('faceGestures')) as Record<string, MoveStep[]>,
       getTurnContext: () => this.#turnCtx,
+      speech: {
+        textThisStep: () => this.#speakSeq > this.#stepStartSpeakSeq,
+        takeAnchor: () => this.#speechGate.takeAnchor(),
+        waitQuiet: () => this.#speechGate.waitQuiet(),
+        waitAnchor: (seq: number) => this.#speechGate.waitAnchor(seq),
+      },
       recordVideo: deps.recordVideo
         ? {
             record: (streamId, seconds) => deps.recordVideo!.record(streamId, seconds),
@@ -516,6 +528,7 @@ export class DockBrainSession {
     const prev = this.#running;
     if (prev) {
       this.#cancelled = true;
+      this.#speechGate.cancel(); // release any move gated inside the superseded turn
       this.#agent?.abort();
     }
     const run = (async () => {
@@ -620,6 +633,7 @@ export class DockBrainSession {
     if (!this.#turnActive) return;
     if (turnId != null && turnId !== this.#activeTurnId) return;
     this.#cancelled = true;
+    this.#speechGate.cancel(); // a gated move must not fire into the interruption
     this.#d.motion.stop(this.dock);
     this.#d.rpc.rejectAllForDock(this.dock, 'turn cancelled');
     this.#agent?.abort();
@@ -631,6 +645,7 @@ export class DockBrainSession {
   onDockOffline(): void {
     if (!this.#turnActive) return;
     this.#cancelled = true;
+    this.#speechGate.cancel();
     this.#d.motion.stop(this.dock);
     this.#d.rpc.rejectAllForDock(this.dock, 'dock went offline');
     this.#agent?.abort();
@@ -656,6 +671,9 @@ export class DockBrainSession {
     const wasSpeaking = this.#conv.mode(Date.now()) === 'speaking';
     if (speaking) this.#conv.speakStart(Date.now());
     else this.#conv.speakEnd(Date.now());
+    // TTS queue drained → everything sent so far was SPOKEN: release any move
+    // gated on "after my words" (motion-speech-timing).
+    if (!speaking) this.#speechGate.noteQuiet();
     this.#shipObsMarker(speaking ? 'SpeakStart' : 'SpeakEnd');
     if (!speaking && !this.#turnActive) {
       this.#shipObsMarker('TurnSettled');
@@ -912,6 +930,8 @@ export class DockBrainSession {
     this.#toolRanThisTurn = false;
     this.#streamer = new SentenceStreamer();
     this.#speakSeq = 0;
+    this.#stepStartSpeakSeq = 0;
+    this.#speechGate.reset(); // a stale [move] anchor or gated waiter must not leak into this turn
     this.#obsSeq = 0;
     this.#obsTurnId = `turn-${randomUUID().slice(0, 8)}`;
     this.#shippedStreamStart = false;
@@ -1104,6 +1124,7 @@ export class DockBrainSession {
     const timeoutMs = num(this.#d.config('brainTurnTimeoutMs'), 60_000);
     const timer = setTimeout(() => {
       this.#timedOut = true;
+      this.#speechGate.cancel(); // a move gated on speech must not outlive the turn
       agent.abort();
     }, timeoutMs);
 
@@ -1355,6 +1376,7 @@ export class DockBrainSession {
         this.#streamer = new SentenceStreamer();
         this.#shippedStreamStart = false;
         this.#stepIndex++;
+        this.#stepStartSpeakSeq = this.#speakSeq; // "spoke before the tool call?" is judged per STEP
         this.#stepStartedAt = Date.now();
         this.#stepTtft = undefined;
         this.#stepThinkAt = undefined;
@@ -1403,6 +1425,15 @@ export class DockBrainSession {
       case 'message_end': {
         const m = event.message as AssistantMessage;
         if ((m as { role?: string }).role === 'assistant') {
+          // Flush the streamer's tail NOW — before this step's tools execute.
+          // The tail used to wait for the next step's turn_start, which runs
+          // AFTER tools: a [move] tag on the step's LAST sentence never
+          // reached #speak before the move tool consumed its anchor (live
+          // turn-863f68ff: "…one… [move]go wiggle!" — the wiggle ran during
+          // the countdown and "go wiggle!" played after it). Flushing here
+          // puts every spoken word of the step ahead of its motion gate.
+          const tail = this.#streamer.flush();
+          if (tail != null) this.#speak(tail);
           // strip the inline mood tag so the console/obs history shows what
           // was actually SAID, not the control token.
           this.#shipObs('MessageEnd', { text: stripMoodTag(assistantText(event.message)) });
@@ -1574,11 +1605,24 @@ export class DockBrainSession {
   moodActive(p: { turnId?: unknown; seq?: unknown; expression?: unknown }): void {
     const expression = typeof p.expression === 'string' ? p.expression.toLowerCase() : '';
     if (!FACES.includes(expression as never)) return;
+    // a mood ack IS a playback-start report — feed the motion gate too, so a
+    // [move] anchored on a mood-tagged sentence releases even on app builds
+    // that predate the generic utterance-active ack.
+    if (typeof p.seq === 'number') this.#speechGate.noteUtteranceActive(p.seq);
     try {
       this.#d.motion.playGesture(this.dock, expression,
         gesturesFromConfig(this.#d.config('faceGestures')) as Record<string, MoveStep[]>);
     } catch { /* body offline — the face already changed */ }
     this.#traceMood(expression, typeof p.seq === 'number' ? p.seq : undefined, 'phone');
+  }
+
+  /** The phone reports a speak-frame's audio just started PLAYING (the
+   *  `ack:true` sentences — motion-speech-timing). Releases a move gated on
+   *  that sentence's [move] anchor. */
+  utteranceActive(p: { turnId?: unknown; seq?: unknown }): void {
+    if (typeof p.seq !== 'number') return;
+    this.#speechGate.noteUtteranceActive(p.seq);
+    this.#debug('utterance-active', { seq: p.seq });
   }
 
   /** An inline mood becoming REAL is an action in the world, but it bypasses
@@ -1617,18 +1661,29 @@ export class DockBrainSession {
    *  words left after stripping fires station-side immediately (nothing to
    *  synchronize with). */
   #speak(sentence: string): void {
+    // The [move] anchor (motion-speech-timing): detected BEFORE stripping (the
+    // mood strip removes it too), it pins the pending move to THIS sentence's
+    // playback start. `ack:true` asks the phone to report that start
+    // (utterance-active) — old app builds ignore it and the gate falls back
+    // to the quiet/timeout path.
+    const hasMoveAnchor = MOVE_TAG_RE.test(sentence);
     const { text, mood } = this.#extractMood(sentence);
     if (text.length === 0) {
       if (mood != null) this.#fireMood(mood);
+      if (hasMoveAnchor) this.#speechGate.noteAnchor(this.#speakSeq - 1); // bare tag: anchor to the last real sentence
       return; // never ship an empty utterance
     }
     this.#spokeThisTurn = true;
     this.#spokenSentences.push(text);
     const seq = this.#speakSeq++;
+    this.#speechGate.noteSent(text.length);
+    if (hasMoveAnchor) this.#speechGate.noteAnchor(seq);
     this.#sendToVoice('speak', {
-      turnId: this.#activeTurnId, seq, text, ...(mood != null ? { mood } : {}),
+      turnId: this.#activeTurnId, seq, text,
+      ...(mood != null ? { mood } : {}),
+      ...(hasMoveAnchor ? { ack: true } : {}),
     });
-    this.#debug('speak', { seq, text, ...(mood != null ? { mood } : {}) });
+    this.#debug('speak', { seq, text, ...(mood != null ? { mood } : {}), ...(hasMoveAnchor ? { moveAnchor: true } : {}) });
   }
 
   /** Rich per-turn debug stream for the console's turn inspector — kind

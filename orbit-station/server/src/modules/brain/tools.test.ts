@@ -172,3 +172,84 @@ test('memory tools throw cleanly when the facade is unavailable', async () => {
   const t = memTools(undefined); // getMemory returns undefined
   await assert.rejects(() => t.get('recall_memory')!.execute('c', {} as never), /memory is not available/);
 });
+
+// ── move tool timing (docs/decision-traces/motion-speech-timing.md) ─────────
+// A fake motion + a scripted speech facade; asserts WHEN dispatch happens
+// relative to the gates, and that the tool awaits `done`.
+
+function fakeMotion(log: string[]) {
+  return {
+    runStepsAwaited(_dock: string, _steps: unknown, _source: string) {
+      log.push('dispatch');
+      return { status: 'moving: foot→30°', done: Promise.resolve().then(() => { log.push('done'); }) };
+    },
+  } as never;
+}
+
+function speech(log: string[], over: Partial<NonNullable<ToolDeps['speech']>> = {}): NonNullable<ToolDeps['speech']> {
+  return {
+    textThisStep: () => false,
+    takeAnchor: () => undefined,
+    waitQuiet: async () => { log.push('waited-quiet'); return 'quiet'; },
+    waitAnchor: async (seq: number) => { log.push(`waited-anchor-${seq}`); return 'spoken'; },
+    ...over,
+  };
+}
+
+test('move: tool-call-first (no text this step) dispatches immediately', async () => {
+  const log: string[] = [];
+  const t = toolMap(deps({ motion: fakeMotion(log), speech: speech(log) }));
+  const r = await t.get('move')!.execute('c1', { steps: [{ part: 'foot', degrees: 30 }] } as never);
+  assert.deepEqual(log, ['dispatch', 'done']); // no gate consulted
+  assert.match(text(r), /moved:/); // past tense — travel completed
+});
+
+test('move: text-before-call gates on quiet (announce → then act)', async () => {
+  const log: string[] = [];
+  const t = toolMap(deps({ motion: fakeMotion(log), speech: speech(log, { textThisStep: () => true }) }));
+  await t.get('move')!.execute('c1', { steps: [{ part: 'foot', degrees: 30 }] } as never);
+  assert.deepEqual(log, ['waited-quiet', 'dispatch', 'done']);
+});
+
+test('move: timing:"now" skips the gate even when text preceded it', async () => {
+  const log: string[] = [];
+  const t = toolMap(deps({ motion: fakeMotion(log), speech: speech(log, { textThisStep: () => true }) }));
+  await t.get('move')!.execute('c1', { steps: [{ part: 'foot', degrees: 30 }], timing: 'now' } as never);
+  assert.deepEqual(log, ['dispatch', 'done']);
+});
+
+test('move: a [move] anchor wins — gates on that sentence, not on quiet', async () => {
+  const log: string[] = [];
+  const t = toolMap(deps({
+    motion: fakeMotion(log),
+    speech: speech(log, { textThisStep: () => true, takeAnchor: () => 4 }),
+  }));
+  await t.get('move')!.execute('c1', { steps: [{ part: 'foot', degrees: 30 }], timing: 'at_tag' } as never);
+  assert.deepEqual(log, ['waited-anchor-4', 'dispatch', 'done']);
+});
+
+test('move: timing:"at_tag" with no tag falls back to the quiet gate', async () => {
+  const log: string[] = [];
+  const t = toolMap(deps({ motion: fakeMotion(log), speech: speech(log) }));
+  await t.get('move')!.execute('c1', { steps: [{ part: 'foot', degrees: 30 }], timing: 'at_tag' } as never);
+  assert.deepEqual(log, ['waited-quiet', 'dispatch', 'done']);
+});
+
+test('move: a cancelled gate skips the motion entirely', async () => {
+  const log: string[] = [];
+  const t = toolMap(deps({
+    motion: fakeMotion(log),
+    speech: speech(log, { textThisStep: () => true, waitQuiet: async () => 'cancelled' }),
+  }));
+  const r = await t.get('move')!.execute('c1', { steps: [{ part: 'foot', degrees: 30 }] } as never);
+  assert.equal(log.includes('dispatch'), false);
+  assert.match(text(r), /skipped/);
+});
+
+test('move: no speech facade (bare harness) keeps the old immediate behavior', async () => {
+  const log: string[] = [];
+  const t = toolMap(deps({ motion: fakeMotion(log) }));
+  const r = await t.get('move')!.execute('c1', { steps: [{ part: 'foot', degrees: 30 }] } as never);
+  assert.deepEqual(log, ['dispatch', 'done']);
+  assert.match(text(r), /moved:/);
+});

@@ -23,12 +23,20 @@ export const MOOD_TAG_RE = /^\s*\[(?:face|mood)\s*:\s*([a-z_-]+)\s*\]\s*/i;
  *  global, or a tag the parser doesn't recognise as leading reaches TTS. */
 const MOOD_TAG_ANYWHERE_RE = /\[(?:face|mood)\s*:\s*[a-z_-]+\s*\]\s*/gi;
 
+/** The inline MOVE anchor tag (motion-speech-timing): "[move]" in reply text
+ *  marks WHERE in the speech the queued move (timing:"at_tag") should begin.
+ *  Never spoken; the sentence it rides gets a playback-start ack from the
+ *  phone, which releases the gated motion. Same strip rules as mood tags. */
+export const MOVE_TAG_RE = /\[\s*move\s*\]\s*/i;
+const MOVE_TAG_ANYWHERE_RE = /\[\s*move\s*\]\s*/gi;
+
 /** Strip EVERY mood tag from assistant text. The live stream strips before TTS
  *  (session #filterMood); every OTHER reader of raw assistant text (obs
  *  MessageEnd, session summaries, compaction input) must strip too or the tag
- *  leaks into UIs and seeded context (code-review finding). */
+ *  leaks into UIs and seeded context (code-review finding). Move anchors are
+ *  control tokens with the same leak surface, so they strip here too. */
 export const stripMoodTag = (text: string): string =>
-  text.replace(MOOD_TAG_ANYWHERE_RE, '');
+  text.replace(MOOD_TAG_ANYWHERE_RE, '').replace(MOVE_TAG_ANYWHERE_RE, '');
 
 /** The face paragraph, in two variants (WI-3, busy-queue-black-hole.md):
  *  - inline mood (default): the mood rides the reply text as a leading
