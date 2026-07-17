@@ -41,9 +41,35 @@ const GROUPS: Array<{ value: GroupBy; label: string; noun: string }> = [
 const fmtUsd = (c: number) => (c === 0 ? '$0' : c < 0.01 ? `$${c.toFixed(5)}` : `$${c.toFixed(4)}`);
 const fmtTok = (n: number) => (n >= 1000 ? `${(n / 1000).toFixed(1)}k` : `${n}`);
 
-// stable-ish palette for stacked segments / legend.
-const COLORS = ['#6ea8ff', '#7ee0c0', '#ffb86b', '#ff7eb6', '#c98bff', '#9be36b', '#ffd166', '#7fd1ff', '#ff9e7d', '#a0e8af'];
-const colorFor = (key: string, keys: string[]) => COLORS[Math.max(0, keys.indexOf(key)) % COLORS.length]!;
+// Entity-stable colors: a category keeps its color forever — across windows,
+// groupings, and views — never assigned by rank or appearance order (rank changes
+// day to day; identity doesn't). Known use cases are pinned; anything new (docks,
+// models, future use cases) gets a deterministic hashed pastel hue. The folded
+// "Other" bucket is always gray — it's a remainder, not an identity.
+const PINNED: Record<string, string> = {
+  // CVD-checked as a set (dataviz validator, dark surface): worst adjacent pair
+  // sits in the 6-8 ΔE band, legal because segments also carry gaps + labels.
+  'Conversation': '#6ea8ff',
+  'audio-enricher': '#7ee0c0',
+  'introspect': '#ffb86b',
+  'Background tasks': '#c98bff',
+  'bg-audio': '#f45c9a',
+  'summary': '#52c26d',
+  'consolidate': '#ffd166',
+  'span-digest': '#7fd1ff',
+  'fact-extract': '#ff9e7d',
+  'reconcile': '#a0e8af',
+  'introspect-condense': '#9d7ce8',
+  'enrich': '#d9a54a',
+  'web-search': '#63b3a0',
+};
+const hashHue = (key: string) => {
+  let h = 0;
+  for (let i = 0; i < key.length; i++) h = ((h * 31 + key.charCodeAt(i)) >>> 0);
+  return (h * 137.508) % 360; // golden-angle spread keeps hashed hues far apart
+};
+const colorFor = (key: string) =>
+  key.startsWith('Other (') ? 'var(--dim)' : (PINNED[key] ?? `hsl(${hashHue(key).toFixed(1)} 62% 72%)`);
 
 // ── URL-hash filter persistence ───────────────────────────────────────────────
 function readHashFilters(): { windowId: string; groupBy: GroupBy } {
@@ -98,11 +124,26 @@ export function Cost() {
 
   const total = summary?.total;
   const groups = useMemo(() => summary?.groups ?? [], [summary]);
-  const groupKeys = useMemo(() => groups.map((g) => g.group ?? '(unknown)'), [groups]);
-  const seriesKeys = useMemo(
-    () => [...new Set(series.flatMap((p) => Object.keys(p.byGroup)))],
-    [series],
-  );
+  // chart keys ranked by window cost (matches the donut's ordering — biggest
+  // spender stacks at the bottom), with the long tail folded into a gray "Other"
+  // so the stack and its legend stay legible.
+  const chart = useMemo(() => {
+    const totals = new Map<string, number>();
+    for (const p of series) for (const [k, v] of Object.entries(p.byGroup)) totals.set(k, (totals.get(k) ?? 0) + v);
+    const ranked = [...totals.keys()].sort((a, b) => (totals.get(b)! - totals.get(a)!));
+    const TOP = 9;
+    if (ranked.length <= TOP + 1) return { series, keys: ranked };
+    const head = new Set(ranked.slice(0, TOP));
+    const otherKey = `Other (${ranked.length - TOP})`;
+    const folded = series.map((p) => {
+      const byGroup: Record<string, number> = {};
+      let other = 0;
+      for (const [k, v] of Object.entries(p.byGroup)) head.has(k) ? (byGroup[k] = v) : (other += v);
+      if (other > 0) byGroup[otherKey] = other;
+      return { ...p, byGroup };
+    });
+    return { series: folded, keys: [...ranked.slice(0, TOP), otherKey] };
+  }, [series]);
   const noun = GROUPS.find((g) => g.value === groupBy)?.noun ?? 'group';
 
   return (
@@ -134,7 +175,7 @@ export function Cost() {
           <h3 className="cost-h">Spend per day</h3>
           {series.length === 0
             ? <div className="empty">No LLM spend recorded in this window.</div>
-            : <StackedChart series={series} keys={seriesKeys} hover={hover} setHover={setHover} setTip={setTip} />}
+            : <StackedChart series={chart.series} keys={chart.keys} hover={hover} setHover={setHover} setTip={setTip} />}
         </>
       )}
 
@@ -143,7 +184,7 @@ export function Cost() {
         ? <div className="empty">Nothing to break down yet.</div>
         : (
           <div className="cost-breakdown">
-            <Donut groups={groups} keys={groupKeys} total={total?.cost ?? 0}
+            <Donut groups={groups} total={total?.cost ?? 0}
               hover={hover} setHover={setHover} setTip={setTip} />
             <table className="cost-tbl">
               <thead><tr><th className="l">{noun}</th><th>cost</th><th>share</th><th>calls</th><th>in</th><th>out</th></tr></thead>
@@ -155,11 +196,11 @@ export function Cost() {
                     <tr key={key} className={hover === key ? 'hot' : hover ? 'dim' : ''}
                       onMouseEnter={() => setHover(key)} onMouseLeave={() => setHover(null)}>
                       <td className="l">
-                        <span className="swatch" style={{ background: colorFor(key, groupKeys) }} />
+                        <span className="swatch" style={{ background: colorFor(key) }} />
                         {key}
                       </td>
                       <td className="mono">{fmtUsd(g.cost)}</td>
-                      <td><Bar pct={pct} color={colorFor(key, groupKeys)} /></td>
+                      <td><Bar pct={pct} color={colorFor(key)} /></td>
                       <td className="mono">{g.calls}</td>
                       <td className="mono muted">{fmtTok(g.inputTokens)}</td>
                       <td className="mono muted">{fmtTok(g.outputTokens)}</td>
@@ -190,22 +231,21 @@ function Tooltip({ tip }: { tip: Tip }) {
 }
 
 // ── donut: window-total share by the active grouping ─────────────────────────
-function Donut({ groups, keys, total, hover, setHover, setTip }: {
-  groups: CostBucket[]; keys: string[]; total: number;
+function Donut({ groups, total, hover, setHover, setTip }: {
+  groups: CostBucket[]; total: number;
   hover: string | null; setHover: (k: string | null) => void;
   setTip: (t: Tip | null) => void;
 }) {
   const R = 78, r = 50, C = 96; // outer radius, inner radius, center
   const sum = total || groups.reduce((a, g) => a + g.cost, 0) || 1e-9;
-  // long tails (many docks) would repeat the 9-color palette into mush — fold
-  // everything past the top 8 into one "Other" slice so each slice is legible.
+  // fold everything past the top 8 into one "Other" slice so each slice is legible.
   const TOP = 8;
   const positive = groups.filter((g) => g.cost > 0);
   const head = positive.slice(0, TOP);
   const tail = positive.slice(TOP);
   const slices: Array<{ key: string; cost: number; color: string }> = head.map((g) => {
     const key = g.group ?? '(unknown)';
-    return { key, cost: g.cost, color: colorFor(key, keys) };
+    return { key, cost: g.cost, color: colorFor(key) };
   });
   if (tail.length) slices.push({ key: `Other (${tail.length})`, cost: tail.reduce((a, g) => a + g.cost, 0), color: 'var(--dim)' });
   let acc = 0;
@@ -273,44 +313,100 @@ function Bar({ pct, color }: { pct: number; color: string }) {
   );
 }
 
+// compact money for on-chart labels (bar caps, in-segment) — 2-3 significant chars.
+const fmtUsdShort = (v: number) => (v >= 100 ? `$${v.toFixed(0)}` : v >= 10 ? `$${v.toFixed(1)}` : `$${v.toFixed(2)}`);
+// axis ticks are clean numbers, so drop trailing zeros ($5, $2.50).
+const fmtAxis = (v: number) => `$${(+v.toFixed(2)).toString()}`;
+// round a max up to a clean tick ceiling — steps fine enough that a value just
+// over a round number doesn't double the scale ($10.02 → $12, not $20).
+function niceCeil(v: number): number {
+  const mag = Math.pow(10, Math.floor(Math.log10(v)));
+  for (const s of [1, 1.2, 1.5, 2, 2.5, 3, 4, 5, 6, 8, 10]) if (s * mag >= v) return s * mag;
+  return 10 * mag;
+}
+
 // ── stacked per-day bar chart (dependency-free inline SVG) ────────────────────
 function StackedChart({ series, keys, hover, setHover, setTip }: {
   series: CostSeriesPoint[]; keys: string[];
   hover: string | null; setHover: (k: string | null) => void; setTip: (t: Tip | null) => void;
 }) {
-  const W = 760, H = 210, PAD = 30, GAP = 6;
+  const W = 760, H = 230, PADL = 46, PADR = 12, PADT = 22, PADB = 26;
   const dayTotal = (p: CostSeriesPoint) => Object.values(p.byGroup).reduce((a, b) => a + b, 0);
-  const max = Math.max(...series.map(dayTotal), 1e-9);
-  const bw = (W - PAD * 2) / series.length - GAP;
-  const y = (v: number) => (H - PAD) - (v / max) * (H - PAD * 2);
+  // scale to a clean ceiling so the gridline labels are round numbers.
+  const max = niceCeil(Math.max(...series.map(dayTotal), 1e-9));
+  const slot = (W - PADL - PADR) / series.length;
+  const bw = Math.min(slot - 6, 46); // cap bar width — wide windows get slim bars, 7d stays readable
+  const y = (v: number) => (H - PADB) - (v / max) * (H - PADT - PADB);
+  // rough label width at the on-bar font sizes; labels that don't fit are skipped, not clipped.
+  const textW = (s: string) => s.length * 5;
+  // thin x labels when slots get narrow (30d) so dates don't collide.
+  const dayEvery = Math.max(1, Math.ceil(34 / slot));
+  // anti-overlap for bar-cap totals, biggest-first so peaks always keep their
+  // label and smaller neighbors yield (their totals stay reachable via hover).
+  const totalBoxes = series.map((p, i) => {
+    const total = dayTotal(p);
+    const cx = PADL + i * slot + slot / 2, w = textW(fmtUsdShort(total));
+    return { i, total, start: cx - w / 2, end: cx + w / 2, top: y(total) - 5 };
+  });
+  const showTotalIdx = new Set<number>();
+  const placed: typeof totalBoxes = [];
+  for (const b of [...totalBoxes].sort((a, c) => c.total - a.total)) {
+    if (b.total < 0.005) continue; // would render as $0.00
+    // collides only when boxes overlap horizontally AND sit at a similar height
+    if (placed.every((a) => b.end + 3 < a.start || b.start - 3 > a.end || Math.abs(a.top - b.top) > 10)) {
+      showTotalIdx.add(b.i);
+      placed.push(b);
+    }
+  }
 
   return (
     <div className="card cost-chart">
       <svg width="100%" viewBox={`0 0 ${W} ${H}`} role="img" aria-label="spend per day" preserveAspectRatio="xMidYMid meet">
-        {/* y gridlines at 0/50/100% of max */}
-        {[0, 0.5, 1].map((f) => (
+        {/* y gridlines at 0/25/50/75/100% of the clean max */}
+        {[0, 0.25, 0.5, 0.75, 1].map((f) => (
           <g key={f}>
-            <line x1={PAD} y1={y(max * f)} x2={W - PAD} y2={y(max * f)} stroke="var(--line)" strokeDasharray={f === 0 ? '' : '3 4'} opacity={f === 0 ? 1 : 0.5} />
-            {f > 0 && <text x={PAD - 4} y={y(max * f) + 3} textAnchor="end" className="cost-axis">{fmtUsd(max * f)}</text>}
+            <line x1={PADL} y1={y(max * f)} x2={W - PADR} y2={y(max * f)} stroke="var(--line)" opacity={f === 0 ? 1 : 0.45} />
+            {f > 0 && <text x={PADL - 6} y={y(max * f) + 3} textAnchor="end" className="cost-axis">{fmtAxis(max * f)}</text>}
           </g>
         ))}
         {series.map((p, i) => {
-          const x = PAD + i * ((W - PAD * 2) / series.length) + GAP / 2;
+          const x = PADL + i * slot + (slot - bw) / 2;
+          const total = dayTotal(p);
+          const segs = keys.map((k) => ({ k, v: p.byGroup[k] ?? 0 })).filter((s) => s.v > 0);
           let acc = 0;
+          const totalLabel = fmtUsdShort(total);
           return (
             <g key={p.day}>
-              {keys.map((k) => {
-                const v = p.byGroup[k] ?? 0;
-                if (v <= 0) return null;
+              {segs.map(({ k, v }, si) => {
                 const yTop = y(acc + v), yBot = y(acc);
                 acc += v;
+                const h = Math.max(0, yBot - yTop);
+                // 2px surface gap between stacked segments (skip the topmost — its cap is the bar total)
+                const inset = si < segs.length - 1 && h > 5 ? 2 : 0;
                 const dimmed = hover && hover !== k;
-                return <rect key={k} x={x} y={yTop} width={bw} height={Math.max(0, yBot - yTop)} fill={colorFor(k, keys)}
-                  opacity={dimmed ? 0.25 : 1} className="cost-bar"
-                  onMouseEnter={(e) => { setHover(k); setTip({ x: e.clientX, y: e.clientY, label: `${p.day} · ${k}`, cost: v, pct: (v / dayTotal(p)) * 100 }); }}
-                  onMouseLeave={() => { setHover(null); setTip(null); }} />;
+                const label = fmtUsdShort(v);
+                const labelFits = h >= 13 && textW(label) <= bw - 8;
+                return (
+                  <g key={k}>
+                    <rect x={x} y={yTop + inset} width={bw} height={Math.max(0.5, h - inset)} fill={colorFor(k)}
+                      opacity={dimmed ? 0.25 : 1} className="cost-bar"
+                      onMouseEnter={(e) => { setHover(k); setTip({ x: e.clientX, y: e.clientY, label: `${p.day} · ${k}`, cost: v, pct: (v / total) * 100 }); }}
+                      onMouseLeave={() => { setHover(null); setTip(null); }} />
+                    {/* in-segment cost, only where it fits; hover/tooltip carries the rest */}
+                    {labelFits && (
+                      <text x={x + bw / 2} y={(yTop + inset + yBot) / 2 + 3.5} textAnchor="middle"
+                        className="cost-seg-label" opacity={dimmed ? 0.25 : 1}>{label}</text>
+                    )}
+                  </g>
+                );
               })}
-              <text x={x + bw / 2} y={H - PAD + 14} textAnchor="middle" className="cost-axis">{p.day.slice(5)}</text>
+              {/* day total on the bar cap (skipped when it would collide with a neighbor's) */}
+              {showTotalIdx.has(i) && (
+                <text x={x + bw / 2} y={y(total) - 5} textAnchor="middle" className="cost-bar-total">{totalLabel}</text>
+              )}
+              {i % dayEvery === 0 && (
+                <text x={x + bw / 2} y={H - PADB + 14} textAnchor="middle" className="cost-axis">{p.day.slice(5)}</text>
+              )}
             </g>
           );
         })}
@@ -319,7 +415,7 @@ function StackedChart({ series, keys, hover, setHover, setTip }: {
         {keys.map((k) => (
           <span key={k} className={`cost-legend-item ${hover === k ? 'hot' : hover ? 'dim' : ''}`}
             onMouseEnter={() => setHover(k)} onMouseLeave={() => setHover(null)}>
-            <span className="swatch" style={{ background: colorFor(k, keys) }} />{k}
+            <span className="swatch" style={{ background: colorFor(k) }} />{k}
           </span>
         ))}
       </div>

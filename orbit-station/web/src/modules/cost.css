@@ -40,8 +40,12 @@
 
 /* per-day chart */
 .cost-chart { overflow: hidden; }
-.cost-axis { fill: var(--dim); font-size: 10px; }
+.cost-axis { fill: var(--dim); font-size: 10px; font-variant-numeric: tabular-nums; }
 .cost-bar { cursor: pointer; transition: opacity .12s; }
+/* day total on the bar cap */
+.cost-bar-total { fill: var(--fg); font-size: 9px; font-weight: 600; font-variant-numeric: tabular-nums; pointer-events: none; }
+/* cost inside a segment — dark ink: the palette fills are all light pastels */
+.cost-seg-label { fill: #101623; font-size: 8px; font-weight: 600; font-variant-numeric: tabular-nums; pointer-events: none; transition: opacity .12s; }
 
 /* breakdown table */
 .cost-tbl { border-collapse: collapse; width: 100%; }
