@@ -54,6 +54,14 @@ class DockTools(
      *  echoing the clamped ratio, or an "unavailable" message if no camera is bound.
      *  Default = no camera wired (mic-only dock). */
     private val setZoom: (Float) -> String = { "camera zoom is not available on this dock" },
+    /** Float a picture over the face for a while (visual_search's "gotcha"
+     *  reveal — the station's show-image frame). null clears. Default = no-op
+     *  (headless/test docks). */
+    private val onShowImage: (android.graphics.Bitmap?, Long) -> Unit = { _, _ -> },
+    /** On-demand HIGH-RES still (base64 JPEG, ≤maxEdge px) — visual_search's
+     *  identity escalation: stream frames can't identify across a room. null =
+     *  no camera / capture failed. */
+    val captureStill: suspend (Int, Int) -> String? = { _, _ -> null },
 ) {
 
     private val spokeThisTurn = AtomicBoolean(false)
@@ -205,6 +213,20 @@ class DockTools(
      * changes WITH the words (not seconds early at parse). No tool chrome
      * (this is choreography, not a tool call); wink stays the brief overlay.
      */
+    /** Decode + float a JPEG over the face for [ttlMs] (the station's
+     *  show-image frame). Decode failures are logged and dropped — a bad
+     *  payload must never take the face down. */
+    fun showImage(jpegB64: String, ttlMs: Long) {
+        try {
+            val bytes = android.util.Base64.decode(jpegB64, android.util.Base64.DEFAULT)
+            val bmp = android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+            if (bmp == null) { Timber.w("showImage: undecodable jpeg (%d bytes)", bytes.size); return }
+            onShowImage(bmp, ttlMs)
+        } catch (e: Exception) {
+            Timber.w(e, "showImage failed")
+        }
+    }
+
     fun moodLive(expression: String) {
         val why = "it fits what I'm saying right now"
         if (expression.trim().lowercase() == "wink") { face.wink(why = why); return }

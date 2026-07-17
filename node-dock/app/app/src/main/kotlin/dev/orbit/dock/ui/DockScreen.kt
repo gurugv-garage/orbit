@@ -23,6 +23,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
@@ -59,6 +60,10 @@ fun DockScreen() {
     val controller = remember { FaceController() }
     val scope = rememberCoroutineScope()
     var botSubtitle by remember { mutableStateOf("") }
+    // visual_search's "gotcha" reveal (station show-image frame): the found-view
+    // photo floats over the face until its expiry, then clears itself. Pair =
+    // bitmap + absolute expiry epoch-ms.
+    var shownImage by remember { mutableStateOf<Pair<android.graphics.Bitmap, Long>?>(null) }
     // construction order: brain depends on tools+link; tts callback updates brain state.
     val agentRef = remember { object { var value: RemoteBrain? = null } }
     // Forward ref: tools is built before wiring but needs to clear the transcript
@@ -120,6 +125,13 @@ fun DockScreen() {
     val recognitionPhoto: suspend () -> String? = remember {
         { faceTracker.captureRecognitionJpegBase64() ?: faceTracker.latestJpegBase64() }
     }
+    // expire the floating found-view photo (one-shot per image, re-armed by a
+    // newer one — the runTest eternal-ticker rule: no forever loops in a scope)
+    LaunchedEffect(shownImage) {
+        val expiry = shownImage?.second ?: return@LaunchedEffect
+        kotlinx.coroutines.delay((expiry - System.currentTimeMillis()).coerceAtLeast(0L))
+        if (shownImage?.second == expiry) shownImage = null
+    }
     val tools = remember(controller, tts) {
         DockTools(
             controller,
@@ -129,6 +141,10 @@ fun DockScreen() {
             perception = perception,
             onTurnSettled = { wiringRef.value?.clearTranscript() },
             setZoom = { r -> faceTracker.setZoom(r) },
+            onShowImage = { bmp, ttlMs ->
+                shownImage = bmp?.let { it to (System.currentTimeMillis() + ttlMs) }
+            },
+            captureStill = { maxEdge, quality -> faceTracker.captureRecognitionJpegBase64(maxEdge, quality) },
         ).also { dev.orbit.dock.agent.ToolsTestController.tools = it }
     }
     // OTA self-update (docs/ota.md §5). Holds a forward ref so onOtaOffer below
@@ -846,6 +862,20 @@ fun DockScreen() {
                         speaking = state == FaceState.Speaking,
                         accent = activeFace.palette.eyeGlow,
                     )
+                    // Found-view photo — floats top-right over the face for its
+                    // TTL ("here's what I saw when I said gotcha"), then fades.
+                    shownImage?.let { (bmp, _) ->
+                        androidx.compose.foundation.Image(
+                            bitmap = bmp.asImageBitmap(),
+                            contentDescription = "what I found",
+                            modifier = Modifier
+                                .align(Alignment.TopEnd)
+                                .padding(top = 90.dp, end = 14.dp)
+                                .fillMaxWidth(0.38f)
+                                .background(Color(0xCC000000), RoundedCornerShape(14.dp))
+                                .padding(5.dp),
+                        )
+                    }
                     // LISTENING COUNTDOWN badge — unambiguous on a screenshot: shows it's
                     // in a listening window AND the seconds left before it closes. Visible
                     // whenever the station says we're in a timed window (windowUntil>0).

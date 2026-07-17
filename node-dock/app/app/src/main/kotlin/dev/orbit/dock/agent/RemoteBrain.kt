@@ -398,6 +398,16 @@ class RemoteBrain(
             "task-digest" -> onTaskDigest(payload)
             "tool-call" -> onToolCall(payload)
             "speak" -> onSpeak(payload)
+            "show-image" -> {
+                // visual_search's found-view reveal: float the station-sent JPEG
+                // over the face for ttlMs (default 10s), then it fades on its own.
+                val b64 = payload.str("jpegB64")
+                val ttl = payload.long("ttlMs").takeIf { it > 0 } ?: 10_000L
+                if (b64.isNotEmpty()) {
+                    tools.showImage(b64, ttl)
+                    trace("SHOW-IMAGE ${b64.length / 1024}KB for ${ttl}ms")
+                }
+            }
             "turn-status" -> onTurnStatus(payload)
             "conversation" -> {
                 // The STATION is the sole owner of conversation state (listening/
@@ -667,6 +677,26 @@ class RemoteBrain(
         // Own early return + its own ack, exactly like `confirm`. The face state
         // rides along so one sample is self-describing: the picture AND what the
         // dock believed it was showing, from the same instant.
+        // visual_search's identity escalation: a fresh high-res still, returned
+        // as base64 in the tool-result content. ASYNC like face_shot (capture
+        // hops threads); ~200-400KB payload, a few times per search at most.
+        if (name == "capture_still") {
+            scope.launch {
+                val maxEdge = args["maxEdge"]?.jsonPrimitive?.content?.toIntOrNull() ?: 1280
+                val quality = args["quality"]?.jsonPrimitive?.content?.toIntOrNull() ?: 80
+                val b64 = try { tools.captureStill(maxEdge, quality) } catch (t: Throwable) {
+                    Timber.w(t, "capture_still failed"); null
+                }
+                link.publishCritical("agent", "tool-result", buildJsonObject {
+                    put("reqId", reqId); put("toolCallId", p.str("toolCallId")); put("turnId", turnId)
+                    put("content", b64 ?: "capture failed — no camera or capture error")
+                    put("isError", b64 == null)
+                })
+                trace("CAPTURE_STILL ${if (b64 != null) "${b64.length / 1024}KB" else "FAILED"}")
+            }
+            return
+        }
+
         if (name == "face_shot") {
             scope.launch {
                 val jpeg = dev.orbit.dock.debug.ScreenCapture.jpegBase64(

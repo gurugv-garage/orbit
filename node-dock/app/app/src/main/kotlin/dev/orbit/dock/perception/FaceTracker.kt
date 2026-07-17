@@ -385,7 +385,11 @@ class FaceTracker(private val appContext: Context) : CameraFrameProvider, Lifecy
         // preview + analysis + capture is a guaranteed CameraX combination.
         val cap = ImageCapture.Builder()
             .setCaptureMode(ImageCapture.CAPTURE_MODE_MINIMIZE_LATENCY)
-            .setTargetResolution(Size(640, 480))
+            // 1600px stills (was 640): identity across a room needs face pixels —
+            // at 640 every across-the-room face was 13-30px and the recognizer's
+            // names were noise (visual_search ground truth, 2026-07-17). Stills
+            // are on-demand only, so the steady-state ISP cost is unchanged.
+            .setTargetResolution(Size(1600, 1200))
             .setTargetRotation(displayRotation)
             .build()
         imageCapture = cap
