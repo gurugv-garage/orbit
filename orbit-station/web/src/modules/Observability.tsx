@@ -151,6 +151,8 @@ export function Observability() {
   const turnIndex = useRef(new Map<string, number>());
   const [expanded, setExpanded] = useState<Set<string>>(new Set());     // expanded turn ids
   const [collapsedSessions, setCollapsedSessions] = useState<Set<string>>(new Set());
+  // source-turn ids whose nested REPLAY rows are shown (collapsed by default)
+  const [openReplays, setOpenReplays] = useState<Set<string>>(new Set());
 
   // filters
   const [fSession, setFSession] = useState('');
@@ -248,7 +250,11 @@ export function Observability() {
     return () => clearInterval(iv);
   }, []);
 
-  const onEvent = useCallback((frame: { payload: unknown }) => {
+  const onEvent = useCallback((frame: { kind?: string; payload: unknown }) => {
+    // obs carries OTHER kinds too (the Brain view's 'brain-debug' stream, keyed
+    // by the WIRE turnId) — treating those as trace events created ghost turn
+    // rows (0 steps, running forever) under a different id. Events only.
+    if (frame.kind !== 'event') return;
     const ev = frame.payload as AgentEventDto;
     setTurns((prev) => {
       const next = prev.slice();
@@ -319,6 +325,7 @@ export function Observability() {
   const groups = useMemo(() => allGroups.filter((g) => !isPerc(g.sid)), [allGroups]);
   const percGroups = useMemo(() => allGroups.filter((g) => isPerc(g.sid)), [allGroups]);
 
+  const toggleReplays = (key: string) => setOpenReplays((s) => { const n = new Set(s); n.has(key) ? n.delete(key) : n.add(key); return n; });
   const toggleTurn = (id: string) => setExpanded((s) => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
   const toggleSession = (sid: string) => setCollapsedSessions((s) => { const n = new Set(s); n.has(sid) ? n.delete(sid) : n.add(sid); return n; });
 
@@ -403,9 +410,47 @@ export function Observability() {
                     ⬇ dump
                   </span>
                 </button>
-                {!collapsed && g.turns.map((t) => (
-                  <TurnRow key={t.id} turn={t} open={expanded.has(t.id)} onToggle={() => toggleTurn(t.id)} feedback={fbByTurn.get(turnKey(t.sessionId, t.id))} />
-                ))}
+                {!collapsed && (() => {
+                  // REPLAY rows nest under their source turn (via = "srcSession:srcTurn")
+                  // when the source is in this list; orphans (source in another
+                  // session / evicted) stay inline. Collapsed by default behind a
+                  // "↳ N replays" line — a LIVE (running) replay always shows.
+                  const ids = new Set(g.turns.map((t) => t.id));
+                  const srcOf = (t: TurnVM): string | undefined =>
+                    t.trigger?.kind === 'replay' ? t.trigger.via?.split(':')[1] : undefined;
+                  const nested = new Map<string, TurnVM[]>();
+                  for (const t of g.turns) {
+                    const src = srcOf(t);
+                    if (src && ids.has(src)) nested.set(src, [...(nested.get(src) ?? []), t]);
+                  }
+                  const isNested = (t: TurnVM) => { const s = srcOf(t); return s != null && ids.has(s); };
+                  const row = (t: TurnVM) => (
+                    <TurnRow key={t.id} turn={t} open={expanded.has(t.id)} onToggle={() => toggleTurn(t.id)} feedback={fbByTurn.get(turnKey(t.sessionId, t.id))} dock={g.source} />
+                  );
+                  return g.turns.filter((t) => !isNested(t)).map((t) => {
+                    const reps = nested.get(t.id) ?? [];
+                    if (reps.length === 0) return row(t);
+                    const live = reps.filter((r) => !r.ended);
+                    const shown = openReplays.has(turnKey(g.sid, t.id)) ? reps : live;
+                    return (
+                      <div key={t.id}>
+                        {row(t)}
+                        {shown.length < reps.length && (
+                          <button className="obs-replays-toggle" onClick={() => toggleReplays(turnKey(g.sid, t.id))}
+                            title="re-runs of this turn (recorded responses through live code)">
+                            ↳ {reps.length} replay{reps.length !== 1 ? 's' : ''}
+                          </button>
+                        )}
+                        {shown.map((r) => <div key={r.id} className="obs-replay-nest">{row(r)}</div>)}
+                        {shown.length === reps.length && reps.length > live.length && (
+                          <button className="obs-replays-toggle" onClick={() => toggleReplays(turnKey(g.sid, t.id))}>
+                            ↳ hide replays
+                          </button>
+                        )}
+                      </div>
+                    );
+                  });
+                })()}
               </div>
             );
           })}
@@ -464,8 +509,26 @@ function tagLabel(tc: ToolVM): string | undefined {
 }
 
 // ── one turn: header row + in-place expandable detail ────────────────────────
-function TurnRow({ turn, open, onToggle, feedback }: { turn: TurnVM; open: boolean; onToggle: () => void; feedback?: FeedbackMeta[] }) {
+function TurnRow({ turn, open, onToggle, feedback, dock }: { turn: TurnVM; open: boolean; onToggle: () => void; feedback?: FeedbackMeta[]; dock?: string }) {
   const err = turn.steps.some((s) => s.tools.some((x) => x.isError));
+  // ▶ REPLAY (conversation lane only — `dock` is passed there): re-run this
+  // recorded turn on the dock through the LIVE pipeline with no LLM calls.
+  const replay = async (e: { stopPropagation: () => void }) => {
+    e.stopPropagation();
+    if (!dock) return;
+    try {
+      const r = await fetch(`/api/brain/${encodeURIComponent(dock)}/replay`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sessionId: turn.sessionId, turnId: turn.id }),
+      });
+      const j = (await r.json().catch(() => ({}))) as { error?: string; degraded?: boolean };
+      if (!r.ok) alert(`replay failed: ${j.error ?? `HTTP ${r.status}`}`);
+      else if (j.degraded) alert('replay started — DEGRADED: transcript slice not found, [face:]/[move] tags were lost (obs text only)');
+    } catch (err2) {
+      alert(`replay failed: ${String(err2)}`);
+    }
+  };
   return (
     <div className={`obs-turn${open ? ' open' : ''}`}>
       <button className="obs-turn-head" onClick={onToggle}>
@@ -477,7 +540,12 @@ function TurnRow({ turn, open, onToggle, feedback }: { turn: TurnVM; open: boole
             the RAISING source (mood:curious.wonder / gate:arrival:x / face-follow:errored). */}
         {turn.trigger?.kind && turn.trigger.kind !== 'user' && (
           <span className={`obs-turn-kind trigger-${turn.trigger.kind}`} title={turn.trigger.via ?? turn.trigger.kind}>
-            {turn.trigger.kind}{turn.trigger.via ? `·${turn.trigger.via.split(':')[0]}` : ''}
+            {/* replay via = "srcSession:srcTurn" — the TURN is the informative half
+                (replays usually target the same session); other kinds badge the source. */}
+            {turn.trigger.kind}
+            {turn.trigger.via ? `·${(turn.trigger.kind === 'replay'
+              ? (turn.trigger.via.split(':')[1] ?? turn.trigger.via).replace('turn-', '')
+              : turn.trigger.via.split(':')[0])}` : ''}
           </span>
         )}
         {turn.trigger?.text && <span className="obs-turn-prompt" title={turn.trigger.text}>“{turn.trigger.text}”</span>}
@@ -498,6 +566,18 @@ function TurnRow({ turn, open, onToggle, feedback }: { turn: TurnVM; open: boole
         {feedback?.map((f) => (
           <span key={f.id} className="pill acc sm" title={`feedback (${f.source}): ${f.reason ?? ''}`}>💬 {f.reason ?? 'feedback'}</span>
         ))}
+        {dock && turn.ended && turn.trigger?.kind !== 'replay' && (
+          <span
+            role="button"
+            tabIndex={0}
+            className="pill sm obs-replay"
+            title="re-run this turn on the dock — recorded responses through the LIVE pipeline, no LLM calls (speaks + moves for real)"
+            onClick={(e) => { void replay(e); }}
+            onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { void replay(e); } }}
+          >
+            ▶ replay
+          </span>
+        )}
         <span className="spacer" />
         <span className="muted sm obs-turn-fulltime">{fullTime(turn.startedAt)}</span>
       </button>

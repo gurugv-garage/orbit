@@ -54,6 +54,9 @@ export interface AgentEventDto {
     isError?: boolean;
     result?: string;
     text?: string;
+    /** MessageEnd: the UNSTRIPPED assistant text ([face:]/[move] tags intact) —
+     *  the turn-replay source; `text` stays the spoken (tag-stripped) form. */
+    rawText?: string;
     trigger?: { kind: string; text?: string; via?: string };
     state?: string;
     merges?: number;
@@ -96,6 +99,9 @@ export interface StepRecord {
    *  etc.) — shown in the inspector even when a later step recovered the turn. */
   error?: string;
   text?: string;
+  /** raw assistant text, [face:]/[move] tags intact (text is tag-stripped) —
+   *  what turn-replay feeds back; recorded from 2026-07-17 on. */
+  rawText?: string;
   usage?: { inputTokens?: number; outputTokens?: number; totalTokens?: number; cost?: number; cacheRead?: number; thinkingTokens?: number };
   /** rich timings the host reports on StepEnd (mirrors the live brain-debug
    *  inspector so a resumed session renders identically). */

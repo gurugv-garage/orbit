@@ -40,6 +40,7 @@ import { RpcBroker } from './rpc.js';
 import { BusyQueue, splitByAge, type HeardUtterance } from './busy-queue.js';
 import { classifyStopIntent } from './stop-intent.js';
 import { DockBrainSession, type TurnRequest, keyStatusFor } from './session.js';
+import { buildReplayScript } from './replay.js';
 import { SessionStore } from './store.js';
 import { installDockSkill, listDockSkills, removeDockSkill, loadDockSkills } from './skills.js';
 import { buildSystemPrompt } from './prompt.js';
@@ -1208,6 +1209,46 @@ export function brainModule(w: BrainWiring): StationModule {
         const dock = decodeURIComponent(m[1]!);
         sessions.get(dock)?.endSession('console');
         json(res, 200, { ok: true });
+        return true;
+      }
+      // ── ▶ REPLAY a recorded turn (obs console) — re-run its recorded assistant
+      // responses through the LIVE pipeline with no LLM calls (brain/replay.ts).
+      // POST /:dock/replay { sessionId, turnId, paced? } — paced (default) also
+      // reproduces the recorded TTFT/stream/tool timings.
+      m = subPath.match(/^\/([^/]+)\/replay$/);
+      if (m && req.method === 'POST') {
+        const dock = decodeURIComponent(m[1]!);
+        const body = JSON.parse((await readBody(req)) || '{}') as { sessionId?: string; turnId?: string; paced?: boolean };
+        const rec = body.sessionId ? w.obs?.session(body.sessionId) : undefined;
+        // tenancy: the recording must belong to THIS dock's lane
+        const turn = rec && rec.source === dock ? rec.turns.find((t) => t.turnId === body.turnId) : undefined;
+        if (!turn) {
+          json(res, 404, { error: 'no recorded turn matched that sessionId/turnId for this dock' });
+          return true;
+        }
+        // no replays of replays: a replay's own trace has no transcript slice
+        // (nothing persisted) and stacking copies makes bugs unreproducible —
+        // always replay the ORIGINAL turn.
+        if (turn.trigger?.kind === 'replay') {
+          const srcVia = (turn.trigger as { via?: string }).via;
+          json(res, 400, { error: `this turn is itself a replay — replay the original instead (${srcVia ?? 'see its via tag'})` });
+          return true;
+        }
+        if (!w.directory.resolveCap(dock, 'voice')) {
+          json(res, 409, { error: 'dock voice offline — connect the phone (or run the fake phone: SMOKE_HOLD=1 npm run smoke)' });
+          return true;
+        }
+        const script = buildReplayScript(turn, store.messages(dock, body.sessionId!), body.paced !== false);
+        const replayTurnId = `replay-${randomUUID().slice(0, 8)}`;
+        // fire and forget — a paced replay runs as long as the original turn did
+        void session(dock).handleTurnRequest({
+          turnId: replayTurnId,
+          // via `<sessionId>:<turnId>` — the obs badge shows the part before ':'
+          trigger: { kind: 'replay', text: script.triggerText, via: `${body.sessionId}:${body.turnId}` },
+          stationOriginated: true, // the phone must ADOPT it so speak frames play
+          replay: script,
+        }).catch((err) => console.log(`[brain] ${dock}: replay failed: ${String(err)}`));
+        json(res, 200, { ok: true, replayTurnId, degraded: script.degraded ?? false, steps: script.steps.length });
         return true;
       }
       // ── internal THOUGHT poke (docs/perception-to-brain.md Phase 1) ──────────

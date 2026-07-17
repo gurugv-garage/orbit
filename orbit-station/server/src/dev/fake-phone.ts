@@ -13,6 +13,10 @@
  *
  *     npm run smoke:brain
  *     npm run smoke:brain -- "look up and say hi"
+ *
+ * SMOKE_HOLD=1 keeps the peers connected after the turn (instead of exiting),
+ * so the dock stays "online" as a headless target — e.g. for the obs console's
+ * ▶ replay (POST /api/brain/<dock>/replay), which needs a live voice peer.
  */
 
 import { WebSocket } from 'ws';
@@ -20,6 +24,7 @@ import { randomUUID } from 'node:crypto';
 
 const URL = process.env.STATION_WS ?? 'ws://localhost:8099/ws';
 const DOCK = process.env.SMOKE_DOCK ?? 'smoke-brain';
+const HOLD = process.env.SMOKE_HOLD === '1';
 const UTTERANCE = process.argv[2] ?? 'hello there! give me a happy wiggle';
 
 function connect(opts: {
@@ -146,7 +151,13 @@ async function main() {
           pub(ws, 'agent', 'speech-status', { turnId: payload.turnId, speaking: true });
           setTimeout(() => {
             pub(ws, 'agent', 'speech-status', { turnId: payload.turnId, speaking: false });
-            setTimeout(() => process.exit(0), 300);
+            if (HOLD) {
+              // stay connected as a live dock (replay target); reset per-turn stats
+              console.log('\n  SMOKE_HOLD: peers staying up — ▶ replay away (ctrl-c to quit)');
+              firstSpeakAt = 0; speakCount = 0; turnStartedAt = Date.now();
+            } else {
+              setTimeout(() => process.exit(0), 300);
+            }
           }, 200);
         }
       }
@@ -170,11 +181,14 @@ async function main() {
     context: { state: 'You can see someone in front of you (fake smoke peer).', battery: 80 },
   });
 
-  // safety net: don't hang forever if the brain never answers
-  setTimeout(() => {
-    console.log('\n  no terminal turn-status within 90s — check station logs / API keys');
-    process.exit(1);
-  }, 90_000);
+  // safety net: don't hang forever if the brain never answers (skipped when
+  // holding — a HOLD run is interactive and lives until ctrl-c)
+  if (!HOLD) {
+    setTimeout(() => {
+      console.log('\n  no terminal turn-status within 90s — check station logs / API keys');
+      process.exit(1);
+    }, 90_000);
+  }
 }
 
 main().catch((err) => {

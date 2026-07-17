@@ -55,6 +55,7 @@ import { decideThought, type SessionState } from './thought-router.js';
 import { ConversationState, type ConvTransition } from './conversation-state.js';
 import { MAX_HISTORY_MESSAGES, SESSION_IDLE_MIN, VISION_GATE } from './constants.js';
 import { RpcBroker } from './rpc.js';
+import { makeReplayStreamFn, wrapToolsForReplay, type ReplayScript } from './replay.js';
 import { SentenceStreamer } from './sentence.js';
 import { SessionStore, type SessionMeta } from './store.js';
 import { loadDockSkills, type DockSkills } from './skills.js';
@@ -99,6 +100,11 @@ export interface TurnRequest {
    *  (Addendum 10: speech heard mid-thinking cancels + re-asks with the
    *  addition folded in). Bounds the abort-restart loop (cap in brain index). */
   merges?: number;
+  /** REPLAY (station-constructed only — the obs console's ▶ replay): re-run a
+   *  recorded turn's assistant responses through the live pipeline with NO LLM
+   *  calls. The turn leaves no trace in the session: history is restored and
+   *  persistence/enrichment are skipped (see #runTurn's replay guards). */
+  replay?: ReplayScript;
 }
 
 export interface SessionDeps {
@@ -262,6 +268,10 @@ export class DockBrainSession {
   /** the serialized request the in-flight step sent (captured in the streamFn
    *  wrapper, persisted to the obs request ring on its StepEnd). */
   #pendingRequest: string | undefined;
+  /** REPLAY transport for the CURRENT turn (undefined = real LLM). Assigned
+   *  from req.replay in #runTurn's reset block — every turn overwrites it, so
+   *  a stale replay can never leak into a later real turn. */
+  #replayStreamFn: import('@earendil-works/pi-agent-core').StreamFn | undefined;
   #stepTtft: number | undefined;
   /** wall-clock of the step's first thinking / first answer-text token —
    *  thinkingMs = the span between them (the model's reasoning phase). */
@@ -900,7 +910,7 @@ export class DockBrainSession {
       // transport — or pi's own default when none is injected.
       streamFn: ((model, context, options) => {
         this.#pendingRequest = serializeRequest(context);
-        return (this.#d.streamFn ?? streamSimple)(model, context, options);
+        return (this.#replayStreamFn ?? this.#d.streamFn ?? streamSimple)(model, context, options);
       }) as import('@earendil-works/pi-agent-core').StreamFn,
     });
     agent.subscribe((event) => this.#onAgentEvent(event));
@@ -911,12 +921,17 @@ export class DockBrainSession {
 
   async #runTurn(req: TurnRequest): Promise<void> {
     const agent = this.#ensureSession();
+    // REPLAY leaves no trace: snapshot the history now, restore it in finally.
+    const preReplayMessages = req.replay ? agent.state.messages.slice() : undefined;
 
     // conversation: a turn is running → THINKING (closes any listening window).
     this.#conv.turnStart(Date.now());
 
     // reset per-turn state
     this.#activeTurnId = req.turnId;
+    // per-turn replay latch: EVERY turn assigns it (undefined on normal turns),
+    // so a stale replay transport can never survive into a real turn.
+    this.#replayStreamFn = req.replay ? makeReplayStreamFn(req.replay) : undefined;
     this.#triggerText = req.trigger.text;
     this.#triggerKind = req.trigger.kind || 'user';
     this.#triggerVia = req.trigger.via;
@@ -1077,6 +1092,9 @@ export class DockBrainSession {
         () => (this.#meta ? this.#d.hasRunningTasks?.(this.dock, this.#meta.sessionId) === true : false),
       ),
     ];
+    // REPLAY tool policy: embodiment runs real, external effects return their
+    // recorded results (the canned assistant messages reuse recorded call ids).
+    if (req.replay) agent.state.tools = wrapToolsForReplay(agent.state.tools, req.replay);
     this.#debug('turn-start', {
       text: req.trigger.text,
       model: `${agent.state.model.provider}/${agent.state.model.id}`,
@@ -1102,7 +1120,8 @@ export class DockBrainSession {
     const gate = VISION_GATE && this.#triggerKind === 'user';
     const content: (TextContent | ImageContent)[] = [{ type: 'text', text: req.trigger.text }];
     if (!gate || isVisionIntent(req.trigger.text)) {
-      const grabbed = req.imageBase64 == null && streamId != null
+      // no live-frame grab on a replay: the responses are canned, an image is dead weight
+      const grabbed = req.imageBase64 == null && streamId != null && !req.replay
         ? this.#d.getFaces()?.frame(streamId) : undefined;
       const image = req.imageBase64 ?? grabbed;
       if (image) {
@@ -1197,7 +1216,10 @@ export class DockBrainSession {
         if (tail != null) this.#speak(tail);
       }
 
-      if (this.#meta) this.#d.store.turnEnded(this.dock, this.#meta.sessionId, agent.state.messages);
+      // REPLAY: restore the pre-turn history and skip persistence — the canned
+      // exchange must not enter the session's real transcript or context.
+      if (preReplayMessages) agent.state.messages = preReplayMessages;
+      if (this.#meta && !req.replay) this.#d.store.turnEnded(this.dock, this.#meta.sessionId, agent.state.messages);
       // obs records the TERMINAL STATE (cancelled turns were previously
       // indistinguishable from done ones in /api/observability — a merge-
       // superseded turn must show as cancelled, per Addendum 10).
@@ -1218,7 +1240,7 @@ export class DockBrainSession {
       // INSTRUMENT: snapshot the session's station-side context (provenance,
       // config, models, perception window, …) onto the obs record. Best-effort,
       // off the turn's critical path — a failure here never affects the reply.
-      if (this.#meta) {
+      if (this.#meta && !req.replay) {
         const sid = this.#meta.sessionId;
         const span = { from: this.#turnStartedAt, to: Date.now() };
         void Promise.resolve(this.#d.enrichSession?.(this.dock, sid, span))
@@ -1435,8 +1457,11 @@ export class DockBrainSession {
           const tail = this.#streamer.flush();
           if (tail != null) this.#speak(tail);
           // strip the inline mood tag so the console/obs history shows what
-          // was actually SAID, not the control token.
-          this.#shipObs('MessageEnd', { text: stripMoodTag(assistantText(event.message)) });
+          // was actually SAID, not the control token — but keep the RAW form
+          // too: turn-replay needs the tags, and the session transcript that
+          // also holds them is bounded (history trim loses old turns).
+          const rawAssistant = assistantText(event.message);
+          this.#shipObs('MessageEnd', { text: stripMoodTag(rawAssistant), rawText: rawAssistant });
         }
         break;
       }

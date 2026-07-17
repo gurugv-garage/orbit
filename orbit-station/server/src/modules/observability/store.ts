@@ -94,6 +94,7 @@ export class ObsStore {
       case 'MessageEnd': {
         const step = last(turn.steps);
         if (step && ev.data?.text != null) step.text = ev.data.text;
+        if (step && typeof ev.data?.rawText === 'string') step.rawText = ev.data.rawText;
         break;
       }
       case 'SpeakStart': {
