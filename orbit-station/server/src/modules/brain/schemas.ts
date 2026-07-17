@@ -378,6 +378,35 @@ export const researchRecentSchema = {
   required: ['topic'],
 } as const;
 
+export const visualSearchSchema = {
+  type: 'object',
+  properties: {
+    query: {
+      type: 'string',
+      description: 'WHO or WHAT to find, in natural language — a known person\'s name ("Guru"), "anyone", ' +
+        'or any object/description ("the TV", "white cup", "something red on the table").',
+    },
+    budget_s: {
+      type: 'number',
+      description: 'How long to keep looking, seconds (default 30, max 45). Map it from the user\'s intent: a quick glance ≈ 10, "search properly / look everywhere" ≈ 45.',
+    },
+    tilt: {
+      type: 'string',
+      enum: ['level', 'down', 'up', 'all'],
+      description: 'Where to look vertically: "level" eye-height only, "down" adds desks/floor (default), "up" adds shelves/ceiling, "all" covers everything (slowest).',
+    },
+    resume: {
+      type: 'boolean',
+      description: 'Continue the RECENT search instead of restarting — use when the user says "keep looking", "look more", or steers you ("try the left side") right after a search.',
+    },
+    exclude_current: {
+      type: 'boolean',
+      description: 'The user rejected who/what you found ("not that one", "no, the other one") — rule it out and continue to the next candidate. Implies resume.',
+    },
+  },
+  required: ['query'],
+} as const;
+
 export const webSearchSchema = {
   type: 'object',
   properties: {
@@ -387,6 +416,17 @@ export const webSearchSchema = {
 } as const;
 
 // Descriptions live next to the schemas so the model-facing surface is one place.
+export const VISUAL_SEARCH_DESC =
+  'Physically LOOK AROUND the room to find a PERSON or an OBJECT: sweeps the body through a grid of ' +
+  'camera poses, checks each view, and ends FACING the target. Use for "find me", "find Guru", ' +
+  '"is anyone here", "find the TV", "where is the white cup", "look for something red". Pass the ' +
+  'user\'s target in `query` as natural language — people you know are matched by face; anything ' +
+  'else is judged visually. This does the whole search itself — do NOT hand-roll move+recollect_face loops. ' +
+  'It runs for several seconds; announce first ("Let me have a look around!") so the words play while you search. ' +
+  'It remembers its recent coverage: if the user says "keep looking" / "look more" / steers you ' +
+  '("check the left side"), call again with resume:true; if they reject the find ("not that one"), ' +
+  'call again with exclude_current:true. The result reports where it looked — relay honestly, never ' +
+  'claim you searched more than it says. If it cannot see the person but their VOICE was matched, say that.';
 export const WEB_SEARCH_DESC =
   'Search the web and get back a grounded answer with its sources. Use for any "look it up" ask — ' +
   'current facts, dates, prices, news, release dates, anything your own knowledge may be stale or missing on. ' +

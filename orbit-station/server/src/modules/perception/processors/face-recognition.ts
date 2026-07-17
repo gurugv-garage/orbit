@@ -49,6 +49,9 @@ export function faceRecognitionProcessor(gallery: Gallery): StreamProcessor & {
   /** "That's not me": drop the wrong association so it stops mis-matching. */
   forgetCurrent(streamId: string, name: string): Promise<{ ok: boolean }>;
   currentFrame(streamId: string): Buffer | null;
+  /** currentFrame, but only a frame decoded at/after `minTs` (visual-search:
+   *  judge post-settle frames only, never a mid-move smear). */
+  currentFrameSince(streamId: string, minTs: number): Buffer | null;
 } {
   const streams = new Map<string, Stream>();
   void loadFaceModels(); // warm the models at construction
@@ -171,6 +174,10 @@ export function faceRecognitionProcessor(gallery: Gallery): StreamProcessor & {
     /** DEBUG: the grabber's latest decoded JPEG (to inspect what we're seeing). */
     currentFrame(streamId: string): Buffer | null {
       return streams.get(streamId)?.grabber.latest() ?? null;
+    },
+
+    currentFrameSince(streamId: string, minTs: number): Buffer | null {
+      return streams.get(streamId)?.grabber.latestSince(minTs) ?? null;
     },
   };
 }

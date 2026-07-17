@@ -95,6 +95,17 @@ export class FrameGrabber {
     return this.#latest;
   }
 
+  /** The latest frame only if it was decoded AT/AFTER `minTs` (and fresh).
+   *  The visual-search sweep must judge a frame captured after its motion
+   *  settled — a frame from 1.2s ago is a mid-move smear, and `latest()`
+   *  would happily serve it. Callers poll this until a post-settle frame
+   *  lands (one arrives within ~100ms on a live stream). */
+  latestSince(minTs: number): Buffer | null {
+    if (!this.#latest || this.#latestAt < minTs) return null;
+    if (Date.now() - this.#latestAt > FRAME_FRESH_MS) return null;
+    return this.#latest;
+  }
+
   stop(): void {
     this.#started = false;
     try { this.#ff?.stdin?.end(); } catch { /* */ }

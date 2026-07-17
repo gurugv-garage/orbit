@@ -272,3 +272,27 @@ test('runStepsAwaited: done resolves early when a new sequence supersedes it', a
   assert.ok(Date.now() - t0 < 500, 'done resolved promptly after stop');
   motion.shutdown();
 });
+
+test('playGesture: choreography is an OFFSET around the current pose, not absolute', async () => {
+  const { motion, sent } = setup();
+  // park the body well off-center (visual_search just centered on someone)
+  motion.runSteps(DOCK, [{ parts: [{ part: 'foot', degrees: -80 }, { part: 'neck', degrees: -10 }], duration_ms: 200 }]);
+  await sleep(450);
+  const before = sent.length;
+  // a "happy"-shaped gesture authored around 0 — ends at (0,0) in authored terms
+  motion.playGesture(DOCK, 'happy', {
+    happy: [
+      { parts: [{ part: 'foot', degrees: 12 }, { part: 'neck', degrees: -12 }], duration_ms: 150, snap: true },
+      { parts: [{ part: 'foot', degrees: 0 }, { part: 'neck', degrees: 0 }], duration_ms: 150, snap: true },
+    ],
+  });
+  await sleep(900);
+  const partsOf = (m: BusMessage) => (m.payload as { parts: Record<string, { pulse_width_us: number }> }).parts;
+  const frames = sent.slice(before).map(partsOf).filter((p) => p.foot != null);
+  assert.ok(frames.length >= 2, 'gesture dispatched');
+  // wiggle peak: -80 + 12 = -68° ≈ 744µs ; final: back to -80° ≈ 611µs — NEVER center (1500µs)
+  const last = frames[frames.length - 1]!;
+  assert.ok(Math.abs(last.foot!.pulse_width_us - 611) < 20, `ends at start pose, got ${last.foot!.pulse_width_us}µs`);
+  assert.ok(!frames.some((f) => Math.abs(f.foot!.pulse_width_us - 1500) < 20), 'never teleports to center');
+  motion.shutdown();
+});

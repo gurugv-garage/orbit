@@ -253,6 +253,9 @@ export class DockBrainSession {
   // (docs/decision-traces/motion-speech-timing.md).
   #speechGate = new SpeechGate();
   #stepStartSpeakSeq = 0;
+  // the TURN's abort signal — long tools (visual_search) poll it; fired at every
+  // site the speech gate cancels (cancel/supersede/offline/timeout) + turn end.
+  #turnAbort = new AbortController();
   #obsSeq = 0;
   #obsTurnId = '';
   #shippedStreamStart = false;
@@ -294,6 +297,9 @@ export class DockBrainSession {
       getGrounding: deps.getGrounding,
       getGestures: () => gesturesFromConfig(deps.config('faceGestures')) as Record<string, MoveStep[]>,
       getTurnContext: () => this.#turnCtx,
+      showOnFace: (jpegB64: string, ttlMs: number) => {
+        this.#sendToVoice('show-image', { turnId: this.#activeTurnId, jpegB64, ttlMs });
+      },
       speech: {
         textThisStep: () => this.#speakSeq > this.#stepStartSpeakSeq,
         takeAnchor: () => this.#speechGate.takeAnchor(),
@@ -539,6 +545,7 @@ export class DockBrainSession {
     if (prev) {
       this.#cancelled = true;
       this.#speechGate.cancel(); // release any move gated inside the superseded turn
+      this.#turnAbort.abort();
       this.#agent?.abort();
     }
     const run = (async () => {
@@ -644,6 +651,7 @@ export class DockBrainSession {
     if (turnId != null && turnId !== this.#activeTurnId) return;
     this.#cancelled = true;
     this.#speechGate.cancel(); // a gated move must not fire into the interruption
+    this.#turnAbort.abort();
     this.#d.motion.stop(this.dock);
     this.#d.rpc.rejectAllForDock(this.dock, 'turn cancelled');
     this.#agent?.abort();
@@ -656,6 +664,7 @@ export class DockBrainSession {
     if (!this.#turnActive) return;
     this.#cancelled = true;
     this.#speechGate.cancel();
+    this.#turnAbort.abort();
     this.#d.motion.stop(this.dock);
     this.#d.rpc.rejectAllForDock(this.dock, 'dock went offline');
     this.#agent?.abort();
@@ -947,6 +956,7 @@ export class DockBrainSession {
     this.#speakSeq = 0;
     this.#stepStartSpeakSeq = 0;
     this.#speechGate.reset(); // a stale [move] anchor or gated waiter must not leak into this turn
+    this.#turnAbort = new AbortController(); // fresh signal — the last turn's abort must not kill this one
     this.#obsSeq = 0;
     this.#obsTurnId = `turn-${randomUUID().slice(0, 8)}`;
     this.#shippedStreamStart = false;
@@ -1114,6 +1124,7 @@ export class DockBrainSession {
       imageBase64: req.imageBase64, // face tools may use the frame even on gated turns
       streamId,
       voice: req.stt?.voice, // hearing-identity → face tools answer with both channels
+      signal: this.#turnAbort.signal, // long tools (visual_search) stop when the turn dies
     };
     // vision-gate bypass for task turns: the triggering frame IS the evidence,
     // and task text won't match the vision-intent regex (tasks §7a).
@@ -1144,6 +1155,7 @@ export class DockBrainSession {
     const timer = setTimeout(() => {
       this.#timedOut = true;
       this.#speechGate.cancel(); // a move gated on speech must not outlive the turn
+      this.#turnAbort.abort();
       agent.abort();
     }, timeoutMs);
 

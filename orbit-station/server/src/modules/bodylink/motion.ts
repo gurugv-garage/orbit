@@ -250,12 +250,29 @@ export class MotionExecutor {
    * Gestures come from the faceGestures config — the single copy. Unknown
    * expression or offline body is a silent no-op (the face still changes on
    * the phone; emotion choreography is best-effort by design).
+   *
+   * Gesture degrees are OFFSETS from the pose the body is in when the gesture
+   * starts — a mood is a wiggle AROUND the current gaze, never a teleport.
+   * (Found live, turn-1d02dd98: visual_search centered on Guru at −86°, then
+   * the "Found you!" happy gesture — authored around 0 — swung the gaze back
+   * to center, undoing the find.) Offsets clamp at joint limits per-step from
+   * a FIXED base, so repeated gestures can't drift.
    */
   playGesture(dock: string, expression: string, gestures: Record<string, MoveStep[]>, source = 'brain-turn'): void {
     const steps = gestures[expression];
     if (!steps || steps.length === 0 || !this.isOnline(dock)) return;
     if (!this.#lease.admit(dock, source, priorityForSource(source))) return; // a higher holder owns the body
-    void this.#runSequence(dock, steps, source);
+    const base = this.#docks.get(dock)?.targets ?? {};
+    const baseDeg = (part: string) => usToDegrees(base[part] ?? 1500);
+    const rebased = steps.map((step) => {
+      const joints = stepJoints(step);
+      if (joints.length === 0) return step; // pure wait
+      return {
+        parts: joints.map((j) => ({ part: j.part, degrees: baseDeg(j.part) + j.degrees })),
+        duration_ms: step.duration_ms, wait_ms: step.wait_ms, snap: step.snap,
+      };
+    });
+    void this.#runSequence(dock, rebased, source);
   }
 
   /** Cancel the running sequence (new turn / turn-cancel / dock offline). */

@@ -18,6 +18,7 @@
  * observability re-publishes the agent stream for the live UI.
  */
 
+import { createReadStream, existsSync, readdirSync } from 'node:fs';
 import type { Bus } from '../../core/bus.js';
 import { json } from '../../core/http.js';
 import type { RouteContext, StationModule } from '../../core/module.js';
@@ -109,6 +110,40 @@ export function observabilityModule(): StationModule {
       // UX-health summary over the last N turns (default 100): latency
       // percentiles + reliability counters. The regression tripwire for
       // "snappy and reliable" — see health.ts for what each metric catches.
+      // GET /search-shots?dock=&from=&to= — list a search's judged-view shots
+      // (filenames carry <dock>-<epochMs>-<tag>.jpg) so the trace can render
+      // the WHOLE sweep, found or not, without paths riding the tool result.
+      if (subPath === '/search-shots' && req.method === 'GET') {
+        const u = new URL(req.url ?? '/', 'http://x');
+        const dock = u.searchParams.get('dock') ?? '';
+        const from = Number(u.searchParams.get('from') ?? 0);
+        const to = Number(u.searchParams.get('to') ?? Date.now());
+        let files: string[] = [];
+        try { files = readdirSync('.data/search'); } catch { /* none yet */ }
+        const shots = files.map((f) => {
+          const m = /^(.+)-(\d{13})-(.+)\.jpg$/.exec(f);
+          return m ? { f, dock: m[1]!, ts: Number(m[2]), tag: m[3]! } : undefined;
+        }).filter((s): s is NonNullable<typeof s> => !!s && (dock === '' || s.dock === dock) && s.ts >= from && s.ts <= to)
+          .sort((a, b) => a.ts - b.ts)
+          .map(({ f, ts, tag }) => ({ f, ts, tag }));
+        json(res, 200, { shots });
+        return true;
+      }
+
+      // GET /search-shot?f=<basename.jpg> — serve a visual_search found-view
+      // snapshot (.data/search) so the trace can SHOW what "gotcha" saw.
+      // Basename-only: no separators/traversal reach the filesystem.
+      if (subPath === '/search-shot' && req.method === 'GET') {
+        const u = new URL(req.url ?? '/', 'http://x');
+        const f = u.searchParams.get('f') ?? '';
+        if (!/^[a-zA-Z0-9._-]+\.jpg$/.test(f)) { json(res, 400, { error: 'bad shot name' }); return true; }
+        const file = `.data/search/${f}`;
+        if (!existsSync(file)) { json(res, 404, { error: 'no such shot' }); return true; }
+        res.writeHead(200, { 'content-type': 'image/jpeg', 'cache-control': 'max-age=86400' });
+        createReadStream(file).pipe(res);
+        return true;
+      }
+
       if (subPath === '/health' && req.method === 'GET') {
         const url = new URL(req.url ?? '', 'http://x');
         const window = Math.max(1, Math.min(2000, Number(url.searchParams.get('window')) || 100));

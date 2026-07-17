@@ -45,6 +45,73 @@ export async function geminiText(
   return data?.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || '';
 }
 
+/** One-shot IMAGE+text → text Gemini call, sharing this module's key/cost
+ *  plumbing (like geminiText). visual_search's object judge rides this:
+ *  flash-lite, thinking OFF — per-frame verdicts are "look and answer", not
+ *  reasoning (the web_search cost lesson). `purpose` tags the Cost tab. */
+export async function geminiVision(
+  prompt: string, jpegB64: string, dockId: string, purpose = 'visual-judge',
+  model = process.env.VS_VLM_MODEL ?? 'gemini-3.1-flash-lite',
+): Promise<string> {
+  const key = geminiKey();
+  if (!key) throw new Error('no GEMINI_API_KEY');
+  const r = await fetch(`${GEMINI_BASE}/${model}:generateContent?key=${key}`, {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      contents: [{ parts: [
+        { inlineData: { mimeType: 'image/jpeg', data: jpegB64 } },
+        { text: prompt },
+      ] }],
+      generationConfig: { thinkingConfig: { thinkingBudget: 0 } },
+    }),
+    signal: AbortSignal.timeout(20_000),
+  });
+  const data = (await r.json()) as any;
+  if (!r.ok) throw new Error(`gemini ${r.status}: ${JSON.stringify(data).slice(0, 200)}`);
+  reportGeminiCost(dockId, model, purpose, data?.usageMetadata, Date.now());
+  return data?.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || '';
+}
+
+/** geminiVision + ONE callable function: the mini agentic judge visual_search
+ *  uses per frame — the model may call the function (e.g. identify_faces) on
+ *  the SAME photo before answering. At most 3 hops; returns the final text. */
+export async function geminiVisionAgent(
+  prompt: string, jpegB64: string, dockId: string,
+  fn: { name: string; description: string; parameters: object; run: (args: unknown) => Promise<string> },
+  purpose = 'visual-judge', model = process.env.VS_VLM_MODEL ?? 'gemini-3.1-flash-lite',
+): Promise<string> {
+  const key = geminiKey();
+  if (!key) throw new Error('no GEMINI_API_KEY');
+  const contents: unknown[] = [{
+    role: 'user',
+    parts: [{ inlineData: { mimeType: 'image/jpeg', data: jpegB64 } }, { text: prompt }],
+  }];
+  for (let hop = 0; hop < 3; hop++) {
+    const r = await fetch(`${GEMINI_BASE}/${model}:generateContent?key=${key}`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        contents,
+        tools: [{ functionDeclarations: [{ name: fn.name, description: fn.description, parameters: fn.parameters }] }],
+        generationConfig: { thinkingConfig: { thinkingBudget: 0 } },
+      }),
+      signal: AbortSignal.timeout(20_000),
+    });
+    const data = (await r.json()) as any;
+    if (!r.ok) throw new Error(`gemini ${r.status}: ${JSON.stringify(data).slice(0, 200)}`);
+    reportGeminiCost(dockId, model, purpose, data?.usageMetadata, Date.now());
+    const parts: any[] = data?.candidates?.[0]?.content?.parts ?? [];
+    const call = parts.find((p) => p?.functionCall);
+    if (!call) return parts.map((p) => p?.text ?? '').join(' ').trim();
+    contents.push({ role: 'model', parts: [call] });
+    const result = await fn.run(call.functionCall?.args ?? {}).catch((e) => `tool failed: ${String(e)}`);
+    contents.push({
+      role: 'user',
+      parts: [{ functionResponse: { name: call.functionCall.name, response: { result } } }],
+    });
+  }
+  return '';
+}
+
 const SYSTEM = [
   'You are the situational awareness of a personal robot. From a noisy perception',
   'feed of a room you produce the brief the robot acts on: what is actually going on',

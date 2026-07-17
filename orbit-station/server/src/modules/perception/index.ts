@@ -165,6 +165,9 @@ export interface FaceToolsApi {
    *  brain's vision source when the phone didn't attach a photo (the video
    *  is already flowing; vision turns need no extra upload). */
   frame(streamId: string): string | undefined;
+  /** frame(), but only one decoded at/after `minTs` — visual-search judges
+   *  post-settle frames only, never a mid-move smear. */
+  frameSince(streamId: string, minTs: number): string | undefined;
   /** Is this name enrolled in the gallery (case-insensitive)? — the gallery pre-check for
    *  find_person: "do I actually know this person before I go looking for them?". */
   knowsPerson(name: string): boolean;
@@ -1185,6 +1188,9 @@ export function perceptionModule(getHub: () => PerceptionProcessingHub): Station
         frame(streamId) {
           return face.currentFrame(streamId)?.toString('base64');
         },
+        frameSince(streamId, minTs) {
+          return face.currentFrameSince(streamId, minTs)?.toString('base64');
+        },
         async forget({ name, streamId }) {
           const n = name.trim();
           if (!n) return { ok: false };
@@ -1396,6 +1402,20 @@ export function perceptionModule(getHub: () => PerceptionProcessingHub): Station
         const b = await parseBody<{ enabled?: boolean }>(req);
         gateRef.current?.setEnabled(b.enabled === true);
         json(res, 200, { ok: true, enabled: gateRef.current?.isEnabled() ?? false });
+        return true;
+      }
+
+      // ── DEBUG: run face recognition on an arbitrary photo (base64 JPEG) ──
+      // POST /recognize {photoB64} → RecognizeOut. The off-device adjudicator for
+      // visual_search false-positives: "who does the gallery think is in THIS
+      // saved frame, at what confidence?" — without standing in front of the dock.
+      if (req.method === 'POST' && subPath === '/recognize') {
+        const b = await parseBody<{ photoB64?: string }>(req);
+        if (!b.photoB64) { json(res, 400, { error: 'photoB64 (base64 JPEG) required' }); return true; }
+        const ft = faceToolsRef.current;
+        if (!ft) { json(res, 503, { error: 'face tools not ready' }); return true; }
+        const out = await ft.recognize({ photo: b.photoB64 });
+        json(res, 200, out);
         return true;
       }
 
