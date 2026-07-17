@@ -452,6 +452,17 @@ export function Observability() {
   );
 }
 
+/** Synthetic TAG rows vs real LLM tool calls. inline_mood entries are the
+ *  station's trace of an inline [face:] control token going live on the phone
+ *  (and a [move] anchor rides the same mechanism) — they are NOT tool calls
+ *  the model made. Render them as 🏷 with the tag's own syntax so the trace
+ *  never conflates the two. */
+function tagLabel(tc: ToolVM): string | undefined {
+  if (tc.name !== 'inline_mood') return undefined;
+  const a = tc.args as { expression?: string; appliedBy?: string } | undefined;
+  return `[face:${a?.expression ?? '?'}]`;
+}
+
 // ── one turn: header row + in-place expandable detail ────────────────────────
 function TurnRow({ turn, open, onToggle, feedback }: { turn: TurnVM; open: boolean; onToggle: () => void; feedback?: FeedbackMeta[] }) {
   const err = turn.steps.some((s) => s.tools.some((x) => x.isError));
@@ -473,9 +484,15 @@ function TurnRow({ turn, open, onToggle, feedback }: { turn: TurnVM; open: boole
         <span className={`obs-turn-dur${dur(turn) > 4000 ? ' slow' : ''}`}>{fmtMs(dur(turn))}</span>
         <span className="muted sm">{turn.steps.length} step{turn.steps.length !== 1 ? 's' : ''}</span>
         <UsageChip u={turnUsage(turn)} title="turn total" />
-        {turn.steps.flatMap((s) => s.tools).map((tc) => (
-          <span key={tc.id} className={`pill sm ${tc.isError ? 'bad' : 'acc'}`}>{tc.name}</span>
-        ))}
+        {turn.steps.flatMap((s) => s.tools).map((tc) => {
+          const tag = tagLabel(tc);
+          return (
+            <span key={tc.id} className={`pill sm ${tc.isError ? 'bad' : tag ? '' : 'acc'}`}
+              title={tag ? 'inline tag (applied by the phone at playback) — not an LLM tool call' : 'LLM tool call'}>
+              {tag ? `🏷 ${tag}` : `⚙ ${tc.name}`}
+            </span>
+          );
+        })}
         {err && <span className="dot off" title="error" />}
         {!turn.ended && <span className="dot wait" title="running" />}
         {feedback?.map((f) => (
@@ -517,12 +534,14 @@ function TurnTimeline({ turn }: { turn: TurnVM }) {
     for (const tc of s.tools) {
       const ta = (tc.startedAt ?? t0) - t0;
       const tb = (tc.endedAt ?? tc.startedAt ?? t0) - t0;
+      const tag = tagLabel(tc);
       evs.push({
-        lane: 'tool', cls: `tool${tc.isError ? ' err' : ''}`, label: `⚙ ${tc.name}`, start: ta, end: tb,
+        lane: 'tool', cls: `tool${tc.isError ? ' err' : ''}`,
+        label: tag ? `🏷 ${tag} · inline tag` : `⚙ ${tc.name} · tool call`, start: ta, end: tb,
         detail: (
           <details className="obs-ev-tool">
             <summary className="muted sm">
-              {tc.isError ? 'error · ' : ''}params / response
+              {tc.isError ? 'error · ' : ''}{tag ? 'applied at playback · ' : ''}params / response
               <span className="obs-ev-peek mono">{inlinePeek(tc.args, tc.result)}</span>
             </summary>
             <div className="obs-kv"><span>params</span><pre>{pretty(tc.args)}</pre></div>
