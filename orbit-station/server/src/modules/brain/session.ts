@@ -1157,6 +1157,9 @@ export class DockBrainSession {
       // autonomous (phone must ADOPT) iff the phone didn't start it: any non-user
       // trigger (task/self) OR a station-originated user turn (A1.2 addressed mic).
       ...(this.#triggerKind !== 'user' || this.#stationOriginated ? { autonomous: true } : {}),
+      // kind lets the phone fire the HEARD cue only for the USER's own speech
+      // (an adopted task/self turn is the robot acting alone — no flash).
+      kind: this.#triggerKind,
     });
 
     const timeoutMs = num(this.#d.config('brainTurnTimeoutMs'), 60_000);

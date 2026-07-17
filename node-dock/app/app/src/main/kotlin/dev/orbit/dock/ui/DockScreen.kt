@@ -873,6 +873,27 @@ fun DockScreen() {
                         speaking = state == FaceState.Speaking,
                         accent = activeFace.palette.eyeGlow,
                     )
+                    // WORKING pulse — a slow face-wide breathing glow while the
+                    // brain works, readable across the room (the pill/dots are
+                    // not). Accent hue = thinking; warm orange = a TOOL is
+                    // running (a long visual_search sweep never reads as a
+                    // stall). Sits under the one-shot HEARD flash.
+                    run {
+                        val working = agentState is AgentState.Waiting || agentState is AgentState.Thinking
+                        val acting = agentState is AgentState.ToolCalling
+                        if (working || acting) {
+                            val breath = androidx.compose.animation.core.rememberInfiniteTransition(label = "workpulse")
+                            val a by breath.animateFloat(
+                                initialValue = 0.04f, targetValue = 0.16f,
+                                animationSpec = androidx.compose.animation.core.infiniteRepeatable(
+                                    animation = androidx.compose.animation.core.tween(900),
+                                    repeatMode = androidx.compose.animation.core.RepeatMode.Reverse,
+                                ), label = "workpulse-a",
+                            )
+                            val tint = if (acting) Color(0xFFFFA040) else activeFace.palette.eyeGlow
+                            Box(modifier = Modifier.fillMaxSize().background(tint.copy(alpha = a)))
+                        }
+                    }
                     // HEARD pulse — full-face tinted flash, decaying ~700ms.
                     if (heardAlpha.value > 0.01f) {
                         Box(

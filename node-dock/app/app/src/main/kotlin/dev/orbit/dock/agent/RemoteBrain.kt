@@ -831,6 +831,12 @@ class RemoteBrain(
             // are dropped by the turnId gate and the reminder is never spoken.
             if (localUserTurn && turnActive) return
             adoptAutonomousTurn(turnId)
+            // the HEARD cue for the ALWAYS-ON MIC path: the station transcribed
+            // your speech, judged it addressed, and this turn is it — the flash
+            // was previously wired only to phone-local turns, so the main way
+            // of talking to the dock never flashed. Tasks/self turns (kind !=
+            // user) are the robot acting alone: no flash.
+            if (p.str("kind") == "user") tools.heardCue()
             return
         }
         if (turnId != currentTurnId) return
