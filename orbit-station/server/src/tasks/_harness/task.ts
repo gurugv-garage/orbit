@@ -103,6 +103,14 @@ export interface TaskInstanceInfo {
   about: string;
 }
 
+/** The running Task registers itself here so one-shot LLM sugar that builds its
+ *  own Agent outside the class (vision.ts askVision) ships usage through the SAME
+ *  obs path as `this.ask` — a task process hosts exactly one Task. */
+let activeUsageShipper: ((agent: Agent) => void) | undefined;
+export function shipOneShotUsage(agent: Agent): void {
+  try { activeUsageShipper?.(agent); } catch { /* obs must never break a task */ }
+}
+
 export abstract class Task {
   /** the run_task inputs (set from the station's `init` frame before run()). */
   protected params: Record<string, unknown> = {};
@@ -139,6 +147,7 @@ export abstract class Task {
    */
   async start(ident: TaskIdentity): Promise<void> {
     this.#ident = ident;
+    activeUsageShipper = (a) => this.#shipLlmUsage(a);
     // Safety net: a crash in the LLM-authored body (an unhandled rejection or a
     // throw outside the run() await chain — e.g. an unawaited askAgentInput that
     // got superseded) should still tell the PARENT why, not just exit silently.

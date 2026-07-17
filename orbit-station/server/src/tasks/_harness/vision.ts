@@ -31,6 +31,9 @@ export async function askVision(question: string, imageBase64: string | undefine
     content: [{ type: 'text', text: question }, { type: 'image', data: imageBase64, mimeType: 'image/jpeg' }],
     timestamp: Date.now(),
   } as AgentMessage]);
+  // this one-shot Agent bypasses getAgent()'s wrapped prompt — ship its usage
+  // through the running Task so vision sugar spend also reaches the Cost tab.
+  try { (await import('./task.js')).shipOneShotUsage(agent); } catch { /* obs must never break sugar */ }
   return assistantText(agent.state.messages) || '(no answer)';
 }
 

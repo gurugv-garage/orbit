@@ -13,6 +13,7 @@
  */
 
 import { spawn } from 'node:child_process';
+import { reportGeminiCost, type GeminiUsage } from '../perception/cost-report.js';
 
 /** Downsample a WAV to 16 kHz mono (much smaller upload; online STT wants 16k anyway).
  *  Optionally extract a [start, start+dur] window (seconds) for chunked processing.
@@ -176,7 +177,8 @@ async function geminiAudio(audioPath: string, modelArg?: string): Promise<Online
       signal: AbortSignal.timeout(120_000),
     });
     if (!r.ok) throw new Error(`gemini-audio ${r.status}: ${(await r.text()).slice(0, 200)}`);
-    const data = await r.json() as { candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }> };
+    const data = await r.json() as { candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>; usageMetadata?: GeminiUsage };
+    reportGeminiCost('station', model, 'capture-stt', data.usageMetadata, Date.now());
     const txt = data?.candidates?.[0]?.content?.parts?.[0]?.text ?? '{}';
     const rawSegs = parseSegmentsLoose(txt)
       .map((s) => ({ start: s.start ?? 0, end: s.end ?? s.start ?? 0, text: (s.text ?? '').trim(), speaker: s.speaker }))
@@ -267,7 +269,8 @@ async function geminiEnrich(audioPath: string, modelArg: string, ctx?: EnrichCon
       signal: AbortSignal.timeout(120_000),
     });
     if (!r.ok) throw new Error(`enrich ${r.status}: ${(await r.text()).slice(0, 200)}`);
-    const data = await r.json() as { candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }> };
+    const data = await r.json() as { candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>; usageMetadata?: GeminiUsage };
+    reportGeminiCost('station', model, 'capture-enrich', data.usageMetadata, Date.now());
     const txt = data?.candidates?.[0]?.content?.parts?.[0]?.text ?? '{}';
     const raw = parseSegmentsLoose(txt) as Array<Record<string, unknown>>;
     const rawSegs = raw

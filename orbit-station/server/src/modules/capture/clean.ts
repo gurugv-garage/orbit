@@ -13,6 +13,7 @@
  */
 
 import { isoIst } from '../perception/snapshots.js';
+import { reportGeminiCost, type GeminiUsage } from '../perception/cost-report.js';
 
 const GEMINI_BASE = 'https://generativelanguage.googleapis.com/v1beta/models';
 const MODEL = process.env.CAPTURE_CLEAN_MODEL ?? 'gemini-2.5-flash';
@@ -85,8 +86,9 @@ export async function cleanRun(opts: {
       }),
       signal: AbortSignal.timeout(120_000),
     });
-    const data = await r.json() as { candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }> };
+    const data = await r.json() as { candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>; usageMetadata?: GeminiUsage };
     if (!r.ok) { out.error = `gemini ${r.status}: ${JSON.stringify(data).slice(0, 200)}`; return out; }
+    reportGeminiCost(opts.segments[0]?.dockId ?? 'station', model, 'capture-clean', data.usageMetadata, Date.now());
     const txt = data?.candidates?.[0]?.content?.parts?.[0]?.text ?? '{}';
     const parsed = JSON.parse(txt) as { segments?: Array<{ id: number; text: string; confidence?: number }> };
     const byId = new Map((parsed.segments ?? []).map((s) => [s.id, s]));

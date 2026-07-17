@@ -212,6 +212,19 @@ export function Cost() {
           </div>
         )}
 
+      {/* spend that exists but can't be computed from usage metadata — keep the
+          reader from mistaking this dashboard for the invoice. */}
+      <div className="cost-notes">
+        <h4>Not counted above</h4>
+        <ul>
+          <li><b>web-search grounding fee</b> — token cost is counted, but Google bills the <code>google_search</code> grounding per request: 5,000 grounded prompts/month free, then ~$14 per 1,000. Only Google billing shows it.</li>
+          <li><b>Deepgram STT</b> (capture console) — billed per audio minute, not tokens; see the Deepgram dashboard.</li>
+          <li><b>bench grader</b> — the LLM-as-judge in the bench harness isn't wired into this rollup.</li>
+          <li><b>external research script</b> — the brain's research tool spawns a script outside the station; any LLM spend inside it is invisible here.</li>
+        </ul>
+        <p className="muted">All figures are list prices from a hand-maintained table — free-tier keys still show list cost, and a model missing from the table records tokens at $0. Station-side console calls (capture-*, mem-embed) are attributed to the “station” source, not a dock.</p>
+      </div>
+
       {tip && <Tooltip tip={tip} />}
     </section>
   );
