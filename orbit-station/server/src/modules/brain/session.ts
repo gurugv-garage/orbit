@@ -973,11 +973,19 @@ export class DockBrainSession {
     this.#sanitizeHistory(agent);
     // The body half of the grounding is the STATION's to report (it owns the
     // body link since the cutover); the phone's context covers face + senses.
-    const bodyLine = this.#d.directory.resolveCap(this.dock, 'servo') != null
+    const camOnline = this.#d.directory.resolveCap(this.dock, 'camera') != null;
+    const bodyLine = (this.#d.directory.resolveCap(this.dock, 'servo') != null
       ? `Body: CONNECTED — currently ${this.#d.motion.pose(this.dock) ?? 'at rest'}. `
         + 'Parts you can move — neck (head tilt), foot (base swivel); use the move tool '
         + '(relative:true for "turn more/again").'
-      : 'Body: NOT connected (movement requests will be ignored).';
+      : 'Body: NOT connected (movement requests will be ignored).')
+      + (camOnline ? ' Camera: LIVE.' : ' Camera: OFFLINE.')
+      // Components flap; the transcript remembers their outages as vivid tool
+      // errors long after recovery (live turn-a3f: "my body is still offline"
+      // while the body stood connected — the model trusted its own history
+      // over this line). THIS line is the present tense; say so explicitly.
+      + ' This status line is CURRENT as of this turn — if earlier messages in this conversation'
+      + ' said a body/camera/tool was offline or unable, that is OUTDATED; trust this line and try again.';
     // session seeding: the most recent CLOSED session's memory note rides the
     // system prompt, so a fresh engagement still knows this morning's context.
     const memory = this.#d.store.sessions(this.dock)
@@ -1651,6 +1659,14 @@ export class DockBrainSession {
         gesturesFromConfig(this.#d.config('faceGestures')) as Record<string, MoveStep[]>);
     } catch { /* body offline — the face already changed */ }
     this.#traceMood(expression, typeof p.seq === 'number' ? p.seq : undefined, 'phone');
+  }
+
+  /** Mid-turn speech was CAPTURED (merged into the in-flight turn, or queued
+   *  for after the reply) — tell the phone so it can flash the HEARD cue. The
+   *  user is often across the room; "did it hear me?" was unanswerable from
+   *  there (UX ask 2026-07-17). */
+  notifyHeardDuringTurn(via: 'merge' | 'queued'): void {
+    this.#sendToVoice('heard-during-turn', { via });
   }
 
   /** The phone reports a speak-frame's audio just started PLAYING (the

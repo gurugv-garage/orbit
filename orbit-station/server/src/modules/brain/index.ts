@@ -837,6 +837,7 @@ export function brainModule(w: BrainWiring): StationModule {
           const info = session(t.dockId).activeTurn;
           if (info && info.kind === 'user' && info.merges < MERGE_MAX) {
             trace('merge:supersede');
+            session(t.dockId).notifyHeardDuringTurn('merge'); // flash the heard cue
             void session(t.dockId).handleTurnRequest({
               turnId: `addr-${randomUUID()}`,
               trigger: {
@@ -855,6 +856,7 @@ export function brainModule(w: BrainWiring): StationModule {
         }
         if (pre.mode === 'thinking' || pre.mode === 'speaking') {
           busyQueue.add(t);
+          session(t.dockId).notifyHeardDuringTurn('queued'); // flash the heard cue
           trace('queue:busy');
           return;
         }
