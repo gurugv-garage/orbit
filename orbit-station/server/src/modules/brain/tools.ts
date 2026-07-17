@@ -27,6 +27,7 @@ import * as slack from '../../integrations/slack.js';
 import * as whatsapp from '../../integrations/whatsapp.js';
 import * as last30days from '../../integrations/last30days.js';
 
+import * as websearch from '../../integrations/websearch.js';
 /** force_get_current summarizes only this tight window around its fresh capture, so
  *  "right now" means now — not the 60s background window (which the LLM already has
  *  passively via grounding). Small enough that the just-captured frame dominates. */
@@ -230,6 +231,24 @@ export function buildResearchTools(): AgentTool<any>[] {
       } catch (err) {
         // A timeout / bad topic / CLI failure surfaces here; hand the reason to
         // the brain to narrate rather than failing the whole turn silently.
+/**
+ * The `web_search` tool — Gemini google_search grounding (integrations/websearch.ts).
+ * Only offered when a Gemini key is present. Exists because headless-browser
+ * searches are bot-blocked by every engine; the browse skill defers to this.
+ */
+export function buildWebSearchTools(dock: string): AgentTool<any>[] {
+  if (!websearch.webSearchEnabled()) return [];
+  return [
+    tool('web_search', S.WEB_SEARCH_DESC, S.webSearchSchema, async (_id, args: { query: string }) => {
+      try {
+        return textResult(await websearch.webSearch(args.query ?? '', dock));
+      } catch (err) {
+        return textResult(`Couldn't search the web right now: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }),
+  ];
+}
+
         return textResult(`Couldn't research that right now: ${err instanceof Error ? err.message : String(err)}`);
       }
     }),

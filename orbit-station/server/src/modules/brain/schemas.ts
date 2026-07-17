@@ -363,7 +363,22 @@ export const researchRecentSchema = {
   required: ['topic'],
 } as const;
 
+export const webSearchSchema = {
+  type: 'object',
+  properties: {
+    query: { type: 'string', description: 'what to find out, as a full question or search phrase (e.g. "when does Outer Banks season 5 release", "current gold price in India")' },
+  },
+  required: ['query'],
+} as const;
+
 // Descriptions live next to the schemas so the model-facing surface is one place.
+export const WEB_SEARCH_DESC =
+  'Search the web and get back a grounded answer with its sources. Use for any "look it up" ask — ' +
+  'current facts, dates, prices, news, release dates, anything your own knowledge may be stale or missing on. ' +
+  'This is the ONLY way you search the web: do NOT drive google/duckduckgo/bing through the browse skill ' +
+  '(search engines block headless browsers). Use the browse skill only to OPEN a specific page/URL you ' +
+  'already know. Takes a few seconds; answer from the result and cite a source naturally when it matters. ' +
+  'For "what are people saying about X" community-buzz questions, prefer research_recent instead.';
 export const RESEARCH_RECENT_DESC =
   'Research what people have been saying about a topic RECENTLY (the last ~30 days) across Reddit, ' +
   'Hacker News, YouTube, GitHub, and prediction markets, ranked by real engagement (upvotes/views/odds). ' +

@@ -29,6 +29,7 @@ interface Price { textIn: number; audioIn?: number; out: number }
 // Keep keys as the bare model id (no `models/` prefix); matched by prefix so a
 // dated/suffixed id (`gemini-2.5-flash-lite-preview-…`) still resolves.
 const PRICES: Record<string, Price> = {
+  'gemini-3.1-flash-lite': { textIn: 0.25, audioIn: 0.50, out: 1.50 },
   'gemini-2.5-flash-lite': { textIn: 0.10, audioIn: 0.30, out: 0.40 },
   'gemini-2.5-flash':      { textIn: 0.30, audioIn: 1.00, out: 2.50 },
   'gemini-2.5-pro':        { textIn: 1.25, audioIn: 1.25, out: 10.00 },

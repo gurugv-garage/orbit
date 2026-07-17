@@ -58,7 +58,7 @@ import { SentenceStreamer } from './sentence.js';
 import { SessionStore, type SessionMeta } from './store.js';
 import { loadDockSkills, type DockSkills } from './skills.js';
 import { buildFileTools, FILE_TOOLS_PROMPT } from './filetools.js';
-import { buildDockTools, buildGrantTools, buildSlackTools, buildWhatsAppTools, buildResearchTools, buildMemoryTools, buildFeedbackTools, buildObsTools, buildSessionTools, fireFace, type ToolTurnContext } from './tools.js';
+import { buildDockTools, buildGrantTools, buildSlackTools, buildWhatsAppTools, buildResearchTools, buildWebSearchTools, buildMemoryTools, buildFeedbackTools, buildObsTools, buildSessionTools, fireFace, type ToolTurnContext } from './tools.js';
 import { FACES, type MoveStep } from './schemas.js';
 import type { VideoRecorderApi } from '../perception/record/recorder.js';
 import * as slack from '../../integrations/slack.js';
@@ -1038,6 +1038,7 @@ export class DockBrainSession {
       ...buildSlackTools(), // send_to_slack — only when SLACK_BOT_TOKEN is set
       ...buildWhatsAppTools(), // send_to_whatsapp — only when WHATSAPP_TOKEN is set
       ...buildResearchTools(), // research_recent — only when the last30days CLI is wired
+      ...buildWebSearchTools(this.dock), // web_search — only when a Gemini key is set
       // memory tools (recall/inspect/remember/update/forget) — only when the dock's
       // memory facade is wired (docs/perception-to-brain.md Decision 4).
       ...(this.#d.getMemory ? buildMemoryTools(this.dock, this.#d.getMemory) : []),
