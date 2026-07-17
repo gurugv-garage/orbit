@@ -66,23 +66,48 @@ try {
 
   await page.goto(plan.url, NAV);
 
+  // click/press can kick off a navigation (Enter in a search box, clicking a
+  // link). Arm the wait BEFORE acting, then await it — tolerating the case
+  // where no navigation happens at all (SPA clicks, plain keys).
+  const armNav = () => page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 5000 }).catch(() => {});
+
   for (const step of plan.steps || []) {
     if (step.goto) await page.goto(step.goto, NAV);
-    else if (step.click) await page.click(step.click, { timeout: 8000 });
-    else if (step.type) await page.fill(step.type[0], step.type[1], { timeout: 8000 });
-    else if (step.press) await page.keyboard.press(step.press);
-    else if (step.waitFor) await page.waitForSelector(step.waitFor, { timeout: 12000 });
+    else if (step.click) {
+      const nav = armNav();
+      await page.click(step.click, { timeout: 8000 });
+      await nav;
+    } else if (step.type) await page.fill(step.type[0], step.type[1], { timeout: 8000 });
+    else if (step.press) {
+      const nav = armNav();
+      await page.keyboard.press(step.press);
+      await nav;
+    } else if (step.waitFor) await page.waitForSelector(step.waitFor, { timeout: 12000 });
     else if (step.wait) await page.waitForTimeout(Math.min(Number(step.wait) || 0, 10000));
   }
 
+  // Extraction races any still-committing navigation ("Execution context was
+  // destroyed") — settle first, and on failure re-settle and retry.
+  const settle = () => page.waitForLoadState('domcontentloaded', { timeout: 15000 }).catch(() => {});
+  await settle();
+
   const extract = plan.extract || 'text';
   let text = '';
-  if (extract === 'title') text = await page.title();
-  else if (extract.startsWith('css=') || extract.startsWith('text=') || extract.startsWith('//')) {
-    const els = await page.$$(extract.replace(/^css=/, ''));
-    text = (await Promise.all(els.map((el) => el.innerText().catch(() => '')))).join('\n');
-  } else {
-    text = await page.evaluate(() => document.body?.innerText || '');
+  for (let attempt = 0; ; attempt++) {
+    try {
+      if (extract === 'title') text = await page.title();
+      else if (extract.startsWith('css=') || extract.startsWith('text=') || extract.startsWith('//')) {
+        const els = await page.$$(extract.replace(/^css=/, ''));
+        text = (await Promise.all(els.map((el) => el.innerText().catch(() => '')))).join('\n');
+      } else {
+        text = await page.evaluate(() => document.body?.innerText || '');
+      }
+      break;
+    } catch (e) {
+      if (attempt >= 2) throw e;
+      await page.waitForTimeout(500);
+      await settle();
+    }
   }
 
   await page.screenshot({ path: shot, fullPage: !!plan.fullPage });
