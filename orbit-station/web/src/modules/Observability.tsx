@@ -508,6 +508,47 @@ function tagLabel(tc: ToolVM): string | undefined {
   return `[face:${a?.expression ?? '?'}]`;
 }
 
+/** visual_search saves the FOUND view under .data/search and cites it in the
+ *  result — extract the basename so the trace can render the actual image. */
+function searchShot(result?: string): string | undefined {
+  const m = result?.match(/\.data\/search\/([a-zA-Z0-9._-]+\.jpg)/);
+  return m?.[1];
+}
+
+/** The WHOLE sweep's judged views (found or not) for one visual_search call —
+ *  lazy-fetched by dock + the tool's time window, rendered as a thumbnail
+ *  strip. MATCH frames get the accent border; -still frames are the hi-res
+ *  escalations. The "why didn't it see me" panel. */
+function SearchShotStrip({ dock, from, to }: { dock: string; from: number; to: number }) {
+  const [shots, setShots] = useState<Array<{ f: string; ts: number; tag: string }> | null>(null);
+  const load = () => {
+    if (shots !== null) return;
+    fetch(`/api/observability/search-shots?dock=${encodeURIComponent(dock)}&from=${from - 2000}&to=${to + 2000}`)
+      .then(async (r) => setShots(((await r.json()) as { shots?: Array<{ f: string; ts: number; tag: string }> }).shots ?? []))
+      .catch(() => setShots([]));
+  };
+  return (
+    <details className="obs-ev-tool" onToggle={(e) => { if ((e.target as HTMLDetailsElement).open) load(); }}>
+      <summary className="muted sm">judged views (every pose the sweep looked at)</summary>
+      {shots === null && <div className="muted sm">…</div>}
+      {shots?.length === 0 && <div className="muted sm">no shots recorded for this window</div>}
+      {!!shots?.length && (
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 6 }}>
+          {shots.map((s) => (
+            <a key={s.f} href={`/api/observability/search-shot?f=${encodeURIComponent(s.f)}`} target="_blank" rel="noreferrer"
+              style={{ textAlign: 'center', textDecoration: 'none' }}>
+              <img src={`/api/observability/search-shot?f=${encodeURIComponent(s.f)}`} alt={s.tag}
+                style={{ width: 108, borderRadius: 5, display: 'block',
+                  border: /match/i.test(s.tag) ? '2px solid var(--acc, #6c6)' : '1px solid #3333' }} />
+              <span className="muted" style={{ fontSize: 10 }}>{s.tag.replace(/^pose/, '')}</span>
+            </a>
+          ))}
+        </div>
+      )}
+    </details>
+  );
+}
+
 // ── one turn: header row + in-place expandable detail ────────────────────────
 function TurnRow({ turn, open, onToggle, feedback, dock }: { turn: TurnVM; open: boolean; onToggle: () => void; feedback?: FeedbackMeta[]; dock?: string }) {
   const err = turn.steps.some((s) => s.tools.some((x) => x.isError));
@@ -626,6 +667,23 @@ function TurnTimeline({ turn }: { turn: TurnVM }) {
             </summary>
             <div className="obs-kv"><span>params</span><pre>{pretty(tc.args)}</pre></div>
             {tc.result != null && <div className="obs-kv"><span>response</span><pre>{tc.result}</pre></div>}
+            {searchShot(tc.result) && (
+              <div className="obs-kv"><span>found view</span>
+                {/* plain link-out for the big version — no in-page zoom state
+                    to get stuck in (user-reported: zoomed in, couldn't zoom out) */}
+                <a href={`/api/observability/search-shot?f=${encodeURIComponent(searchShot(tc.result)!)}`}
+                  target="_blank" rel="noreferrer" title="open full size in a new tab">
+                  <img src={`/api/observability/search-shot?f=${encodeURIComponent(searchShot(tc.result)!)}`}
+                    alt="what visual_search saw at the find"
+                    style={{ maxWidth: 320, borderRadius: 6, display: 'block', cursor: 'zoom-in' }} />
+                </a>
+              </div>
+            )}
+            {tc.name === 'visual_search' && (
+              <SearchShotStrip dock={turn.source ?? ''}
+                from={tc.startedAt ?? turn.startedAt}
+                to={tc.endedAt ?? (tc.startedAt ?? turn.startedAt) + 60_000} />
+            )}
           </details>
         ),
       });
