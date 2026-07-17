@@ -128,6 +128,9 @@ export class WebSocketGateway {
       const json = JSON.stringify(frame);
       for (const peer of this.#peers.values()) {
         if (!peer.topics.has(msg.topic)) continue;
+        // role-scoped message: only peers of that role receive it — resolved
+        // against the live peer, same as `toAddr` below.
+        if (msg.toRole != null && peer.role !== msg.toRole) continue;
         // directed message: only the addressed peer receives it — by peer id
         // (`to`) or by component address (`toAddr`, resolved right here
         // against the live peer, so reconnects need nothing special).

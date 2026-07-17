@@ -159,8 +159,9 @@ export function bodylinkModule(deps: {
     return out;
   }
 
-  /** ~1 Hz body-status digest: directed to the dock's face component (the
-   *  phone's status panel) + undirected for consoles. */
+  /** ~1 Hz body-status digest: directed to the dock's own phone (its status
+   *  panel) + a browser-scoped copy for consoles, which watch every dock.
+   *  Tenancy: a phone only ever sees ITS dock's body — never another's. */
   function maybeDigest(dock: string, force = false): void {
     const d = body(dock);
     const now = Date.now();
@@ -172,12 +173,12 @@ export function bodylinkModule(deps: {
     // health-check button is only for the extra active loss/RTT measurement.
     const health = deps.directory.resolveCap(dock, 'servo')?.health;
     const payload = { dock, online, state: d.state, targets: deps.motion.targets(dock), health, ts: now };
-    bus.publish({ topic: 'bodylink', kind: 'digest', payload, source: 'station' });
-    const face = deps.directory.resolveCap(dock, 'face');
-    if (face?.component) {
+    bus.publish({ topic: 'bodylink', kind: 'digest', payload, source: 'station', toRole: 'browser' });
+    const phone = deps.directory.resolveCap(dock, 'face');
+    if (phone?.component) {
       bus.publish({
         topic: 'bodylink', kind: 'digest', payload, source: 'station',
-        toAddr: { dock, component: face.component },
+        toAddr: { dock, component: phone.component },
       });
     }
   }

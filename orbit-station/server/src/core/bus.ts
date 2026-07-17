@@ -6,7 +6,7 @@
  * hub bridges the bus to/from sockets; modules subscribe to react.
  */
 
-import type { ComponentAddr, Topic } from './protocol.js';
+import type { ComponentAddr, PeerRole, Topic } from './protocol.js';
 
 export interface BusMessage {
   topic: Topic;
@@ -29,6 +29,14 @@ export interface BusMessage {
    * receives it.
    */
   toAddr?: ComponentAddr;
+  /**
+   * Optional target ROLE — every peer of this role receives it, resolved
+   * against the live roster at fan-out time. For frames that are inherently
+   * multi-dock (a console watching every dock's body) rather than addressed to
+   * one device. Deliberately NOT part of `isDirected`: role-scoped frames stay
+   * sheddable under backpressure, like the broadcast they replace.
+   */
+  toRole?: PeerRole;
 }
 
 /** True when a message is directed (peer-id or address). */
