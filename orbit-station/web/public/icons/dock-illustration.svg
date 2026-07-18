@@ -1,0 +1,102 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 340 400" width="340" height="400" role="img" aria-label="orbit desk companion — phone face on a servo neck, printed tripod base with exposed electronics">
+  <defs>
+    <linearGradient id="screen" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0f2e52"/><stop offset="1" stop-color="#0a2440"/>
+    </linearGradient>
+    <linearGradient id="printed" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#fbfcfe"/><stop offset="1" stop-color="#d7dde6"/>
+    </linearGradient>
+    <linearGradient id="printedSide" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#e7ebf1"/><stop offset="1" stop-color="#c2cad6"/>
+    </linearGradient>
+    <linearGradient id="phoneBody" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#2b3440"/><stop offset="1" stop-color="#1a2028"/>
+    </linearGradient>
+    <radialGradient id="eyeGlow" cx="50%" cy="50%" r="60%">
+      <stop offset="0" stop-color="#7fe6ff"/><stop offset="100%" stop-color="#18a5c8"/>
+    </radialGradient>
+    <linearGradient id="board" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#f2e6c4"/><stop offset="1" stop-color="#d8c48f"/>
+    </linearGradient>
+    <filter id="soft" x="-20%" y="-20%" width="140%" height="140%"><feGaussianBlur stdDeviation="1.1"/></filter>
+  </defs>
+
+  <!-- ground shadow -->
+  <ellipse cx="170" cy="384" rx="120" ry="16" fill="#000" opacity=".28"/>
+
+  <!-- ══════════ TRIPOD BASE ══════════ -->
+  <!-- base platform (electronics tray) -->
+  <g>
+    <!-- tray top face -->
+    <polygon points="92,332 248,332 268,352 72,352" fill="url(#printed)"/>
+    <!-- tray front -->
+    <polygon points="72,352 268,352 262,372 78,372" fill="url(#printedSide)"/>
+    <!-- exposed electronics on the tray -->
+    <g>
+      <!-- breadboard -->
+      <rect x="150" y="336" width="60" height="18" rx="2" fill="url(#board)" stroke="#b9a86f" stroke-width=".6"/>
+      <g stroke="#c9b988" stroke-width=".5" opacity=".7">
+        <line x1="154" y1="340" x2="206" y2="340"/><line x1="154" y1="344" x2="206" y2="344"/><line x1="154" y1="348" x2="206" y2="348"/>
+      </g>
+      <!-- components -->
+      <rect x="116" y="336" width="14" height="16" rx="1.5" fill="#1f2937"/>
+      <rect x="132" y="340" width="9" height="12" rx="1" fill="#2b3444"/>
+      <circle cx="222" cy="344" r="6" fill="#26303e"/><circle cx="222" cy="344" r="2.2" fill="#3b4656"/>
+      <rect x="234" y="337" width="8" height="15" rx="1.5" fill="#b23b3b"/>
+      <!-- wiring -->
+      <path d="M126,336 C130,320 150,320 158,334" fill="none" stroke="#d1403a" stroke-width="1.6"/>
+      <path d="M140,336 C150,322 170,322 176,334" fill="none" stroke="#2b2b2b" stroke-width="1.6"/>
+      <path d="M206,338 C214,326 226,328 230,338" fill="none" stroke="#d1403a" stroke-width="1.4"/>
+      <circle cx="130" cy="349" r="1.6" fill="#ff5a4d"/> <!-- power LED -->
+    </g>
+    <!-- three splayed legs -->
+    <polygon points="96,262 108,262 92,352 78,352" fill="url(#printedSide)"/>
+    <polygon points="232,262 244,262 262,352 248,352" fill="url(#printed)"/>
+    <polygon points="163,266 177,266 172,352 168,352" fill="url(#printedSide)" opacity=".95"/>
+  </g>
+
+  <!-- ══════════ SHOULDERS: printed disc ══════════ -->
+  <ellipse cx="170" cy="262" rx="86" ry="26" fill="url(#printed)" stroke="#c2cad6" stroke-width="1"/>
+  <ellipse cx="170" cy="258" rx="86" ry="26" fill="url(#printed)"/>
+  <ellipse cx="170" cy="258" rx="86" ry="26" fill="none" stroke="#cdd4de" stroke-width="1"/>
+  <!-- disc top subtle inset -->
+  <ellipse cx="170" cy="256" rx="60" ry="16" fill="#eef1f6" opacity=".6"/>
+
+  <!-- ══════════ NECK: servo mechanism ══════════ -->
+  <!-- servo pedestal -->
+  <rect x="150" y="222" width="40" height="34" rx="4" fill="url(#printedSide)" stroke="#c2cad6" stroke-width=".8"/>
+  <!-- black tilt servo block -->
+  <rect x="158" y="214" width="24" height="22" rx="3" fill="#15181d"/>
+  <rect x="162" y="210" width="16" height="10" rx="2" fill="#22262d"/>
+  <circle cx="170" cy="216" r="3" fill="#3a4048"/>
+  <!-- mount arm to phone -->
+  <rect x="166" y="196" width="8" height="20" rx="2" fill="#2a3038"/>
+
+  <!-- ══════════ FACE: phone in clamp ══════════ -->
+  <!-- clamp arms behind -->
+  <rect x="86" y="96" width="10" height="70" rx="3" fill="#20262e"/>
+  <rect x="244" y="96" width="10" height="70" rx="3" fill="#20262e"/>
+  <!-- phone body (landscape) -->
+  <rect x="80" y="88" width="180" height="96" rx="12" fill="url(#phoneBody)" stroke="#3a424c" stroke-width="1.5"/>
+  <!-- screen -->
+  <rect x="90" y="98" width="160" height="76" rx="6" fill="url(#screen)"/>
+  <!-- top clamp bracket -->
+  <rect x="150" y="82" width="40" height="12" rx="3" fill="#e7ebf1" stroke="#c2cad6" stroke-width=".8"/>
+
+  <!-- FACE on screen: cyan eyes + eyebrow arcs -->
+  <g filter="url(#soft)">
+    <!-- left eye -->
+    <circle cx="146" cy="134" r="12" fill="url(#eyeGlow)"/>
+    <circle cx="146" cy="134" r="12" fill="none" stroke="#9ff0ff" stroke-width="1.4" opacity=".8"/>
+    <circle cx="146" cy="134" r="4.5" fill="#eafcff"/>
+    <!-- right eye -->
+    <circle cx="194" cy="134" r="12" fill="url(#eyeGlow)"/>
+    <circle cx="194" cy="134" r="12" fill="none" stroke="#9ff0ff" stroke-width="1.4" opacity=".8"/>
+    <circle cx="194" cy="134" r="4.5" fill="#eafcff"/>
+    <!-- raised eyebrow arcs -->
+    <path d="M132,116 Q146,108 160,115" fill="none" stroke="#4fd8f5" stroke-width="2.4" stroke-linecap="round"/>
+    <path d="M180,115 Q194,108 208,116" fill="none" stroke="#4fd8f5" stroke-width="2.4" stroke-linecap="round"/>
+  </g>
+  <!-- faint status bar hint -->
+  <rect x="96" y="102" width="30" height="3" rx="1.5" fill="#2f6f8f" opacity=".6"/>
+</svg>
