@@ -1,102 +1,83 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 340 400" width="340" height="400" role="img" aria-label="orbit desk companion — phone face on a servo neck, printed tripod base with exposed electronics">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 400" width="320" height="400" role="img" aria-label="orbit desk companion — phone face on a pan-tilt gimbal, domed printed base on a splayed tripod, exposed electronics tray">
   <defs>
-    <linearGradient id="screen" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#0f2e52"/><stop offset="1" stop-color="#0a2440"/>
-    </linearGradient>
-    <linearGradient id="printed" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#fbfcfe"/><stop offset="1" stop-color="#d7dde6"/>
-    </linearGradient>
-    <linearGradient id="printedSide" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#e7ebf1"/><stop offset="1" stop-color="#c2cad6"/>
-    </linearGradient>
-    <linearGradient id="phoneBody" x1="0" y1="0" x2="1" y2="0">
-      <stop offset="0" stop-color="#2b3440"/><stop offset="1" stop-color="#1a2028"/>
-    </linearGradient>
-    <radialGradient id="eyeGlow" cx="50%" cy="50%" r="60%">
-      <stop offset="0" stop-color="#7fe6ff"/><stop offset="100%" stop-color="#18a5c8"/>
-    </radialGradient>
-    <linearGradient id="board" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#f2e6c4"/><stop offset="1" stop-color="#d8c48f"/>
-    </linearGradient>
-    <filter id="soft" x="-20%" y="-20%" width="140%" height="140%"><feGaussianBlur stdDeviation="1.1"/></filter>
+    <linearGradient id="screen" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#0e2c4e"/><stop offset="1" stop-color="#09203a"/></linearGradient>
+    <linearGradient id="phoneBody" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#2c3540"/><stop offset="1" stop-color="#191f27"/></linearGradient>
+    <linearGradient id="print" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#fbfcfe"/><stop offset="1" stop-color="#dce1e9"/></linearGradient>
+    <linearGradient id="printDark" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#e6eaf0"/><stop offset="1" stop-color="#c3cbd6"/></linearGradient>
+    <linearGradient id="drum" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#f2f5f9"/><stop offset="1" stop-color="#cfd6e0"/></linearGradient>
+    <radialGradient id="eye" cx="50%" cy="45%" r="60%"><stop offset="0" stop-color="#8fe9ff"/><stop offset="100%" stop-color="#17a3c6"/></radialGradient>
+    <linearGradient id="board" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#efe2bd"/><stop offset="1" stop-color="#d5c088"/></linearGradient>
+    <filter id="soft" x="-20%" y="-20%" width="140%" height="140%"><feGaussianBlur stdDeviation="1"/></filter>
   </defs>
 
   <!-- ground shadow -->
-  <ellipse cx="170" cy="384" rx="120" ry="16" fill="#000" opacity=".28"/>
+  <ellipse cx="160" cy="386" rx="112" ry="15" fill="#000" opacity=".26"/>
 
-  <!-- ══════════ TRIPOD BASE ══════════ -->
-  <!-- base platform (electronics tray) -->
+  <!-- ══════════ TRIPOD + ELECTRONICS TRAY ══════════ -->
+  <!-- square base tray (perspective) -->
+  <polygon points="98,338 222,338 246,360 74,360" fill="url(#print)"/>
+  <polygon points="74,360 246,360 240,378 80,378" fill="url(#printDark)"/>
+  <!-- perfboard + components -->
   <g>
-    <!-- tray top face -->
-    <polygon points="92,332 248,332 268,352 72,352" fill="url(#printed)"/>
-    <!-- tray front -->
-    <polygon points="72,352 268,352 262,372 78,372" fill="url(#printedSide)"/>
-    <!-- exposed electronics on the tray -->
-    <g>
-      <!-- breadboard -->
-      <rect x="150" y="336" width="60" height="18" rx="2" fill="url(#board)" stroke="#b9a86f" stroke-width=".6"/>
-      <g stroke="#c9b988" stroke-width=".5" opacity=".7">
-        <line x1="154" y1="340" x2="206" y2="340"/><line x1="154" y1="344" x2="206" y2="344"/><line x1="154" y1="348" x2="206" y2="348"/>
-      </g>
-      <!-- components -->
-      <rect x="116" y="336" width="14" height="16" rx="1.5" fill="#1f2937"/>
-      <rect x="132" y="340" width="9" height="12" rx="1" fill="#2b3444"/>
-      <circle cx="222" cy="344" r="6" fill="#26303e"/><circle cx="222" cy="344" r="2.2" fill="#3b4656"/>
-      <rect x="234" y="337" width="8" height="15" rx="1.5" fill="#b23b3b"/>
-      <!-- wiring -->
-      <path d="M126,336 C130,320 150,320 158,334" fill="none" stroke="#d1403a" stroke-width="1.6"/>
-      <path d="M140,336 C150,322 170,322 176,334" fill="none" stroke="#2b2b2b" stroke-width="1.6"/>
-      <path d="M206,338 C214,326 226,328 230,338" fill="none" stroke="#d1403a" stroke-width="1.4"/>
-      <circle cx="130" cy="349" r="1.6" fill="#ff5a4d"/> <!-- power LED -->
+    <rect x="120" y="342" width="86" height="20" rx="2" fill="url(#board)" stroke="#bda868" stroke-width=".6"/>
+    <g stroke="#c9b988" stroke-width=".4" opacity=".6">
+      <line x1="124" y1="346" x2="202" y2="346"/><line x1="124" y1="350" x2="202" y2="350"/><line x1="124" y1="354" x2="202" y2="354"/><line x1="124" y1="358" x2="202" y2="358"/>
     </g>
-    <!-- three splayed legs -->
-    <polygon points="96,262 108,262 92,352 78,352" fill="url(#printedSide)"/>
-    <polygon points="232,262 244,262 262,352 248,352" fill="url(#printed)"/>
-    <polygon points="163,266 177,266 172,352 168,352" fill="url(#printedSide)" opacity=".95"/>
+    <!-- power module (blue) + caps -->
+    <rect x="152" y="343" width="20" height="17" rx="1.5" fill="#2a5cc0"/>
+    <rect x="176" y="345" width="9" height="15" rx="1" fill="#1f2733"/>
+    <circle cx="196" cy="352" r="4.5" fill="#26303e"/><circle cx="196" cy="352" r="1.8" fill="#c9922f"/>
+    <rect x="128" y="345" width="12" height="15" rx="1.5" fill="#8a2f2f"/> <!-- red module -->
+    <circle cx="134" cy="357" r="1.7" fill="#ff5a4d"/> <!-- LED -->
+    <!-- jumper wires: purple, blue, orange, red, black -->
+    <path d="M132,343 C136,326 150,326 156,340" fill="none" stroke="#7b52c9" stroke-width="1.5"/>
+    <path d="M140,343 C146,322 162,324 166,340" fill="none" stroke="#2a6cc0" stroke-width="1.5"/>
+    <path d="M150,343 C156,320 176,322 182,340" fill="none" stroke="#d98a2b" stroke-width="1.5"/>
+    <path d="M162,343 C170,326 190,328 196,344" fill="none" stroke="#d1403a" stroke-width="1.4"/>
+    <path d="M126,343 C122,330 122,330 128,342" fill="none" stroke="#2b2b2b" stroke-width="1.4"/>
   </g>
+  <!-- three splayed legs -->
+  <polygon points="120,250 132,250 84,360 74,360" fill="url(#printDark)"/>
+  <polygon points="188,250 200,250 246,360 236,360" fill="url(#print)"/>
+  <polygon points="154,254 166,254 162,340 158,340" fill="url(#printDark)" opacity=".92"/>
 
-  <!-- ══════════ SHOULDERS: printed disc ══════════ -->
-  <ellipse cx="170" cy="262" rx="86" ry="26" fill="url(#printed)" stroke="#c2cad6" stroke-width="1"/>
-  <ellipse cx="170" cy="258" rx="86" ry="26" fill="url(#printed)"/>
-  <ellipse cx="170" cy="258" rx="86" ry="26" fill="none" stroke="#cdd4de" stroke-width="1"/>
-  <!-- disc top subtle inset -->
-  <ellipse cx="170" cy="256" rx="60" ry="16" fill="#eef1f6" opacity=".6"/>
+  <!-- ══════════ DOMED PRINTED BASE (drum) ══════════ -->
+  <!-- drum cylinder -->
+  <path d="M96,248 Q96,286 160,286 Q224,286 224,248 L224,240 Q224,262 160,262 Q96,262 96,240 Z" fill="url(#printDark)"/>
+  <!-- drum top dome -->
+  <ellipse cx="160" cy="240" rx="64" ry="22" fill="url(#drum)" stroke="#cdd4de" stroke-width="1"/>
+  <ellipse cx="160" cy="236" rx="46" ry="14" fill="#eef2f7" opacity=".6"/>
+  <!-- seam line on drum -->
+  <path d="M99,247 Q99,258 160,258 Q221,258 221,247" fill="none" stroke="#c3cbd6" stroke-width=".8" opacity=".7"/>
 
-  <!-- ══════════ NECK: servo mechanism ══════════ -->
-  <!-- servo pedestal -->
-  <rect x="150" y="222" width="40" height="34" rx="4" fill="url(#printedSide)" stroke="#c2cad6" stroke-width=".8"/>
-  <!-- black tilt servo block -->
-  <rect x="158" y="214" width="24" height="22" rx="3" fill="#15181d"/>
-  <rect x="162" y="210" width="16" height="10" rx="2" fill="#22262d"/>
-  <circle cx="170" cy="216" r="3" fill="#3a4048"/>
-  <!-- mount arm to phone -->
-  <rect x="166" y="196" width="8" height="20" rx="2" fill="#2a3038"/>
+  <!-- ══════════ PAN-TILT GIMBAL NECK ══════════ -->
+  <!-- lower pan hub -->
+  <ellipse cx="160" cy="234" rx="20" ry="7" fill="url(#printDark)"/>
+  <rect x="146" y="212" width="28" height="24" rx="6" fill="url(#print)" stroke="#cdd4de" stroke-width=".8"/>
+  <!-- tilt knuckle (rounded servo joint) -->
+  <circle cx="160" cy="210" r="13" fill="url(#printDark)" stroke="#c3cbd6" stroke-width=".8"/>
+  <circle cx="160" cy="210" r="6" fill="#dfe4ec"/>
+  <!-- small servo horn / bolt -->
+  <circle cx="160" cy="210" r="2.4" fill="#aab4c2"/>
+  <!-- riser to clamp -->
+  <rect x="155" y="188" width="10" height="24" rx="3" fill="url(#print)"/>
 
-  <!-- ══════════ FACE: phone in clamp ══════════ -->
-  <!-- clamp arms behind -->
-  <rect x="86" y="96" width="10" height="70" rx="3" fill="#20262e"/>
-  <rect x="244" y="96" width="10" height="70" rx="3" fill="#20262e"/>
+  <!-- ══════════ PHONE FACE in spring clamp ══════════ -->
+  <!-- bottom clamp jaw -->
+  <path d="M120,182 q40,14 80,0 l0,10 q-40,12 -80,0 z" fill="url(#printDark)"/>
   <!-- phone body (landscape) -->
-  <rect x="80" y="88" width="180" height="96" rx="12" fill="url(#phoneBody)" stroke="#3a424c" stroke-width="1.5"/>
-  <!-- screen -->
-  <rect x="90" y="98" width="160" height="76" rx="6" fill="url(#screen)"/>
-  <!-- top clamp bracket -->
-  <rect x="150" y="82" width="40" height="12" rx="3" fill="#e7ebf1" stroke="#c2cad6" stroke-width=".8"/>
+  <rect x="78" y="92" width="164" height="92" rx="13" fill="url(#phoneBody)" stroke="#39424c" stroke-width="1.4"/>
+  <rect x="88" y="102" width="144" height="72" rx="6" fill="url(#screen)"/>
+  <!-- top clamp jaw (rounded grip) -->
+  <path d="M142,84 q18,-8 36,0 q4,2 4,7 l-44,0 q0,-5 4,-7 z" fill="url(#print)" stroke="#cdd4de" stroke-width=".8"/>
 
-  <!-- FACE on screen: cyan eyes + eyebrow arcs -->
+  <!-- FACE: cyan eyes + subtle brows -->
   <g filter="url(#soft)">
-    <!-- left eye -->
-    <circle cx="146" cy="134" r="12" fill="url(#eyeGlow)"/>
-    <circle cx="146" cy="134" r="12" fill="none" stroke="#9ff0ff" stroke-width="1.4" opacity=".8"/>
-    <circle cx="146" cy="134" r="4.5" fill="#eafcff"/>
-    <!-- right eye -->
-    <circle cx="194" cy="134" r="12" fill="url(#eyeGlow)"/>
-    <circle cx="194" cy="134" r="12" fill="none" stroke="#9ff0ff" stroke-width="1.4" opacity=".8"/>
-    <circle cx="194" cy="134" r="4.5" fill="#eafcff"/>
-    <!-- raised eyebrow arcs -->
-    <path d="M132,116 Q146,108 160,115" fill="none" stroke="#4fd8f5" stroke-width="2.4" stroke-linecap="round"/>
-    <path d="M180,115 Q194,108 208,116" fill="none" stroke="#4fd8f5" stroke-width="2.4" stroke-linecap="round"/>
+    <circle cx="138" cy="138" r="12" fill="url(#eye)"/><circle cx="138" cy="138" r="12" fill="none" stroke="#a6f0ff" stroke-width="1.3" opacity=".8"/><circle cx="138" cy="135" r="4" fill="#eafcff"/>
+    <circle cx="182" cy="138" r="12" fill="url(#eye)"/><circle cx="182" cy="138" r="12" fill="none" stroke="#a6f0ff" stroke-width="1.3" opacity=".8"/><circle cx="182" cy="135" r="4" fill="#eafcff"/>
+    <path d="M126,120 q12,-6 24,-1" fill="none" stroke="#54daf5" stroke-width="2.2" stroke-linecap="round"/>
+    <path d="M170,119 q12,-5 24,1" fill="none" stroke="#54daf5" stroke-width="2.2" stroke-linecap="round"/>
   </g>
-  <!-- faint status bar hint -->
-  <rect x="96" y="102" width="30" height="3" rx="1.5" fill="#2f6f8f" opacity=".6"/>
+  <!-- faint status hint -->
+  <rect x="94" y="106" width="26" height="2.6" rx="1.3" fill="#2f6f8f" opacity=".55"/>
 </svg>
