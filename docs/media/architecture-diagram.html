@@ -1,0 +1,268 @@
+<title>orbit — the loop</title>
+<style>
+  :root{
+    --bg:#F4F6F8;--panel:#FFFFFF;--ink:#16202B;--muted:#5F6C79;--faint:#93A1AE;
+    --line:#DDE3E9;--line-strong:#C3CCD6;
+    --cyan:#12A5C4;--cyan-bright:#1FC6E8;--cyan-soft:#E4F6FA;--cyan-ink:#0A6478;
+    --in:#C77A2E;--in-soft:#FBEFE2;--in-ink:#8A5115;
+    --out:#2E9E6B;--out-soft:#E6F4EC;--out-ink:#1C6844;
+    --self:#7A5CC4;--self-soft:#EEE9FA;--self-ink:#4A3486;
+    --body:#3A6BD6;--body-soft:#E8EEFC;--body-ink:#254a9e;
+    --mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+    --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  }
+  @media (prefers-color-scheme:dark){:root{
+    --bg:#0E1418;--panel:#161E25;--ink:#E6ECF1;--muted:#9AA8B4;--faint:#6B7987;
+    --line:#26313B;--line-strong:#35434F;
+    --cyan:#2CC0E0;--cyan-bright:#4FD8F5;--cyan-soft:#10323C;--cyan-ink:#7FE3F7;
+    --in:#E0A05A;--in-soft:#2E2318;--in-ink:#F0C89A;
+    --out:#56C48C;--out-soft:#143024;--out-ink:#9BE3BE;
+    --self:#A88CE6;--self-soft:#241C3A;--self-ink:#C9B6F5;
+    --body:#6E97EE;--body-soft:#182545;--body-ink:#AFC6F7;
+  }}
+  :root[data-theme="light"]{--bg:#F4F6F8;--panel:#FFFFFF;--ink:#16202B;--muted:#5F6C79;--faint:#93A1AE;--line:#DDE3E9;--line-strong:#C3CCD6;--cyan:#12A5C4;--cyan-bright:#1FC6E8;--cyan-soft:#E4F6FA;--cyan-ink:#0A6478;--in:#C77A2E;--in-soft:#FBEFE2;--in-ink:#8A5115;--out:#2E9E6B;--out-soft:#E6F4EC;--out-ink:#1C6844;--self:#7A5CC4;--self-soft:#EEE9FA;--self-ink:#4A3486;--body:#3A6BD6;--body-soft:#E8EEFC;--body-ink:#254a9e;}
+  :root[data-theme="dark"]{--bg:#0E1418;--panel:#161E25;--ink:#E6ECF1;--muted:#9AA8B4;--faint:#6B7987;--line:#26313B;--line-strong:#35434F;--cyan:#2CC0E0;--cyan-bright:#4FD8F5;--cyan-soft:#10323C;--cyan-ink:#7FE3F7;--in:#E0A05A;--in-soft:#2E2318;--in-ink:#F0C89A;--out:#56C48C;--out-soft:#143024;--out-ink:#9BE3BE;--self:#A88CE6;--self-soft:#241C3A;--self-ink:#C9B6F5;--body:#6E97EE;--body-soft:#182545;--body-ink:#AFC6F7;}
+  *{box-sizing:border-box;} body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--sans);line-height:1.5;}
+  .wrap{max-width:1120px;margin:0 auto;padding:40px 24px 80px;}
+  .eyebrow{font-family:var(--mono);font-size:12px;letter-spacing:.16em;text-transform:uppercase;color:var(--cyan);}
+  h1{font-size:26px;margin:6px 0 6px;font-weight:650;letter-spacing:-.01em;}
+  .sub{color:var(--muted);margin:0 0 6px;max-width:70ch;}
+  .note{font-size:12.5px;color:var(--faint);font-family:var(--mono);}
+  .card{margin-top:22px;background:radial-gradient(120% 90% at 50% 0%,color-mix(in srgb,var(--cyan) 7%,transparent),transparent 60%),var(--panel);border:1px solid var(--line-strong);border-radius:18px;padding:20px 22px 14px;overflow-x:auto;box-shadow:0 20px 50px -34px color-mix(in srgb,var(--ink) 70%,transparent);}
+  svg{width:100%;height:auto;display:block;font-family:var(--sans);min-width:900px;}
+  .t-title{font-weight:650;} .t-mono{font-family:var(--mono);}
+  .toolbar{display:flex;gap:10px;align-items:center;margin-top:16px;}
+  button{font-family:var(--mono);font-size:13px;color:var(--ink);background:var(--panel);border:1px solid var(--line-strong);border-radius:8px;padding:6px 12px;cursor:pointer;}
+  button:hover{border-color:var(--cyan);color:var(--cyan);}
+  button:focus-visible{outline:2px solid var(--cyan);outline-offset:2px;}
+  .legend{display:flex;gap:16px;flex-wrap:wrap;margin-top:14px;font-size:12.5px;color:var(--muted);}
+  .legend span{display:inline-flex;align-items:center;gap:6px;}
+  .sw{width:22px;height:0;border-top:2px solid;}
+
+  .flow{stroke-dasharray:5 7;animation:march 1.1s linear infinite;}
+  @keyframes march{to{stroke-dashoffset:-24;}}
+  .breathe{transform-box:fill-box;transform-origin:center;animation:breathe 3.6s ease-in-out infinite;}
+  @keyframes breathe{0%,100%{opacity:.62;}50%{opacity:1;}}
+  .spin{animation:spin 34s linear infinite;transform-origin:770px 250px;}
+  @keyframes spin{to{transform:rotate(360deg);}}
+  @media (prefers-reduced-motion:reduce){.flow,.breathe,.spin,.spin-r{animation:none!important;}.flow{stroke-dasharray:none;}}
+</style>
+
+<div class="wrap" id="root">
+  <div class="eyebrow">orbit · architecture</div>
+  <h1>One brain. Many bodies. A closed loop.</h1>
+  <p class="sub">Every body — desk dock, floor rover, a wearable — streams what it senses into one shared perception layer, where swappable vision, audio, and language models turn raw signal into understanding. Agents reason over it, drawing on a persistent self — memory, ego, personality — that grows with every turn, and send actions back out to the bodies. The robot then senses its own actions, and the loop closes.</p>
+  <div class="toolbar">
+    <button id="toggle">⏸ pause motion</button>
+    <span class="note">dashed green loop = the robot senses its own actions, back into perception</span>
+  </div>
+
+  <div class="card">
+    <svg viewBox="0 0 1240 496" role="img" aria-label="orbit closed-loop architecture">
+      <defs>
+        <marker id="hc" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7.5" markerHeight="7.5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="var(--cyan)"/></marker>
+        <marker id="hi" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7.5" markerHeight="7.5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="var(--in)"/></marker>
+        <marker id="hb" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="var(--body)"/></marker>
+        <marker id="ho" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7.5" markerHeight="7.5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="var(--out)"/></marker>
+        <marker id="hs" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="var(--self)"/></marker>
+        <radialGradient id="core" cx="50%" cy="42%" r="62%"><stop offset="0" stop-color="var(--self)"/><stop offset="1" stop-color="color-mix(in srgb,var(--self) 52%,var(--cyan))"/></radialGradient>
+        <radialGradient id="planet" cx="42%" cy="38%" r="70%"><stop offset="0" stop-color="#8fd0ff"/><stop offset="55%" stop-color="#5db8ff"/><stop offset="100%" stop-color="#2f7fd1"/></radialGradient>
+        <radialGradient id="selfcore" cx="42%" cy="38%" r="70%"><stop offset="0" stop-color="#d9c7ff"/><stop offset="45%" stop-color="#a98bff"/><stop offset="100%" stop-color="#6f52c9"/></radialGradient>
+      </defs>
+
+      <!-- ═══════════ BODIES ═══════════ -->
+      <text x="76" y="52" text-anchor="middle" class="t-mono t-title" font-size="10.5" fill="var(--body-ink)" letter-spacing="1.5">BODIES</text>
+
+      <!-- dock -->
+      <rect x="20" y="66" width="112" height="62" rx="12" fill="var(--body-soft)" stroke="var(--body)" stroke-width="1.2"/>
+      <g transform="translate(36,80)" stroke="var(--body)" stroke-width="1.7" fill="none" stroke-linecap="round" stroke-linejoin="round">
+        <rect x="0" y="0" width="24" height="15" rx="2.5" fill="color-mix(in srgb,var(--body) 18%,transparent)"/>
+        <circle cx="8" cy="7.5" r="1.6" fill="var(--body)" stroke="none"/><circle cx="16" cy="7.5" r="1.6" fill="var(--body)" stroke="none"/>
+        <line x1="12" y1="15" x2="12" y2="24"/><line x1="4" y1="26" x2="20" y2="26"/>
+      </g>
+      <text x="96" y="94" text-anchor="middle" class="t-title" font-size="12" fill="var(--body-ink)">dock</text>
+      <text x="96" y="110" text-anchor="middle" class="t-mono" font-size="9" fill="var(--muted)">desk</text>
+
+      <!-- rover -->
+      <rect x="20" y="138" width="112" height="62" rx="12" fill="var(--body-soft)" stroke="var(--body)" stroke-width="1.2"/>
+      <g transform="translate(36,152)" stroke="var(--body)" stroke-width="1.7" fill="none" stroke-linecap="round" stroke-linejoin="round">
+        <rect x="0" y="6" width="26" height="11" rx="2.5" fill="color-mix(in srgb,var(--body) 18%,transparent)"/>
+        <circle cx="7" cy="20" r="3.4"/><circle cx="19" cy="20" r="3.4"/>
+        <line x1="13" y1="6" x2="13" y2="0"/><circle cx="13" cy="-1" r="1.5" fill="var(--body)" stroke="none"/>
+      </g>
+      <text x="96" y="166" text-anchor="middle" class="t-title" font-size="12" fill="var(--body-ink)">rover</text>
+      <text x="96" y="182" text-anchor="middle" class="t-mono" font-size="9" fill="var(--muted)">floor</text>
+
+      <!-- wearable -->
+      <rect x="20" y="210" width="112" height="62" rx="12" fill="var(--body-soft)" stroke="var(--body)" stroke-width="1.2"/>
+      <g transform="translate(40,222)" stroke="var(--body)" stroke-width="1.7" fill="none" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M2,14 C2,2 22,2 22,14"/>
+        <rect x="0" y="12" width="7" height="12" rx="2.5" fill="color-mix(in srgb,var(--body) 18%,transparent)"/>
+        <rect x="17" y="12" width="7" height="12" rx="2.5" fill="color-mix(in srgb,var(--body) 18%,transparent)"/>
+      </g>
+      <text x="96" y="238" text-anchor="middle" class="t-title" font-size="12" fill="var(--body-ink)">wearable</text>
+      <text x="96" y="254" text-anchor="middle" class="t-mono" font-size="9" fill="var(--muted)">on you</text>
+
+      <text x="76" y="292" text-anchor="middle" class="t-mono" font-size="9.5" fill="var(--faint)">…&amp; more — all one</text>
+
+      <!-- bodies -> senses -->
+      <path d="M132,97  C158,97  158,150 186,158" fill="none" stroke="var(--body)" stroke-width="1.5" class="flow" opacity=".8" marker-end="url(#hb)"/>
+      <path d="M132,169 C158,169 168,166 186,168" fill="none" stroke="var(--body)" stroke-width="1.5" class="flow" opacity=".8" marker-end="url(#hb)"/>
+      <path d="M132,241 C158,241 158,186 186,178" fill="none" stroke="var(--body)" stroke-width="1.5" class="flow" opacity=".8" marker-end="url(#hb)"/>
+
+      <!-- ═══════════ SENSES ═══════════ -->
+      <text x="220" y="130" text-anchor="middle" class="t-mono t-title" font-size="10.5" fill="var(--in-ink)" letter-spacing="1.2">SENSES</text>
+      <!-- vision (eye) -->
+      <g transform="translate(190,150)" stroke="var(--in)" stroke-width="1.6" fill="none"><path d="M0,6 C6,-2 18,-2 24,6 C18,14 6,14 0,6 Z"/><circle cx="12" cy="6" r="3" fill="var(--in)" stroke="none"/></g>
+      <text x="222" y="162" class="t-mono" font-size="11.5" fill="var(--in-ink)">vision</text>
+      <!-- audio (mic) -->
+      <g transform="translate(196,172)" stroke="var(--in)" stroke-width="1.6" fill="none" stroke-linecap="round"><rect x="8" y="0" width="7" height="12" rx="3.5" fill="color-mix(in srgb,var(--in) 20%,transparent)"/><path d="M4,8 C4,14 19,14 19,8"/><line x1="11.5" y1="14" x2="11.5" y2="18"/></g>
+      <text x="222" y="186" class="t-mono" font-size="11.5" fill="var(--in-ink)">audio</text>
+      <!-- text (bubble) -->
+      <g transform="translate(192,196)" stroke="var(--in)" stroke-width="1.6" fill="none" stroke-linejoin="round"><path d="M0,3 a3,3 0 0 1 3,-3 h14 a3,3 0 0 1 3,3 v6 a3,3 0 0 1 -3,3 h-9 l-5,4 v-4 h-0 a3,3 0 0 1 -3,-3 Z" fill="color-mix(in srgb,var(--in) 14%,transparent)"/></g>
+      <text x="222" y="210" class="t-mono" font-size="11.5" fill="var(--in-ink)">text</text>
+
+      <path id="inBus" d="M300,182 C330,182 330,250 360,250" fill="none" stroke="var(--in)" stroke-width="2" class="flow" marker-end="url(#hi)"/>
+
+      <!-- ═══════════ ORBIT box (trimmed on the right) ═══════════ -->
+      <rect x="346" y="40" width="700" height="404" rx="24" fill="color-mix(in srgb,var(--cyan) 4%,var(--panel))" stroke="var(--cyan)" stroke-width="1.5"/>
+      <!-- orbit badge as a translucent corner badge, bleeding out the top-left -->
+      <g transform="translate(318,12)" opacity=".92">
+        <g transform="scale(0.5)">
+          <rect width="128" height="128" rx="28" fill="#0b1120" opacity=".82"/>
+          <circle cx="64" cy="64" r="22" fill="url(#planet)"/>
+          <ellipse cx="64" cy="64" rx="48" ry="17" fill="none" stroke="#8f7bff" stroke-width="4.5" transform="rotate(-22 64 64)"/>
+          <ellipse cx="64" cy="64" rx="40" ry="40" fill="none" stroke="#4ad6a0" stroke-width="2.6" stroke-dasharray="3 7" opacity=".7"/>
+          <circle cx="18" cy="76" r="5.5" fill="#4ad6a0" transform="rotate(-22 64 64)"/>
+          <circle cx="110" cy="52" r="4" fill="#ffc861" transform="rotate(-22 64 64)"/>
+        </g>
+      </g>
+      <text x="392" y="68" class="t-mono t-title" font-size="12" fill="var(--cyan)" letter-spacing="1.5">ORBIT PLATFORM</text>
+
+      <!-- PERCEPTION stage: two parts — a live STREAM, and the swappable MODELS -->
+      <rect x="362" y="128" width="188" height="248" rx="16" fill="var(--cyan-soft)" stroke="var(--cyan)" stroke-width="1.3"/>
+      <text x="456" y="152" text-anchor="middle" class="t-title" font-size="13" fill="var(--cyan-ink)">Perception</text>
+
+      <!-- part 1: stream -->
+      <text x="378" y="176" class="t-mono t-title" font-size="8.5" fill="var(--cyan-ink)" opacity=".8" letter-spacing="1">STREAM</text>
+      <rect x="374" y="182" width="164" height="30" rx="8" fill="var(--panel)" stroke="var(--cyan)" stroke-width="1"/>
+      <g transform="translate(386,190)" stroke="var(--cyan)" stroke-width="1.4" fill="none" stroke-linecap="round"><path d="M0,7 q3,-6 6,0 t6,0 t6,0"/></g>
+      <text x="414" y="201" class="t-mono" font-size="11" fill="var(--cyan-ink)">live snapshots</text>
+
+      <!-- part 2: models (plural) -->
+      <text x="378" y="238" class="t-mono t-title" font-size="8.5" fill="var(--cyan-ink)" opacity=".8" letter-spacing="1">SWAPPABLE MODELS</text>
+      <rect x="374" y="244" width="164" height="30" rx="8" fill="var(--panel)" stroke="var(--cyan)" stroke-width="1"/>
+      <g transform="translate(386,253)" stroke="var(--cyan)" stroke-width="1.4" fill="none"><path d="M0,5 C4,-1 14,-1 18,5 C14,11 4,11 0,5 Z"/><circle cx="9" cy="5" r="2.2" fill="var(--cyan)" stroke="none"/></g>
+      <text x="414" y="263" class="t-mono" font-size="11" fill="var(--cyan-ink)">vision models</text>
+
+      <rect x="374" y="280" width="164" height="30" rx="8" fill="var(--panel)" stroke="var(--cyan)" stroke-width="1"/>
+      <g transform="translate(388,287)" stroke="var(--cyan)" stroke-width="1.4" fill="none" stroke-linecap="round"><rect x="4" y="0" width="6" height="10" rx="3" fill="color-mix(in srgb,var(--cyan) 20%,transparent)"/><path d="M0,7 C0,12 14,12 14,7"/><line x1="7" y1="12" x2="7" y2="15"/></g>
+      <text x="414" y="299" class="t-mono" font-size="11" fill="var(--cyan-ink)">audio models</text>
+
+      <rect x="374" y="316" width="164" height="30" rx="8" fill="var(--panel)" stroke="var(--cyan)" stroke-width="1"/>
+      <g transform="translate(386,323)" stroke="var(--cyan)" stroke-width="1.4" fill="none" stroke-linejoin="round"><path d="M0,3 a3,3 0 0 1 3,-3 h10 a3,3 0 0 1 3,3 v5 a3,3 0 0 1 -3,3 h-6 l-4,3 v-3 a3,3 0 0 1 -3,-3 Z" fill="color-mix(in srgb,var(--cyan) 16%,transparent)"/></g>
+      <text x="414" y="335" class="t-mono" font-size="11" fill="var(--cyan-ink)">text models</text>
+
+      <!-- perception -> orbit -->
+      <path id="percToRing" d="M550,250 L588,250" fill="none" stroke="var(--cyan)" stroke-width="1.8" class="flow" marker-end="url(#hc)"/>
+
+      <!-- the agents' orbit — dotted path + small satellites riding it (self-badge theme) -->
+      <ellipse cx="770" cy="250" rx="152" ry="120" fill="none" stroke="#8f7bff" stroke-width="1.4" opacity=".45" stroke-dasharray="2 8"/>
+      <!-- little orbiting satellites, drifting around the ring -->
+      <g class="spin">
+        <circle cx="922" cy="250" r="3" fill="#5db8ff" opacity=".9"/>
+        <circle cx="694" cy="136" r="2.4" fill="#4ad6a0" opacity=".85"/>
+        <circle cx="694" cy="364" r="2.4" fill="#a98bff" opacity=".85"/>
+        <circle cx="618" cy="250" r="2" fill="#8f7bff" opacity=".7"/>
+      </g>
+
+      <!-- SELF core = the self badge. Dark disc behind (like the icon tile) so
+           the memory rings read crisp against it, not washed into the box. -->
+      <g transform="translate(770,250) scale(0.94)">
+        <!-- badge tile disc — gives the rings a dark ground, matching the icon -->
+        <circle cx="0" cy="0" r="50" fill="#181233" opacity=".9"/>
+        <circle cx="0" cy="0" r="50" fill="none" stroke="#8f7bff" stroke-width="1" opacity=".3"/>
+        <!-- concentric memory / growth rings, accreting outward -->
+        <circle cx="0" cy="0" r="44" fill="none" stroke="#8f7bff" stroke-width="1.6" opacity=".4" stroke-dasharray="2 7"/>
+        <circle cx="0" cy="0" r="35" fill="none" stroke="#9d84f0" stroke-width="2" opacity=".7"/>
+        <circle cx="0" cy="0" r="26" fill="none" stroke="#b49bff" stroke-width="2.4" opacity=".95"/>
+        <!-- glowing self core -->
+        <circle cx="0" cy="0" r="16" fill="url(#selfcore)"/>
+        <circle cx="0" cy="0" r="16" fill="none" stroke="#e2d4ff" stroke-width="1" opacity=".7"/>
+        <!-- bright spark on the outer ring = new memory / it evolves -->
+        <circle cx="35" cy="0" r="4.5" fill="#5db8ff"/>
+        <circle cx="-23" cy="19" r="3" fill="#4ad6a0" opacity=".9"/>
+      </g>
+      <!-- Self label sits fully BELOW the core (no leak) -->
+      <text x="770" y="322" text-anchor="middle" class="t-title" font-size="13" fill="var(--self-ink)">Self</text>
+      <text x="770" y="337" text-anchor="middle" class="t-mono" font-size="9.5" fill="var(--self-ink)" opacity=".9">memory · ego · personality</text>
+
+      <!-- AGENTS on the ring -->
+      <g class="t-mono" font-size="10.5" text-anchor="middle">
+        <g><circle cx="770" cy="118" r="30" fill="var(--panel)" stroke="var(--cyan-bright)" stroke-width="1.4"/>
+           <g transform="translate(770,110)" stroke="var(--ink)" stroke-width="1.4" fill="none"><circle cx="0" cy="0" r="4.5"/><g stroke-linecap="round"><line x1="0" y1="-8" x2="0" y2="-6"/><line x1="0" y1="6" x2="0" y2="8"/><line x1="-8" y1="0" x2="-6" y2="0"/><line x1="6" y1="0" x2="8" y2="0"/><line x1="-5.7" y1="-5.7" x2="-4.2" y2="-4.2"/><line x1="4.2" y1="4.2" x2="5.7" y2="5.7"/><line x1="5.7" y1="-5.7" x2="4.2" y2="-4.2"/><line x1="-4.2" y1="4.2" x2="-5.7" y2="5.7"/></g></g>
+           <text x="770" y="132" fill="var(--ink)">agent</text></g>
+        <g><circle cx="922" cy="250" r="30" fill="var(--panel)" stroke="var(--cyan-bright)" stroke-width="1.4"/>
+           <g transform="translate(922,242)" stroke="var(--ink)" stroke-width="1.4" fill="none"><circle cx="0" cy="0" r="4.5"/><g stroke-linecap="round"><line x1="0" y1="-8" x2="0" y2="-6"/><line x1="0" y1="6" x2="0" y2="8"/><line x1="-8" y1="0" x2="-6" y2="0"/><line x1="6" y1="0" x2="8" y2="0"/><line x1="-5.7" y1="-5.7" x2="-4.2" y2="-4.2"/><line x1="4.2" y1="4.2" x2="5.7" y2="5.7"/><line x1="5.7" y1="-5.7" x2="4.2" y2="-4.2"/><line x1="-4.2" y1="4.2" x2="-5.7" y2="5.7"/></g></g>
+           <text x="922" y="264" fill="var(--ink)">agent</text></g>
+        <g><circle cx="770" cy="382" r="30" fill="var(--panel)" stroke="var(--cyan-bright)" stroke-width="1.4"/>
+           <g transform="translate(770,374)" stroke="var(--ink)" stroke-width="1.4" fill="none"><circle cx="0" cy="0" r="4.5"/><g stroke-linecap="round"><line x1="0" y1="-8" x2="0" y2="-6"/><line x1="0" y1="6" x2="0" y2="8"/><line x1="-8" y1="0" x2="-6" y2="0"/><line x1="6" y1="0" x2="8" y2="0"/><line x1="-5.7" y1="-5.7" x2="-4.2" y2="-4.2"/><line x1="4.2" y1="4.2" x2="5.7" y2="5.7"/><line x1="5.7" y1="-5.7" x2="4.2" y2="-4.2"/><line x1="-4.2" y1="4.2" x2="-5.7" y2="5.7"/></g></g>
+           <text x="770" y="396" fill="var(--ink)">agent</text></g>
+      </g>
+      <!-- self <-> agent spokes -->
+      <g stroke="var(--self)" stroke-width="1.6" opacity=".85">
+        <line x1="770" y1="188" x2="770" y2="148" marker-end="url(#hs)" marker-start="url(#hs)"/>
+        <line x1="832" y1="250" x2="892" y2="250" marker-end="url(#hs)" marker-start="url(#hs)"/>
+        <line x1="770" y1="312" x2="770" y2="352" marker-end="url(#hs)" marker-start="url(#hs)"/>
+      </g>
+      <circle r="3.4" fill="var(--self)"><animateMotion dur="1.6s" repeatCount="indefinite" keyPoints="0;1;0" keyTimes="0;.5;1" path="M770,188 L770,148"/></circle>
+      <circle r="3.4" fill="var(--self)"><animateMotion dur="1.6s" begin=".5s" repeatCount="indefinite" keyPoints="0;1;0" keyTimes="0;.5;1" path="M832,250 L892,250"/></circle>
+      <circle r="3.4" fill="var(--self)"><animateMotion dur="1.6s" begin="1s" repeatCount="indefinite" keyPoints="0;1;0" keyTimes="0;.5;1" path="M770,312 L770,352"/></circle>
+
+      <!-- agents -> actions out (roomy) -->
+      <path id="ringToOut" d="M952,250 C990,250 1000,250 1042,250" fill="none" stroke="var(--out)" stroke-width="1.8" class="flow" marker-end="url(#ho)"/>
+
+      <!-- ═══════════ ACTIONS ═══════════ -->
+      <text x="1162" y="130" text-anchor="middle" class="t-mono t-title" font-size="10.5" fill="var(--out-ink)" letter-spacing="1.2">ACTIONS</text>
+      <g class="t-mono" font-size="11.5" fill="var(--out-ink)">
+        <rect x="1102" y="148" width="120" height="30" rx="8" fill="var(--out-soft)" stroke="var(--out)"/>
+        <g transform="translate(1114,158)" stroke="var(--out)" stroke-width="1.5" fill="none" stroke-linecap="round"><path d="M0,4 h4 l5,-4 v14 l-5,-4 h-4 Z" fill="color-mix(in srgb,var(--out) 18%,transparent)"/><path d="M12,3 C15,6 15,8 12,11"/></g>
+        <text x="1136" y="167">speak</text>
+
+        <rect x="1102" y="186" width="120" height="30" rx="8" fill="var(--out-soft)" stroke="var(--out)"/>
+        <g transform="translate(1114,194)" stroke="var(--out)" stroke-width="1.5" fill="none"><circle cx="4" cy="4" r="2.5"/><circle cx="12" cy="10" r="2.5"/><path d="M4,7 v3 M12,7 v-3 M0,4 h2 M6,4 h3 M12,10 h4"/></g>
+        <text x="1136" y="205">move</text>
+
+        <rect x="1102" y="224" width="120" height="30" rx="8" fill="var(--out-soft)" stroke="var(--out)"/>
+        <g transform="translate(1114,232)" stroke="var(--out)" stroke-width="1.5" fill="none" stroke-linejoin="round"><rect x="0" y="1" width="16" height="12" rx="2"/><path d="M0,3 L8,8 L16,3"/></g>
+        <text x="1136" y="243">message</text>
+
+        <rect x="1102" y="262" width="120" height="30" rx="8" fill="var(--out-soft)" stroke="var(--out)"/>
+        <g transform="translate(1116,277)" fill="var(--out)"><circle cx="0" cy="0" r="1.6"/><circle cx="6" cy="0" r="1.6"/><circle cx="12" cy="0" r="1.6"/></g>
+        <text x="1136" y="281">&amp; more</text>
+      </g>
+      <path id="outToActions" d="M1042,250 C1070,250 1074,210 1102,200" fill="none" stroke="var(--out)" stroke-width="2" class="flow" marker-end="url(#ho)"/>
+
+      <!-- ═══════════ FEEDBACK loop ═══════════ -->
+      <path id="fb" d="M1162,292 C1162,462 1162,480 560,480 C120,480 76,480 76,320 C76,308 76,304 76,296"
+            fill="none" stroke="var(--out)" stroke-width="1.5" stroke-dasharray="5 7" class="flow" opacity=".7" marker-end="url(#hi)"/>
+
+      <!-- packets -->
+      <circle r="4.4" fill="var(--in)"><animateMotion dur="2.6s" repeatCount="indefinite" path="M300,182 C330,182 330,250 360,250"/></circle>
+      <circle r="4" fill="var(--cyan-bright)"><animateMotion dur=".9s" begin=".2s" repeatCount="indefinite" path="M550,250 L588,250"/></circle>
+      <circle r="4.4" fill="var(--out)"><animateMotion dur="1.1s" begin=".2s" repeatCount="indefinite" path="M952,250 C990,250 1000,250 1042,250"/></circle>
+      <circle r="4.4" fill="var(--out)"><animateMotion dur="1.6s" begin=".5s" repeatCount="indefinite" path="M1042,250 C1070,250 1074,210 1102,200"/></circle>
+      <circle r="4" fill="var(--out)" opacity=".85"><animateMotion dur="5.4s" begin="1.2s" repeatCount="indefinite" path="M1162,292 C1162,462 1162,480 560,480 C120,480 76,480 76,320 C76,308 76,304 76,296"/></circle>
+    </svg>
+  </div>
+</div>
+
+<script>
+  const btn=document.getElementById('toggle');let paused=false;
+  btn.addEventListener('click',()=>{
+    paused=!paused;
+    document.querySelectorAll('svg').forEach(s=>paused?s.pauseAnimations():s.unpauseAnimations());
+    document.querySelectorAll('.flow,.breathe,.spin,.spin-r').forEach(el=>el.style.animationPlayState=paused?'paused':'running');
+    btn.textContent=paused?'▶ resume motion':'⏸ pause motion';
+  });
+</script>

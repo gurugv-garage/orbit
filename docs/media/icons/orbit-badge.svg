@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128" role="img" aria-label="orbit">
+  <!-- app badge: dark space tile + planet, twin orbit rings, satellites -->
+  <defs>
+    <radialGradient id="bg" cx="50%" cy="40%" r="75%">
+      <stop offset="0%" stop-color="#1e2740"/>
+      <stop offset="100%" stop-color="#070a11"/>
+    </radialGradient>
+    <radialGradient id="p" cx="42%" cy="38%" r="70%">
+      <stop offset="0%" stop-color="#8fd0ff"/>
+      <stop offset="55%" stop-color="#5db8ff"/>
+      <stop offset="100%" stop-color="#2f7fd1"/>
+    </radialGradient>
+  </defs>
+  <rect width="128" height="128" rx="28" fill="url(#bg)"/>
+  <!-- faint stars -->
+  <circle cx="26" cy="30" r="1.4" fill="#ffffff" opacity="0.7"/>
+  <circle cx="104" cy="40" r="1.1" fill="#ffffff" opacity="0.6"/>
+  <circle cx="96" cy="96" r="1.6" fill="#ffffff" opacity="0.5"/>
+  <circle cx="34" cy="100" r="1.2" fill="#ffffff" opacity="0.6"/>
+  <!-- planet + rings -->
+  <circle cx="64" cy="64" r="22" fill="url(#p)"/>
+  <ellipse cx="64" cy="64" rx="48" ry="17" fill="none" stroke="#8f7bff" stroke-width="3.5"
+           transform="rotate(-22 64 64)"/>
+  <ellipse cx="64" cy="64" rx="40" ry="40" fill="none" stroke="#4ad6a0" stroke-width="2"
+           stroke-dasharray="3 7" opacity="0.7"/>
+  <circle cx="18" cy="76" r="5" fill="#4ad6a0" transform="rotate(-22 64 64)"/>
+  <circle cx="110" cy="52" r="3.5" fill="#ffc861" transform="rotate(-22 64 64)"/>
+</svg>
