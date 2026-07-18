@@ -1,10 +1,9 @@
 # orbit
 
 <p align="center">
-  <video src="docs/media/dock-hero.mp4" poster="docs/media/dock-hero.jpg"
-         width="640" autoplay loop muted playsinline></video>
-  <!-- GitHub auto-plays this inline (muted); the poster .jpg shows on
-       mirrors that don't render <video>. Both live in docs/media/. -->
+  <a href="https://raw.githubusercontent.com/gurugv-garage/orbit/main/docs/media/dock-hero.mp4">
+    <img src="https://raw.githubusercontent.com/gurugv-garage/orbit/main/docs/media/dock-hero.gif" width="560" alt="the desk companion">
+  </a>
 </p>
 
 **Hackable always-on robots.**
@@ -33,9 +32,10 @@ perception layer, agents reason over it and act back out, and the robot senses
 its own actions. A closed loop.
 
 <p align="center">
-  <video src="docs/media/architecture-diagram.mp4" width="900" autoplay loop muted playsinline></video>
-  <!-- Live/animated source: docs/media/architecture-diagram.html -->
+  <img src="https://raw.githubusercontent.com/gurugv-garage/orbit/main/docs/media/architecture-diagram.gif" width="900" alt="orbit architecture — bodies stream into perception, agents act on it drawing on a persistent self, actions loop back">
 </p>
+
+<sub>Animated source: [`docs/media/architecture-diagram.html`](docs/media/architecture-diagram.html).</sub>
 
 ## Layout
 
