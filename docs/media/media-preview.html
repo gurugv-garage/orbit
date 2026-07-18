@@ -1,0 +1,226 @@
+<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>orbit — media & brand assets</title>
+<style>
+  :root{
+    --bg:#0d1218; --panel:#151c24; --panel-2:#1b232c; --ink:#e7edf2; --muted:#93a2b0; --faint:#6a7886;
+    --line:#242f3a; --line-2:#303d4a;
+    --cyan:#2cc0e0; --violet:#8f7bff; --green:#4ad6a0; --amber:#ffc861;
+    --mono:ui-monospace,"SF Mono",SFMono-Regular,Menlo,Consolas,monospace;
+    --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  }
+  @media (prefers-color-scheme:light){:root{
+    --bg:#eef1f5; --panel:#ffffff; --panel-2:#f5f7fa; --ink:#16202b; --muted:#5a6773; --faint:#8b98a5;
+    --line:#e0e5eb; --line-2:#d2d9e1;
+  }}
+  *{box-sizing:border-box;} body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--sans);line-height:1.55;}
+  .wrap{max-width:1100px;margin:0 auto;padding:44px 24px 100px;}
+  header .eyebrow{font-family:var(--mono);font-size:12px;letter-spacing:.16em;text-transform:uppercase;color:var(--cyan);}
+  h1{font-size:30px;font-weight:680;letter-spacing:-.01em;margin:8px 0 6px;}
+  .lede{color:var(--muted);max-width:70ch;margin:0;}
+  nav.toc{display:flex;gap:8px;flex-wrap:wrap;margin:22px 0 4px;}
+  nav.toc a{font-family:var(--mono);font-size:12.5px;text-decoration:none;color:var(--muted);
+    border:1px solid var(--line-2);border-radius:999px;padding:5px 13px;background:var(--panel);}
+  nav.toc a:hover{color:var(--cyan);border-color:var(--cyan);}
+
+  section{margin-top:46px;scroll-margin-top:20px;}
+  h2{font-size:19px;font-weight:640;margin:0 0 4px;display:flex;align-items:center;gap:10px;}
+  h2 .bar{width:16px;height:3px;border-radius:2px;background:var(--cyan);}
+  .sec-note{color:var(--muted);font-size:14px;margin:0 0 18px;max-width:74ch;}
+
+  .grid{display:grid;gap:16px;}
+  .g-logos{grid-template-columns:repeat(auto-fill,minmax(200px,1fr));}
+  .g-media{grid-template-columns:repeat(auto-fill,minmax(300px,1fr));}
+  .g-icons{grid-template-columns:repeat(auto-fill,minmax(128px,1fr));}
+
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:14px;overflow:hidden;display:flex;flex-direction:column;}
+  .stage{background:
+      linear-gradient(135deg,#0a0e16 0%,#141d2e 100%);
+    display:flex;align-items:center;justify-content:center;padding:22px;min-height:150px;position:relative;}
+  .stage.light{background:linear-gradient(135deg,#f4f6f9,#e6ebf1);}
+  .stage img,.stage svg,.stage video{max-width:100%;max-height:220px;display:block;}
+  .split{display:flex;width:100%;}
+  .split>div{flex:1;display:flex;align-items:center;justify-content:center;padding:18px;min-height:150px;}
+  .split .d{background:linear-gradient(135deg,#0a0e16,#141d2e);}
+  .split .l{background:linear-gradient(135deg,#f4f6f9,#e6ebf1);}
+  .split .d svg,.split .l svg{width:56px;height:56px;}
+  .split .l svg{color:#334;}
+  .split .d svg{color:#cfe0ee;}
+
+  .meta{padding:14px 16px;border-top:1px solid var(--line);}
+  .meta .name{font-weight:640;font-size:15px;}
+  .meta .path{font-family:var(--mono);font-size:11.5px;color:var(--faint);word-break:break-all;margin:3px 0 8px;}
+  .meta .desc{font-size:13px;color:var(--muted);margin:0 0 8px;}
+  .use{display:inline-block;font-family:var(--mono);font-size:11px;color:var(--cyan);
+    border:1px solid color-mix(in srgb,var(--cyan) 40%,transparent);border-radius:6px;padding:2px 8px;background:color-mix(in srgb,var(--cyan) 8%,transparent);}
+  .dims{font-family:var(--mono);font-size:11px;color:var(--faint);float:right;}
+
+  .icon-cell{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px;text-align:center;}
+  .icon-cell .box{height:52px;display:flex;align-items:center;justify-content:center;color:var(--cyan);margin-bottom:8px;}
+  .icon-cell .box svg{width:30px;height:30px;}
+  .icon-cell .n{font-family:var(--mono);font-size:11.5px;color:var(--ink);}
+  .icon-cell .u{font-size:10.5px;color:var(--faint);margin-top:2px;}
+
+  footer{margin-top:60px;padding-top:20px;border-top:1px solid var(--line);color:var(--faint);font-size:12.5px;font-family:var(--mono);}
+</style></head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="eyebrow">orbit · brand & media</div>
+    <h1>Media &amp; asset preview</h1>
+    <p class="lede">Every logo, illustration, icon, and piece of media in the repo — rendered, named, and captioned with what it is and where to use it. Open this file in a browser. Paths are relative to the repo root.</p>
+    <nav class="toc">
+      <a href="#logos">brand logos</a>
+      <a href="#illustration">robot illustration</a>
+      <a href="#media">hero &amp; diagram</a>
+      <a href="#social">social card</a>
+      <a href="#icons">diagram icons</a>
+    </nav>
+  </header>
+
+  <!-- ══════════ BRAND LOGOS ══════════ -->
+  <section id="logos">
+    <h2><span class="bar"></span>Brand logos</h2>
+    <p class="sec-note">The orbit mark in its variants, plus the matching <b>self</b> badge. The planet-with-orbit-ring is the core identity; use the badge for app tiles, the mark/mono for inline UI, the favicon for tabs.</p>
+    <div class="grid g-logos">
+
+      <div class="card">
+        <div class="stage"><img src="../../orbit-station/web/public/icons/orbit-badge.svg" alt="orbit badge" style="width:120px"></div>
+        <div class="meta"><div class="name">orbit-badge <span class="dims">128²</span></div>
+          <div class="path">orbit-station/web/public/icons/orbit-badge.svg</div>
+          <div class="desc">The full app badge — planet, orbit rings, satellites, on a dark tile.</div>
+          <span class="use">app icon · README · social</span></div>
+      </div>
+
+      <div class="card">
+        <div class="stage"><img src="../../orbit-station/web/public/icons/self-badge.svg" alt="self badge" style="width:120px"></div>
+        <div class="meta"><div class="name">self-badge <span class="dims">128²</span></div>
+          <div class="path">orbit-station/web/public/icons/self-badge.svg</div>
+          <div class="desc">The <b>self</b> mark — glowing core + concentric memory rings + a “new memory” spark. Same family as orbit.</div>
+          <span class="use">the Self concept · diagrams</span></div>
+      </div>
+
+      <div class="card">
+        <div class="stage"><img src="../../orbit-station/web/public/icons/orbit-mark.svg" alt="orbit mark" style="width:96px"></div>
+        <div class="meta"><div class="name">orbit-mark <span class="dims">64²</span></div>
+          <div class="path">orbit-station/web/public/icons/orbit-mark.svg</div>
+          <div class="desc">Flat colored mark, no tile — planet + ring + one satellite.</div>
+          <span class="use">headers · loading · inline</span></div>
+      </div>
+
+      <div class="card">
+        <div class="split">
+          <div class="d"><img src="../../orbit-station/web/public/icons/orbit-mono.svg" alt="orbit mono dark" style="width:56px;filter:brightness(0) invert(.85)"></div>
+          <div class="l"><img src="../../orbit-station/web/public/icons/orbit-mono.svg" alt="orbit mono light" style="width:56px;filter:brightness(0) invert(.2)"></div>
+        </div>
+        <div class="meta"><div class="name">orbit-mono <span class="dims">64²</span></div>
+          <div class="path">orbit-station/web/public/icons/orbit-mono.svg</div>
+          <div class="desc">Monochrome — inherits <code>currentColor</code>. Themes to any text color.</div>
+          <span class="use">Slack · docs · single-color UI</span></div>
+      </div>
+
+      <div class="card">
+        <div class="stage"><img src="../../orbit-station/web/public/icons/orbit-favicon.svg" alt="orbit favicon" style="width:64px"></div>
+        <div class="meta"><div class="name">orbit-favicon <span class="dims">32²</span></div>
+          <div class="path">orbit-station/web/public/icons/orbit-favicon.svg</div>
+          <div class="desc">Compact — planet + single ring, legible tiny.</div>
+          <span class="use">browser tab · PWA</span></div>
+      </div>
+
+      <div class="card">
+        <div class="stage"><img src="../../orbit-station/web/public/icons/orbit-app-icon-1024.png" alt="orbit app icon" style="width:120px;border-radius:22px"></div>
+        <div class="meta"><div class="name">orbit-app-icon <span class="dims">1024²</span></div>
+          <div class="path">orbit-station/web/public/icons/orbit-app-icon-1024.png</div>
+          <div class="desc">Hi-res raster of the badge for store/OS icons.</div>
+          <span class="use">Android/desktop app icon</span></div>
+      </div>
+
+    </div>
+  </section>
+
+  <!-- ══════════ ROBOT ILLUSTRATION ══════════ -->
+  <section id="illustration">
+    <h2><span class="bar" style="background:var(--violet)"></span>Robot illustration</h2>
+    <p class="sec-note">A vector illustration of the desk companion, drawn from the hero photo — phone-face with cyan eyes, servo neck, printed tripod base, exposed electronics. Scales cleanly, works on light or dark.</p>
+    <div class="grid g-media">
+      <div class="card">
+        <div class="split">
+          <div class="d"><img src="icons/dock-illustration.svg" alt="dock illustration on dark" style="height:220px"></div>
+          <div class="l"><img src="icons/dock-illustration.svg" alt="dock illustration on light" style="height:220px"></div>
+        </div>
+        <div class="meta"><div class="name">dock-illustration <span class="dims">340×400</span></div>
+          <div class="path">orbit-station/web/public/icons/dock-illustration.svg · docs/media/icons/dock-illustration.svg</div>
+          <div class="desc">Stylized-but-accurate portrait of the dock. The face shows the signature cyan eyes + raised eyebrow arcs.</div>
+          <span class="use">splash · README “what it is” · hero art</span></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ══════════ HERO & DIAGRAM ══════════ -->
+  <section id="media">
+    <h2><span class="bar" style="background:var(--green)"></span>Hero &amp; architecture</h2>
+    <p class="sec-note">The README media. Both animate as GIFs (embed reliably on GitHub) and have crisp MP4s alongside. The architecture diagram also ships as a live animated HTML source.</p>
+    <div class="grid g-media">
+
+      <div class="card">
+        <div class="stage"><img src="dock-hero.gif" alt="dock hero loop"></div>
+        <div class="meta"><div class="name">dock-hero <span class="dims">gif+mp4+jpg</span></div>
+          <div class="path">docs/media/dock-hero.gif · .mp4 · .jpg</div>
+          <div class="desc">The real dock looping — turns &amp; nods. GIF for README, MP4 for sharp, JPG as poster/still.</div>
+          <span class="use">README hero</span></div>
+      </div>
+
+      <div class="card">
+        <div class="stage"><img src="architecture-diagram.gif" alt="architecture diagram loop"></div>
+        <div class="meta"><div class="name">architecture-diagram <span class="dims">gif+mp4+html</span></div>
+          <div class="path">docs/media/architecture-diagram.gif · .mp4 · .html</div>
+          <div class="desc">One brain, many bodies, closed loop — bodies → perception (models) → agents ↔ self → actions → feedback. <a href="architecture-diagram.html" style="color:var(--cyan)">Open live HTML →</a></div>
+          <span class="use">README “how it works” · docs</span></div>
+      </div>
+
+    </div>
+  </section>
+
+  <!-- ══════════ SOCIAL CARD ══════════ -->
+  <section id="social">
+    <h2><span class="bar" style="background:var(--amber)"></span>Social preview card</h2>
+    <p class="sec-note">The 1280×640 card for GitHub’s repo social preview. Set it under <b>repo Settings → General → Social preview</b> (manual upload — GitHub doesn’t read it from the repo).</p>
+    <div class="grid g-media" style="grid-template-columns:1fr">
+      <div class="card">
+        <div class="stage" style="padding:0"><img src="social-preview-1280.png" alt="social card" style="max-height:340px"></div>
+        <div class="meta"><div class="name">social-preview <span class="dims">1280×640 · 2560×1280</span></div>
+          <div class="path">docs/media/social-preview-1280.png · social-preview.png</div>
+          <div class="desc">Badge + wordmark + tagline on the space palette. Use the 1280 for the setting; the 2560 is retina.</div>
+          <span class="use">GitHub social preview</span></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ══════════ DIAGRAM ICONS ══════════ -->
+  <section id="icons">
+    <h2><span class="bar" style="background:var(--violet)"></span>Diagram icons</h2>
+    <p class="sec-note">The hand-drawn line-icons used across the architecture diagram. All use <code>stroke="currentColor"</code> — set the surrounding text color to theme them. Shown here in cyan.</p>
+    <div class="grid g-icons">
+      <div class="icon-cell"><div class="box"><img src="icons/eye.svg" style="filter:none" alt=""></div><div class="n">eye</div><div class="u">vision</div></div>
+      <div class="icon-cell"><div class="box"><img src="icons/mic.svg" alt=""></div><div class="n">mic</div><div class="u">audio</div></div>
+      <div class="icon-cell"><div class="box"><img src="icons/bubble.svg" alt=""></div><div class="n">bubble</div><div class="u">text</div></div>
+      <div class="icon-cell"><div class="box"><img src="icons/stream.svg" alt=""></div><div class="n">stream</div><div class="u">snapshots</div></div>
+      <div class="icon-cell"><div class="box"><img src="icons/agent.svg" alt=""></div><div class="n">agent</div><div class="u">agent node</div></div>
+      <div class="icon-cell"><div class="box"><img src="icons/dock.svg" alt=""></div><div class="n">dock</div><div class="u">body</div></div>
+      <div class="icon-cell"><div class="box"><img src="icons/rover.svg" alt=""></div><div class="n">rover</div><div class="u">body</div></div>
+      <div class="icon-cell"><div class="box"><img src="icons/wearable.svg" alt=""></div><div class="n">wearable</div><div class="u">body</div></div>
+      <div class="icon-cell"><div class="box"><img src="icons/speaker.svg" alt=""></div><div class="n">speaker</div><div class="u">speak</div></div>
+      <div class="icon-cell"><div class="box"><img src="icons/move.svg" alt=""></div><div class="n">move</div><div class="u">move</div></div>
+      <div class="icon-cell"><div class="box"><img src="icons/envelope.svg" alt=""></div><div class="n">envelope</div><div class="u">message</div></div>
+    </div>
+    <p class="sec-note" style="margin-top:14px">Note: the icons above are loaded as <code>&lt;img&gt;</code>, so <code>currentColor</code> shows as their file default. Inline them in HTML (or set <code>fill/stroke</code>) to recolor. Full list &amp; usage: <a href="icons/README.md" style="color:var(--cyan)">docs/media/icons/README.md</a>.</p>
+  </section>
+
+  <footer>
+    orbit · docs/media/media-preview.html — open in a browser to preview all assets.
+    Line-icons theme via currentColor; badges + illustration are self-contained SVG; media has gif/mp4 variants.
+  </footer>
+</div>
+</body></html>
