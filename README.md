@@ -1,14 +1,14 @@
 # orbit
 
+<h2 align="center">Hackable always-on robots.</h2>
+
 <p align="center">
   <a href="https://raw.githubusercontent.com/gurugv-garage/orbit/main/docs/media/dock-hero.mp4">
     <img src="https://raw.githubusercontent.com/gurugv-garage/orbit/main/docs/media/dock-hero.gif" width="560" alt="the desk companion">
   </a>
 </p>
 
-**Hackable always-on robots.**
-
-👁 sees &nbsp;·&nbsp; 👂 hears &nbsp;·&nbsp; 🗣 talks &nbsp;·&nbsp; 🤖 moves &nbsp;·&nbsp; 🌱 grows
+<p align="center">👁 sees &nbsp;·&nbsp; 👂 hears &nbsp;·&nbsp; 🗣 talks &nbsp;·&nbsp; 🤖 moves &nbsp;·&nbsp; 🌱 grows</p>
 
 An experiment: put an always-on system in your space — seeing, hearing,
 moving, talking — and find out what it unlocks. Its purpose isn't fixed; it
@@ -34,8 +34,6 @@ its own actions. A closed loop.
 <p align="center">
   <img src="https://raw.githubusercontent.com/gurugv-garage/orbit/main/docs/media/architecture-diagram.gif" width="900" alt="orbit architecture — bodies stream into perception, agents act on it drawing on a persistent self, actions loop back">
 </p>
-
-<sub>Animated source: [`docs/media/architecture-diagram.html`](docs/media/architecture-diagram.html).</sub>
 
 ## Layout
 
