@@ -176,7 +176,8 @@ test('isSalient: keeps good speech, salient sound, vision-with-text, state strea
   assert.equal(isSalient(srec('vision', '2026-07-06T10:00:06.000+05:30', { text: 'a person entered' })), true);
   assert.equal(isSalient(srec('vision', '2026-07-06T10:00:07.000+05:30', { text: '   ' })), false);
   assert.equal(isSalient(srec('identity', '2026-07-06T10:00:08.000+05:30', {})), true);
-  assert.equal(isSalient(srec('bodymotion', '2026-07-06T10:00:09.000+05:30', {})), true);
+  // bodymotion is the robot's OWN motion — deliberately NOT salient (never wakes the dock).
+  assert.equal(isSalient(srec('bodymotion', '2026-07-06T10:00:09.000+05:30', {})), false);
 });
 
 test('coherent mode: tail keeps only salient records; head summary unchanged', () => {

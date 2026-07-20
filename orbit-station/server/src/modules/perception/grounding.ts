@@ -106,9 +106,10 @@ export function isSalient(r: SnapshotRecord): boolean {
     }
     case 'sound': return p.salience === 'notable' || p.salience === 'startling';
     case 'vision': return !!p.text?.trim();   // change-gated → a committed record is a change
-    case 'identity':
-    case 'bodymotion': return true;   // STATE streams: compact, real transitions
-    default: return false;            // unknown kinds (incl. future 'summary') stay out
+    case 'identity': return true;     // STATE stream: compact, real presence transitions
+    // 'bodymotion' is the robot's OWN motion, not a world event — deliberately NOT salient
+    // (it never wakes the dock; matches the salient-pulse exclusion in index.ts). Falls through.
+    default: return false;            // bodymotion + unknown kinds (incl. 'summary') stay out
   }
 }
 

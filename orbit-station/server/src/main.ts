@@ -141,7 +141,7 @@ async function main() {
   // measured 2026-07-09: at 1200ms most probes landed post-settle (pans finish fast).
   const selfMotionWindow = Number(process.env.VISION_SELFMOTION_WINDOW_MS ?? 2500);
   setCameraMoving((dock) => motion.recentlyMoved(dock, selfMotionWindow));
-  // AUDIT: every servo command (accepted or rejected) → perception's bodycmd timeline.
+  // AUDIT: every servo command (accepted or rejected) → perception's bodymotion timeline.
   // Dock-keyed, camera-independent — the log of who moved the body, from where, to where,
   // and what got blocked by priority. Keeps bodylink decoupled from perception (main bridges).
   motion.setCmdSink(bodyCmdSink(), (instanceId) => getBrainAccess()?.taskName(instanceId));

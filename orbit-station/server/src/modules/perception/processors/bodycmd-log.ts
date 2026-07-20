@@ -114,7 +114,7 @@ export function bodyCmdLog(store: SnapshotStore): BodyCmdLog {
       const at = new Date(e.at ?? Date.now());
       store.add(makeSnapshot({
         dockId: e.dock,
-        source: { id: `${e.dock}:body`, kind: 'bodycmd', device: 'dock-body', host: 'station' },
+        source: { id: `${e.dock}:body`, kind: 'bodymotion', device: 'dock-body', host: 'station' },
         model: { name: 'motion-executor', endpoint: 'in-process' },
         from: at, to: at,
         payload: {

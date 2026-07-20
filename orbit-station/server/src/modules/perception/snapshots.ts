@@ -38,12 +38,13 @@ export interface SnapshotSource {
   // 'enriched' = the AUDIO ENRICHER's unified record (one kind for all its output; WHAT it contains
   // — speech / played media / a non-speech sound — is the `audioSource` field, not the kind).
   // 'speech'/'sound' remain for the LIVE parakeet records + historical data.
-  // 'bodycmd' = the AUDIT log of every body (servo) command the station issued —
-  // source, priority, accepted/rejected (+ who blocked), the pose it applied ON, the
-  // target, and derived gaze (pan/tilt/facing). Keyed by DOCK, camera-independent (a
-  // servo-only body has no video stream) — do NOT confuse with 'bodymotion', which is
-  // the CAMERA-moving ego signal tied to the WebRTC stream. See bodycmd-log.ts.
-  kind: 'vision' | 'speech' | 'enriched' | 'identity' | 'emotion' | 'bodymotion' | 'bodycmd' | 'sound' | 'summary';
+  // 'bodymotion' = the robot's OWN body/gaze — one record per servo command the station
+  // issued: source, priority, accepted/rejected (+ who blocked), the pose it applied ON, the
+  // target, and derived gaze (pan/tilt/facing). Keyed by DOCK, camera-independent (a servo-only
+  // body has no video stream). (Consolidated 2026-07-20: this replaced BOTH the old thin
+  // "camera-is-moving" ego stream AND the separate 'bodycmd' audit log — one well-named stream.
+  // The live "is the camera moving now?" question moved to MotionExecutor.recentlyMoved.)
+  kind: 'vision' | 'speech' | 'enriched' | 'identity' | 'emotion' | 'bodymotion' | 'sound' | 'summary';
   device: string;
   host: string;
 }
@@ -58,10 +59,11 @@ export interface SnapshotSource {
  * Generalizes to future look-back: a state's value is always "the last record as of
  * time T", regardless of when it last changed.
  */
-// 'bodycmd' is an EVENT stream (each command is a discrete thing that happened — keep
-// them all on the timeline, don't collapse to a latest-value). The gaze it establishes
-// is state, but that's derived from the latest bodycmd record, not windowed as one.
-export const STATE_KINDS: ReadonlyArray<SnapshotSource['kind']> = ['identity', 'bodymotion'];
+// 'bodymotion' is now an EVENT stream (one record per servo command — a discrete thing that
+// happened; keep them all on the timeline). It is NOT in STATE_KINDS: there's no explicit
+// 'stationary'/settled record to carry forward, so "is the head moving / where is it pointing
+// as of time T" comes from MotionExecutor.recentlyMoved / .pose at read time, not carry-forward.
+export const STATE_KINDS: ReadonlyArray<SnapshotSource['kind']> = ['identity'];
 
 export interface SnapshotRecord {
   ts: string;                  // = interval.from, IST

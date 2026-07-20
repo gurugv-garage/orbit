@@ -139,14 +139,13 @@ const KIND_META: Record<string, { icon: string; color: string; label: string }> 
   identity:   { icon: '👤', color: '#ffd9a0', label: 'identity' },
   emotion:    { icon: '😮', color: '#ff9ed4', label: 'emotion' },
   bodymotion: { icon: '🤖', color: '#a0e0c0', label: 'bodymotion' },
-  bodycmd:    { icon: '🦿', color: '#a0e0c0', label: 'body command' },
 };
 const KIND_FALLBACK = { icon: '◇', color: '#bcd', label: '' };
 function kindMeta(kind: string) {
   return KIND_META[kind] ?? { ...KIND_FALLBACK, label: kind };
 }
 /** Preferred lane/filter order; unknown (future) kinds sort after, alphabetically. */
-const KIND_ORDER = ['vision', 'enriched', 'stt', 'sound', 'identity', 'emotion', 'bodymotion', 'bodycmd'];
+const KIND_ORDER = ['vision', 'enriched', 'stt', 'sound', 'identity', 'emotion', 'bodymotion'];
 
 /** Trim a model id to its recognizable short name (drops the org/quant suffix). */
 function MODEL_SHORT(name: string): string {
@@ -1620,13 +1619,13 @@ export function PerceptionStudio() {
                         → orbit{p.directive ? `: ${p.directive}` : ''}
                       </span>
                     )}
-                    {/* BODY COMMAND — a servo-command audit row. Structured Final / Cmd / Meta
-                        instead of the flat text sentence (which blurs input vs result vs why). */}
-                    {viewKind === 'bodycmd' && <BodyCmdRow p={p} />}
+                    {/* BODYMOTION — a servo-command row. Structured Final / Cmd / Meta instead of
+                        the flat text sentence (which blurs input vs result vs why). */}
+                    {viewKind === 'bodymotion' && <BodyCmdRow p={p} />}
                     {/* The transcript. Low-confidence enriched text is dimmed + italic so you SEE the
                         model was unsure (kept in the stream, not hidden — the ego weights it down).
-                        bodycmd renders its own structured block above — skip the flat text here. */}
-                    {viewKind === 'bodycmd' ? null
+                        bodymotion renders its own structured block above — skip the flat text here. */}
+                    {viewKind === 'bodymotion' ? null
                       : isEnriched && p.transcriptConf != null && p.transcriptConf < 0.45
                       ? <span style={{ opacity: 0.5, fontStyle: 'italic' }} title="low-confidence — the enricher was unsure of these words">{sttText}</span>
                       : sttText}
