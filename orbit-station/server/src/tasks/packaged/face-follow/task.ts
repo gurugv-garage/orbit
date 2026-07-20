@@ -108,7 +108,7 @@ class FaceFollowTask extends Task {
       const faces = await this.faces();
       const r = stepFollow(state, faces, cfg);
       state = r.state;
-      if (r.command) await this.moveTo(r.command);
+      if (r.command) await this.moveTo(r.command, `follow:${r.state.mode}`);
       this.status(r.status);
       if (measure) {
         tickNo++;
@@ -164,11 +164,12 @@ class FaceFollowTask extends Task {
     }
   }
 
-  /** Command an absolute pose (both joints in one timed step). */
-  private async moveTo(p: Pose): Promise<void> {
+  /** Command an absolute pose (both joints in one timed step). `reason` names why (the follow
+   *  mode: 'follow:track' / 'follow:search' / …) → the body-command audit log. */
+  private async moveTo(p: Pose, reason: string): Promise<void> {
     // travel over ~most of the tick so motion is smooth + the servo settles before the
     // next recognize read (don't chase a stale, mid-travel frame).
-    await this.move([{ parts: [{ part: 'foot', degrees: p.foot }, { part: 'neck', degrees: p.neck }], duration_ms: 500 }]);
+    await this.move([{ parts: [{ part: 'foot', degrees: p.foot }, { part: 'neck', degrees: p.neck }], duration_ms: 500 }], reason);
     // NOTE (v1): no ego-motion loop-closure here — perception's bodymotion stream isn't
     // a task capability yet, and we re-recognize every tick so a panned-past face is
     // re-found next tick anyway. The proper pushCommand loop-closure rides with the

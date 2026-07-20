@@ -110,10 +110,18 @@ export interface BodyPoseDeg { neck: number; foot: number }
 export interface BodyCmdMeta {
   /** did the source AUTHOR this as a delta (relative), vs an absolute target? */
   relative?: boolean;
-  /** why the source chose to move (free prose: 'heard a sound to the left', 'mood: curious'). */
-  reason?: string;
   [k: string]: unknown;
 }
+
+/**
+ * WHY the body moved — a REQUIRED argument on every executor entry point (runSteps,
+ * runStepsAwaited, playGesture, setTargets). No command moves the body anonymously: the
+ * caller must say why (the compiler enforces it at every call site). Free-form, but use a
+ * stable `namespace:detail` shape so the audit log groups cleanly:
+ *   'mood:curious.tilt' · 'follow:guru' · 'follow:searching' · 'face:happy' ·
+ *   'move-tool' · 'search:red mug' · 'console:play' · 'console:slider' · 'lease-probe'
+ */
+export type BodyReason = string;
 
 /** The body-command AUDIT sink — one entry per servo command, accepted OR rejected.
  *  main.ts bridges this to perception's bodycmd log; motion.ts stays decoupled from
@@ -228,8 +236,8 @@ export class MotionExecutor {
    * body is offline or the steps are unusable (pi turns throws into error
    * tool results — the model narrates, the turn continues).
    */
-  runSteps(dock: string, steps: MoveStep[], source = 'station', meta?: BodyCmdMeta): string {
-    return this.runStepsAwaited(dock, steps, source, meta).status;
+  runSteps(dock: string, steps: MoveStep[], reason: BodyReason, source = 'station', meta?: BodyCmdMeta): string {
+    return this.runStepsAwaited(dock, steps, reason, source, meta).status;
   }
 
   /**
@@ -240,14 +248,13 @@ export class MotionExecutor {
    * sequence finishes OR is cancelled/superseded; it never rejects. The
    * fire-and-forget contract stays the default for every other caller.
    */
-  runStepsAwaited(dock: string, steps: MoveStep[], source = 'station', meta?: BodyCmdMeta): { status: string; done: Promise<void> } {
+  runStepsAwaited(dock: string, steps: MoveStep[], reason: BodyReason, source = 'station', meta?: BodyCmdMeta): { status: string; done: Promise<void> } {
     if (!this.isOnline(dock)) throw new Error(`the body of ${dock} is not responding (offline)`);
     if (!Array.isArray(steps) || steps.length === 0) throw new Error('move needs at least one step');
-    // The source may declare its own meta (reason, relative, …). If it didn't say whether this
-    // was relative, DERIVE it from the steps (an executor-known fact) as the default — the source
-    // can always override. Everything else in meta is carried verbatim, never derived.
+    // `reason` (required) + optional meta. If the source didn't say whether this was relative,
+    // DERIVE it from the steps (an executor-known fact); everything else is carried verbatim.
     const anyRelative = steps.some((s) => s.relative || stepJoints(s).some((j) => j.relative));
-    const cmdMeta: BodyCmdMeta = { relative: anyRelative, ...meta };
+    const cmdMeta: BodyCmdMeta = { relative: anyRelative, ...meta, reason };
     // LEASE: a higher-priority holder owns the body → this move can't run. THROW (like the
     // offline case) so the tool surfaces an ERROR result — the model then narrates that it
     // couldn't move, instead of the old success-shaped "body busy" string that made the brain
@@ -336,12 +343,12 @@ export class MotionExecutor {
    * to center, undoing the find.) Offsets clamp at joint limits per-step from
    * a FIXED base, so repeated gestures can't drift.
    */
-  playGesture(dock: string, expression: string, gestures: Record<string, MoveStep[]>, source = 'brain-turn', meta?: BodyCmdMeta): void {
+  playGesture(dock: string, expression: string, gestures: Record<string, MoveStep[]>, reason: BodyReason, source = 'brain-turn', meta?: BodyCmdMeta): void {
     const steps = gestures[expression];
     if (!steps || steps.length === 0 || !this.isOnline(dock)) return;
-    // A gesture is authored as OFFSETS around the current gaze (relative in spirit), tagged with
-    // the expression as its reason. Source can add more via `meta`; it wins over these defaults.
-    const cmdMeta: BodyCmdMeta = { relative: true, reason: `gesture:${expression}`, ...meta };
+    // A gesture is authored as OFFSETS around the current gaze (relative in spirit). `reason`
+    // (required) says WHY it's playing (e.g. 'face:happy', 'mood:attention.perk').
+    const cmdMeta: BodyCmdMeta = { relative: true, ...meta, reason };
     if (!this.#lease.admit(dock, source, priorityForSource(source))) { this.#logReject(dock, source, 'rejected-priority', cmdMeta); return; } // a higher holder owns the body
     const base = this.#docks.get(dock)?.targets ?? {};
     const baseDeg = (part: string) => usToDegrees(base[part] ?? 1500);
@@ -400,8 +407,8 @@ export class MotionExecutor {
   }
 
   /** Direct single set_target (the console's slider path) — same master. Absolute targets. */
-  setTargets(dock: string, partsUs: Record<string, number>, durationMs = DEFAULT_STEP_DURATION_MS, source = 'console', meta?: BodyCmdMeta): void {
-    const cmdMeta: BodyCmdMeta = { relative: false, ...meta }; // a slider sets an absolute target
+  setTargets(dock: string, partsUs: Record<string, number>, reason: BodyReason, durationMs = DEFAULT_STEP_DURATION_MS, source = 'console', meta?: BodyCmdMeta): void {
+    const cmdMeta: BodyCmdMeta = { relative: false, ...meta, reason }; // a slider sets an absolute target
     if (!this.#lease.admit(dock, source, priorityForSource(source))) { this.#logReject(dock, source, 'rejected-priority', cmdMeta); return; } // a higher holder owns the body
     this.stop(dock); // a manual command supersedes a running sequence (last write wins)
     this.#send(dock, partsUs, durationMs, source, cmdMeta);

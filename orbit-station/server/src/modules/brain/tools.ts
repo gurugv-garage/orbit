@@ -157,7 +157,7 @@ export function buildGrantTools(
       `Move the body of "${target}" — another robot you are allowed to control. ${S.MOVE_DESC}`,
       S.moveSchema,
       async (_toolCallId, args: { steps: MoveStep[] }) =>
-        textResult(motion.runSteps(target, (args as { steps: MoveStep[] }).steps ?? [], 'brain-turn')),
+        textResult(motion.runSteps(target, (args as { steps: MoveStep[] }).steps ?? [], 'move-tool', 'brain-turn')),
     ));
   }
   return out;
@@ -525,7 +525,7 @@ export function fireFace(opts: {
    *  one — they're a single token by design — so they land without it. */
   reason?: string;
 }): void {
-  try { opts.motion.playGesture(opts.dock, opts.expression, opts.gestures); }
+  try { opts.motion.playGesture(opts.dock, opts.expression, opts.gestures, `face:${opts.expression}`); }
   catch { /* body offline — face still changes */ }
   void opts.rpc.call({
     dock: opts.dock, cap: 'face', turnId: opts.turnId,
@@ -788,7 +788,7 @@ export function buildDockTools(deps: ToolDeps): AgentTool<any>[] {
       }
       // Await ACTUAL servo travel, so the next step's words land after the
       // motion they follow ("did I shake it well?" comes after the shake).
-      const { status, done } = deps.motion.runStepsAwaited(deps.dock, args.steps ?? [], 'brain-turn');
+      const { status, done } = deps.motion.runStepsAwaited(deps.dock, args.steps ?? [], 'move-tool', 'brain-turn');
       await done;
       return textResult(status.replace(/^moving:/, 'moved:'));
     }),
@@ -900,7 +900,7 @@ export function buildDockTools(deps: ToolDeps): AgentTool<any>[] {
           const travel = Math.max(Math.abs(pose.pan - deg(t.foot)), Math.abs(pose.tilt - deg(t.neck)));
           const duration = Math.min(Math.max(Math.round(travel * 16), 400), 1_600);
           const steps = stepsFor(pose).map((s) => ({ ...s, duration_ms: duration }));
-          await deps.motion.runStepsAwaited(deps.dock, steps, 'brain-turn').done;
+          await deps.motion.runStepsAwaited(deps.dock, steps, `search:${query}`, 'brain-turn').done;
         },
         frameSince: (minTs) => f.frameSince(streamId, minTs),
         judge: (frame) => judgeFrame(deps.dock, f, frame, query),

@@ -1659,7 +1659,8 @@ export class DockBrainSession {
     if (typeof p.seq === 'number') this.#speechGate.noteUtteranceActive(p.seq);
     try {
       this.#d.motion.playGesture(this.dock, expression,
-        gesturesFromConfig(this.#d.config('faceGestures')) as Record<string, MoveStep[]>);
+        gesturesFromConfig(this.#d.config('faceGestures')) as Record<string, MoveStep[]>,
+        `face:${expression}`);
     } catch { /* body offline — the face already changed */ }
     this.#traceMood(expression, typeof p.seq === 'number' ? p.seq : undefined, 'phone');
   }

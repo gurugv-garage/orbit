@@ -55,7 +55,7 @@ class LeaseProbeTask extends Task {
       foot += dir * step;
       if (foot >= amp) { foot = amp; dir = -1; }
       if (foot <= -amp) { foot = -amp; dir = 1; }
-      await this.move([{ parts: [{ part: 'foot', degrees: foot }], duration_ms: 400 }]);
+      await this.move([{ parts: [{ part: 'foot', degrees: foot }], duration_ms: 400 }], 'lease-probe');
       this.status(`sweeping foot=${foot}° (holding @${priority})`);
       this.state.foot = foot; this.checkpoint();
       await this.sleep(tick);
