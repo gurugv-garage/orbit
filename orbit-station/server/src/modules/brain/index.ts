@@ -66,6 +66,9 @@ export interface BrainAccess {
   models(dock: string): { brain?: string; thinking?: string };
   addressed(dock: string): unknown[];
   dockOf(peerId: string): string | undefined;
+  /** Definition name of a running task instance (e.g. 'idle-moods', 'face-follow') by its
+   *  `t-xxxx` id — so a `task:<id>` body-command source can show WHICH task moved the body. */
+  taskName(instanceId: string): string | undefined;
 }
 /**
  * Parse the phone's flat `k=v k=v` face probe (DockTools.faceProbe).
@@ -310,6 +313,13 @@ export function brainModule(w: BrainWiring): StationModule {
   // recording). `session()` is the factory, so a cold dock is safe.
   const raiseSelfThought = (dock: string, text: string, opts: { key?: string; ttlMs?: number; idPrefix?: string; via?: string } = {}) => {
     if (isRecording(dock)) return;
+    // QUIET MODE (🤐): a quiet dock makes NO unprompted remarks — this suppresses
+    // self-thought (gate raises, greetings, console poke) AND idle-moods' spoken
+    // bits (they funnel here via the `think` capability). Body motion is separate
+    // (gesture/move never route through here), so moods keep moving, just silent.
+    // sessions.get (not the factory): a cold dock can't be quiet, and we mustn't
+    // spin up a session just to drop the thought.
+    if (sessions.get(dock)?.isQuiet()) return;
     // No anti-repeat quote-list, no style scaffolding: the self-thought prompt is ONE
     // plain instruction (idle-moods thoughtPrompt), and we trust the model to vary its
     // own remarks from the real inputs — the camera frame + grounding + its own history
@@ -486,6 +496,7 @@ export function brainModule(w: BrainWiring): StationModule {
     },
     addressed: (dock) => addrTrace.filter((e) => e.dock === dock),
     dockOf,
+    taskName: (instanceId) => supervisor.get(instanceId)?.name,
   };
 
   // WakeApi for the conductor's `wakeUp` behaviour — set/clear the per-dock wake config.
@@ -738,6 +749,13 @@ export function brainModule(w: BrainWiring): StationModule {
         // the dock must NOT respond (we want clean ambient perception). The mic/cam
         // keep capturing + transcribing upstream; we just don't turn it into a reply.
         if (isRecording(t.dockId)) { trace('skip:recording'); return; }
+        // QUIET MODE (🤐): a quiet dock does NOT reply — skip the turn WHOLE (no
+        // LLM call, no wake ack), before wake/stop/merge. The mic/cam keep
+        // capturing + transcribing upstream (snapshots still land, tagged); we
+        // just don't turn any of it into a reply. Placed above wake so a wake
+        // phrase can't crack quiet either — the UI toggle / timed expiry / a
+        // fresh keep_quiet is the only way in and out.
+        if (session(t.dockId).isQuiet()) { trace('skip:quiet'); return; }
         // WAKE (conductor's `wakeUp` behaviour): when the dock is NOT in a listening window
         // and this utterance matches the wake phrase, WAKE — open listening + speak the prompt
         // — and consume the utterance (it was just "hey orbit", not a turn). Governed by the
@@ -1020,6 +1038,17 @@ export function brainModule(w: BrainWiring): StationModule {
           case 'turn-cancel':
             session(dock).cancel(typeof p?.turnId === 'string' ? p.turnId : undefined);
             break;
+          case 'quiet': {
+            // QUIET MODE (🤐) toggled from the DOCK FACE (the big on-face button).
+            // Same setter the UI toggle + keep_quiet tool use. on=true → quiet
+            // (minutes → timed, else indefinite); on=false → OFF NOW (manual,
+            // always wins over a timed/agent lock). The setter re-emits the quiet
+            // frame so the face reflects it immediately.
+            const on = p?.on === true;
+            const mins = typeof p?.minutes === 'number' && p.minutes > 0 ? p.minutes : undefined;
+            session(dock).setQuiet(on ? (mins != null ? Date.now() + mins * 60_000 : Infinity) : null);
+            break;
+          }
           case 'mood-active':
             // Fix 5: the phone applied a sentence's mood at playback start —
             // play the paired body gesture + trace it into the turn.
@@ -1168,6 +1197,27 @@ export function brainModule(w: BrainWiring): StationModule {
         session(dock).setListening(body.listening === true);
         json(res, 200, { ok: true, listening: body.listening === true });
         return true;
+      }
+      // QUIET MODE (🤐). GET /:dock/quiet → { quiet, until } (until=0 unless a
+      // timed lock). POST /:dock/quiet {on:bool, minutes?:number}: on=true →
+      // quiet (minutes → timed auto-unlock, else indefinite until toggled off);
+      // on=false → OFF NOW (manual, always wins over a timed lock). The UI toggle
+      // is always the indefinite form; the timed form is the keep_quiet tool's.
+      const qm = subPath.match(/^\/([^/]+)\/quiet$/);
+      if (qm) {
+        const dock = decodeURIComponent(qm[1]!);
+        if (req.method === 'GET') { json(res, 200, session(dock).quietState()); return true; }
+        if (req.method === 'POST') {
+          const body = JSON.parse((await readBody(req)) || '{}') as { on?: boolean; minutes?: number };
+          if (body.on === true) {
+            const mins = typeof body.minutes === 'number' && body.minutes > 0 ? body.minutes : undefined;
+            session(dock).setQuiet(mins != null ? Date.now() + mins * 60_000 : Infinity);
+          } else {
+            session(dock).setQuiet(null);
+          }
+          json(res, 200, { ok: true, ...session(dock).quietState() });
+          return true;
+        }
       }
       // GET /:dock/conversation — the live conversation state probe (the primary
       // testability hook: { mode, windowUntil, speakUntil, msToExpiry }).

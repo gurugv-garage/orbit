@@ -28,7 +28,7 @@ import { visionSnapshotProcessor } from './processors/vision-snapshot.js';
 import { identitySnapshotProcessor } from './processors/identity-snapshot.js';
 import { speechWatchProcessor, utteranceWavPath } from './processors/speech-watch.js';
 import { enrichAudio } from './processors/audio-enricher.js';
-import { bodyMotionWatchProcessor, type MotionCommand } from './processors/bodymotion-watch.js';
+import { bodyCmdLog, type BodyCmdEntry } from './processors/bodycmd-log.js';
 import { SnapshotStore, isoIst, sampleEvenly, makeSnapshot, type SnapshotRecord } from './snapshots.js';
 import { PerceiveStore, type PerceivePayload } from './perceive.js';
 import { TakeStore } from './takes.js';
@@ -647,6 +647,14 @@ export function getPerceiveStore(): PerceiveStore | undefined {
 const cameraMovingRef: { current?: (dockId: string) => boolean } = {};
 export function setCameraMoving(fn: (dockId: string) => boolean): void { cameraMovingRef.current = fn; }
 
+/** The body-command AUDIT sink — main.ts hands this to the MotionExecutor so every servo
+ *  command (accepted OR rejected) lands on the perception timeline as a 'bodymotion' record.
+ *  Keyed by dock, camera-independent (see bodycmd-log.ts). The ref is filled in init(). */
+const bodyCmdRef: { push?: (e: BodyCmdEntry) => void } = {};
+export function bodyCmdSink(): (e: BodyCmdEntry) => void {
+  return (e) => bodyCmdRef.push?.(e);
+}
+
 export function perceptionModule(getHub: () => PerceptionProcessingHub): StationModule {
   let state: PerceptionState;
   const snapshots = new SnapshotStore(); // WebRTC vision+speech snapshot records
@@ -830,11 +838,16 @@ export function perceptionModule(getHub: () => PerceptionProcessingHub): Station
     // if the dock is mid-reply the brain holds its TTS until the final decides.
     (e) => speechStartHandler?.(e),
   ); // 🎙 speech (exposes flushAll)
-  const bodymotion = bodyMotionWatchProcessor(snapshots); // 🤖 ego-motion (setMotion seam)
+  // 🤖 bodymotion — the robot's own body/gaze stream: one record per servo command (dock-keyed,
+  // camera-independent). Fills the module ref so main.ts's MotionExecutor wiring pushes every
+  // command here. (Consolidated: the old thin camera-ego processor is gone — "is the head moving
+  // now?" is answered by MotionExecutor.recentlyMoved, which vision + identity read directly.)
+  const bodyLog = bodyCmdLog(snapshots);
+  bodyCmdRef.push = (e) => bodyLog.push(e);
   // Vision reuses the face processor's decoded frame (ONE ffmpeg per dock, not two). The
   // camera-moving signal comes from the MotionExecutor (set by main via setCameraMoving) —
-  // faceFollow's pans never reach the bodymotion stream, so bodymotion.current() is useless
-  // here; the executor's lastMotionAt is the real "my head just moved" signal.
+  // its lastMotionAt/recentlyMoved is the real "my head just moved" signal (the single source
+  // of truth for self-motion, now that the old moving/stationary bodymotion flag is gone).
   const vision = visionSnapshotProcessor(snapshots, (sid) => face.currentFrame(sid),
     (dockId) => cameraMovingRef.current?.(dockId) ?? false); // 👁 vision + self-motion tag
 
@@ -863,10 +876,11 @@ export function perceptionModule(getHub: () => PerceptionProcessingHub): Station
       // THREE snapshot streams, same format, kept separate (LLM merge later):
       hub.register(stt);    // 🎙 speech (whisper)
       hub.register(vision); // 👁 vision (qwen, no identity)
-      hub.register(bodymotion); // 🤖 ego-motion (robot proprioception; station feeds commands)
       hub.register(identitySnapshotProcessor(snapshots, // 👤 identity (face-api + boxes)
         (sid) => face.recognizeAllCurrent(sid),
-        (sid) => bodymotion.current(sid))); // ego-aware: don't drop people mid-move
+        // ego-aware: don't drop people mid-move. Same dock-keyed self-motion signal vision uses
+        // (motion.recentlyMoved via setCameraMoving) — the old bodymotion.current() flag is gone.
+        (dockId) => cameraMovingRef.current?.(dockId) ?? false));
 
       // Summarize a dock's recent window and cache it as `lastSummary` (so grounding
       // goes live). Shared by force_get_current, the console, and the A1.5
@@ -1052,7 +1066,8 @@ export function perceptionModule(getHub: () => PerceptionProcessingHub): Station
         decisions.push({ ts: Date.now(), dockId, raised: o.raise, detail: o.raise ? `${o.kind}: ${o.text}` : o.reason });
         if (decisions.length > 50) decisions.splice(0, decisions.length - 50);
       };
-      startGateWatcher(snapshots, () => gateCfg, (t) => raiseHandler?.(t), noteDecision);
+      startGateWatcher(snapshots, () => gateCfg, (t) => raiseHandler?.(t), noteDecision,
+        (dockId) => cameraMovingRef.current?.(dockId) ?? false);
 
       // Durable perception retention + SELF-COMPRESSION (§7c). The ONE summarizer pass, at trim,
       // per closed clock-hour, produces TWO outputs (apart from each other, one checkpoint):
@@ -1478,8 +1493,14 @@ export function perceptionModule(getHub: () => PerceptionProcessingHub): Station
         // ?dock=X scopes to one dock/stream's snapshots (the console source selector);
         // omitted/all = the merged feed across every producer.
         const dock = q.get('dock');
-        const all = snapshots.list(limit);
-        json(res, 200, dock && dock !== 'all' ? all.filter((r) => r.dockId === dock) : all);
+        // ?kind=X scopes to one stream (e.g. 'bodymotion' for the body-command stream).
+        // Filter BEFORE limiting so you get the last N OF THAT KIND, not the last N overall
+        // (else a rare kind is buried under high-rate vision/speech and returns empty).
+        const kind = q.get('kind');
+        let recs = snapshots.list();
+        if (dock && dock !== 'all') recs = recs.filter((r) => r.dockId === dock);
+        if (kind && kind !== 'all') recs = recs.filter((r) => r.source.kind === kind);
+        json(res, 200, recs.slice(-limit));
         return true;
       }
       if (req.method === 'POST' && subPath === '/snapshots/clear') {
@@ -1499,23 +1520,8 @@ export function perceptionModule(getHub: () => PerceptionProcessingHub): Station
         json(res, 200, { ok: true, vision: visionCommitted });
         return true;
       }
-      // Inject a robot MOTION COMMAND (the station's contract; or a mock for testing).
-      // POST /bodymotion {streamId, mode, direction?, durationMs, amount?, label?}
-      // → records a 'camera moving' snapshot + marks the camera unsettled for
-      //   durationMs + settle tail (so identity won't drop people mid-move).
-      if (req.method === 'POST' && subPath === '/bodymotion') {
-        const body = await parseBody<{ streamId?: string } & MotionCommand>(req);
-        if (!body.streamId || !body.mode || body.durationMs == null) {
-          json(res, 400, { error: 'bodymotion needs streamId, mode, durationMs' });
-          return true;
-        }
-        const ok = bodymotion.pushCommand(body.streamId, {
-          mode: body.mode, direction: body.direction, durationMs: body.durationMs,
-          amount: body.amount, label: body.label, at: body.at,
-        });
-        json(res, ok ? 200 : 404, { ok, reason: ok ? undefined : 'stream not found' });
-        return true;
-      }
+      // (The old POST /bodymotion mock-injection route is gone — bodymotion records now come
+      //  ONLY from real servo commands via the MotionExecutor sink. Removed 2026-07-20.)
       // Summarize the last `windowMs` of snapshots via Gemini. Optional keyframes.
       // POST /snapshots/summarize {windowMs, withKeyframes?, maxKeyframes?}
       // → {summary, model, counts, prompt:{system,transcript}, withKeyframes, error?}

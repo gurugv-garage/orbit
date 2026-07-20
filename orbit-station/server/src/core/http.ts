@@ -68,8 +68,17 @@ async function route(req: IncomingMessage, res: ServerResponse, modules: Station
     const mod = modules.find((m) => m.name === name);
     if (mod?.route) {
       const ctx: RouteContext = { req, res, subPath, url };
-      const handled = await mod.route(ctx);
-      if (handled) return;
+      // A route handler that throws (e.g. JSON.parse on a malformed body) must
+      // become a 500 for THAT request — never an unhandled rejection that takes
+      // the whole station down (observed: a bad-JSON POST crashed the process).
+      try {
+        const handled = await mod.route(ctx);
+        if (handled) return;
+      } catch (err) {
+        console.error(`[http] ${name} route ${subPath} threw:`, err);
+        if (!res.writableEnded) json(res, 500, { error: 'route handler failed' });
+        return;
+      }
     }
     if (!res.writableEnded) json(res, 404, { error: `no api route for ${path}` });
     return;

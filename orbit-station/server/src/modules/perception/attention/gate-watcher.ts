@@ -43,8 +43,11 @@ export function namesIn(rec: SnapshotRecord | undefined): string[] {
 export function deriveSignals(args: {
   now: number;
   latestIdentity?: SnapshotRecord;
-  latestBodymotion?: SnapshotRecord;
   latestEmotion?: SnapshotRecord;
+  /** did the head move recently? A true time-decayed flag from MotionExecutor.recentlyMoved —
+   *  NOT inferred from a (possibly stale) bodymotion record's text. Suppresses arrival-raise
+   *  while the robot is panning (a face entering/leaving frame is ego-motion, not the world). */
+  cameraMoving: boolean;
   prevPresent: string[];
   msSinceLastSnapshot: number;
   lastRaisedAt: number;
@@ -56,9 +59,7 @@ export function deriveSignals(args: {
   const arrivedNames = present.filter((n) => !prev.has(n));
   const departedNames = args.prevPresent.filter((n) => !cur.has(n));
 
-  // camera moving iff the newest bodymotion record says so (its text carries it).
-  const cameraMoving = !!args.latestBodymotion
-    && /moving/i.test(String(args.latestBodymotion.payload.text ?? ''));
+  const cameraMoving = args.cameraMoving;
 
   // a STRONG emotion = an emotion record whose text reads "looked X" (the upstream
   // emotion stream only emits "looked" for confident reads; "seemed a little" is soft).
@@ -95,6 +96,9 @@ export function startGateWatcher(
   getConfig: () => GateConfig,
   raise: (t: RaisedThought) => void,
   onDecision?: (dockId: string, outcome: GateOutcome) => void,
+  /** did the dock's head move recently? (MotionExecutor.recentlyMoved via setCameraMoving.)
+   *  Suppresses arrival-raises while the robot is panning. Default: never-moving. */
+  cameraMoving: (dockId: string) => boolean = () => false,
 ): () => void {
   const docks = new Map<string, DockState>();
   const timers = new Map<string, ReturnType<typeof setTimeout>>();
@@ -116,7 +120,7 @@ export function startGateWatcher(
     const signals = deriveSignals({
       now: Date.now(),
       latestIdentity: latestOf('identity'),
-      latestBodymotion: latestOf('bodymotion'),
+      cameraMoving: cameraMoving(dockId),
       latestEmotion: latestOf('emotion'),
       prevPresent: s.presentNames,
       msSinceLastSnapshot: last ? Date.now() - new Date(last.interval.to.replace('+05:30', 'Z')).getTime() : Infinity,

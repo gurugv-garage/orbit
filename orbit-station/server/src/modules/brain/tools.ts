@@ -157,7 +157,7 @@ export function buildGrantTools(
       `Move the body of "${target}" — another robot you are allowed to control. ${S.MOVE_DESC}`,
       S.moveSchema,
       async (_toolCallId, args: { steps: MoveStep[] }) =>
-        textResult(motion.runSteps(target, (args as { steps: MoveStep[] }).steps ?? [], 'brain-turn')),
+        textResult(motion.runSteps(target, (args as { steps: MoveStep[] }).steps ?? [], 'move-tool', 'brain-turn')),
     ));
   }
   return out;
@@ -329,6 +329,29 @@ export function buildSessionTools(requestEnd: () => void, hasTasks: () => boolea
         + 'Say a brief sign-off; the next thing anyone says opens a fresh session '
         + '(a short memory note of this conversation carries over).'
         + (tasks ? ' HEADS UP: background tasks running under this session will be STOPPED by the close — mention that.' : ''),
+      );
+    }),
+  ];
+}
+
+/** keep_quiet — the agent's "go silent" tool (🤐). Like end_session it only
+ *  SETS a flag; the quiet takes hold from the NEXT utterance on, so this turn's
+ *  acknowledgement ("okay, going quiet") is still spoken. `setQuiet(untilMs)`:
+ *  a future epoch-ms for a timed lock, Infinity for indefinite. The dock can't
+ *  un-quiet itself — the person does (voice re-engage isn't wired: quiet skips
+ *  turns whole, so there's no LLM to hear "you can talk now"; the UI toggle or a
+ *  timed expiry ends it). */
+export function buildQuietTools(setQuiet: (untilMs: number) => void): AgentTool<any>[] {
+  return [
+    tool('keep_quiet', S.KEEP_QUIET_DESC, S.keepQuietSchema, async (_id, args: { minutes?: number }) => {
+      const mins = typeof args.minutes === 'number' && args.minutes > 0 ? args.minutes : undefined;
+      setQuiet(mins != null ? Date.now() + mins * 60_000 : Infinity);
+      return textResult(
+        `Quiet mode is scheduled — it starts as soon as you finish speaking this turn. `
+        + `Say a brief acknowledgement now (e.g. "okay, going quiet 🤐")`
+        + (mins != null
+          ? `; you'll go quiet for about ${mins} minute${mins === 1 ? '' : 's'}, then speak again on your own.`
+          : ` and go quiet until the person asks you to talk again.`),
       );
     }),
   ];
@@ -525,7 +548,7 @@ export function fireFace(opts: {
    *  one — they're a single token by design — so they land without it. */
   reason?: string;
 }): void {
-  try { opts.motion.playGesture(opts.dock, opts.expression, opts.gestures); }
+  try { opts.motion.playGesture(opts.dock, opts.expression, opts.gestures, `face:${opts.expression}`); }
   catch { /* body offline — face still changes */ }
   void opts.rpc.call({
     dock: opts.dock, cap: 'face', turnId: opts.turnId,
@@ -788,7 +811,7 @@ export function buildDockTools(deps: ToolDeps): AgentTool<any>[] {
       }
       // Await ACTUAL servo travel, so the next step's words land after the
       // motion they follow ("did I shake it well?" comes after the shake).
-      const { status, done } = deps.motion.runStepsAwaited(deps.dock, args.steps ?? [], 'brain-turn');
+      const { status, done } = deps.motion.runStepsAwaited(deps.dock, args.steps ?? [], 'move-tool', 'brain-turn');
       await done;
       return textResult(status.replace(/^moving:/, 'moved:'));
     }),
@@ -900,7 +923,7 @@ export function buildDockTools(deps: ToolDeps): AgentTool<any>[] {
           const travel = Math.max(Math.abs(pose.pan - deg(t.foot)), Math.abs(pose.tilt - deg(t.neck)));
           const duration = Math.min(Math.max(Math.round(travel * 16), 400), 1_600);
           const steps = stepsFor(pose).map((s) => ({ ...s, duration_ms: duration }));
-          await deps.motion.runStepsAwaited(deps.dock, steps, 'brain-turn').done;
+          await deps.motion.runStepsAwaited(deps.dock, steps, `search:${query}`, 'brain-turn').done;
         },
         frameSince: (minTs) => f.frameSince(streamId, minTs),
         judge: (frame) => judgeFrame(deps.dock, f, frame, query),

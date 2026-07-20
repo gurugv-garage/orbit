@@ -109,6 +109,17 @@ interface Snapshot {
     // the snapshot's own bus id (survives on records that carry one) — shown on the child as the
     // bus-item identity. Falls back to the row key when absent.
     id?: string;
+    // ── BODY COMMAND (bodycmd) ── the servo-command audit log. `source` (who) + `priority`,
+    // `outcome` (accepted/rejected/dropped) + `blockedBy` (who won the lease on a reject) are
+    // EXECUTOR facts; `relative`/`reason` are SOURCE-authored (meta). base/target/delta are
+    // absolute degrees per joint; pan/tilt/facing = resulting gaze.
+    outcome?: 'accepted' | 'rejected-priority' | 'dropped-offline';
+    // who issued the command — a string on the PAYLOAD (distinct from the snapshot's source.kind).
+    source?: string;
+    priority?: number; blockedBy?: { holder: string; priority: number };
+    base?: { neck: number; foot: number }; target?: { neck: number; foot: number };
+    delta?: { neck: number; foot: number }; relative?: boolean; reason?: string;
+    pan?: number; tilt?: number; facing?: string; durationMs?: number;
   };
   id?: string;
 }
@@ -1608,9 +1619,14 @@ export function PerceptionStudio() {
                         → orbit{p.directive ? `: ${p.directive}` : ''}
                       </span>
                     )}
+                    {/* BODYMOTION — a servo-command row. Structured Final / Cmd / Meta instead of
+                        the flat text sentence (which blurs input vs result vs why). */}
+                    {viewKind === 'bodymotion' && <BodyCmdRow p={p} />}
                     {/* The transcript. Low-confidence enriched text is dimmed + italic so you SEE the
-                        model was unsure (kept in the stream, not hidden — the ego weights it down). */}
-                    {isEnriched && p.transcriptConf != null && p.transcriptConf < 0.45
+                        model was unsure (kept in the stream, not hidden — the ego weights it down).
+                        bodymotion renders its own structured block above — skip the flat text here. */}
+                    {viewKind === 'bodymotion' ? null
+                      : isEnriched && p.transcriptConf != null && p.transcriptConf < 0.45
                       ? <span style={{ opacity: 0.5, fontStyle: 'italic' }} title="low-confidence — the enricher was unsure of these words">{sttText}</span>
                       : sttText}
                     {/* LEGACY SOUND: the acoustic fields as a clean KEY–VALUE list. */}
@@ -1886,6 +1902,73 @@ function enrichedContentEmoji(audioSource?: string, audioKind?: string): { emoji
     : '🗣';
   const label = src === 'speech' ? 'in-room speech' : src === 'media' ? `played media${k ? ` (${k})` : ''}` : `sound${k ? ` (${k})` : ''}`;
   return { emoji, label };
+}
+
+/**
+ * BODY COMMAND row — a servo-command audit entry, shown as three clear lines so INPUT,
+ * RESULT, and WHY don't blur into one sentence:
+ *   Final  — the resulting gaze / end pose (what the body is at after this command)
+ *   Cmd    — what was COMMANDED, as Actual (Implied): the value the SOURCE authored in bold,
+ *            the derived counterpart in muted parens. Absolute-authored → `0→-18 (Δ-18 implied)`;
+ *            relative-authored → `Δ-18 (from 0 implied)`. Per joint (neck/foot); only moved joints.
+ *   Meta   — source · priority · outcome (+ blockedBy on a reject) · reason (source-authored).
+ * A rejected/dropped command has no travel — Final = where the body stayed; Cmd shows the
+ * attempt; Meta shows why it didn't land.
+ */
+function BodyCmdRow({ p }: { p: Snapshot['payload'] }) {
+  const base = p.base, target = p.target, delta = p.delta;
+  const rel = p.relative === true;
+  const rejected = p.outcome && p.outcome !== 'accepted';
+  const sgn = (n: number) => `${n > 0 ? '+' : ''}${Math.round(n)}`;
+  const muted: React.CSSProperties = { opacity: 0.55, fontStyle: 'italic', marginLeft: 4 };
+  const label: React.CSSProperties = { color: '#5f728c', textAlign: 'right', fontFamily: 'var(--mono)', opacity: 0.85 };
+
+  // Per-joint "Actual (Implied)" — bold = source-authored, muted parens = derived.
+  const jointCmd = (j: 'neck' | 'foot') => {
+    if (!base || !target || !delta) return null;
+    if (Math.round(base[j]) === Math.round(target[j])) return null; // didn't move
+    const from = Math.round(base[j]), to = Math.round(target[j]), d = Math.round(delta[j]);
+    return (
+      <span key={j} style={{ marginRight: 12, fontFamily: 'var(--mono)' }}>
+        <span style={{ opacity: 0.6 }}>{j} </span>
+        {rel
+          ? <><b style={{ color: '#dfe' }}>Δ{sgn(d)}→{to}</b><span style={muted}>(from {from} implied)</span></>
+          : <><b style={{ color: '#dfe' }}>{from}→{to}</b><span style={muted}>(Δ{sgn(d)} implied)</span></>}
+      </span>
+    );
+  };
+  const cmdJoints = base && target && delta ? (['neck', 'foot'] as const).map(jointCmd).filter(Boolean) : [];
+
+  const outcomeColor = p.outcome === 'accepted' ? '#7ee0a0' : p.outcome === 'rejected-priority' ? '#ff9e6b' : '#c9a0e0';
+
+  return (
+    <div style={{ display: 'grid', gridTemplateColumns: 'max-content 1fr', columnGap: 10, rowGap: 3, marginTop: 2,
+      fontSize: 12, color: '#a8bbd4', lineHeight: 1.5 }}>
+      {/* Final — the end pose / gaze */}
+      <span style={label}>Final</span>
+      <span style={{ fontFamily: 'var(--mono)', color: rejected ? '#8ba0bd' : '#dfe' }}>
+        {p.facing ?? '—'}
+        {(p.pan != null && p.tilt != null) && <span style={{ opacity: 0.5 }}>{'  '}(foot {p.pan}°, neck {p.tilt}°)</span>}
+        {rejected && <span style={{ opacity: 0.6, fontStyle: 'italic' }}>{'  '}— unchanged (didn’t land)</span>}
+      </span>
+
+      {/* Cmd — Actual (Implied) per joint */}
+      <span style={label}>Cmd</span>
+      <span>{cmdJoints.length ? cmdJoints : <span style={{ opacity: 0.5 }}>no joint travel</span>}</span>
+
+      {/* Meta — source-authored + arbitration outcome */}
+      <span style={label}>Meta</span>
+      <span style={{ display: 'flex', flexWrap: 'wrap', gap: '2px 10px', alignItems: 'baseline', fontSize: 11 }}>
+        <span title="who issued the command"><span style={{ opacity: 0.6 }}>src </span><b style={{ color: '#cfe' }}>{p.source ?? '—'}</b>
+          {p.priority != null && <span style={{ opacity: 0.55 }}>({p.priority})</span>}</span>
+        {p.outcome && <span style={{ color: outcomeColor, fontWeight: 600 }} title="lease arbitration outcome">{p.outcome}</span>}
+        {p.blockedBy && <span style={{ color: '#ff9e6b' }} title="the holder that won the body">blocked by {p.blockedBy.holder}({p.blockedBy.priority})</span>}
+        {p.reason && <span style={{ color: '#8ba0bd' }} title="source-authored reason (meta)">“{p.reason}”</span>}
+        <span style={{ opacity: 0.5 }} title="relative = source authored a delta; absolute = a target">{rel ? 'relative' : 'absolute'}</span>
+        {p.durationMs != null && <span style={{ opacity: 0.45 }}>{p.durationMs}ms</span>}
+      </span>
+    </div>
+  );
 }
 
 /** ONE enriched record = ONE enricher LLM call = ONE row. The call took one audio clip (this

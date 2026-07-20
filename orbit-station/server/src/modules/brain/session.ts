@@ -60,7 +60,7 @@ import { SentenceStreamer } from './sentence.js';
 import { SessionStore, type SessionMeta } from './store.js';
 import { loadDockSkills, type DockSkills } from './skills.js';
 import { buildFileTools, FILE_TOOLS_PROMPT } from './filetools.js';
-import { buildDockTools, buildGrantTools, buildSlackTools, buildWhatsAppTools, buildResearchTools, buildWebSearchTools, buildMemoryTools, buildFeedbackTools, buildObsTools, buildSessionTools, fireFace, type ToolTurnContext } from './tools.js';
+import { buildDockTools, buildGrantTools, buildSlackTools, buildWhatsAppTools, buildResearchTools, buildWebSearchTools, buildMemoryTools, buildFeedbackTools, buildObsTools, buildSessionTools, buildQuietTools, fireFace, type ToolTurnContext } from './tools.js';
 import { FACES, type MoveStep } from './schemas.js';
 import type { VideoRecorderApi } from '../perception/record/recorder.js';
 import * as slack from '../../integrations/slack.js';
@@ -264,6 +264,15 @@ export class DockBrainSession {
   /** set by the end_session tool: close the session at the NEXT settle (an
    *  in-turn close would cancel the turn that asked for it — see buildSessionTools). */
   #endRequested = false;
+  /** QUIET MODE (🤐): while set, the dock does NOT SPEAK — addressed turns are
+   *  skipped whole (no LLM), self-thought + spoken mood bits are suppressed, the
+   *  wake ack is silenced. Perception intake and body motion/idle-moods keep
+   *  running (motion never routes through the speak path). Values: undefined =
+   *  off; Infinity = indefinite (UI toggle, until manually turned off); a
+   *  timestamp = timed (the keep_quiet tool), auto-unlocks when Date.now() passes
+   *  it. Session-scoped (in-memory), like #approveAllMutations — a station
+   *  restart clears it. Manual off (setQuiet(null)) ALWAYS wins over a timed lock. */
+  #quietUntil?: number;
   // debug-stream timing (the console's turn inspector — kind 'brain-debug' on obs)
   #turnStartedAt = 0;
   #stepIndex = -1;
@@ -410,6 +419,11 @@ export class DockBrainSession {
    *  reply (tap-to-interrupt): a tap while thinking/speaking aborts the active turn
    *  (stops TTS) and opens a fresh listening window so the user can speak again. */
   tap(now = Date.now()): void {
+    // QUIET MODE (🤐): a TAP is the deliberate "engage me" gesture, so it EXITS
+    // quiet (manual off always wins over a timed/agent lock) and then opens
+    // listening as normal. A palm (tapOpen) does NOT — see tapOpen. (Face-arrival
+    // and wake windows also can't open while quiet.)
+    if (this.isQuiet(now)) this.setQuiet(null);
     const interrupts = this.#conv.tapWouldInterrupt(now);
     this.#conv.tap(now);
     if (interrupts) this.#interruptSpeech(); // abort the interrupted reply (or its TTS tail)
@@ -432,6 +446,11 @@ export class DockBrainSession {
    *  LISTENING (fixes the palm-during-speaking → followup → tap-off → dropped
    *  utterance bug). */
   tapOpen(now = Date.now()): void {
+    // QUIET MODE (🤐): the PALM ("listen to me") is ignored while quiet — a quiet
+    // dock never opens a listening window it can't reply from. This is also the
+    // gate for wake() (which calls tapOpen) and wake+command's adopt. Only a TAP
+    // (tap(), the deliberate engage gesture) exits quiet. No-op cleanly.
+    if (this.isQuiet(now)) return;
     const interrupts = this.#conv.tapWouldInterrupt(now);
     this.#conv.tapOpen(now);
     if (interrupts) this.#interruptSpeech(); // abort the interrupted reply (or its TTS tail)
@@ -460,10 +479,49 @@ export class DockBrainSession {
    *  the speak passes its turnId gate — RemoteBrain.onTurnStatus), the `speak`,
    *  and `done`. No agent, no transcript message, no per-step obs. */
   speakCanned(text: string): void {
+    if (this.isQuiet()) return; // 🤐 quiet mode silences the wake ack too
     const turnId = `canned-${randomUUID()}`;
     this.#sendToVoice('turn-status', { turnId, state: 'accepted', autonomous: true });
     this.#sendToVoice('speak', { turnId, seq: 0, text });
     this.#sendToVoice('turn-status', { turnId, state: 'done' });
+  }
+
+  // ── QUIET MODE (🤐) ─────────────────────────────────────────────────────────
+  /** Enter/leave quiet mode. `untilMs`: Infinity = indefinite (UI toggle, until
+   *  manually off); a future epoch-ms = timed (auto-unlocks); `null` = OFF NOW
+   *  (manual, always wins over a timed lock). Pushes a `quiet` frame so the
+   *  phone face shows/hides the 🤐 (with a countdown when timed). */
+  setQuiet(untilMs: number | null): void {
+    this.#quietUntil = untilMs == null ? undefined : untilMs;
+    this.#d.log?.(`[quiet] ${this.dock} ${untilMs == null ? 'OFF' : untilMs === Infinity ? 'ON (indefinite)' : `ON until ${new Date(untilMs).toISOString()}`}`);
+    this.#emitQuiet();
+  }
+
+  /** Whether the dock is currently quiet. Lazily expires a timed lock (and emits
+   *  the un-quiet frame) so a screenshot / probe never shows stale quiet. */
+  isQuiet(now = Date.now()): boolean {
+    if (this.#quietUntil == null) return false;
+    if (this.#quietUntil === Infinity) return true;
+    if (now < this.#quietUntil) return true;
+    this.#quietUntil = undefined; // timed lock expired → auto-unlock
+    this.#emitQuiet();
+    return false;
+  }
+
+  /** REST probe: { quiet, until } — until is 0 for indefinite/off (no countdown),
+   *  else the epoch-ms the timed lock unlocks. */
+  quietState(now = Date.now()): { quiet: boolean; until: number } {
+    const quiet = this.isQuiet(now); // also expires a stale timed lock
+    const until = this.#quietUntil && this.#quietUntil !== Infinity ? this.#quietUntil : 0;
+    return { quiet, until };
+  }
+
+  /** Push the current quiet state to the phone face (renderer). `until` = the
+   *  timed-unlock epoch ms (0 = indefinite or off) so the face can count down. */
+  #emitQuiet(): void {
+    const until = this.#quietUntil && this.#quietUntil !== Infinity ? this.#quietUntil : 0;
+    try { this.#sendToVoice('quiet', { quiet: this.#quietUntil != null, until }); }
+    catch { /* transport optional in tests */ }
   }
 
   /** Spoken dismissal ("stop" / "shut up" / "not talking to you"): abort any
@@ -480,7 +538,10 @@ export class DockBrainSession {
   vadActivity(active = true, now = Date.now()): void { this.#conv.vadActivity(now, active); }
 
   /** A new face arrived in the dock's camera (low-priority listen). */
-  faceArrival(now = Date.now()): void { this.#conv.faceArrival(now); }
+  faceArrival(now = Date.now()): void {
+    if (this.isQuiet(now)) return; // 🤐 a new face can't open a listen window while quiet
+    this.#conv.faceArrival(now);
+  }
 
   /** A face left the camera (releases only a low-priority face listen window —
    *  never a tap/follow-up). */
@@ -492,6 +553,7 @@ export class DockBrainSession {
     const m = this.#conv.mode(Date.now());
     try { this.#sendToVoice('conversation', { from: m, to: m, reason: 'resync', at: Date.now() }); }
     catch { /* transport optional */ }
+    this.#emitQuiet(); // a phone connecting mid-quiet must show the 🤐 immediately
   }
 
   /**
@@ -567,6 +629,13 @@ export class DockBrainSession {
    *  ever STARTS in a free lane and is superseded by any user turn exactly like a
    *  normal turn — users are never starved (docs/tasks.md §7a). */
   enqueueAutonomousTurn(req: TurnRequest & { expiresAt?: number; coalesceKey?: string }): void {
+    // QUIET MODE (🤐): a quiet dock makes NO unprompted speech — drop every
+    // autonomous turn (task reminders/notify, greetings, self-thought). This is
+    // the single chokepoint for ALL station-originated turns, so a source that
+    // doesn't route through raiseSelfThought (e.g. task signals) is covered too.
+    // The turn is dropped, not deferred — consistent with skipping addressed
+    // turns whole. Only USER turns (handleTurnRequest, gated at admission) run.
+    if (this.isQuiet()) return;
     // COALESCE: a task often emits a notify then a finish ~0ms apart (the reminder,
     // then "reminded"). Two back-to-back autonomous turns make the 2nd supersede the
     // 1st before TTS plays, AND read as redundant. If a not-yet-run turn with the
@@ -1109,6 +1178,9 @@ export class DockBrainSession {
         () => { this.#endRequested = true; },
         () => (this.#meta ? this.#d.hasRunningTasks?.(this.dock, this.#meta.sessionId) === true : false),
       ),
+      // keep_quiet — "be quiet" / "stop talking for a bit", spoken. Sets the
+      // quiet flag; this turn's ack is still spoken, quiet holds from next turn.
+      ...buildQuietTools((untilMs) => this.setQuiet(untilMs)),
     ];
     // REPLAY tool policy: embodiment runs real, external effects return their
     // recorded results (the canned assistant messages reuse recorded call ids).
@@ -1659,7 +1731,8 @@ export class DockBrainSession {
     if (typeof p.seq === 'number') this.#speechGate.noteUtteranceActive(p.seq);
     try {
       this.#d.motion.playGesture(this.dock, expression,
-        gesturesFromConfig(this.#d.config('faceGestures')) as Record<string, MoveStep[]>);
+        gesturesFromConfig(this.#d.config('faceGestures')) as Record<string, MoveStep[]>,
+        `face:${expression}`);
     } catch { /* body offline — the face already changed */ }
     this.#traceMood(expression, typeof p.seq === 'number' ? p.seq : undefined, 'phone');
   }

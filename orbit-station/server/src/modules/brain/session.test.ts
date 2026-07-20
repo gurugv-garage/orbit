@@ -630,6 +630,108 @@ test('resume: can switch between old sessions repeatedly (regression: 2nd resume
   assert.equal(session.resume(ids[2]!), true);
 });
 
+test('quiet mode: setQuiet drives isQuiet + emits a directed quiet frame; null clears', () => {
+  const { session, frames } = makeSession([]);
+  const quietFrames = () => frames.filter((f) => f.kind === 'quiet').map((f) => f.payload as { quiet: boolean; until: number });
+
+  assert.equal(session.isQuiet(), false);
+  assert.deepEqual(session.quietState().quiet, false);
+
+  // indefinite (the UI toggle form)
+  session.setQuiet(Infinity);
+  assert.equal(session.isQuiet(), true);
+  assert.deepEqual(session.quietState(), { quiet: true, until: 0 }); // until=0 → no countdown
+  assert.deepEqual(quietFrames().at(-1), { quiet: true, until: 0 });
+  // the quiet frame is DIRECTED at the voice component like every station→phone frame
+  assert.deepEqual(frames.filter((f) => f.kind === 'quiet').at(-1)!.toAddr, { dock: DOCK, component: 'phone' });
+
+  // manual off always clears
+  session.setQuiet(null);
+  assert.equal(session.isQuiet(), false);
+  assert.deepEqual(quietFrames().at(-1), { quiet: false, until: 0 });
+});
+
+test('quiet mode: a TIMED lock auto-unlocks once its deadline passes (+ emits the un-quiet frame)', () => {
+  const { session, frames } = makeSession([]);
+  const t0 = 1_000_000;
+  session.setQuiet(t0 + 60_000); // quiet for 60s
+  assert.equal(session.isQuiet(t0), true);
+  assert.equal(session.isQuiet(t0 + 59_999), true);
+  assert.equal(session.quietState(t0 + 30_000).until, t0 + 60_000); // countdown target exposed
+
+  // stepping past the deadline flips it off AND pushes the un-quiet frame once
+  const before = frames.filter((f) => f.kind === 'quiet').length;
+  assert.equal(session.isQuiet(t0 + 60_001), false);
+  const after = frames.filter((f) => f.kind === 'quiet');
+  assert.equal(after.length, before + 1);
+  assert.deepEqual(after.at(-1)!.payload, { quiet: false, until: 0 });
+  // idempotent: a second check past the deadline does not re-emit
+  assert.equal(session.isQuiet(t0 + 70_000), false);
+  assert.equal(frames.filter((f) => f.kind === 'quiet').length, after.length);
+});
+
+test('quiet mode: a quiet dock speaks nothing — the wake ack (speakCanned) is silenced', () => {
+  const { session, frames } = makeSession([]);
+  session.setQuiet(Infinity);
+  session.speakCanned('did you call me?');
+  assert.deepEqual(speakFrames(frames), [], 'canned ack leaked while quiet');
+  // and after clearing, canned speech flows again
+  session.setQuiet(null);
+  session.speakCanned('did you call me?');
+  assert.deepEqual(speakFrames(frames), ['did you call me?']);
+});
+
+test('quiet mode: palm (tapOpen), wake, and face-arrival do NOT open a listening window', () => {
+  const { session } = makeSession([]);
+  session.setQuiet(Infinity);
+  // palm — the "listen to me" gesture — is ignored while quiet
+  session.tapOpen();
+  assert.equal(session.isListening(), false, 'palm opened a window while quiet');
+  // wake() (audio-enricher fallback / wake phrase) routes through tapOpen + speakCanned — both gated
+  session.wake('did you call me?');
+  assert.equal(session.isListening(), false, 'wake opened a window while quiet');
+  // a new face can't open the low-priority listen window either
+  session.faceArrival();
+  assert.equal(session.isListening(), false, 'face-arrival opened a window while quiet');
+});
+
+test('quiet mode: a TAP exits quiet and then opens listening (the deliberate engage gesture)', () => {
+  const { session, frames } = makeSession([]);
+  session.setQuiet(Infinity);
+  assert.equal(session.isQuiet(), true);
+  session.tap();
+  assert.equal(session.isQuiet(), false, 'tap did not exit quiet');
+  assert.equal(session.isListening(), true, 'tap did not open listening after exiting quiet');
+  // and the un-quiet frame was pushed to the phone
+  assert.deepEqual(frames.filter((f) => f.kind === 'quiet').at(-1)!.payload, { quiet: false, until: 0 });
+});
+
+test('quiet mode: enqueueAutonomousTurn (task signal / greeting / self-thought) is dropped while quiet', async () => {
+  const { session, frames } = makeSession([]); // no scripts: a turn that RAN would throw "script exhausted"
+  session.setQuiet(Infinity);
+  session.enqueueAutonomousTurn({
+    turnId: 'auto-quiet',
+    trigger: { kind: 'task', text: '[background task reminder fired] tea is ready' },
+    expiresAt: Date.now() + 60_000,
+  });
+  // give any (erroneously) started drain a tick to run
+  await new Promise((r) => setTimeout(r, 30));
+  assert.deepEqual(speakFrames(frames), [], 'an autonomous turn spoke while quiet');
+  // clearing quiet lets autonomous turns flow again (sanity that the guard is the flag, not a break)
+  session.setQuiet(null);
+  assert.equal(session.isQuiet(), false);
+});
+
+test('quiet mode: resendConversation re-pushes the quiet state (a phone joining mid-quiet shows 🤐)', () => {
+  const { session, frames } = makeSession([]);
+  session.setQuiet(Infinity);
+  const before = frames.filter((f) => f.kind === 'quiet').length;
+  session.resendConversation();
+  const q = frames.filter((f) => f.kind === 'quiet');
+  assert.equal(q.length, before + 1, 'resync did not re-emit quiet');
+  assert.deepEqual(q.at(-1)!.payload, { quiet: true, until: 0 });
+});
+
 test('store.delete: removes a closed session, refuses the open one', () => {
   const { store } = makeSession([]);
   const m = store.open('del-dock');

@@ -79,7 +79,9 @@ function label(faces: FaceIdentity[]): string {
 /** Optional ego-motion getter: the robot's current camera-motion state. When the
  *  camera is 'moving', a face going out of frame is likely the ROBOT panning away,
  *  not the person leaving — so we DON'T count those misses toward "left". */
-export type CameraMotion = (streamId: string) => 'stationary' | 'moving';
+// dock-keyed "did the head just move" — same signal (and source: motion.recentlyMoved) that
+// vision's self-motion tag uses. Replaces the old streamId-keyed bodymotion.current() flag.
+export type CameraMotion = (dockId: string) => boolean;
 
 export function identitySnapshotProcessor(
   store: SnapshotStore, recognizeAll: RecognizeAll, cameraMotion?: CameraMotion,
@@ -98,7 +100,7 @@ export function identitySnapshotProcessor(
       // EGO-MOTION GUARD: while the camera is moving, faces leave/enter the frame
       // because of the ROBOT, not the world. Freeze presence (don't accrue misses)
       // so we neither drop someone the robot panned past nor invent arrivals.
-      const moving = cameraMotion?.(streamId) === 'moving';
+      const moving = cameraMotion?.(s.ctx.dockId) === true;
 
       // 1) update trackers: increment hits for seen, misses for unseen.
       for (const f of seen) {

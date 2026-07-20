@@ -248,7 +248,10 @@ export function stitch(records: SnapshotRecord[], windowFromIso?: string): strin
   const flushBm = () => {
     if (!bmRun) return;
     const span = bmRun.from === bmRun.to ? bmRun.from : `${bmRun.from}–${bmRun.to}`;
-    lines.push(`${span} CAMERA  ${bmRun.label}${staleTag(bmRun.iso)}`);
+    // BODY (was CAMERA): bodymotion is now a per-command record — its text says what the body
+    // did and where it ended looking (e.g. "faceFollow moved → looking 27° right"), not just a
+    // coarse moving/stationary flag. Consecutive same-text records still coalesce into one run.
+    lines.push(`${span} BODY  ${bmRun.label}${staleTag(bmRun.iso)}`);
     bmRun = null;
   };
   // Flush both pending state runs in TIMESTAMP order (earlier `from` first). A fixed

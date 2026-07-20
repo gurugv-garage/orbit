@@ -25,7 +25,7 @@ test('namesIn: identity faces → names, unknown → "someone", empty → []', (
   assert.deepEqual(namesIn(undefined), []);
 });
 
-const base = { now: 2_000_000, msSinceLastSnapshot: 100, lastRaisedAt: 0 };
+const base = { now: 2_000_000, msSinceLastSnapshot: 100, lastRaisedAt: 0, cameraMoving: false };
 
 test('arrival: present minus prev', () => {
   const s = deriveSignals({
@@ -58,13 +58,11 @@ test('no change: nobody arrived/departed when the set is stable', () => {
   assert.deepEqual(s.departedNames, []);
 });
 
-test('camera motion read from the latest bodymotion record text', () => {
-  const moving = deriveSignals({ ...base, latestBodymotion: rec('bodymotion', 'camera moving'), prevPresent: [] });
+test('camera motion is the passed-in flag (from MotionExecutor.recentlyMoved), not inferred', () => {
+  const moving = deriveSignals({ ...base, cameraMoving: true, prevPresent: [] });
   assert.equal(moving.cameraMoving, true);
-  const still = deriveSignals({ ...base, latestBodymotion: rec('bodymotion', 'stationary'), prevPresent: [] });
+  const still = deriveSignals({ ...base, cameraMoving: false, prevPresent: [] });
   assert.equal(still.cameraMoving, false);
-  const none = deriveSignals({ ...base, prevPresent: [] });
-  assert.equal(none.cameraMoving, false);
 });
 
 test('strong emotion only from a confident "looked X" read (not "seemed a little")', () => {

@@ -263,13 +263,14 @@ export function bodylinkModule(deps: {
       // returns the status string immediately; the sequence runs server-side
       // with the normal heartbeat. A new play/command supersedes it.
       if (subPath === '/play' && req.method === 'POST') {
-        const cmd = JSON.parse(await readBody(req)) as { dock?: string; steps?: unknown; source?: string };
+        const cmd = JSON.parse(await readBody(req)) as { dock?: string; steps?: unknown; source?: string; reason?: string };
         const dock = cmd.dock ?? pickDock();
         if (!dock) { json(res, 400, { error: 'which dock? pass {dock}' }); return true; }
         try {
           // forward an optional `source` so the lease arbitrates this move at the right
           // priority (default 'console'); lets the console / a test drive any priority.
-          const status = deps.motion.runSteps(dock, (cmd.steps ?? []) as MoveStep[], cmd.source ?? 'console');
+          const status = deps.motion.runSteps(dock, (cmd.steps ?? []) as MoveStep[],
+            cmd.reason ?? 'console:play', cmd.source ?? 'console');
           maybeDigest(dock, true);
           json(res, 200, { dock, status });
         } catch (e) {
@@ -289,7 +290,7 @@ export function bodylinkModule(deps: {
           if (typeof params.pulse_width_us === 'number') partsUs[part] = params.pulse_width_us;
           if (typeof params.duration_ms === 'number') durationMs = params.duration_ms;
         }
-        deps.motion.setTargets(dock, partsUs, durationMs);
+        deps.motion.setTargets(dock, partsUs, 'console:slider', durationMs);
         maybeDigest(dock, true);
         json(res, 200, { sent: { dock, parts } });
         return true;

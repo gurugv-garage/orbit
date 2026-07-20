@@ -99,7 +99,10 @@ export function buildCapabilityRegistry(d: CapabilityDeps): CapabilityRegistry {
       const steps = (Array.isArray(args.steps) ? args.steps : []) as MoveStep[];
       // TAG the move with this task's id so a standing behaviour (faceFollow) can tell its
       // OWN moves from a foreign mover (a brain turn / console / another task) and yield.
-      d.motion.runSteps(ctx.dock, steps, `task:${ctx.instanceId}`);
+      // `reason` (the bit/decision that chose the move) is REQUIRED at the harness; fall back to
+      // the task name if a task somehow omits it, so the audit log is never anonymous.
+      const reason = typeof args.reason === 'string' && args.reason ? args.reason : `task:${ctx.instanceId}`;
+      d.motion.runSteps(ctx.dock, steps, reason, `task:${ctx.instanceId}`);
       return { ok: true };
     },
   });
@@ -130,8 +133,10 @@ export function buildCapabilityRegistry(d: CapabilityDeps): CapabilityRegistry {
       // Must be the executor's own paced estimate, not the authored sum: fast gestures
       // stretch 2×+ under the velocity/comfort floor (review finding 2026-07-05).
       const durationMs = d.motion.estimateSequenceMs(ctx.dock, steps);
-      // same source tag as `move`, so the lease arbitrates it like any task motion.
-      d.motion.playGesture(ctx.dock, expression, gestures, `task:${ctx.instanceId}`);
+      // same source tag as `move`, so the lease arbitrates it like any task motion. `reason`
+      // (the bit) is required at the harness; fall back to gesture:<expression> if omitted.
+      const reason = typeof args.reason === 'string' && args.reason ? args.reason : `gesture:${expression}`;
+      d.motion.playGesture(ctx.dock, expression, gestures, reason, `task:${ctx.instanceId}`);
       return { ok: true, durationMs };
     },
   });

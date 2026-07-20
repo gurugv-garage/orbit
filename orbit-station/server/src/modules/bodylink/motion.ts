@@ -99,6 +99,48 @@ const SERVO_CAP = 'servo';
  *  trace) in its lightest form: observe who's driving, don't hard-lock. */
 export interface Mover { tag: string; at: number }
 
+/** A pose in DEGREES (neck = pitch/tilt, foot = pan/yaw). */
+export interface BodyPoseDeg { neck: number; foot: number }
+
+/** SOURCE-AUTHORED metadata attached to a body command — carried VERBATIM to the audit
+ *  log. The executor never derives these; the caller (brain move tool, a task, the console)
+ *  declares them. Open by design so callers can add fields (a `reason` for the move, the
+ *  originating `bit`, etc.) without touching the executor or the log. The executor adds only
+ *  what it alone owns (outcome, priority, base/target pose) — see BodyCmdSinkEntry. */
+export interface BodyCmdMeta {
+  /** did the source AUTHOR this as a delta (relative), vs an absolute target? */
+  relative?: boolean;
+  [k: string]: unknown;
+}
+
+/**
+ * WHY the body moved — a REQUIRED argument on every executor entry point (runSteps,
+ * runStepsAwaited, playGesture, setTargets). No command moves the body anonymously: the
+ * caller must say why (the compiler enforces it at every call site). Free-form, but use a
+ * stable `namespace:detail` shape so the audit log groups cleanly:
+ *   'mood:curious.tilt' · 'follow:guru' · 'follow:searching' · 'face:happy' ·
+ *   'move-tool' · 'search:red mug' · 'console:play' · 'console:slider' · 'lease-probe'
+ */
+export type BodyReason = string;
+
+/** The body-command AUDIT sink — one entry per servo command, accepted OR rejected.
+ *  main.ts bridges this to perception's bodycmd log; motion.ts stays decoupled from
+ *  perception (it only knows this shape). base/target are ABSOLUTE degrees. */
+export interface BodyCmdSinkEntry {
+  dock: string;
+  source: string;
+  priority: number;
+  outcome: 'accepted' | 'rejected-priority' | 'dropped-offline';
+  blockedBy?: { holder: string; priority: number };
+  // ── physical facts the EXECUTOR owns (authoritative — never source-supplied) ──
+  base: BodyPoseDeg;
+  target: BodyPoseDeg;
+  durationMs?: number;
+  // ── SOURCE-authored metadata, carried verbatim (relative?, reason?, …) ──
+  meta: BodyCmdMeta;
+}
+export type BodyCmdSink = (e: BodyCmdSinkEntry) => void;
+
 interface DockMotion {
   /** current per-part target (µs) — what the heartbeat re-sends. */
   targets: Record<string, number>;
@@ -117,6 +159,8 @@ export class MotionExecutor {
   #docks = new Map<string, DockMotion>();
   #timer: NodeJS.Timeout;
   #lease: ActuatorLease;
+  #cmdSink?: BodyCmdSink;
+  #taskName?: (instanceId: string) => string | undefined;
 
   constructor(bus: Bus, directory: Directory, leaseOpts?: LeaseOpts) {
     this.#bus = bus;
@@ -124,6 +168,42 @@ export class MotionExecutor {
     this.#lease = new ActuatorLease({ log: (l) => console.log(l), ...leaseOpts });
     this.#timer = setInterval(() => this.#heartbeatSweep(), ACTIVE_HEARTBEAT_MS);
     this.#timer.unref?.();
+  }
+
+  /** Wire the body-command AUDIT sink (main.ts → perception's bodycmd log). Every servo
+   *  command — accepted or rejected — is reported here. Optional: unset = no logging.
+   *  `taskName` resolves a `task:<id>` source's instance id → its task name for the log. */
+  setCmdSink(sink: BodyCmdSink, taskName?: (instanceId: string) => string | undefined): void {
+    this.#cmdSink = sink;
+    this.#taskName = taskName;
+  }
+
+  /** Enrich a `task:<id>` source with its task name → `task:<name>(<id>)` (e.g.
+   *  `task:idle-moods(t-3602)`), so the log shows WHICH task moved the body. Other
+   *  sources (brain-turn/console/…) pass through unchanged. */
+  #labelSource(source: string): string {
+    if (!source.startsWith('task:')) return source;
+    const id = source.slice('task:'.length);
+    const name = this.#taskName?.(id);
+    return name ? `task:${name}(${id})` : source;
+  }
+
+  /** Current pose (degrees) for the log's base/target. Never-moved joint = 0° (1500µs). */
+  #poseDeg(dock: string): BodyPoseDeg {
+    const t = this.#docks.get(dock)?.targets ?? {};
+    return { neck: usToDegrees(t.neck ?? 1500), foot: usToDegrees(t.foot ?? 1500) };
+  }
+
+  /** Report a REJECTED / dropped command to the audit sink (no pose change occurred). */
+  #logReject(dock: string, source: string, outcome: 'rejected-priority' | 'dropped-offline', meta: BodyCmdMeta = {}): void {
+    if (!this.#cmdSink) return;
+    const base = this.#poseDeg(dock);
+    this.#cmdSink({
+      dock, source: this.#labelSource(source), priority: priorityForSource(source), outcome,
+      blockedBy: outcome === 'rejected-priority' ? this.#lease.current(dock) : undefined,
+      base, target: base, // rejected → body stayed where it was
+      meta,
+    });
   }
 
   /** EXPLICIT lease for a continuous body-holder (faceFollow): acquire at a priority, renew
@@ -156,8 +236,8 @@ export class MotionExecutor {
    * body is offline or the steps are unusable (pi turns throws into error
    * tool results — the model narrates, the turn continues).
    */
-  runSteps(dock: string, steps: MoveStep[], source = 'station'): string {
-    return this.runStepsAwaited(dock, steps, source).status;
+  runSteps(dock: string, steps: MoveStep[], reason: BodyReason, source = 'station', meta?: BodyCmdMeta): string {
+    return this.runStepsAwaited(dock, steps, reason, source, meta).status;
   }
 
   /**
@@ -168,9 +248,13 @@ export class MotionExecutor {
    * sequence finishes OR is cancelled/superseded; it never rejects. The
    * fire-and-forget contract stays the default for every other caller.
    */
-  runStepsAwaited(dock: string, steps: MoveStep[], source = 'station'): { status: string; done: Promise<void> } {
+  runStepsAwaited(dock: string, steps: MoveStep[], reason: BodyReason, source = 'station', meta?: BodyCmdMeta): { status: string; done: Promise<void> } {
     if (!this.isOnline(dock)) throw new Error(`the body of ${dock} is not responding (offline)`);
     if (!Array.isArray(steps) || steps.length === 0) throw new Error('move needs at least one step');
+    // `reason` (required) + optional meta. If the source didn't say whether this was relative,
+    // DERIVE it from the steps (an executor-known fact); everything else is carried verbatim.
+    const anyRelative = steps.some((s) => s.relative || stepJoints(s).some((j) => j.relative));
+    const cmdMeta: BodyCmdMeta = { relative: anyRelative, ...meta, reason };
     // LEASE: a higher-priority holder owns the body → this move can't run. THROW (like the
     // offline case) so the tool surfaces an ERROR result — the model then narrates that it
     // couldn't move, instead of the old success-shaped "body busy" string that made the brain
@@ -181,6 +265,7 @@ export class MotionExecutor {
     // other sources keep the default momentary TTL.
     const holdMs = source === 'brain-turn' ? BRAIN_MOVE_SETTLE_MS : undefined;
     if (!this.#lease.admit(dock, source, priorityForSource(source), holdMs)) {
+      this.#logReject(dock, source, 'rejected-priority', cmdMeta);
       const h = this.#lease.current(dock);
       throw new Error(`can't move ${dock} right now — ${h?.holder ?? 'another holder'} has the body`);
     }
@@ -215,7 +300,7 @@ export class MotionExecutor {
     if (commandsAnyJoint && !anyTravel) {
       throw new Error(`already there — ${described.join(', ')} is where the body already is (can't move further that way)`);
     }
-    const done = this.#runSequence(dock, resolved, source);
+    const done = this.#runSequence(dock, resolved, source, cmdMeta);
     return { status: `moving: ${described.join(', ') || 'pausing'}`, done };
   }
 
@@ -258,10 +343,13 @@ export class MotionExecutor {
    * to center, undoing the find.) Offsets clamp at joint limits per-step from
    * a FIXED base, so repeated gestures can't drift.
    */
-  playGesture(dock: string, expression: string, gestures: Record<string, MoveStep[]>, source = 'brain-turn'): void {
+  playGesture(dock: string, expression: string, gestures: Record<string, MoveStep[]>, reason: BodyReason, source = 'brain-turn', meta?: BodyCmdMeta): void {
     const steps = gestures[expression];
     if (!steps || steps.length === 0 || !this.isOnline(dock)) return;
-    if (!this.#lease.admit(dock, source, priorityForSource(source))) return; // a higher holder owns the body
+    // A gesture is authored as OFFSETS around the current gaze (relative in spirit). `reason`
+    // (required) says WHY it's playing (e.g. 'face:happy', 'mood:attention.perk').
+    const cmdMeta: BodyCmdMeta = { relative: true, ...meta, reason };
+    if (!this.#lease.admit(dock, source, priorityForSource(source))) { this.#logReject(dock, source, 'rejected-priority', cmdMeta); return; } // a higher holder owns the body
     const base = this.#docks.get(dock)?.targets ?? {};
     const baseDeg = (part: string) => usToDegrees(base[part] ?? 1500);
     const rebased = steps.map((step) => {
@@ -272,7 +360,7 @@ export class MotionExecutor {
         duration_ms: step.duration_ms, wait_ms: step.wait_ms, snap: step.snap,
       };
     });
-    void this.#runSequence(dock, rebased, source);
+    void this.#runSequence(dock, rebased, source, cmdMeta);
   }
 
   /** Cancel the running sequence (new turn / turn-cancel / dock offline). */
@@ -318,18 +406,19 @@ export class MotionExecutor {
     return `${facing}, ${tilt} (foot ${footDeg}°, neck ${neckDeg}°)`;
   }
 
-  /** Direct single set_target (the console's slider path) — same master. */
-  setTargets(dock: string, partsUs: Record<string, number>, durationMs = DEFAULT_STEP_DURATION_MS, source = 'console'): void {
-    if (!this.#lease.admit(dock, source, priorityForSource(source))) return; // a higher holder owns the body
+  /** Direct single set_target (the console's slider path) — same master. Absolute targets. */
+  setTargets(dock: string, partsUs: Record<string, number>, reason: BodyReason, durationMs = DEFAULT_STEP_DURATION_MS, source = 'console', meta?: BodyCmdMeta): void {
+    const cmdMeta: BodyCmdMeta = { relative: false, ...meta, reason }; // a slider sets an absolute target
+    if (!this.#lease.admit(dock, source, priorityForSource(source))) { this.#logReject(dock, source, 'rejected-priority', cmdMeta); return; } // a higher holder owns the body
     this.stop(dock); // a manual command supersedes a running sequence (last write wins)
-    this.#send(dock, partsUs, durationMs, source);
+    this.#send(dock, partsUs, durationMs, source, cmdMeta);
   }
 
   shutdown(): void {
     clearInterval(this.#timer);
   }
 
-  async #runSequence(dock: string, steps: MoveStep[], source = 'station'): Promise<void> {
+  async #runSequence(dock: string, steps: MoveStep[], source = 'station', meta: BodyCmdMeta = {}): Promise<void> {
     const m = this.#dock(dock);
     // one sequence per dock: starting a new one cancels the previous
     // (last-write-wins, logged — corner case 20).
@@ -354,7 +443,7 @@ export class MotionExecutor {
         // matched to the body's ACTUAL travel time so the next step doesn't preempt this
         // one mid-ramp (else a fast full sweep collapses to a wiggle).
         const duration = this.#effectiveDuration(dock, partsUs, requested, step.snap === true);
-        this.#send(dock, partsUs, duration, source);
+        this.#send(dock, partsUs, duration, source, meta);
         const pause = duration + (step.wait_ms ?? 0);
         if (pause > 0) await sleep(pause);
       } else {
@@ -434,14 +523,22 @@ export class MotionExecutor {
   }
 
   /** Publish one set_target (directed to the servo component) + record targets + mover. */
-  #send(dock: string, partsUs: Record<string, number>, durationMs: number, source = 'station'): void {
+  #send(dock: string, partsUs: Record<string, number>, durationMs: number, source = 'station', meta: BodyCmdMeta = {}): void {
     const target = this.#directory.resolveCap(dock, SERVO_CAP);
-    if (!target?.component) return; // went offline mid-sequence — body holds pose
+    if (!target?.component) { this.#logReject(dock, source, 'dropped-offline', meta); return; } // offline — body holds pose
     const m = this.#dock(dock);
+    const base = this.#poseDeg(dock); // where the body is BEFORE this step (the pose it applies ON)
     Object.assign(m.targets, partsUs);
     m.lastMotionAt = Date.now();
     m.lastMover = { tag: source, at: m.lastMotionAt }; // who's driving (faceFollow yield signal)
     this.#publishSetTarget(dock, target.component, m.targets, durationMs);
+    // AUDIT: one 'accepted' bodycmd per step (raw wire truth — an abandoned mid-bit shows
+    // the last step that fired and the missing home step). base = pre-step pose, target =
+    // the resulting pose (post Object.assign).
+    this.#cmdSink?.({
+      dock, source: this.#labelSource(source), priority: priorityForSource(source), outcome: 'accepted',
+      base, target: this.#poseDeg(dock), durationMs, meta,
+    });
   }
 
   #publishSetTarget(dock: string, component: string, targets: Record<string, number>, durationMs: number): void {
