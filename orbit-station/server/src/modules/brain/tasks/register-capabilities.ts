@@ -99,7 +99,9 @@ export function buildCapabilityRegistry(d: CapabilityDeps): CapabilityRegistry {
       const steps = (Array.isArray(args.steps) ? args.steps : []) as MoveStep[];
       // TAG the move with this task's id so a standing behaviour (faceFollow) can tell its
       // OWN moves from a foreign mover (a brain turn / console / another task) and yield.
-      d.motion.runSteps(ctx.dock, steps, `task:${ctx.instanceId}`);
+      // A task may pass `reason` (e.g. the bit that chose the move) — carried to the audit log.
+      const meta = typeof args.reason === 'string' ? { reason: args.reason } : undefined;
+      d.motion.runSteps(ctx.dock, steps, `task:${ctx.instanceId}`, meta);
       return { ok: true };
     },
   });
@@ -130,8 +132,10 @@ export function buildCapabilityRegistry(d: CapabilityDeps): CapabilityRegistry {
       // Must be the executor's own paced estimate, not the authored sum: fast gestures
       // stretch 2×+ under the velocity/comfort floor (review finding 2026-07-05).
       const durationMs = d.motion.estimateSequenceMs(ctx.dock, steps);
-      // same source tag as `move`, so the lease arbitrates it like any task motion.
-      d.motion.playGesture(ctx.dock, expression, gestures, `task:${ctx.instanceId}`);
+      // same source tag as `move`, so the lease arbitrates it like any task motion. A task may
+      // pass `reason` (the bit) to override the default `gesture:<expression>` in the audit log.
+      const meta = typeof args.reason === 'string' ? { reason: args.reason } : undefined;
+      d.motion.playGesture(ctx.dock, expression, gestures, `task:${ctx.instanceId}`, meta);
       return { ok: true, durationMs };
     },
   });

@@ -315,8 +315,11 @@ export abstract class Task {
   /** the dock's latest camera frame as a base64 JPEG (or undefined if none). To
    *  REASON about it, run your own pi Agent — the model key is in process.env. */
   protected frame(): Promise<string | undefined> { return this.request('frame'); }
-  /** drive the dock body with move steps (fire-and-forget on the station side). */
-  protected move(steps: unknown[]): Promise<void> { return this.request('move', { steps }); }
+  /** drive the dock body with move steps (fire-and-forget on the station side). `reason`
+   *  (e.g. the bit that chose this move) is carried to the body-command audit log. */
+  protected move(steps: unknown[], reason?: string): Promise<void> {
+    return this.request('move', reason ? { steps, reason } : { steps });
+  }
   /** The latest on-device face boxes via `face-track` — [] on ANY error (a transient
    *  read failure reads as "no faces", never a crash). Shared face source for body
    *  tasks; callers needing the full typed shape can request('face-track') directly. */

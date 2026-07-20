@@ -38,7 +38,12 @@ export interface SnapshotSource {
   // 'enriched' = the AUDIO ENRICHER's unified record (one kind for all its output; WHAT it contains
   // — speech / played media / a non-speech sound — is the `audioSource` field, not the kind).
   // 'speech'/'sound' remain for the LIVE parakeet records + historical data.
-  kind: 'vision' | 'speech' | 'enriched' | 'identity' | 'emotion' | 'bodymotion' | 'sound' | 'summary';
+  // 'bodycmd' = the AUDIT log of every body (servo) command the station issued —
+  // source, priority, accepted/rejected (+ who blocked), the pose it applied ON, the
+  // target, and derived gaze (pan/tilt/facing). Keyed by DOCK, camera-independent (a
+  // servo-only body has no video stream) — do NOT confuse with 'bodymotion', which is
+  // the CAMERA-moving ego signal tied to the WebRTC stream. See bodycmd-log.ts.
+  kind: 'vision' | 'speech' | 'enriched' | 'identity' | 'emotion' | 'bodymotion' | 'bodycmd' | 'sound' | 'summary';
   device: string;
   host: string;
 }
@@ -53,6 +58,9 @@ export interface SnapshotSource {
  * Generalizes to future look-back: a state's value is always "the last record as of
  * time T", regardless of when it last changed.
  */
+// 'bodycmd' is an EVENT stream (each command is a discrete thing that happened — keep
+// them all on the timeline, don't collapse to a latest-value). The gaze it establishes
+// is state, but that's derived from the latest bodycmd record, not windowed as one.
 export const STATE_KINDS: ReadonlyArray<SnapshotSource['kind']> = ['identity', 'bodymotion'];
 
 export interface SnapshotRecord {

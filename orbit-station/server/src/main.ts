@@ -23,7 +23,7 @@ import { bodylinkModule } from './modules/bodylink/index.js';
 import { MotionExecutor } from './modules/bodylink/motion.js';
 import { mediaModule } from './modules/media/index.js';
 import { PerceptionProcessingHub } from './modules/perception/perception-processing-hub.js';
-import { perceptionModule, setCameraMoving } from './modules/perception/index.js';
+import { perceptionModule, setCameraMoving, bodyCmdSink } from './modules/perception/index.js';
 import { buildVideoRecorder } from './modules/perception/record/recorder.js';
 import { captureModule } from './modules/capture/index.js';
 import { slackModule } from './modules/slack/index.js';
@@ -141,6 +141,10 @@ async function main() {
   // measured 2026-07-09: at 1200ms most probes landed post-settle (pans finish fast).
   const selfMotionWindow = Number(process.env.VISION_SELFMOTION_WINDOW_MS ?? 2500);
   setCameraMoving((dock) => motion.recentlyMoved(dock, selfMotionWindow));
+  // AUDIT: every servo command (accepted or rejected) → perception's bodycmd timeline.
+  // Dock-keyed, camera-independent — the log of who moved the body, from where, to where,
+  // and what got blocked by priority. Keeps bodylink decoupled from perception (main bridges).
+  motion.setCmdSink(bodyCmdSink(), (instanceId) => getBrainAccess()?.taskName(instanceId));
   modules.push(docksModule(directory, () => hub, bindings));
   modules.push(bodylinkModule({ directory, motion, getHub: () => hub }));
 

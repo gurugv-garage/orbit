@@ -148,7 +148,7 @@ class IdleMoodsTask extends Task {
           foundCompany = (await this.faces()) > 0;
           if (foundCompany) {
             console.log('[mood] seek found company — delighted');
-            const r = await this.request<{ ok: boolean; durationMs?: number }>('gesture', { expression: 'surprised' })
+            const r = await this.request<{ ok: boolean; durationMs?: number }>('gesture', { expression: 'surprised', reason: `mood:${pick.bit.id}:seek-found` })
               .catch(() => null);
             if (r?.ok) await this.holdBodyThrough(r.durationMs ?? 3000);
           }
@@ -179,15 +179,18 @@ class IdleMoodsTask extends Task {
    *  paced estimate (authored sums under-count stretched fast gestures 2×+). A genuine
    *  preempt (brain turn / console) → abandon the rest, don't fight. */
   private async perform(bit: Bit): Promise<void> {
+    // Tag every body command with the BIT that chose it → the audit log shows WHICH mood
+    // move left the head where it is (e.g. an abandoned mid-bit staring up).
+    const reason = `mood:${bit.id}`;
     if (bit.gesture) {
-      const r = await this.request<{ ok: boolean; durationMs?: number }>('gesture', { expression: bit.gesture })
+      const r = await this.request<{ ok: boolean; durationMs?: number }>('gesture', { expression: bit.gesture, reason })
         .catch(() => null);
       // hold + renew until the fire-and-forget choreography actually finishes.
       if (r?.ok) await this.holdBodyThrough(r.durationMs ?? 3000);
       return;
     }
     for (const step of bit.steps ?? []) {
-      await this.move([step]).catch(() => {});
+      await this.move([step], reason).catch(() => {});
       const done = await this.holdBodyThrough((step.duration_ms ?? 500) + (step.wait_ms ?? 0));
       if (!done) { console.log('[mood] preempted mid-bit — abandoning'); return; }
     }

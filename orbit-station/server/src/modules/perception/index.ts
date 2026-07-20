@@ -29,6 +29,7 @@ import { identitySnapshotProcessor } from './processors/identity-snapshot.js';
 import { speechWatchProcessor, utteranceWavPath } from './processors/speech-watch.js';
 import { enrichAudio } from './processors/audio-enricher.js';
 import { bodyMotionWatchProcessor, type MotionCommand } from './processors/bodymotion-watch.js';
+import { bodyCmdLog, type BodyCmdEntry } from './processors/bodycmd-log.js';
 import { SnapshotStore, isoIst, sampleEvenly, makeSnapshot, type SnapshotRecord } from './snapshots.js';
 import { PerceiveStore, type PerceivePayload } from './perceive.js';
 import { TakeStore } from './takes.js';
@@ -647,6 +648,14 @@ export function getPerceiveStore(): PerceiveStore | undefined {
 const cameraMovingRef: { current?: (dockId: string) => boolean } = {};
 export function setCameraMoving(fn: (dockId: string) => boolean): void { cameraMovingRef.current = fn; }
 
+/** The body-command AUDIT sink — main.ts hands this to the MotionExecutor so every servo
+ *  command (accepted OR rejected) lands on the perception timeline as a 'bodycmd' record.
+ *  Keyed by dock, camera-independent (see bodycmd-log.ts). The ref is filled in init(). */
+const bodyCmdRef: { push?: (e: BodyCmdEntry) => void } = {};
+export function bodyCmdSink(): (e: BodyCmdEntry) => void {
+  return (e) => bodyCmdRef.push?.(e);
+}
+
 export function perceptionModule(getHub: () => PerceptionProcessingHub): StationModule {
   let state: PerceptionState;
   const snapshots = new SnapshotStore(); // WebRTC vision+speech snapshot records
@@ -831,6 +840,10 @@ export function perceptionModule(getHub: () => PerceptionProcessingHub): Station
     (e) => speechStartHandler?.(e),
   ); // 🎙 speech (exposes flushAll)
   const bodymotion = bodyMotionWatchProcessor(snapshots); // 🤖 ego-motion (setMotion seam)
+  // 🤖 body-command AUDIT log (dock-keyed, camera-independent — bodycmd-log.ts). Fills the
+  // module-level ref so main.ts's MotionExecutor wiring can push every servo command here.
+  const bodyLog = bodyCmdLog(snapshots);
+  bodyCmdRef.push = (e) => bodyLog.push(e);
   // Vision reuses the face processor's decoded frame (ONE ffmpeg per dock, not two). The
   // camera-moving signal comes from the MotionExecutor (set by main via setCameraMoving) —
   // faceFollow's pans never reach the bodymotion stream, so bodymotion.current() is useless
@@ -1478,8 +1491,14 @@ export function perceptionModule(getHub: () => PerceptionProcessingHub): Station
         // ?dock=X scopes to one dock/stream's snapshots (the console source selector);
         // omitted/all = the merged feed across every producer.
         const dock = q.get('dock');
-        const all = snapshots.list(limit);
-        json(res, 200, dock && dock !== 'all' ? all.filter((r) => r.dockId === dock) : all);
+        // ?kind=X scopes to one stream (e.g. 'bodycmd' for the body-command audit log).
+        // Filter BEFORE limiting so you get the last N OF THAT KIND, not the last N overall
+        // (else a rare kind is buried under high-rate vision/speech and returns empty).
+        const kind = q.get('kind');
+        let recs = snapshots.list();
+        if (dock && dock !== 'all') recs = recs.filter((r) => r.dockId === dock);
+        if (kind && kind !== 'all') recs = recs.filter((r) => r.source.kind === kind);
+        json(res, 200, recs.slice(-limit));
         return true;
       }
       if (req.method === 'POST' && subPath === '/snapshots/clear') {

@@ -66,6 +66,9 @@ export interface BrainAccess {
   models(dock: string): { brain?: string; thinking?: string };
   addressed(dock: string): unknown[];
   dockOf(peerId: string): string | undefined;
+  /** Definition name of a running task instance (e.g. 'idle-moods', 'face-follow') by its
+   *  `t-xxxx` id — so a `task:<id>` body-command source can show WHICH task moved the body. */
+  taskName(instanceId: string): string | undefined;
 }
 /**
  * Parse the phone's flat `k=v k=v` face probe (DockTools.faceProbe).
@@ -486,6 +489,7 @@ export function brainModule(w: BrainWiring): StationModule {
     },
     addressed: (dock) => addrTrace.filter((e) => e.dock === dock),
     dockOf,
+    taskName: (instanceId) => supervisor.get(instanceId)?.name,
   };
 
   // WakeApi for the conductor's `wakeUp` behaviour — set/clear the per-dock wake config.
