@@ -212,6 +212,11 @@ const THINKING_LEVELS = ['off', 'minimal', 'low', 'medium', 'high'];
 const wsUrl = () => `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`;
 const fmtMs = (ms?: number) => (ms == null ? '—' : ms >= 1000 ? `${(ms / 1000).toFixed(2)}s` : `${Math.round(ms)}ms`);
 const fmtCost = (c?: number) => (c == null || c === 0 ? '' : `$${c.toFixed(5)}`);
+// Countdown label for a TIMED quiet: "M:SS" under an hour, "Hh Mm" above.
+const fmtQuietLeft = (secs: number) =>
+  secs >= 3600
+    ? `${Math.floor(secs / 3600)}h ${Math.floor((secs % 3600) / 60)}m`
+    : `${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, '0')}`;
 
 // ── component ────────────────────────────────────────────────────────────────
 
@@ -226,6 +231,10 @@ export function Brain() {
   const [cfgDirty, setCfgDirty] = useState<Partial<BrainConfig>>({});
   const [keyStatus, setKeyStatus] = useState<KeyStatus | null>(null);
   const [profile, setProfile] = useState<DockProfile | null>(null);
+  // QUIET MODE (🤐): { quiet, until } from GET /api/brain/:dock/quiet. until>0 =
+  // a timed lock (the keep_quiet tool); the UI toggle sets the indefinite form.
+  const [quiet, setQuiet] = useState<{ quiet: boolean; until: number }>({ quiet: false, until: 0 });
+  const [nowTick, setNowTick] = useState(Date.now()); // ticks the quiet countdown
   const [showContext, setShowContext] = useState(false);
   const [showTasks, setShowTasks] = useState(false);
   // 2c test surface: the self-thought box + grounding preview toggle.
@@ -337,12 +346,36 @@ export function Brain() {
 
   // the dock's full brain context (config, key, composition, memory, skills,
   // system prompt) — loaded on connect + after any config change.
+  // QUIET MODE (🤐): read state. The console toggle (toggleQuiet, below) is always
+  // the INDEFINITE form — a timed quiet only comes from the agent's keep_quiet
+  // tool. Off always wins, even over a timed lock. Refreshed with every profile
+  // load; the station drives the on-face 🤐 independently.
+  const loadQuiet = useCallback(async (d: string) => {
+    try {
+      const r = await fetch(`/api/brain/${encodeURIComponent(d)}/quiet`);
+      if (r.ok) setQuiet(await r.json() as { quiet: boolean; until: number });
+    } catch { /* station down */ }
+  }, []);
+
   const loadProfile = useCallback(async (d: string) => {
     try {
       const r = await fetch(`/api/brain/${encodeURIComponent(d)}/profile`);
       if (r.ok) setProfile(await r.json() as DockProfile);
     } catch { /* ignore */ }
-  }, []);
+    void loadQuiet(d); // keep the 🤐 badge in step with every profile refresh
+  }, [loadQuiet]);
+
+  // Tick the quiet countdown while a TIMED quiet is live; re-poll once it lapses
+  // so the badge clears when the station auto-unlocks (server-owned expiry).
+  useEffect(() => {
+    if (!(quiet.quiet && quiet.until > 0)) return;
+    const id = setInterval(() => {
+      const now = Date.now();
+      setNowTick(now);
+      if (now >= quiet.until) void loadQuiet(dockRef.current.trim() || 'web-test');
+    }, 500);
+    return () => clearInterval(id);
+  }, [quiet.quiet, quiet.until, loadQuiet]);
 
   const applyConfig = async () => {
     if (Object.keys(cfgDirty).length === 0) return;
@@ -544,6 +577,16 @@ export function Brain() {
     await loadProfile(d);
   };
 
+  const toggleQuiet = async () => {
+    const d = dockRef.current.trim() || 'web-test';
+    const next = !quiet.quiet;
+    await fetch(`/api/brain/${encodeURIComponent(d)}/quiet`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(next ? { on: true } : { on: false }),
+    });
+    await loadQuiet(d);
+  };
+
   // 4c: load this dock's memories (optionally filtered by a semantic query).
   const loadMemory = async (query?: string) => {
     const d = dockRef.current.trim() || 'web-test';
@@ -702,6 +745,14 @@ export function Brain() {
           <button className={`br-btn ${profile?.listening ? 'acc glow' : ''}`} onClick={toggleListening}
             title="stub: user mid-utterance (no real mic yet). A thought DEFERS while on.">
             {profile?.listening ? '🎙 listening ON' : '🎙 listening off'}
+          </button>
+          <button className={`br-btn ${quiet.quiet ? 'acc glow' : ''}`} onClick={toggleQuiet}
+            title="Quiet mode: the dock keeps hearing + idling but makes NO replies or remarks. Toggle is indefinite; a timed quiet comes from the keep_quiet tool. Off always wins.">
+            {quiet.quiet
+              ? (quiet.until > 0
+                ? `🤐 quiet · ${fmtQuietLeft(Math.max(0, Math.ceil((quiet.until - nowTick) / 1000)))}`
+                : '🤐 quiet ON')
+              : '🤐 quiet off'}
           </button>
           <span className="br-sep" />
           <label className="br-lbl">think</label>

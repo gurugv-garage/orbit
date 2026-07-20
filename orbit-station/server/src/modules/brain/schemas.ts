@@ -319,6 +319,27 @@ export const endSessionSchema = {
   properties: {},
 } as const;
 
+export const KEEP_QUIET_DESC =
+  'Go QUIET (🤐): stop speaking for a while. Use when the person clearly wants you '
+  + 'to be silent — "be quiet", "stop talking for a bit", "shush", "let me focus", '
+  + '"don\'t talk during the meeting". While quiet you keep watching and listening '
+  + 'and your body still idles, but you do NOT reply to anything and you make no '
+  + 'unprompted remarks. Say a brief acknowledgement THIS turn (e.g. "okay, going '
+  + 'quiet 🤐") — quiet starts right after. Give `minutes` if they named a duration '
+  + '("for ten minutes", "until the call\'s over" ≈ your best guess); OMIT it if they '
+  + 'want you quiet with no set end (it stays until they tell you to talk again or '
+  + 'someone flips the toggle). You cannot un-quiet yourself — the person does.';
+
+export const keepQuietSchema = {
+  type: 'object',
+  properties: {
+    minutes: {
+      type: 'number',
+      description: 'how many minutes to stay quiet before speaking again on your own. Omit for indefinite (until the person asks you to talk again). Use their stated duration, or a sensible estimate when they gave a vaguer bound.',
+    },
+  },
+} as const;
+
 export const inspectObservabilitySchema = {
   type: 'object',
   properties: {

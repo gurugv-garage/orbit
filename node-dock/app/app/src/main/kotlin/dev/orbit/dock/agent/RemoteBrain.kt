@@ -101,6 +101,18 @@ class RemoteBrain(
     private val _windowUntil = MutableStateFlow(0L)
     val windowUntil: StateFlow<Long> = _windowUntil.asStateFlow()
 
+    /** QUIET MODE (🤐). The station is the sole owner: while quiet it skips every
+     *  reply and unprompted remark (the dock keeps watching/listening + its body
+     *  still idles). The phone is a pure renderer — it shows a big 🤐 while
+     *  `quiet` is true. `quietUntil` = the epoch-ms a TIMED quiet auto-unlocks (0
+     *  = indefinite, until someone toggles it off), so the face counts down like
+     *  the listening window. Pushed on every change AND on (re)connect resync, so
+     *  a phone joining mid-quiet shows it immediately. */
+    private val _quiet = MutableStateFlow(false)
+    val quiet: StateFlow<Boolean> = _quiet.asStateFlow()
+    private val _quietUntil = MutableStateFlow(0L)
+    val quietUntil: StateFlow<Long> = _quietUntil.asStateFlow()
+
     /** LIVE interim (partial) user-speech transcript for the on-face caption. The
      *  station re-transcribes the in-progress utterance every ~800ms and streams the
      *  growing text here; the UI shows it dim/italic while the user talks, then clears
@@ -230,6 +242,18 @@ class RemoteBrain(
             put("openOnly", true)
         })
         trace("ADDRESSED (palm, open-only) → station")
+    }
+
+    /** QUIET MODE (🤐) toggled from the ON-FACE button. Publishes an `agent`/quiet
+     *  frame; the STATION owns the state (it skips replies + remarks while quiet)
+     *  and echoes a `quiet` frame back that flips [quiet]/[quietUntil], so the face
+     *  reflects the real state, not an optimistic local guess. `on=false` (manual
+     *  off) always wins over a timed/agent lock. The on-face button is always the
+     *  INDEFINITE form — timed quiet comes only from the keep_quiet tool. */
+    fun setQuiet(on: Boolean) {
+        if (!isConfigured) return
+        link.publish("agent", "quiet", buildJsonObject { put("on", on) })
+        trace("QUIET ${if (on) "ON" else "OFF"} (on-face button) → station")
     }
 
     /** Flag FEEDBACK about this session (feedback-flow). Ships the user's reason +
@@ -428,6 +452,16 @@ class RemoteBrain(
                 // utterance's caption — the interim has done its job; the reply (or
                 // silence) takes over. Clear so a stale partial doesn't linger.
                 if (to != "listening" && to != "followup") clearInterim()
+            }
+            "quiet" -> {
+                // QUIET MODE (🤐) toggle from the station (UI toggle, keep_quiet
+                // tool, or timed auto-unlock). Pure render: reflect it on the face.
+                // until = epoch-ms a timed quiet unlocks (0 = indefinite / off).
+                val on = payload.bool("quiet")
+                _quiet.value = on
+                _quietUntil.value = if (on) payload.long("until") else 0L
+                Timber.i("quiet → $on (until=${_quietUntil.value})")
+                trace("QUIET $on")
             }
             "transcript-interim" -> onTranscriptInterim(payload)
             "tts-hold" -> {

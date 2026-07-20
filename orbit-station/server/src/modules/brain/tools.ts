@@ -334,6 +334,29 @@ export function buildSessionTools(requestEnd: () => void, hasTasks: () => boolea
   ];
 }
 
+/** keep_quiet — the agent's "go silent" tool (🤐). Like end_session it only
+ *  SETS a flag; the quiet takes hold from the NEXT utterance on, so this turn's
+ *  acknowledgement ("okay, going quiet") is still spoken. `setQuiet(untilMs)`:
+ *  a future epoch-ms for a timed lock, Infinity for indefinite. The dock can't
+ *  un-quiet itself — the person does (voice re-engage isn't wired: quiet skips
+ *  turns whole, so there's no LLM to hear "you can talk now"; the UI toggle or a
+ *  timed expiry ends it). */
+export function buildQuietTools(setQuiet: (untilMs: number) => void): AgentTool<any>[] {
+  return [
+    tool('keep_quiet', S.KEEP_QUIET_DESC, S.keepQuietSchema, async (_id, args: { minutes?: number }) => {
+      const mins = typeof args.minutes === 'number' && args.minutes > 0 ? args.minutes : undefined;
+      setQuiet(mins != null ? Date.now() + mins * 60_000 : Infinity);
+      return textResult(
+        `Quiet mode is scheduled — it starts as soon as you finish speaking this turn. `
+        + `Say a brief acknowledgement now (e.g. "okay, going quiet 🤐")`
+        + (mins != null
+          ? `; you'll go quiet for about ${mins} minute${mins === 1 ? '' : 's'}, then speak again on your own.`
+          : ` and go quiet until the person asks you to talk again.`),
+      );
+    }),
+  ];
+}
+
 /** Read-only observability access for the inspect tool. */
 export interface ObsToolApi {
   /** the enriched session record (turns + enrichment) for a session id. */

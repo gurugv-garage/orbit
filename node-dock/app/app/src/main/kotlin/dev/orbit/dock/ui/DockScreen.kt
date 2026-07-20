@@ -1,7 +1,9 @@
 package dev.orbit.dock.ui
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.draw.clip
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -9,6 +11,15 @@ import androidx.compose.animation.core.animateFloat
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.WindowInsetsSides
+import androidx.compose.foundation.layout.displayCutout
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.only
+import androidx.compose.foundation.layout.statusBars
+import androidx.compose.foundation.layout.union
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.material3.MaterialTheme
@@ -581,6 +592,16 @@ fun DockScreen() {
         while (windowUntil > 0L) { nowTick = System.currentTimeMillis(); kotlinx.coroutines.delay(250) }
     }
     val listenSecsLeft = if (windowUntil > 0L) ((windowUntil - nowTick + 999) / 1000).coerceAtLeast(0) else 0L
+    // QUIET MODE (🤐): station-owned. When on, a big 🤐 covers the face so it's
+    // unmistakable on a glance/screenshot that the dock won't reply. A TIMED quiet
+    // (quietUntil>0) shows a live countdown; indefinite shows just the emoji. Reuse
+    // the same nowTick clock as the listening countdown (already ticking here).
+    val quiet by agent.quiet.collectAsState()
+    val quietUntil by agent.quietUntil.collectAsState()
+    LaunchedEffect(quietUntil) {
+        while (quietUntil > 0L) { nowTick = System.currentTimeMillis(); kotlinx.coroutines.delay(250) }
+    }
+    val quietSecsLeft = if (quietUntil > 0L) ((quietUntil - nowTick + 999) / 1000).coerceAtLeast(0) else 0L
     // A fresh live interim means the USER is speaking again (e.g. a follow-up in the
     // followup window, no palm). The previous reply's botSubtitle is now stale and, by
     // the Subtitle precedence (botSubtitle > transcript), would otherwise mask the live
@@ -826,7 +847,17 @@ fun DockScreen() {
                     modifier = Modifier
                         .align(Alignment.TopStart)
                         .fillMaxHeight()
-                        .padding(top = 34.dp), // clear the version label above
+                        // The app is edge-to-edge with system bars hidden (immersive),
+                        // so content draws UNDER the notch/camera cutout. A fixed 34dp
+                        // top pad was fine on the old phone but on the Redmi the cutout
+                        // is taller — the debug HUD rendered off/under it (invisible for
+                        // days). Pad by the ACTUAL cutout+status inset so it clears on
+                        // any phone, then +34dp to still sit below the version label.
+                        .windowInsetsPadding(
+                            WindowInsets.displayCutout.union(WindowInsets.statusBars)
+                                .only(WindowInsetsSides.Top),
+                        )
+                        .padding(top = 34.dp),
                 ) {
                     dev.orbit.dock.ui.widgets.TaskHud(info = debugInfo)
                     dev.orbit.dock.ui.widgets.EventLog(
@@ -932,6 +963,63 @@ fun DockScreen() {
                                 .padding(horizontal = 14.dp, vertical = 5.dp),
                         )
                     }
+                    // QUIET MODE (🤐) overlay — big and centered so a glance (or a
+                    // screenshot) reads it instantly: the dock is hearing but won't
+                    // reply. A timed quiet shows the countdown; indefinite shows only
+                    // the emoji + label. Dims the face behind it so it clearly reads
+                    // as a mode, not a passing reaction. The WHOLE overlay is one big
+                    // tap target to EXIT (manual off always wins, even over a timed/
+                    // agent quiet) — clickable consumes the tap so it never reaches the
+                    // face's listen/barge gesture underneath.
+                    if (quiet) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .background(Color(0xFF07080B).copy(alpha = 0.72f))
+                                .clickable { agent.setQuiet(false) },
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                Text("🤐", fontSize = 132.sp)
+                                Spacer(Modifier.height(10.dp))
+                                Text(
+                                    text = if (quietSecsLeft > 0L) "Quiet · ${formatQuietLeft(quietSecsLeft)}" else "Quiet",
+                                    color = Color(0xFFB9C2D0),
+                                    fontSize = 22.sp,
+                                    fontWeight = FontWeight.Medium,
+                                )
+                                Spacer(Modifier.height(6.dp))
+                                Text(
+                                    text = "tap to talk again",
+                                    color = Color(0xFF7C8798),
+                                    fontSize = 15.sp,
+                                )
+                            }
+                        }
+                    } else {
+                        // NOT quiet → a big finger-friendly "Quiet" pill, bottom-center.
+                        // The whole face is already a tap-to-listen surface, so the
+                        // manual-quiet control needs its OWN target; a clickable child
+                        // consumes the tap before the face gesture sees it. Anchored low
+                        // with a large bottom inset so it clears the phone's rounded
+                        // corner / gesture bar (the Redmi has no room up top — cutout).
+                        Box(
+                            modifier = Modifier
+                                .align(Alignment.BottomCenter)
+                                .padding(bottom = 28.dp)
+                                .clip(RoundedCornerShape(50))
+                                .background(Color(0xFF15181F).copy(alpha = 0.92f))
+                                .clickable { agent.setQuiet(true) }
+                                .padding(horizontal = 30.dp, vertical = 16.dp),
+                        ) {
+                            Text(
+                                text = "🤐  Quiet",
+                                color = Color(0xFFC6CEDA),
+                                fontSize = 24.sp,
+                                fontWeight = FontWeight.Medium,
+                            )
+                        }
+                    }
                     // Who the station last recognized (lags a new face by ~1-2s).
                     seenName?.let { who ->
                         Text(
@@ -1026,6 +1114,13 @@ fun DockScreen() {
                         fontSize = 11.sp,
                         modifier = Modifier
                             .align(Alignment.TopStart)
+                            // Same cutout fix as the debug HUD: immersive edge-to-edge
+                            // draws this under the notch on the Redmi. Inset first, then
+                            // the visual 12dp gap.
+                            .windowInsetsPadding(
+                                WindowInsets.displayCutout.union(WindowInsets.statusBars)
+                                    .only(WindowInsetsSides.Top),
+                            )
                             .padding(12.dp)
                             .pointerInput(Unit) {
                                 detectTapGestures(
@@ -1350,6 +1445,12 @@ private fun agentStatusText(s: AgentState): String = when (s) {
     is AgentState.ToolCalling -> "🛠 ${s.shortLabel}"
     is AgentState.Failed -> "⚠ ${s.message}"
     else -> ""
+}
+
+/** Countdown label for a TIMED quiet: "M:SS" once under an hour, "Hh Mm" above. */
+private fun formatQuietLeft(secs: Long): String {
+    if (secs >= 3600) return "${secs / 3600}h ${(secs % 3600) / 60}m"
+    return "${secs / 60}:${(secs % 60).toString().padStart(2, '0')}"
 }
 
 private fun agentStatusColor(s: AgentState): Color = when (s) {
