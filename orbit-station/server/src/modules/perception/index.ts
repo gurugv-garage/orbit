@@ -1314,12 +1314,12 @@ export function perceptionModule(getHub: () => PerceptionProcessingHub): Station
         if (!payload || !Array.isArray(payload.faces)) return;
         const dockId = getHub().resolveDock(msg.source);
         perceive.update(dockId, payload);
-        // TODO(perceive→ring): optionally fold payload.emotion / payload.identity into
-        // the SnapshotStore (the ring already models those kinds) so they join the
-        // recall record. Deferred: the on-device emotion/identity here would need the
-        // same CONFIRM/DROP hysteresis the identity stream applies (else ~1 Hz raw
-        // would spam the ring + skew the summarizer), which is more than a few lines —
-        // out of scope for landing the live face-track. Face GEOMETRY never goes in the ring.
+        // TODO(perceive→ring): optionally fold payload.identity into the SnapshotStore
+        // (the ring already models that kind) so it joins the recall record. Deferred:
+        // the on-device identity here would need the same CONFIRM/DROP hysteresis the
+        // identity stream applies (else ~1 Hz raw would spam the ring + skew the
+        // summarizer), which is more than a few lines. Face GEOMETRY never goes in the ring.
+        // (Emotion is no longer on this stream — the station's face-api handles it.)
       });
 
       // Generic reconnect snapshot: when a dock (re)joins, push it its current

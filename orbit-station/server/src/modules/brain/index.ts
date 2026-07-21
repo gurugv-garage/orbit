@@ -549,7 +549,7 @@ export function brainModule(w: BrainWiring): StationModule {
       // Resolve the task defs the conductor may start (so ConductorAccess.startTask is
       // sync). Fire-and-forget — populated well before the first ~1Hz conductor tick.
       void (async () => {
-        for (const name of ['face-follow', 'idle-moods']) {
+        for (const name of ['idle-moods']) {
           try { const d = await findTaskDef(taskRoots, name); condTaskDefs.set(name, { name: d.name, filePath: d.filePath, manifest: d.manifest }); }
           catch { /* def missing → conductor startTask returns null, reconcile retries */ }
         }
@@ -1377,39 +1377,9 @@ export function brainModule(w: BrainWiring): StationModule {
         json(res, 200, { ok: !r.isError, result: r.content });
         return true;
       }
-      // ── debug: inject a camera EMOTION read ────────────────────────────────
-      // POST /:dock/debug/face/emotion {kind, [confidence=0.9], [times=4], [everyMs=700]}
-      //   → publishes UserEmotion onto the phone's PerceptionBus, the same seam
-      //     every real FER read flows through.
-      //
-      // Sent REPEATEDLY by default because the gate is a DEBOUNCE: a read must
-      // persist (~2s for a strong emotion) before the dock reacts, so a single
-      // injection correctly does nothing. That is the anti-flicker behaviour
-      // under test, not an obstacle to it — the camera streams at ~1 Hz and so
-      // does this.
-      m = subPath.match(/^\/([^/]+)\/debug\/face\/emotion$/);
-      if (m && req.method === 'POST') {
-        const dock = decodeURIComponent(m[1]!);
-        const b = JSON.parse((await readBody(req)) || '{}') as
-          { kind?: string; confidence?: number; times?: number; everyMs?: number };
-        const kind = typeof b.kind === 'string' ? b.kind.trim() : '';
-        if (!kind) { json(res, 400, { error: 'body.kind (Happy|Sad|Angry|Surprised|Neutral|Sleepy) is required' }); return true; }
-        const times = Math.min(Math.max(Number(b.times) || 4, 1), 20);
-        const everyMs = Math.min(Math.max(Number(b.everyMs) || 700, 100), 5_000);
-        const confidence = String(b.confidence ?? 0.9);
-        let last = '';
-        for (let i = 0; i < times; i++) {
-          if (i > 0) await new Promise((r) => setTimeout(r, everyMs));
-          const r = await rpc.call({
-            dock, cap: 'face', turnId: `emo-${Date.now()}`, toolCallId: `emo-${i}`,
-            name: 'face_emotion', args: { kind, confidence },
-          });
-          last = r.content;
-          if (r.isError) { json(res, 200, { ok: false, error: r.content }); return true; }
-        }
-        json(res, 200, { ok: true, sent: times, last, face: parseProbe('') });
-        return true;
-      }
+      // (the /debug/face/emotion inject route was removed with on-device FER —
+      // the station reads emotion from the SFU stream now; see
+      // docs/decision-traces/thin-client-consolidation.md.)
       // ── debug: FACE FILMSTRIP — sample the face over TIME ──────────────────
       // POST /:dock/debug/face/film {count=5, everyMs=1000, [maxWidth], [quality]}
       //   → writes JPEGs + a state line per sample to var/debug/face/<runId>/

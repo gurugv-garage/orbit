@@ -152,25 +152,19 @@ object DebugTestReceiver {
                         }
                     }
                     "${PREFIX}FACE" -> {
-                        // Inject a camera face sighting (+ optional emotion) so the
-                        // grounded-perception path is testable on the emulator,
-                        // whose virtual camera won't trip ML Kit face detection.
-                        //   adb ... FACE -e x 0 -e y 0 -e emotion Happy
+                        // Inject a camera face sighting so the grounded-perception path
+                        // is testable on the emulator, whose virtual camera won't trip
+                        // ML Kit face detection.
+                        //   adb ... FACE -e x 0 -e y 0
                         //   adb ... FACE -e lost true
+                        // (on-device emotion inject retired — the station reads emotion
+                        //  from the SFU stream now.)
                         if (intent.getStringExtra("lost")?.toBoolean() == true) {
                             PerceptionBus.emit(PerceptionEvent.FaceLost)
                         } else {
                             val x = intent.getStringExtra("x")?.toFloatOrNull() ?: 0f
                             val y = intent.getStringExtra("y")?.toFloatOrNull() ?: 0f
                             PerceptionBus.emit(PerceptionEvent.FaceSeen(x, y, size = 0.3f))
-                            intent.getStringExtra("emotion")?.let { name ->
-                                val kind = runCatching {
-                                    PerceptionEvent.UserEmotion.Kind.valueOf(name)
-                                }.getOrNull()
-                                if (kind != null) {
-                                    PerceptionBus.emit(PerceptionEvent.UserEmotion(kind, 0.9f))
-                                }
-                            }
                         }
                     }
                 }

@@ -117,15 +117,6 @@ sealed class PerceptionEvent {
     ) : PerceptionEvent()
 
     /**
-     * The dock's read of the user's emotional state from the camera. Drives
-     * passive emotion mirroring while the dock is watching/listening so the
-     * face reacts to the user even between LLM turns.
-     */
-    data class UserEmotion(val kind: Kind, val confidence: Float) : PerceptionEvent() {
-        enum class Kind { Neutral, Happy, Sad, Surprised, Sleepy, Angry }
-    }
-
-    /**
      * Identity recognized by the STATION's stream processing (face/voice fused),
      * not the on-device camera. Lets the agent address the user by name. `name`
      * null = a person is present but not recognized. Arrives over the station's

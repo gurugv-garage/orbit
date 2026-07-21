@@ -37,36 +37,23 @@ class PerceptionSnapshotTest {
     }
 
     @Test
-    fun emotionIsLowercasedAndIncludedWhenPresent() {
-        val s = PerceptionSnapshot()
-        s.onFaceSeen(0f, 0f)
-        s.onEmotion("Happy")
-        assertThat(s.facts.emotion).isEqualTo("happy")
-        assertThat(s.describe()).isEqualTo(
-            "You can see someone (toward your center); they appear happy — recollect_face to find out who.",
-        )
-    }
-
-    @Test
-    fun faceLostClearsPresenceAndGazeButKeepsLastEmotion() {
+    fun faceLostClearsPresenceAndGaze() {
         val s = PerceptionSnapshot()
         s.onFaceSeen(-0.8f, 0f)
-        s.onEmotion("Sad")
         s.onFaceLost()
         assertThat(s.facts.facePresent).isFalse()
         assertThat(s.facts.gaze).isNull()
-        assertThat(s.facts.emotion).isEqualTo("sad") // retained (stale but harmless)
-        // Nothing in view → no description, even with a remembered emotion.
+        // Nothing in view → no description.
         assertThat(s.describe()).isNull()
     }
 
     @Test
-    fun reappearingFaceDescribesAgainWithRememberedEmotion() {
+    fun reappearingFaceDescribesAgain() {
         val s = PerceptionSnapshot()
-        s.onFaceSeen(0f, 0f); s.onEmotion("Surprised"); s.onFaceLost()
+        s.onFaceSeen(0f, 0f); s.onFaceLost()
         s.onFaceSeen(0.8f, 0f) // back, now to the right
         assertThat(s.describe())
-            .isEqualTo("You can see someone (toward your right); they appear surprised — recollect_face to find out who.")
+            .isEqualTo("You can see someone (toward your right) — recollect_face to find out who.")
     }
 
     @Test
@@ -74,10 +61,9 @@ class PerceptionSnapshotTest {
         val s = PerceptionSnapshot()
         s.onFaceSeen(0f, 0f)
         s.onIdentity("guru", verified = true)
-        s.onEmotion("Happy")
         assertThat(s.facts.identity).isEqualTo("guru")
         assertThat(s.describe())
-            .isEqualTo("You can see guru (toward your center); they appear happy.")
+            .isEqualTo("You can see guru (toward your center).")
     }
 
     @Test

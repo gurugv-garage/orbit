@@ -337,11 +337,8 @@ class DockTools(
             append(" style=").append(style)
             append(" privacy=").append(privacy)
             append(" gaze=").append("%.2f,%.2f".format(gaze.x, gaze.y))
-            // The HUMAN's emotion the camera last read — the other "face" in the
-            // system. Named userEmotion, never `emotion`: this is the person's,
-            // NOT the dock's (expression=, above). Conflating them is what makes
-            // the dock claim someone else's mood as its own.
-            append(" userEmotion=").append(sees?.emotion ?: "none")
+            // (userEmotion — the human's camera-read emotion — was retired with the
+            // on-device FER path; the station reads emotion from the SFU stream now.)
             append(" facePresent=").append(sees?.facePresent ?: false)
             // WHY the dock wears this face. moodSource is the filterable tag
             // ("mirror" = it's the human's mood, borrowed); moodWhy is the
