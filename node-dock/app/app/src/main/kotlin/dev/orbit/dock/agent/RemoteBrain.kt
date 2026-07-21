@@ -689,7 +689,7 @@ class RemoteBrain(
         // the staleness guard below would silently drop every one of them (it did:
         // the first live probe returned "no response from dock"). They mutate no
         // turn state, so exempt them explicitly. See docs/testing/face-harness.md.
-        val isTestHook = p.str("name") in setOf("face_probe", "face_force", "face_shot", "face_emotion")
+        val isTestHook = p.str("name") in setOf("face_probe", "face_force", "face_shot")
         if (!isTestHook && turnId != currentTurnId) {
             Timber.d("RemoteBrain: dropped stale tool-call ${p.str("name")} (turn ${turnId.take(8)})")
             return
@@ -786,27 +786,8 @@ class RemoteBrain(
             // the eye: ask the phone what it is ACTUALLY showing, right now.
             // Read-only, no side effects — safe to leave in.
             "face_probe" -> tools.faceProbe() to false
-            // TEST HOOK: inject a camera emotion READ, so the react-don't-mirror
-            // path (EmotionGate → EmotionReaction) is drivable without a human
-            // pulling faces at the lens. Publishes onto the SAME PerceptionBus
-            // every real FER read flows through — so it exercises the true path,
-            // confidence floor and hold-time and all, not a shortcut past them.
-            // (Which means one call reacts to NOTHING: a read must persist ~2s.
-            // Send it repeatedly, like the camera does.)
-            "face_emotion" -> {
-                val kindArg = args["kind"]?.jsonPrimitive?.content.orEmpty()
-                val conf = args["confidence"]?.jsonPrimitive?.content?.toFloatOrNull() ?: 0.9f
-                val kind = dev.orbit.dock.perception.PerceptionEvent.UserEmotion.Kind.entries
-                    .firstOrNull { it.name.equals(kindArg, ignoreCase = true) }
-                if (kind == null) {
-                    "unknown emotion: $kindArg" to true
-                } else {
-                    dev.orbit.dock.perception.PerceptionBus.emit(
-                        dev.orbit.dock.perception.PerceptionEvent.UserEmotion(kind, conf),
-                    )
-                    "emitted $kind conf=$conf" to false
-                }
-            }
+            // (the face_emotion test hook was removed with on-device FER; the station
+            // reads emotion from the SFU stream now.)
             // Drive a face from the station WITHOUT the LLM, so a test can set a
             // known mood and then probe it (the dev panel needs a human finger).
             // The reason must say SO: routing this through setFace's default made
@@ -1011,7 +992,7 @@ data class TaskInfo(
     val name: String,
     val state: String,
     val lastSignal: String = "",
-    /** the followed person's name for face-follow named mode (empty in salient mode). */
+    /** optional task target label from the station digest (unused by current tasks). */
     val target: String = "",
 )
 

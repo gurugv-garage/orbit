@@ -13,23 +13,25 @@ import timber.log.Timber
 
 /**
  * Forwards the on-device MLKit perception (the rich [PerceptionEvent.PerceiveFrame], plus
- * the latest emotion/gesture/identity) to the station as the **`perceive` stream** — the
- * fast, low-latency face source for faceFollow + the perception pipeline. The phone already
- * computes all of this for its own UI/gaze/emotion; this just stops throwing it away.
+ * the latest gesture/identity) to the station as the **`perceive` stream** — the fast,
+ * low-latency face-presence + geometry source for the perception pipeline. The phone already
+ * computes all of this for its own UI/gaze; this just stops throwing it away. (Emotion is no
+ * longer folded in — the station's face-api computes emotion from the SFU stream; see
+ * docs/decision-traces/thin-client-consolidation.md.)
  *
  * NOISE CONTROL (the reason this is a forwarder, not an inline publish): the detector runs
  * ~1 Hz and a still face's box jitters a few %, so blindly publishing every tick spams the
  * bus + console. Same shape as the station identity stream's CONFIRM/DROP hysteresis:
  *   • SUPPRESS a frame ~identical to the last SENT one (Δx/Δy/Δsize < ε, same face count +
- *     trackingIds + emotion + gesture + identity);
+ *     trackingIds + gesture + identity);
  *   • RATE-LIMIT fast change to ≥ MIN_INTERVAL_MS between sends (a thrashing signal can't
  *     flood — coalesced to ≤ ~5 Hz);
  *   • always send TRANSITIONS immediately (face appear/disappear, identity change, a new
  *     trackingId) — these are the events that matter;
  *   • HEARTBEAT: send at most every HEARTBEAT_MS even when unchanged, so the station knows
- *     the face is STILL there (not stale) — faceFollow needs presence, not just change.
+ *     the face is STILL there (not stale) — presence needs a heartbeat, not just change.
  *
- * Latest emotion/gesture/identity are folded in from their own bus events (each arrives on a
+ * Latest gesture/identity are folded in from their own bus events (each arrives on a
  * different cadence) so one `perceive` frame is a coherent "what the dock perceives now".
  */
 class PerceiveForwarder(
@@ -37,8 +39,6 @@ class PerceiveForwarder(
     scope: CoroutineScope,
 ) {
     // Latest auxiliary signals, folded into the next face frame.
-    @Volatile private var emotionKind: String? = null
-    @Volatile private var emotionConf = 0f
     @Volatile private var gestureName: String? = null
     @Volatile private var gesturePalm = false
     @Volatile private var gestureScore = 0f
@@ -47,18 +47,16 @@ class PerceiveForwarder(
 
     // Dedup memory: what we last SENT, and when. (Position deltas are no longer used to gate
     // a present face — we forward every detection so motion isn't lagged — only count/ids/
-    // emotion/gesture/identity transitions + presence + the heartbeat gate now.)
+    // gesture/identity transitions + presence + the heartbeat gate now.)
     private var lastSentMs = 0L
     private var lastFaceCount = -1
     private var lastIds: List<Int?> = emptyList()
-    private var lastEmotion: String? = null
     private var lastGesture: String? = null
     private var lastIdentity: String? = null
 
     init {
         PerceptionBus.events.onEach { ev ->
             when (ev) {
-                is PerceptionEvent.UserEmotion -> { emotionKind = ev.kind.name; emotionConf = ev.confidence }
                 is PerceptionEvent.HandGesture -> { gestureName = ev.gesture; gesturePalm = ev.palm; gestureScore = ev.score }
                 is PerceptionEvent.UserIdentified -> { identityName = ev.name; identityConf = ev.confidence }
                 is PerceptionEvent.PerceiveFrame -> maybeSend(ev)
@@ -74,7 +72,7 @@ class PerceiveForwarder(
         val primary = f.faces.maxByOrNull { it.size }
         val ids = f.faces.map { it.trackingId }
         val transition = f.faces.size != lastFaceCount || ids != lastIds ||
-            emotionKind != lastEmotion || gestureName != lastGesture || identityName != lastIdentity
+            gestureName != lastGesture || identityName != lastIdentity
         val heartbeatDue = now - lastSentMs >= HEARTBEAT_MS
         // FACE PRESENT → forward EVERY detection (don't suppress small moves): faceFollow needs
         // the freshest position the instant the person STARTS moving, and the detector is only
@@ -91,7 +89,7 @@ class PerceiveForwarder(
         lastSentMs = now
         lastFaceCount = f.faces.size
         lastIds = ids
-        lastEmotion = emotionKind; lastGesture = gestureName; lastIdentity = identityName
+        lastGesture = gestureName; lastIdentity = identityName
     }
 
     /** Face fully lost → send one empty frame so the station drops presence promptly. */
@@ -130,9 +128,8 @@ class PerceiveForwarder(
         })
     }
 
-    /** Fold the latest emotion/gesture/identity into a frame. */
+    /** Fold the latest gesture/identity into a frame. */
     private fun putAux(b: kotlinx.serialization.json.JsonObjectBuilder) {
-        emotionKind?.let { b.put("emotion", buildJsonObject { put("kind", it); put("confidence", emotionConf) }) }
         gestureName?.let { b.put("gesture", buildJsonObject { put("name", it); put("palm", gesturePalm); put("score", gestureScore) }) }
         identityName?.let { b.put("identity", buildJsonObject { put("name", it); put("confidence", identityConf) }) }
     }

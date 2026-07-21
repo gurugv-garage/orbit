@@ -148,6 +148,10 @@ export interface RecognizeOut {
   confidence: number;
   noFace: boolean;
   people: RecognizedPerson[];
+  /** the exact frame (base64 JPEG) recognition RAN on — so a follow-up "take a photo of
+   *  them" sends the frame the verdict was formed in, not a fresh (possibly-changed) view
+   *  (frame-provenance audit, 2026-07-21). Absent when recognition used no frame (voice-only). */
+  frameB64?: string;
 }
 
 /**
@@ -168,8 +172,12 @@ export interface FaceToolsApi {
   /** frame(), but only one decoded at/after `minTs` — visual-search judges
    *  post-settle frames only, never a mid-move smear. */
   frameSince(streamId: string, minTs: number): string | undefined;
-  /** Is this name enrolled in the gallery (case-insensitive)? — the gallery pre-check for
-   *  find_person: "do I actually know this person before I go looking for them?". */
+  /** The frame the camera was showing AT `tMs` (station-clock epoch) as base64 JPEG —
+   *  the "look back to a moment" source for time-parameterized capture. undefined if
+   *  `t` predates the retained window. */
+  frameAt(streamId: string, tMs: number): string | undefined;
+  /** Is this name enrolled in the gallery (case-insensitive)? — the gallery pre-check
+   *  used by visual_search: "do I actually know this person before I go looking?". */
   knowsPerson(name: string): boolean;
   /** Canonical display names of everyone enrolled — so find_person can say who it CAN find. */
   knownNames(): string[];
@@ -1146,8 +1154,10 @@ export function perceptionModule(getHub: () => PerceptionProcessingHub): Station
         },
         async recognize({ photo, streamId }) {
           let faces: DetectedFace[] = [];
+          let usedFrameB64: string | undefined; // the frame recognition actually ran on
           if (photo) {
             faces = await describeAllBase64(photo);
+            usedFrameB64 = photo;
           } else if (streamId) {
             // FLICKER TOLERANCE: a single live frame is unreliable — face-api misses a
             // face on a blurred / dropped / mid-blink frame, which made recollect_face
@@ -1159,7 +1169,10 @@ export function perceptionModule(getHub: () => PerceptionProcessingHub): Station
             // continuously from the SFU, so successive reads are genuinely new frames.)
             for (let attempt = 0; attempt < RECOGNIZE_FRAME_TRIES; attempt++) {
               const buf = face.currentFrame(streamId);
-              if (buf) { try { faces = await describeAllFaces(buf); } catch { faces = []; } }
+              if (buf) {
+                usedFrameB64 = buf.toString('base64'); // remember the frame we judged (even if no face)
+                try { faces = await describeAllFaces(buf); } catch { faces = []; }
+              }
               if (faces.length > 0) break;
               if (attempt < RECOGNIZE_FRAME_TRIES - 1) await new Promise((r) => setTimeout(r, RECOGNIZE_FRAME_GAP_MS));
             }
@@ -1205,6 +1218,9 @@ export function perceptionModule(getHub: () => PerceptionProcessingHub): Station
         },
         frameSince(streamId, minTs) {
           return face.currentFrameSince(streamId, minTs)?.toString('base64');
+        },
+        frameAt(streamId, tMs) {
+          return face.currentFrameAt(streamId, tMs)?.toString('base64');
         },
         async forget({ name, streamId }) {
           const n = name.trim();
@@ -1314,12 +1330,12 @@ export function perceptionModule(getHub: () => PerceptionProcessingHub): Station
         if (!payload || !Array.isArray(payload.faces)) return;
         const dockId = getHub().resolveDock(msg.source);
         perceive.update(dockId, payload);
-        // TODO(perceive→ring): optionally fold payload.emotion / payload.identity into
-        // the SnapshotStore (the ring already models those kinds) so they join the
-        // recall record. Deferred: the on-device emotion/identity here would need the
-        // same CONFIRM/DROP hysteresis the identity stream applies (else ~1 Hz raw
-        // would spam the ring + skew the summarizer), which is more than a few lines —
-        // out of scope for landing the live face-track. Face GEOMETRY never goes in the ring.
+        // TODO(perceive→ring): optionally fold payload.identity into the SnapshotStore
+        // (the ring already models that kind) so it joins the recall record. Deferred:
+        // the on-device identity here would need the same CONFIRM/DROP hysteresis the
+        // identity stream applies (else ~1 Hz raw would spam the ring + skew the
+        // summarizer), which is more than a few lines. Face GEOMETRY never goes in the ring.
+        // (Emotion is no longer on this stream — the station's face-api handles it.)
       });
 
       // Generic reconnect snapshot: when a dock (re)joins, push it its current

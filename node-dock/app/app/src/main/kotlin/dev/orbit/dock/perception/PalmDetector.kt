@@ -145,7 +145,7 @@ class PalmDetector private constructor(
         /**
          * Build the recognizer from the bundled `.task` asset. Returns null on
          * any failure (asset missing / parse / native init) — the caller treats
-         * a null detector as "palm detection disabled", like FerOnnx.fromAssets.
+         * a null detector as "palm detection disabled".
          */
         fun fromAssets(context: Context): PalmDetector? = try {
             val base = BaseOptions.builder()

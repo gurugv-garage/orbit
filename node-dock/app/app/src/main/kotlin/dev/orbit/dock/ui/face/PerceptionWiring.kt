@@ -30,8 +30,8 @@ class PerceptionWiring(
     private val onUserUtterance: (String) -> Unit = {},
     private val onWake: () -> Unit = {},
     /** Live-senses snapshot the agent reads per turn. Updated here from the
-     *  same FaceSeen/FaceLost/UserEmotion events that drive gaze + mirroring,
-     *  so the LLM's "what do you see?" is grounded. */
+     *  same FaceSeen/FaceLost events that drive gaze, so the LLM's "what do you
+     *  see?" is grounded. */
     private val perception: dev.orbit.dock.agent.PerceptionSnapshot? = null,
     // ── conversation: the STATION owns the state machine; the phone REPORTS raw
     // events up and RENDERS the mode it sends back. These are the report-up hooks
@@ -75,9 +75,6 @@ class PerceptionWiring(
     // Gates raw face detections into clean ARRIVE/LEAVE edges (near + centered +
     // sustained) so presence-listening doesn't flap as people move through frame.
     private val presenceGate = PresenceGate()
-    // Debounces raw FER reads into a settled REACTION (confidence + persistence).
-    // Shares the injected clock so tests drive it deterministically.
-    private val emotionGate = EmotionGate(nowMs)
     // last rendered "listening" edge, so the face/beep fire only on transitions.
     @Volatile private var listeningRendered = false
 
@@ -238,33 +235,11 @@ class PerceptionWiring(
                             sendFaceLeft()
                         }
                         perception?.onFaceLost()
-                        // Judge the next arrival fresh — not against a candidate
-                        // read left over from whoever was here minutes ago.
-                        emotionGate.onFaceLost()
                         controller.setGaze(GazeOffset())
                     }
-                    is PerceptionEvent.UserEmotion -> {
-                        // REACT, don't mirror. This used to copy the read emotion
-                        // straight onto the face (angry→angry), ungated: every
-                        // read won, `confidence` was ignored entirely, and a
-                        // single flickered frame reached the screen. That is the
-                        // "random emotions" AND the "it looks angry but says it
-                        // isn't" bug. EmotionGate debounces on confidence +
-                        // persistence; EmotionReaction maps to an APPROPRIATE
-                        // response (sad→concerned, angry→concerned) rather than
-                        // an echo. No LLM: it lands in a frame and works offline.
-                        perception?.onEmotion(event.kind.name)
-                        val reaction = emotionGate.onRead(event.kind, event.confidence)
-                        if (reaction == null) {
-                            Timber.d("user emotion: ${event.kind} conf=${"%.2f".format(event.confidence)} → (held)")
-                        } else {
-                            Timber.i("user emotion: ${event.kind} conf=${"%.2f".format(event.confidence)} → react ${reaction.name}")
-                            controller.setExpressionPassive(
-                                reaction,
-                                why = EmotionReaction.reasonFor(event.kind),
-                            )
-                        }
-                    }
+                    // (on-device emotion mirroring retired — the station's face-api reads
+                    // emotion from the SFU stream now; see
+                    // docs/decision-traces/thin-client-consolidation.md.)
                     is PerceptionEvent.UserIdentified -> {
                         // Station recognized (or un-recognized) the user → fold the
                         // name into the snapshot so the next turn's prompt names them.

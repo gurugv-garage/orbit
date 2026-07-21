@@ -11,7 +11,7 @@ import kotlinx.coroutines.flow.update
  * seem?" from reality instead of guessing.
  *
  * Updated by the perception layer ([dev.orbit.dock.ui.face.PerceptionWiring])
- * as `FaceSeen`/`FaceLost`/`UserEmotion` events arrive; read by [DockTools] when
+ * as `FaceSeen`/`FaceLost` events arrive; read by [DockTools] when
  * it assembles the per-turn state context. Thread-safe via a single immutable
  * [Facts] swapped atomically (StateFlow so the UI can observe it too).
  *
@@ -51,7 +51,6 @@ class PerceptionSnapshot {
      */
     data class Facts(
         val facePresent: Boolean = false,
-        val emotion: String? = null,
         val gaze: String? = null,
         val identity: String? = null,
         val identityVerified: Boolean = false,
@@ -83,10 +82,6 @@ class PerceptionSnapshot {
      */
     fun onFaceLost() {
         ref.update { it.copy(facePresent = false, gaze = null, sightingContinuous = false) }
-    }
-
-    fun onEmotion(kind: String) {
-        ref.update { it.copy(emotion = kind.lowercase()) }
     }
 
     /**
@@ -154,17 +149,16 @@ class PerceptionSnapshot {
                 return "You can see ${f.people.size} people: $who. (recollect_face to re-check.)"
             }
             val where = f.gaze?.let { " (toward your $it)" } ?: ""
-            val mood = f.emotion?.let { "; they appear $it" } ?: ""
             return when {
                 // Name confidently only while the verified sighting is
                 // UNBROKEN — after a face-lost gap, whoever is in frame now
                 // may be someone else (people come and go).
                 f.identity != null && f.identityVerified && f.sightingContinuous ->
-                    "You can see ${f.identity}$where$mood."
+                    "You can see ${f.identity}$where."
                 f.identity != null ->
-                    "You can see someone$where$mood — possibly ${f.identity}, but people come and go; recollect_face to check who it is."
+                    "You can see someone$where — possibly ${f.identity}, but people come and go; recollect_face to check who it is."
                 else ->
-                    "You can see someone$where$mood — recollect_face to find out who."
+                    "You can see someone$where — recollect_face to find out who."
             }
         }
         // No face in view: report the remembered person if we have one.

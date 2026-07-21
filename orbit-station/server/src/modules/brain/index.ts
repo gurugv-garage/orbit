@@ -301,7 +301,7 @@ export function brainModule(w: BrainWiring): StationModule {
     { root: userTasks, source: 'generated' as const },
   ];
   // Task defs the CONDUCTOR may start (resolved in init so ConductorAccess.startTask is
-  // synchronous). v1: just face-follow.
+  // synchronous). Currently just idle-moods.
   const condTaskDefs = new Map<string, { name: string; filePath: string; manifest: { model?: string; bgTask?: boolean } }>();
   let bus: Bus;
   let rpc: RpcBroker;
@@ -348,7 +348,7 @@ export function brainModule(w: BrainWiring): StationModule {
   // A task's parent signal (notify / finish / errored / stuck) → an autonomous
   // turn in that dock's conversational session (tasks §7a).
   const onTaskSignal = (dock: string, info: InstanceInfo, kind: SignalKind, ev: { text: string; image?: string }) => {
-    // A CONDUCTOR-standing task (face-follow, idle-moods) that errors is auto-restarted by
+    // A CONDUCTOR-standing task (idle-moods) that errors is auto-restarted by
     // the conductor's idempotent reconcile — do NOT speak the failure. With a body offline
     // this was a crash loop of spoken apologies ("my servo is taking a nap…" ×3 in 4 min,
     // seen in observability 2026-07-05); the conductor card + logs already surface it.
@@ -427,8 +427,8 @@ export function brainModule(w: BrainWiring): StationModule {
       .filter((i) => i.state === 'running' || i.state === 'stuck')
       .map((i) => ({
         instanceId: i.instanceId, name: i.name, state: i.state, lastSignal: i.lastSignal ?? null,
-        // surface the followed person's name for the face-follow indicator (named mode);
-        // undefined in salient mode (the phone then falls back to the recognized identity).
+        // surface an optional task `target` label if a task set one (no current task does;
+        // kept as a generic digest field).
         ...(typeof i.params?.target === 'string' && i.params.target ? { target: i.params.target as string } : {}),
       }));
     bus.publish({
@@ -549,7 +549,7 @@ export function brainModule(w: BrainWiring): StationModule {
       // Resolve the task defs the conductor may start (so ConductorAccess.startTask is
       // sync). Fire-and-forget — populated well before the first ~1Hz conductor tick.
       void (async () => {
-        for (const name of ['face-follow', 'idle-moods']) {
+        for (const name of ['idle-moods']) {
           try { const d = await findTaskDef(taskRoots, name); condTaskDefs.set(name, { name: d.name, filePath: d.filePath, manifest: d.manifest }); }
           catch { /* def missing → conductor startTask returns null, reconcile retries */ }
         }
@@ -851,7 +851,19 @@ export function brainModule(w: BrainWiring): StationModule {
         // the folded note says ignore it if it's unrelated room talk. During
         // SPEAKING the reply is audible: queue (never abort the dock's own
         // speech on heard content — stop/wait/tap are the aborts).
-        if (pre.mode === 'thinking' && w.config('brainThinkingMerge') !== false) {
+        // ADDRESSED-GATE the merge-supersede: only speech ADDRESSED to the dock (a
+        // listening/followup window open) may abort the in-flight turn. Overheard ROOM
+        // chatter while thinking must NOT kill a running turn/tool — that's what let two
+        // people talking near the dock repeatedly abort a visual_search ("interrupted —
+        // looked at 4 of 18 poses"). Stop-intent ("wait"/"stop") already aborted above;
+        // everything else unaddressed falls through to the busy queue and the running turn
+        // finishes. (docs: speech-addressed-vs-overheard; user 2026-07-21.)
+        // NOTE: utteranceAddressed() MUTATES (consumes the window → mode 'thinking') on a
+        // true result, so it must be called EXACTLY ONCE per final. Only the thinking
+        // branch (which returns) calls it here; the idle/listening path at the bottom is
+        // reached only when pre.mode is NOT thinking/speaking, and calls it there.
+        if (pre.mode === 'thinking' && w.config('brainThinkingMerge') !== false
+            && session(t.dockId).utteranceAddressed(t.endedAt, Date.now(), t.startedAt)) {
           const info = session(t.dockId).activeTurn;
           if (info && info.kind === 'user' && info.merges < MERGE_MAX) {
             trace('merge:supersede');
@@ -1121,8 +1133,8 @@ export function brainModule(w: BrainWiring): StationModule {
           s.onDockOffline();
           // PHONE (face) offline → STAND DOWN: kill every running task on the dock except
           // bgTask ones (reminders survive so they still fire after you walk away). Without
-          // this the body kept moving with the phone gone — a conductor task (idle-moods /
-          // face-follow) animating an empty room, since the body stayed online and nothing
+          // this the body kept moving with the phone gone — a conductor task (idle-moods)
+          // animating an empty room, since the body stayed online and nothing
           // tore the tasks down. Conductor tasks ALSO get force-off via reconcile's
           // phone-presence gate; this catches brain/user-launched ones too, immediately.
           if (p.component === 'phone') {
@@ -1377,39 +1389,9 @@ export function brainModule(w: BrainWiring): StationModule {
         json(res, 200, { ok: !r.isError, result: r.content });
         return true;
       }
-      // ── debug: inject a camera EMOTION read ────────────────────────────────
-      // POST /:dock/debug/face/emotion {kind, [confidence=0.9], [times=4], [everyMs=700]}
-      //   → publishes UserEmotion onto the phone's PerceptionBus, the same seam
-      //     every real FER read flows through.
-      //
-      // Sent REPEATEDLY by default because the gate is a DEBOUNCE: a read must
-      // persist (~2s for a strong emotion) before the dock reacts, so a single
-      // injection correctly does nothing. That is the anti-flicker behaviour
-      // under test, not an obstacle to it — the camera streams at ~1 Hz and so
-      // does this.
-      m = subPath.match(/^\/([^/]+)\/debug\/face\/emotion$/);
-      if (m && req.method === 'POST') {
-        const dock = decodeURIComponent(m[1]!);
-        const b = JSON.parse((await readBody(req)) || '{}') as
-          { kind?: string; confidence?: number; times?: number; everyMs?: number };
-        const kind = typeof b.kind === 'string' ? b.kind.trim() : '';
-        if (!kind) { json(res, 400, { error: 'body.kind (Happy|Sad|Angry|Surprised|Neutral|Sleepy) is required' }); return true; }
-        const times = Math.min(Math.max(Number(b.times) || 4, 1), 20);
-        const everyMs = Math.min(Math.max(Number(b.everyMs) || 700, 100), 5_000);
-        const confidence = String(b.confidence ?? 0.9);
-        let last = '';
-        for (let i = 0; i < times; i++) {
-          if (i > 0) await new Promise((r) => setTimeout(r, everyMs));
-          const r = await rpc.call({
-            dock, cap: 'face', turnId: `emo-${Date.now()}`, toolCallId: `emo-${i}`,
-            name: 'face_emotion', args: { kind, confidence },
-          });
-          last = r.content;
-          if (r.isError) { json(res, 200, { ok: false, error: r.content }); return true; }
-        }
-        json(res, 200, { ok: true, sent: times, last, face: parseProbe('') });
-        return true;
-      }
+      // (the /debug/face/emotion inject route was removed with on-device FER —
+      // the station reads emotion from the SFU stream now; see
+      // docs/decision-traces/thin-client-consolidation.md.)
       // ── debug: FACE FILMSTRIP — sample the face over TIME ──────────────────
       // POST /:dock/debug/face/film {count=5, everyMs=1000, [maxWidth], [quality]}
       //   → writes JPEGs + a state line per sample to var/debug/face/<runId>/

@@ -75,19 +75,20 @@ export function buildCapabilityRegistry(d: CapabilityDeps): CapabilityRegistry {
     handler: (ctx) => d.getFaces()?.recognize({ streamId: streamFor(d, ctx.dock) }),
   });
 
-  // The on-device MLKit face-track (the `perceive` stream, docs/decision-traces/
-  // facefollow-and-actuator-lease.md §7) — the FAST, low-latency face source for the
-  // faceFollow control loop. Requires 'face' (the phone's on-device perception cap)
-  // rather than 'camera': this reads the phone's MLKit output, not the SFU video.
+  // (The `face-track` op — the on-device MLKit fast face source with box geometry — was retired
+  // with faceFollow, its only consumer; see docs/decision-traces/thin-client-consolidation.md.
+  // What survives is the neutral BOOLEAN below: "is anyone visible right now", read off the same
+  // perceive primitive the conductor's presence gate uses (main.ts). idle-moods reads it to gate
+  // attention bits. Still on 'face' (the on-device perception cap) — moving room-presence to the
+  // station SFU/face-api path is the pending perception-pulse consolidation, not this cut.)
   reg.register({
-    op: 'face-track', requires: 'face',
-    describe: 'await this.request("face-track") → { faces, noFace } — the latest on-device '
-      + 'face boxes (each with an eye-midpoint anchor). The fast tracking source (~5 Hz), not station face-api',
-    when: 'for a tight control loop that needs WHERE faces are right now (e.g. faceFollow)',
+    op: 'face-present', requires: 'face',
+    describe: 'await this.request("face-present") → { present } — is anyone visible right now',
+    when: 'to gate idle behaviour on whether there is company (no geometry, just presence)',
     handler: (ctx) => {
       const store = d.getPerceive();
-      const faces = store?.toFollowFaces(store.latest(ctx.dock)) ?? [];
-      return { faces, noFace: faces.length === 0 };
+      const present = (store?.toFollowFaces(store.latest(ctx.dock)) ?? []).length > 0;
+      return { present };
     },
   });
 
@@ -97,8 +98,8 @@ export function buildCapabilityRegistry(d: CapabilityDeps): CapabilityRegistry {
     when: 'to physically turn/gesture the body (e.g. sweep to find someone, nod)',
     handler: (ctx, args) => {
       const steps = (Array.isArray(args.steps) ? args.steps : []) as MoveStep[];
-      // TAG the move with this task's id so a standing behaviour (faceFollow) can tell its
-      // OWN moves from a foreign mover (a brain turn / console / another task) and yield.
+      // TAG the move with this task's id so a standing task can tell its OWN moves from a
+      // foreign mover (a brain turn / console / another task) and yield.
       // `reason` (the bit/decision that chose the move) is REQUIRED at the harness; fall back to
       // the task name if a task somehow omits it, so the audit log is never anonymous.
       const reason = typeof args.reason === 'string' && args.reason ? args.reason : `task:${ctx.instanceId}`;
@@ -108,7 +109,13 @@ export function buildCapabilityRegistry(d: CapabilityDeps): CapabilityRegistry {
   });
 
   reg.register({
-    op: 'perception-pulse', requires: 'face',
+    // NO `requires`: msSinceSalient is computed entirely STATION-SIDE (a scan of the
+    // SnapshotStore over SFU-derived speech/sound/vision/identity records — see
+    // perception/index.ts salientPulseRef + grounding.ts isSalient). It reads zero phone
+    // data, so gating it on the on-device `face` cap was spurious — it would wrongly refuse
+    // the pulse whenever the phone's face channel was momentarily down, even though the op
+    // needs nothing from the phone. (thin-client-consolidation.md reassessment, 2026-07-21.)
+    op: 'perception-pulse',
     describe: 'await this.request("perception-pulse") → { msSinceSalient } — how long since the '
       + 'dock last perceived a genuine HAPPENING (confident speech, a notable sound, a visual '
       + 'change). null = unknown (perception cold)',

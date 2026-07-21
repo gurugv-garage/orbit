@@ -96,36 +96,19 @@ class FaceTracker(private val appContext: Context) : CameraFrameProvider, Lifecy
         FaceDetectorOptions.Builder()
             .setPerformanceMode(FaceDetectorOptions.PERFORMANCE_MODE_FAST)
             .setLandmarkMode(FaceDetectorOptions.LANDMARK_MODE_ALL)
-            // ALL gives us smilingProbability + eyes-open probabilities —
-            // the bridge that powers passive emotion mirroring (smile back
-            // when the user smiles, look sleepy when their eyes droop).
+            // ALL gives us smilingProbability + eyes-open probabilities, which
+            // still ride the perceive frame's geometry (harmless extra fields).
+            // Emotion is now the station's job (face-api on the SFU stream).
             .setClassificationMode(FaceDetectorOptions.CLASSIFICATION_MODE_ALL)
             .setMinFaceSize(0.15f)
             .enableTracking()
             .build()
     )
 
-    // EMA-smoothed probabilities and a hysteretic emotion tracker. ML Kit's
-    // per-frame probabilities can flicker; smoothing + state-machine prevents
-    // the dock's expression from twitching every frame.
-    private var smileEma = 0f
-    private var eyesOpenEma = 1f
-    private var lastEmittedKind: PerceptionEvent.UserEmotion.Kind? = null
-    private var lastEmotionEmitMs = 0L
-
-    // FER+ classifier (8 emotions). Loaded lazily on the analyzer thread on
-    // first successful face detection (no point loading the 35 MB asset if
-    // nobody's in front of the dock yet).
-    @Volatile private var fer: FerOnnx? = null
-    @Volatile private var ferLoadAttempted = false
-    private var lastFerNs = 0L
-    // Per-class EMAs over softmax probabilities (8 classes).
-    private val ferEma = FloatArray(FerOnnx.Emotion.entries.size)
-
     // Palm detector (MediaPipe Gesture Recognizer). Loaded lazily on the analyzer
-    // thread on first frame, like FER+. Runs continuously, throttled to ~6 Hz
+    // thread on first frame. Runs continuously, throttled to ~6 Hz
     // (PALM_INTERVAL_NS) for snappy edge-detection while leaving CPU for the
-    // preview + face/FER path on a modest phone.
+    // preview + face path on a modest phone.
     @Volatile private var palm: PalmDetector? = null
     @Volatile private var palmLoadAttempted = false
     private var lastPalmNs = 0L
@@ -135,11 +118,11 @@ class FaceTracker(private val appContext: Context) : CameraFrameProvider, Lifecy
     private val lastSeenMs = AtomicLong(0L)
     // ADAPTIVE analysis cadence (no fixed-rate guess). The face path runs as fast as the
     // phone can sustain WITHOUT starving the live preview: after each run we measure how long
-    // the detect+FER+encode work actually took (EMA), and set the next gate to that cost ×
+    // the detect+encode work actually took (EMA), and set the next gate to that cost ×
     // SLACK. A fast phone converges toward FACE_MIN_INTERVAL_NS (snappy ~5 Hz tracking); a
     // slow 2018 phone self-limits to whatever it can afford. Self-regulating → no per-device
     // tuning, and it tracks load (CPU busy ⇒ cost up ⇒ interval up) at runtime. The steadier,
-    // higher cadence is exactly the bottleneck the perceive stream → faceFollow needs.
+    // higher cadence keeps the perceive stream's presence signal fresh.
     @Volatile private var lastProcessNs = 0L
     @Volatile private var faceIntervalNs = FACE_START_INTERVAL_NS
     @Volatile private var faceCostEmaNs = FACE_START_INTERVAL_NS.toDouble()
@@ -331,8 +314,6 @@ class FaceTracker(private val appContext: Context) : CameraFrameProvider, Lifecy
             lifecycleRegistry.currentState = Lifecycle.State.DESTROYED
         }
         try { detector.close() } catch (_: Throwable) {}
-        try { fer?.close() } catch (_: Throwable) {}
-        fer = null
         try { palm?.close() } catch (_: Throwable) {}
         palm = null
         executor.shutdown()
@@ -532,7 +513,7 @@ class FaceTracker(private val appContext: Context) : CameraFrameProvider, Lifecy
         // measure the FULL face-path cost (gate→callback: encode + async detect + FER) and
         // adapt the next interval from it — run as fast as that cost × SLACK allows, clamped.
         detector.process(InputImage.fromBitmap(bitmap, 0))
-            .addOnSuccessListener { faces -> onFaces(faces, imgW, imgH, bitmap) }
+            .addOnSuccessListener { faces -> onFaces(faces, imgW, imgH) }
             .addOnFailureListener { t -> Timber.w(t, "face detect failed") }
             .addOnCompleteListener { adaptFaceInterval(System.nanoTime() - nowNsGate) }
     }
@@ -547,10 +528,9 @@ class FaceTracker(private val appContext: Context) : CameraFrameProvider, Lifecy
         faceIntervalNs = target.coerceIn(FACE_MIN_INTERVAL_NS, FACE_MAX_INTERVAL_NS)
     }
 
-    private fun onFaces(faces: List<Face>, imgW: Float, imgH: Float, bitmap: Bitmap?) {
+    private fun onFaces(faces: List<Face>, imgW: Float, imgH: Float) {
         if (imgW <= 0f || imgH <= 0f) return
         val now = System.currentTimeMillis()
-        val nowNs = System.nanoTime()
         if (faces.isEmpty()) {
             // Emit Lost only if it's been quiet for >500 ms (avoid flapping).
             val last = lastSeenMs.get()
@@ -566,8 +546,8 @@ class FaceTracker(private val appContext: Context) : CameraFrameProvider, Lifecy
         // emit throttle is needed here — every analyzed frame emits.)
 
         // RICH per-frame detail for ALL faces → the station `perceive` stream (the fast
-        // face source for faceFollow + the pipeline). Everything below is already computed
-        // by the single detection pass; we just stop discarding it. NDC + mirror-corrected,
+        // face-presence + geometry source for the pipeline). Everything below is already
+        // computed by the single detection pass; we just stop discarding it. NDC + mirror-corrected,
         // matching FaceSeen's convention. The forwarder dedups/throttles before the wire.
         PerceptionBus.emit(buildPerceiveFrame(faces, imgW, imgH))
 
@@ -581,60 +561,10 @@ class FaceTracker(private val appContext: Context) : CameraFrameProvider, Lifecy
         val ndcY = (cyRaw / imgH * 2f - 1f).coerceIn(-1f, 1f)
         val size = (box.width() / imgW).coerceIn(0f, 1f)
         PerceptionBus.emit(FaceSeen(x = ndcX, y = ndcY, size = size))
-
-        // ML Kit signals — kept as a cheap fallback for Sleepy (eyes closed
-        // can't be reliably read from FER's 64x64 grayscale crop) and as a
-        // bootstrap before FER finishes loading.
-        val smile = face.smilingProbability ?: -1f
-        val leftEye = face.leftEyeOpenProbability ?: -1f
-        val rightEye = face.rightEyeOpenProbability ?: -1f
-        if (smile >= 0f) smileEma = smileEma * 0.78f + smile * 0.22f
-        if (leftEye >= 0f && rightEye >= 0f) {
-            val eyeAvg = (leftEye + rightEye) / 2f
-            eyesOpenEma = eyesOpenEma * 0.78f + eyeAvg * 0.22f
-        }
-
-        // FER+ inference — heavier than ML Kit so throttled to ~3 Hz. Runs
-        // on the analyzer thread (same as detector callbacks). Loads lazily
-        // on the first face-seen frame.
-        val ferIntervalNs = 330_000_000L
-        if (!ferLoadAttempted) {
-            ferLoadAttempted = true
-            fer = FerOnnx.fromAssets(appContext)
-        }
-        val ferEngine = fer
-        if (ferEngine != null && bitmap != null && nowNs - lastFerNs >= ferIntervalNs) {
-            lastFerNs = nowNs
-            runFer(ferEngine, bitmap, box, imgW.toInt(), imgH.toInt())
-        }
-
-        val kind = classifyEmotion()
-        // LEVEL-triggered, not edge-triggered. This used to fire only on a CHANGE
-        // of kind (`kind != lastEmittedKind`), so a sustained expression emitted
-        // exactly ONCE. The consumer (EmotionGate) debounces on persistence — it
-        // needs to see a read HELD across several samples before reacting — so a
-        // single emit could never satisfy it and the dock never reacted to a
-        // steady face. Re-emit the current read every ~700ms while a face is in
-        // frame; a change still fires immediately (the 300ms floor below).
-        val changed = kind != lastEmittedKind
-        if ((changed && now - lastEmotionEmitMs > 300L) || now - lastEmotionEmitMs > 700L) {
-            lastEmittedKind = kind
-            lastEmotionEmitMs = now
-            val conf = when (kind) {
-                PerceptionEvent.UserEmotion.Kind.Sleepy -> 1f - eyesOpenEma
-                PerceptionEvent.UserEmotion.Kind.Happy ->
-                    maxOf(ferEma[FerOnnx.Emotion.Happiness.ordinal], smileEma)
-                PerceptionEvent.UserEmotion.Kind.Sad ->
-                    ferEma[FerOnnx.Emotion.Sadness.ordinal]
-                PerceptionEvent.UserEmotion.Kind.Surprised ->
-                    ferEma[FerOnnx.Emotion.Surprise.ordinal]
-                PerceptionEvent.UserEmotion.Kind.Angry ->
-                    ferEma[FerOnnx.Emotion.Anger.ordinal]
-                PerceptionEvent.UserEmotion.Kind.Neutral ->
-                    ferEma[FerOnnx.Emotion.Neutral.ordinal]
-            }
-            PerceptionBus.emit(PerceptionEvent.UserEmotion(kind, conf.coerceIn(0f, 1f)))
-        }
+        // (on-device emotion classification retired — the raw MLKit smile/eye
+        // probabilities still ride the perceive frame's geometry; the station's
+        // face-api reads emotion from the SFU stream. See
+        // docs/decision-traces/thin-client-consolidation.md.)
     }
 
     /**
@@ -690,69 +620,6 @@ class FaceTracker(private val appContext: Context) : CameraFrameProvider, Lifecy
         p.onFrame(bitmap, System.currentTimeMillis())
     }
 
-    /**
-     * Run FER+ on a 1.4× expanded crop around the face bounding box. The
-     * model was trained on faces with some forehead/chin margin, so a tight
-     * bbox crop performs noticeably worse than a slightly padded one.
-     */
-    private fun runFer(
-        engine: FerOnnx,
-        bitmap: Bitmap,
-        box: android.graphics.Rect,
-        bmpW: Int,
-        bmpH: Int,
-    ) {
-        try {
-            val cx = (box.left + box.right) / 2
-            val cy = (box.top + box.bottom) / 2
-            val side = (maxOf(box.width(), box.height()) * 1.35f).toInt()
-            val left = (cx - side / 2).coerceIn(0, bmpW - 1)
-            val top = (cy - side / 2).coerceIn(0, bmpH - 1)
-            val right = (cx + side / 2).coerceIn(left + 1, bmpW)
-            val bottom = (cy + side / 2).coerceIn(top + 1, bmpH)
-            val crop = Bitmap.createBitmap(bitmap, left, top, right - left, bottom - top)
-            val result = engine.classify(crop)
-            crop.recycle()
-            if (result != null) {
-                val alpha = 0.35f
-                for (i in ferEma.indices) {
-                    ferEma[i] = ferEma[i] * (1f - alpha) + result.probs[i] * alpha
-                }
-            }
-        } catch (t: Throwable) {
-            Timber.w(t, "FER crop/inference path failed")
-        }
-    }
-
-    /**
-     * Combine FER+ EMAs and ML Kit eyes-open into the coarse Kind enum the
-     * UI uses. ML Kit's eyes-open is more reliable than FER's contempt
-     * /disgust signals on small face crops, so Sleepy wins early.
-     */
-    private fun classifyEmotion(): PerceptionEvent.UserEmotion.Kind {
-        if (eyesOpenEma < 0.32f) return PerceptionEvent.UserEmotion.Kind.Sleepy
-
-        // FER probabilities not yet populated? Fall back to smile signal.
-        val ferActive = ferEma.any { it > 0.01f }
-        if (!ferActive) {
-            return if (smileEma > 0.6f) PerceptionEvent.UserEmotion.Kind.Happy
-            else PerceptionEvent.UserEmotion.Kind.Neutral
-        }
-
-        // Find FER top class with a minimum confidence to avoid noise.
-        val topIdx = ferEma.indices.maxBy { ferEma[it] }
-        val topProb = ferEma[topIdx]
-        if (topProb < 0.35f) return PerceptionEvent.UserEmotion.Kind.Neutral
-        return when (FerOnnx.Emotion.entries[topIdx]) {
-            FerOnnx.Emotion.Happiness -> PerceptionEvent.UserEmotion.Kind.Happy
-            FerOnnx.Emotion.Sadness -> PerceptionEvent.UserEmotion.Kind.Sad
-            FerOnnx.Emotion.Anger -> PerceptionEvent.UserEmotion.Kind.Angry
-            FerOnnx.Emotion.Surprise -> PerceptionEvent.UserEmotion.Kind.Surprised
-            FerOnnx.Emotion.Disgust, FerOnnx.Emotion.Fear,
-            FerOnnx.Emotion.Contempt, FerOnnx.Emotion.Neutral ->
-                PerceptionEvent.UserEmotion.Kind.Neutral
-        }
-    }
 }
 
 // ADAPTIVE face-analysis cadence — bounds + tuning for the self-regulating interval

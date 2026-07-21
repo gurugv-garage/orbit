@@ -34,20 +34,21 @@ export const PRIORITY = {
   console: 70,      // a human at the Body Console FORCE-TAKES the body — overrides the
                     // brain and the follow reflex; only a future emergency-stop outranks it
   brainTurn: 60,    // a conversation gesture / explicit user `move`
-  moodBit: 35,      // an idle-moods BIT (seconds-long) — briefly outranks the follow reflex,
+  moodBit: 35,      // an idle-moods BIT (seconds-long) — briefly outranks a standing task,
                     // yields to the brain/operator (the idle-moods task acquires at this)
-  faceFollow: 30,   // the reflex — yields to the brain/operator, outranks idle
+  continuousTask: 30, // a standing body task — yields to the brain/operator, outranks idle
+                    // (the generic "task:<id>" level; was faceFollow's, now behaviour-neutral)
   idle: 0,          // heartbeat / nothing
 } as const;
 
 /** Map a motion `source` tag (already threaded through MotionExecutor) → a priority. A
- *  `task:<id>` source defaults to faceFollow level (the only continuous task today); refine
- *  per-task later if other body-driving tasks appear. Unknown → console (a manual-ish nudge). */
+ *  `task:<id>` source defaults to the continuous-task level; refine per-task later if
+ *  differently-privileged body tasks appear. Unknown → console (a manual-ish nudge). */
 export function priorityForSource(source: string): number {
   if (source === 'brain-turn') return PRIORITY.brainTurn;
   if (source === 'console') return PRIORITY.console;
   if (source === 'emergency') return PRIORITY.emergency;
-  if (source.startsWith('task:')) return PRIORITY.faceFollow;
+  if (source.startsWith('task:')) return PRIORITY.continuousTask;
   if (source === 'station') return PRIORITY.idle; // heartbeat / system — yields to everything real
   return PRIORITY.console;
 }

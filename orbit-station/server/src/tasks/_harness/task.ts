@@ -322,14 +322,17 @@ export abstract class Task {
   protected move(steps: unknown[], reason: string): Promise<void> {
     return this.request('move', { steps, reason });
   }
-  /** The latest on-device face boxes via `face-track` — [] on ANY error (a transient
-   *  read failure reads as "no faces", never a crash). Shared face source for body
-   *  tasks; callers needing the full typed shape can request('face-track') directly. */
-  protected async trackFaces(): Promise<Array<{ box?: unknown; name?: string }>> {
+  /** Is anyone visible right now — the neutral "who's in the room" boolean, read off the
+   *  on-device perceive stream (the same primitive the conductor's presence gate uses).
+   *  false on ANY error (a glitch reads as "absent", which only makes attention rarer,
+   *  never wrong). This carries NO geometry — a task that wants to TRACK a face is not a
+   *  thing we do on-device any more (faceFollow was retired; acquisition is the brain's
+   *  visual_search tool). See docs/decision-traces/thin-client-consolidation.md. */
+  protected async facePresent(): Promise<boolean> {
     try {
-      const out = await this.request<{ faces?: Array<{ box?: unknown; name?: string }> }>('face-track');
-      return (out?.faces ?? []).filter((f) => f.box);
-    } catch { return []; }
+      const out = await this.request<{ present?: boolean }>('face-present');
+      return out?.present === true;
+    } catch { return false; }
   }
   /** Hold the body lease through `ms` of wall-clock (a long move/gesture playing
    *  station-side): sleep in short slices, renewing via `bodyHeld` each slice. The slice

@@ -7,13 +7,22 @@
  * far too low → neck-dive).
  *
  * This is a LIVE LATEST-STATE signal — the per-dock "last face frame" — NOT the heavy
- * 1000-cap SnapshotStore memory ring. faceFollow reads "the latest perceive faces" each
- * control tick; nobody needs the history, so we keep only the most recent frame per dock
- * (a tiny Map, not a ring). Only emotion/identity (kinds the ring already models) might
- * ALSO land as snapshots — the geometry never does.
+ * 1000-cap SnapshotStore memory ring. The presence gate reads "the latest perceive faces"
+ * (main.ts present()); nobody needs the history, so we keep only the most recent frame per
+ * dock (a tiny Map, not a ring). Only identity (a kind the ring already models) might ALSO
+ * land as snapshots — the geometry never does.
  */
 
-import type { Face } from '../../tasks/packaged/face-follow/control.js';
+/** A face in the neutral "who's visible" shape (name/confidence + NDC box + optional
+ *  eye-midpoint anchor). Produced by `toFollowFaces` from the raw MLKit `perceive` frame;
+ *  consumed by the presence gate (main.ts `present()`) that the conductor reads. */
+export interface Face {
+  name: string | null;
+  confidence: number;
+  box: { x: number; y: number; w: number; h: number }; // normalized 0..1
+  /** eye-midpoint anchor (perceive §7), 0..1 — present when both eyes were visible. */
+  eyeMid?: { x: number; y: number };
+}
 
 /** One face as the phone's MLKit pass reports it (envelope §7). NDC throughout:
  *  x,y ∈ [-1,+1], x+ = the user's RIGHT, y+ = DOWN; `size` = box width fraction 0..1. */
@@ -31,7 +40,8 @@ export interface PerceiveFace {
 export interface PerceivePayload {
   faces: PerceiveFace[];
   zoom?: { ratio: number; min: number; max: number };
-  emotion?: { kind: string; confidence: number };
+  // (emotion is no longer forwarded on the perceive stream — the station's face-api
+  // reads it from the SFU stream; see docs/decision-traces/thin-client-consolidation.md.)
   gesture?: { name: string; palm?: string; score: number };
   identity?: { name: string; confidence: number };
 }
