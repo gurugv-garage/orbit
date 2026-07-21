@@ -66,6 +66,10 @@ const SIDECARS = [
     url: process.env.TEMPORAL_SIDECAR_URL ?? 'http://127.0.0.1:8080' },
   { name: 'speech', kind: 'whisper small.en', modelField: 'stt_model',
     url: process.env.PERCEPTION_SIDECAR_URL ?? 'http://127.0.0.1:8078' },
+  // observe-only addressed classifier (docs/findings/should-respond-gate) — scores
+  // payload.addressed on speech records; not a gate.
+  { name: 'addressed', kind: 'Qwen3-0.6B + linear head', modelField: 'base_model',
+    url: process.env.ADDRESSED_SIDECAR_URL ?? 'http://127.0.0.1:8081' },
 ] as const;
 
 export interface SidecarHealth {

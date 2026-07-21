@@ -1,0 +1,7 @@
+# Raw household transcripts contain personal identifiers (names, private
+# conversation) — NEVER commit to this public repo (see CLAUDE.md conventions).
+# Regenerate locally with build_corpus.py against .data/. Weights (head.npz) and
+# code are fine — they carry no text.
+labeled_set.jsonl
+labels_full.py
+labels_afternoon.py

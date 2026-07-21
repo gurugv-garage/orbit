@@ -35,6 +35,7 @@ The full pipeline is **three kinds of process** (plus the dock app on a phone):
 |---|---|---|---|---|
 | 1 | **vision sidecar** (Python/MLX) | `:8080` | Qwen2.5-VL temporal — `/temporal` | 👁 vision snapshots |
 | 2 | **STT sidecar** (Python/MLX) | `:8078` | Parakeet-TDT (default) / Whisper — `/transcribe` | 🎙 speech snapshots |
+| 2b | **addressed sidecar** (Python/MLX) — OPTIONAL, observe-only | `:8081` | Qwen3-0.6B + linear head — `/addressed` | `payload.addressedP` on speech records (shadow tap, not a gate — docs/findings/should-respond-gate) |
 | 3 | **orbit-station** (Node/TS) | `:8099` | WS hub + SFU + all modules (brain, perception, memory, gate) + browser UI | everything |
 | 4 | **dock app** (Android) | — | the phone: camera/mic → WebRTC, face UI, TTS | a real dock (else use the `web-test` console peer) |
 
@@ -84,6 +85,13 @@ python3 sidecar.py --port 8078 &
 # Vision (qwen temporal) on :8080, STT disabled on this one (one model per process —
 # MLX/Metal is not thread-safe; never load two models in one process).
 python3 sidecar.py --port 8080 --temporal --no-stt &
+
+# OPTIONAL — addressed classifier on :8081 (observe-only shadow tap; stamps
+# payload.addressedP on speech records, does NOT gate). Separate process/model.
+# Uses the MLX python at ~/.pyenv/versions/3.13.1/bin/python (has mlx_lm).
+cd /Users/guru/garage/orbit/models/addressed-sidecar
+~/.pyenv/versions/3.13.1/bin/python sidecar.py --port 8081 &   # curl :8081/health
+# station auto-uses it if reachable; ADDRESSED_CLASSIFIER=0 disables the station call.
 ```
 
 Flags: `--temporal` preloads qwen at boot; `--no-stt` skips loading the STT model;

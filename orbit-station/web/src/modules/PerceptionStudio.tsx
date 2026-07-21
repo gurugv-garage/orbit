@@ -34,6 +34,9 @@ interface Snapshot {
     inferMs?: number | null; confidence?: number; // perf + match confidence (all streams)
     // speech: low-confidence flag + Whisper's own metrics (for the playground)
     lowConfidence?: boolean; avgLogprob?: number | null; noSpeechProb?: number | null; compressionRatio?: number | null;
+    // wall-clock (ms epoch) the transcript committed. interval.to = speech end;
+    // sttDoneAt − interval.to = the spoken-end → transcript-ready lag the user feels.
+    sttDoneAt?: number;
     // audio enricher interpretation (bg-audio-summarizer.md): the acoustic event
     // fields patched onto a speech snapshot (or carried by a standalone 'sound'
     // snapshot). bgModel marks an upgraded record; audioModel is the interpreter
@@ -46,6 +49,10 @@ interface Snapshot {
     // audio: dock-directed intent observed in the clip + the model's self-reported
     // confidences (a vibe, not a probability — but shown so nothing is hidden).
     addressedToRobot?: boolean; directive?: string;
+    // addressedP: the LIVE local classifier's P(spoken to the dock), 0..1 (observe-
+    // only shadow tap — docs/findings/should-respond-gate). Distinct from the
+    // enricher's boolean addressedToRobot; shown side-by-side as a fast cross-check.
+    addressedP?: number;
     echo?: boolean; // model's self-flag: this segment MAY be reference-context leaking, not fresh audio
     audioKindConf?: number; salienceConf?: number; addressConf?: number;
     bgTranscript?: string; gatedProbes?: number; confTier?: string;
@@ -1566,6 +1573,22 @@ export function PerceptionStudio() {
                         📺 media
                       </span>
                     )}
+                    {/* ADDRESSED-P — the LIVE local classifier's P(spoken to the dock).
+                        Observe-only shadow tap (docs/findings/should-respond-gate): a
+                        fast frozen-LM + linear head, NOT a gate. Green=addressed,
+                        red=overheard. Sits next to the enricher's addressed badge as a
+                        cross-check. */}
+                    {typeof p.addressedP === 'number' && (() => {
+                      const a = p.addressedP;
+                      const col = a >= 0.6 ? '#7ec8ff' : a >= 0.35 ? '#ffd9a0' : '#ff8a8a';
+                      const bd = a >= 0.6 ? '#2c4a6f' : a >= 0.35 ? '#5a4a20' : '#7a2c2c';
+                      return (
+                        <span title={`local classifier: ${Math.round(a * 100)}% addressed-to-dock (observe-only shadow tap — NOT a gate)`}
+                          style={{ marginRight: 5, fontSize: 10, fontWeight: 700, color: col, border: `1px solid ${bd}`, borderRadius: 4, padding: '0 5px' }}>
+                          📩 {Math.round(a * 100)}%
+                        </span>
+                      );
+                    })()}
                     {isLiveOnly && (
                       <span title="live-only parakeet — superseded by the enricher's record"
                         style={{ marginRight: 5, fontSize: 9.5, opacity: 0.7, border: '1px solid #444', borderRadius: 4, padding: '0 4px' }}>
@@ -1629,6 +1652,56 @@ export function PerceptionStudio() {
                       : isEnriched && p.transcriptConf != null && p.transcriptConf < 0.45
                       ? <span style={{ opacity: 0.5, fontStyle: 'italic' }} title="low-confidence — the enricher was unsure of these words">{sttText}</span>
                       : sttText}
+                    {/* LIVE STT (parakeet) row: ▶ play the exact utterance audio (saved to disk
+                        as <startedAtMs>.wav → served by /utterance-audio) + the four-timestamp
+                        story: spoken window (interval), how long the sidecar took (inferMs), and
+                        the spoken-end → transcript-ready lag (sttDoneAt − interval.to) the user
+                        actually feels. Only on the live STT lane, only when a source dock is set. */}
+                    {viewKind === 'stt' && source && source !== STREAM_ID && (() => {
+                      const startedMs = Date.parse(s.interval.from);
+                      const spokeEndMs = Date.parse(s.interval.to);
+                      const hasClip = p.clip === true;
+                      const src = `/api/perception/utterance-audio/${encodeURIComponent(source)}/${startedMs}`;
+                      const playing = playingAudio === rowKey;
+                      // The STT WINDOW as wall-clock instants (not just a duration): the sidecar
+                      // FINISHED at sttDoneAt and RAN for inferMs, so it STARTED at sttDoneAt−inferMs.
+                      // We show both edges so "when did STT start / when did it finish" is answered
+                      // directly, in the same clock as the spoken window above it.
+                      const sttEndMs = p.sttDoneAt ?? null;
+                      const sttStartMs = (sttEndMs != null && p.inferMs != null) ? sttEndMs - p.inferMs : null;
+                      // spoken-end → transcript-ready: the felt latency (endpoint wait + STT + queue).
+                      const readyLagMs = sttEndMs != null ? sttEndMs - spokeEndMs : null;
+                      return (
+                        <div style={{ marginTop: 3, fontSize: 10.5, color: '#7a8ca8', display: 'flex', flexWrap: 'wrap', gap: '2px 12px', alignItems: 'baseline', fontVariantNumeric: 'tabular-nums' }}>
+                          {hasClip && <span
+                            onClick={() => {
+                              if (playing) { audioElRef.current?.pause(); setPlayingAudio(null); return; }
+                              if (audioElRef.current) { audioElRef.current.src = src; audioElRef.current.play().then(() => setPlayingAudio(rowKey)).catch(() => setPlayingAudio(null)); }
+                            }}
+                            title="play the exact utterance audio this transcript came from"
+                            style={{ cursor: 'pointer', color: playing ? '#7ee0a0' : '#7fa8d8', fontWeight: 700 }}>
+                            {playing ? '⏸ playing' : '▶ play audio'}</span>}
+                          {/* SPOKEN window — wall-clock start–end (with ms) + how long they talked. */}
+                          <span title="when the audio was SPOKEN (wall clock): speech start → speech end">
+                            🗣 spoke <b style={{ color: '#9db4d0' }}>{istClockMs(startedMs, true)}–{istClockMs(spokeEndMs, true)}</b> <span style={{ opacity: 0.6 }}>({secs(s.interval.durationMs)})</span>
+                          </span>
+                          {/* STT window — wall-clock start–end (both edges), else just the duration on
+                              a pre-edit record that has inferMs but no sttDoneAt. */}
+                          {sttStartMs != null && sttEndMs != null
+                            ? <span title="when SPEECH-TO-TEXT ran (wall clock): STT start → STT done (finished). Width = the sidecar's transcribe time.">
+                                ⚙ STT <b style={{ color: '#9db4d0' }}>{istClockMs(sttStartMs, true)}–{istClockMs(sttEndMs, true)}</b> <span style={{ opacity: 0.6 }}>({p.inferMs}ms)</span>
+                              </span>
+                            : p.inferMs != null
+                            ? <span title="the STT sidecar's transcribe time (this record predates the wall-clock STT-done stamp, so only the duration is known)">⚙ STT {p.inferMs}ms <span style={{ opacity: 0.5 }}>(no clock)</span></span>
+                            : null}
+                          {/* The felt latency: you stopped talking → transcript ready. */}
+                          {readyLagMs != null && <span
+                            title="spoken-end → transcript-ready: the full lag the user feels (endpoint-silence wait + transcribe + queue), wider than the STT time alone"
+                            style={{ color: readyLagMs > 1500 ? '#ff8a8a' : readyLagMs > 800 ? '#ffd9a0' : '#7ee0a0', fontWeight: 700 }}>
+                            ⏱ heard +{(readyLagMs / 1000).toFixed(1)}s</span>}
+                        </div>
+                      );
+                    })()}
                     {/* LEGACY SOUND: the acoustic fields as a clean KEY–VALUE list. */}
                     {viewKind === 'sound' && (() => {
                       const pct = (v: unknown) => (typeof v === 'number' ? `${Math.round(v * 100)}%` : '');

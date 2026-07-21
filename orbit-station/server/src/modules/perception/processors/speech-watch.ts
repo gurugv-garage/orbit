@@ -107,6 +107,33 @@ function saveUtteranceWav(dockId: string, pcm: Int16Array, startedAtMs: number):
 }
 
 const SIDECAR_URL = process.env.PERCEPTION_SIDECAR_URL ?? 'http://127.0.0.1:8078';
+
+// ADDRESSED CLASSIFIER (observe-only shadow tap — docs/findings/should-respond-gate).
+// A tiny frozen-LM + linear-head sidecar scores each utterance for "was this spoken
+// TO the dock?" (addressed vs overheard room chatter). The score is STAMPED onto the
+// speech record (payload.addressed) so we can watch/calibrate it live; it does NOT
+// gate anything yet. Off unless the sidecar URL is reachable — a failed/absent call
+// just leaves the field off (best-effort, never blocks or breaks the STT path).
+const ADDRESSED_URL = process.env.ADDRESSED_SIDECAR_URL ?? 'http://127.0.0.1:8081';
+const ADDRESSED_ON = process.env.ADDRESSED_CLASSIFIER !== '0'; // default on; set 0 to disable
+/** Score P(addressed to the dock) for one utterance given recent conversation
+ *  context. Returns null on any error/timeout so the caller simply omits the field. */
+async function classifyAddressed(
+  text: string,
+  context: Array<{ role: 'user' | 'assistant'; text: string }>,
+): Promise<number | null> {
+  try {
+    const r = await fetch(`${ADDRESSED_URL}/addressed`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ text, context }),
+      signal: AbortSignal.timeout(1500),
+    });
+    if (!r.ok) return null;
+    const j = (await r.json()) as { addressed?: number };
+    return typeof j.addressed === 'number' ? j.addressed : null;
+  } catch { return null; }
+}
 /** A1.4: the echo-gate (drop audio while the dock speaks) is OFF by default — the
  *  A1 AEC fix cancels the dock's own voice, and the gate would block voice
  *  barge-in. Set STT_ECHO_GATE=1 to re-enable on a device with weak AEC. */
@@ -470,6 +497,11 @@ export function speechWatchProcessor(
         const durS = pcm.length / SAMPLE_RATE;
         const wantEmbed = !!voiceId && voiceId.enabled() && durS >= VOICE_MIN_S;
         const res = await transcribe(pcm, wantEmbed);
+        // Wall-clock instant the transcript LANDED (result committed). Distinct from
+        // `inferMs` (the sidecar's own transcribe cost): sttDoneAt − endedAt is the
+        // full "you stopped talking → transcript ready" latency the user actually
+        // feels — it also includes the endpoint-silence wait + queue + round-trip.
+        const sttDoneAt = Date.now();
         if (!res.ok) {
           // The sidecar is unreachable/errored → the dock is DEAF. Record it so the
           // brain can tell the user the real reason when they next try to talk
@@ -524,6 +556,9 @@ export function speechWatchProcessor(
             // keep the raw metrics on the record for the playground to inspect/tune
             avgLogprob: tr.avgLogprob, noSpeechProb: tr.noSpeechProb, compressionRatio: tr.compressionRatio,
             inferMs: tr.inferMs,
+            // wall-clock (ms epoch) the transcript committed — pairs with interval.to
+            // (speech end) so the console can show the spoken-end → transcript-ready lag.
+            sttDoneAt,
             // Parakeet's record is LIVE-ONLY: it feeds the addressed-latch/onFinal + the console
             // STT lane, but the AUDIO ENRICHER's batch pass lands the authoritative durable
             // transcript. The memory arm prefers enricher segments over these (avoid double-count).
@@ -531,6 +566,24 @@ export function speechWatchProcessor(
           },
         });
         store.add(rec);
+        // ADDRESSED CLASSIFIER (observe-only): score "was this spoken TO the dock?"
+        // OUT OF BAND — fire-and-forget so it never delays the STT/brain path. Build
+        // recent conversation context from the last few speech records (the same
+        // shape the classifier trained on), score, then patch payload.addressedP (a
+        // 0..1 PROBABILITY) onto the record (store.update re-persists so disk/console
+        // readers see it). Named `addressedP` to NOT collide with the enricher's
+        // boolean `payload.addressed` (Gemini's later read) — the two sit side by
+        // side as a live cross-check. A null score (sidecar down/slow) leaves the
+        // field off. NOT a gate — nothing acts on this yet.
+        if (ADDRESSED_ON) {
+          const context = store.list(8)
+            .filter((r) => r.source.kind === 'speech' && r !== rec && typeof r.payload.text === 'string')
+            .slice(-4)
+            .map((r) => ({ role: 'user' as const, text: String(r.payload.text) }));
+          void classifyAddressed(tr.text, context).then((addressedP) => {
+            if (addressedP != null) store.update(rec, { addressedP });
+          });
+        }
         // confidence rides along so downstream sees the engine's certainty, not a constant.
         // Parakeet now reports its own token confidence; Whisper maps from logprob;
         // only an old sidecar falls back to the 0.8 neutral default.
