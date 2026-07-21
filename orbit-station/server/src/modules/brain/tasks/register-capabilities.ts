@@ -98,8 +98,8 @@ export function buildCapabilityRegistry(d: CapabilityDeps): CapabilityRegistry {
     when: 'to physically turn/gesture the body (e.g. sweep to find someone, nod)',
     handler: (ctx, args) => {
       const steps = (Array.isArray(args.steps) ? args.steps : []) as MoveStep[];
-      // TAG the move with this task's id so a standing behaviour (faceFollow) can tell its
-      // OWN moves from a foreign mover (a brain turn / console / another task) and yield.
+      // TAG the move with this task's id so a standing task can tell its OWN moves from a
+      // foreign mover (a brain turn / console / another task) and yield.
       // `reason` (the bit/decision that chose the move) is REQUIRED at the harness; fall back to
       // the task name if a task somehow omits it, so the audit log is never anonymous.
       const reason = typeof args.reason === 'string' && args.reason ? args.reason : `task:${ctx.instanceId}`;
@@ -109,7 +109,13 @@ export function buildCapabilityRegistry(d: CapabilityDeps): CapabilityRegistry {
   });
 
   reg.register({
-    op: 'perception-pulse', requires: 'face',
+    // NO `requires`: msSinceSalient is computed entirely STATION-SIDE (a scan of the
+    // SnapshotStore over SFU-derived speech/sound/vision/identity records — see
+    // perception/index.ts salientPulseRef + grounding.ts isSalient). It reads zero phone
+    // data, so gating it on the on-device `face` cap was spurious — it would wrongly refuse
+    // the pulse whenever the phone's face channel was momentarily down, even though the op
+    // needs nothing from the phone. (thin-client-consolidation.md reassessment, 2026-07-21.)
+    op: 'perception-pulse',
     describe: 'await this.request("perception-pulse") → { msSinceSalient } — how long since the '
       + 'dock last perceived a genuine HAPPENING (confident speech, a notable sound, a visual '
       + 'change). null = unknown (perception cold)',

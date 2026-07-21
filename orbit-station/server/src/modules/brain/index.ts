@@ -301,7 +301,7 @@ export function brainModule(w: BrainWiring): StationModule {
     { root: userTasks, source: 'generated' as const },
   ];
   // Task defs the CONDUCTOR may start (resolved in init so ConductorAccess.startTask is
-  // synchronous). v1: just face-follow.
+  // synchronous). Currently just idle-moods.
   const condTaskDefs = new Map<string, { name: string; filePath: string; manifest: { model?: string; bgTask?: boolean } }>();
   let bus: Bus;
   let rpc: RpcBroker;
@@ -348,7 +348,7 @@ export function brainModule(w: BrainWiring): StationModule {
   // A task's parent signal (notify / finish / errored / stuck) → an autonomous
   // turn in that dock's conversational session (tasks §7a).
   const onTaskSignal = (dock: string, info: InstanceInfo, kind: SignalKind, ev: { text: string; image?: string }) => {
-    // A CONDUCTOR-standing task (face-follow, idle-moods) that errors is auto-restarted by
+    // A CONDUCTOR-standing task (idle-moods) that errors is auto-restarted by
     // the conductor's idempotent reconcile — do NOT speak the failure. With a body offline
     // this was a crash loop of spoken apologies ("my servo is taking a nap…" ×3 in 4 min,
     // seen in observability 2026-07-05); the conductor card + logs already surface it.
@@ -427,8 +427,8 @@ export function brainModule(w: BrainWiring): StationModule {
       .filter((i) => i.state === 'running' || i.state === 'stuck')
       .map((i) => ({
         instanceId: i.instanceId, name: i.name, state: i.state, lastSignal: i.lastSignal ?? null,
-        // surface the followed person's name for the face-follow indicator (named mode);
-        // undefined in salient mode (the phone then falls back to the recognized identity).
+        // surface an optional task `target` label if a task set one (no current task does;
+        // kept as a generic digest field).
         ...(typeof i.params?.target === 'string' && i.params.target ? { target: i.params.target as string } : {}),
       }));
     bus.publish({
@@ -1121,8 +1121,8 @@ export function brainModule(w: BrainWiring): StationModule {
           s.onDockOffline();
           // PHONE (face) offline → STAND DOWN: kill every running task on the dock except
           // bgTask ones (reminders survive so they still fire after you walk away). Without
-          // this the body kept moving with the phone gone — a conductor task (idle-moods /
-          // face-follow) animating an empty room, since the body stayed online and nothing
+          // this the body kept moving with the phone gone — a conductor task (idle-moods)
+          // animating an empty room, since the body stayed online and nothing
           // tore the tasks down. Conductor tasks ALSO get force-off via reconcile's
           // phone-presence gate; this catches brain/user-launched ones too, immediately.
           if (p.component === 'phone') {

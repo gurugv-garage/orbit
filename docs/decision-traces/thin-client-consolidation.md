@@ -18,7 +18,8 @@
   - [Why](#why)
   - [What was removed / changed](#what-was-removed--changed-1)
   - [Verification](#verification-1)
-- [Pending cuts](#pending-cuts)
+- [Reassessment (2026-07-21) — the `face`-cap-elimination thesis was WRONG](#reassessment-2026-07-21--the-face-cap-elimination-thesis-was-wrong)
+- [What remains worth doing (on its own merit, NOT for the cap)](#what-remains-worth-doing-on-its-own-merit-not-for-the-cap)
 <!-- /TOC -->
 
 ## The thesis
@@ -197,16 +198,45 @@ system-wide — the phone just stops contributing a redundant read.
 - Android `:app:compileDebugKotlin`, `:compileDebugUnitTestKotlin`, `testDebugUnitTest` all
   BUILD SUCCESSFUL (PerceptionSnapshotTest's emotion cases removed/retargeted).
 
-## Pending cuts
+## Reassessment (2026-07-21) — the `face`-cap-elimination thesis was WRONG
 
-- **Cut 3 — move perception-pulse (and `face-present`) off on-device perception** to the
-  station salience/SFU signal. This is the last `face`-cap consumer; once done, the cap is
-  inert.
-- **Keystone — frame buffer + time-parameterized tools.** A station rolling frame buffer
-  with `capture_photo(at:)` / `visual_query(q, at:)`, so the brain can ask about the moment
-  that prompted a question instead of racing the live stream. Additive, breaks nothing, and
-  moves all frame-selection intelligence to the station — the change that makes the client
-  legitimately a dumb sensor rather than a relocated one.
-- **Drop the `face` cap** from the phone `hello` once cuts 2 + 3 land and nothing calls
-  `resolveCap(dock, 'face')`. The phone then declares `["voice", "camera"]`.
+Before Cut 3, a mapping of what actually holds the `face` cap alive **overturned the
+premise of this whole trace**. The correction, recorded honestly:
+
+**The `face` cap is NOT "the phone's on-device perception surface." It is overloaded, and
+its dominant use is the `set_face` DISPLAY actuator** — the phone rendering the dock's face.
+There are ~9 production `cap:'face'` RPC sites (`brain/session.ts:1667`, `brain/tools.ts:554,
+768,980`, `brain/index.ts:1359,1374,1411`, `bodylink/index.ts:177`) plus the perceive-frame
+routing (`perception/index.ts:1331-1332`). A dock shows a face; it will **always** declare
+`face`. The cap was never freeable, and the "phone drops to `["voice","camera"]`" goal
+(stated in the thesis above) is **not achievable** and was based on a wrong model.
+
+What the mapping also found:
+- **`perception-pulse` is already 100% station-computed** — its handler reads `lastSalientAt`
+  (a scan of the station SnapshotStore over SFU-derived speech/sound/vision/identity records;
+  `perception/index.ts:1001-1009`, `grounding.ts:92-114`). Its `requires: 'face'` tag
+  (`register-capabilities.ts:112`) is **spurious** — the op needs no phone data, yet the gate
+  could refuse it when the phone's face channel is down. That's a latent bug, not a
+  consolidation lever.
+- **`face-present` is correctly on-device.** The station-side alternative (latest `identity`
+  snapshot from the SFU) is a genuine **regression**: it only works while the dock is actively
+  STREAMING VIDEO (vs. today's "phone connected"), at ~0.5 Hz change-triggered (vs. ~1-5 Hz
+  MLKit). Moving it trades a fast, always-available signal for a slow, streaming-dependent one
+  — and frees nothing, since the cap stays for `set_face`.
+
+**Decision (owner, 2026-07-21): STOP the cap-elimination consolidation.** Cuts 1 and 2 stand
+on their own merit — faceFollow was low-value surface, on-device FER was real duplication —
+independent of the (wrong) cap thesis. They removed genuine redundancy; they just don't
+ladder toward a cap removal, because that removal was never possible.
+
+## What remains worth doing (on its own merit, NOT for the cap)
+
+- **Fix `perception-pulse`'s spurious `requires: 'face'`** — a 1-line correctness fix (drop
+  the gate or retag to `camera`/none). It is a bug fix, not consolidation. NOT YET DONE.
+- **Frame buffer + time-parameterized tools** — a station rolling frame buffer with
+  `capture_photo(at:)` / `visual_query(q, at:)`, so the brain can ask about the moment that
+  prompted a question instead of racing the live stream. This was always independent of the
+  cap thesis — it stands. Additive, breaks nothing. NOT YET DONE.
+- **`face-present`: leave on-device.** Moving it is a regression for no benefit.
+- **The `face` cap: leave declared.** It is the dock's face-display actuator.
 

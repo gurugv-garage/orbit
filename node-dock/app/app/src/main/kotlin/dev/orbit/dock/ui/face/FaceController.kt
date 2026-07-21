@@ -62,11 +62,12 @@ class FaceController(
      */
     private val moodTtlMs = 15_000L
 
-    /** Sources whose moods DECAY. `react` is included: the EmotionGate only
-     *  re-reacts on a CHANGE of camera read, so a reaction to someone who then
-     *  walks away would pin forever — the same hang class as the LLM moods.
-     *  (Trade-off, accepted: someone who keeps smiling sees the face settle to
-     *  neutral after the afterglow; honest — the moment passed.)
+    /** Sources whose moods DECAY. `react` (a passive expression via
+     *  [setExpressionPassive]) is included so a one-off reaction settles back to
+     *  neutral after its afterglow rather than pinning forever — the same hang
+     *  class as the LLM moods. (The on-device emotion-mirroring that used to drive
+     *  `react` was retired — see docs/decision-traces/thin-client-consolidation.md;
+     *  the primitive stays for any future passive-reaction use.)
      *  `boot`/`timer`/`wake`/`voice`/`decay` are already resting states. */
     private val decayingSources = setOf("llm", "debug", "react")
 
@@ -307,11 +308,11 @@ class FaceController(
         if (_state.value == FaceState.Speaking) return
         if (_expression.value == FaceExpression.Wink) return
         if (_expression.value == e) return
-        // The reason NAMES THE CAUSE as the person, not the dock's own feeling —
-        // that conflation is why it wore the user's anger and then denied being
-        // angry. source="react" is what lets any reader tell a response-to-them
-        // from a mood the dock chose itself. (The caller supplies `why`; see
-        // EmotionReaction.reasonFor — e.g. "you look sad, so I'm concerned".)
+        // A passive expression: source="react" lets any reader tell a
+        // response-to-the-person from a mood the dock chose itself, and the caller
+        // supplies `why` to name the cause. (No production caller today — the
+        // on-device emotion-mirroring that drove this was retired; the primitive
+        // remains for a future passive-reaction feature.)
         writeExpression(e, why, "react")
     }
 

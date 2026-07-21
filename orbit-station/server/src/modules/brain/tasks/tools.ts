@@ -26,7 +26,7 @@ export interface TaskToolDeps {
   /** this dock's station-capability advertisement for the authoring prompt
    *  (CapabilityRegistry.advertiseFor); '' when the dock has no extra capabilities. */
   capabilityAd?: string;
-  /** gallery pre-check for find_person: is this person enrolled? + who IS enrolled. */
+  /** gallery pre-check (used by visual_search): is this person enrolled? + who IS enrolled. */
   knowsPerson?: (name: string) => boolean;
   knownNames?: () => string[];
 }
