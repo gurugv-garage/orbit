@@ -249,6 +249,7 @@ export const takePhotoSchema = {
   properties: {
     caption: { type: 'string', description: 'an optional caption to show / post with the photo' },
     slackChannel: { type: 'string', description: 'a Slack channel id (Cxxxx) or #name to send the photo to; omit to just show it on the dock (or use the default channel)' },
+    from_shot: { type: 'string', description: 'OPTIONAL: send a specific saved view instead of a fresh capture. Pass the found-view handle from a recent visual_search result — this sends the EXACT frame where the target was found, so "find X then send a photo of it" shows what you found, not a new (possibly changed) view.' },
   },
 } as const;
 

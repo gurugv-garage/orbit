@@ -148,6 +148,10 @@ export interface RecognizeOut {
   confidence: number;
   noFace: boolean;
   people: RecognizedPerson[];
+  /** the exact frame (base64 JPEG) recognition RAN on — so a follow-up "take a photo of
+   *  them" sends the frame the verdict was formed in, not a fresh (possibly-changed) view
+   *  (frame-provenance audit, 2026-07-21). Absent when recognition used no frame (voice-only). */
+  frameB64?: string;
 }
 
 /**
@@ -1150,8 +1154,10 @@ export function perceptionModule(getHub: () => PerceptionProcessingHub): Station
         },
         async recognize({ photo, streamId }) {
           let faces: DetectedFace[] = [];
+          let usedFrameB64: string | undefined; // the frame recognition actually ran on
           if (photo) {
             faces = await describeAllBase64(photo);
+            usedFrameB64 = photo;
           } else if (streamId) {
             // FLICKER TOLERANCE: a single live frame is unreliable — face-api misses a
             // face on a blurred / dropped / mid-blink frame, which made recollect_face
@@ -1163,7 +1169,10 @@ export function perceptionModule(getHub: () => PerceptionProcessingHub): Station
             // continuously from the SFU, so successive reads are genuinely new frames.)
             for (let attempt = 0; attempt < RECOGNIZE_FRAME_TRIES; attempt++) {
               const buf = face.currentFrame(streamId);
-              if (buf) { try { faces = await describeAllFaces(buf); } catch { faces = []; } }
+              if (buf) {
+                usedFrameB64 = buf.toString('base64'); // remember the frame we judged (even if no face)
+                try { faces = await describeAllFaces(buf); } catch { faces = []; }
+              }
               if (faces.length > 0) break;
               if (attempt < RECOGNIZE_FRAME_TRIES - 1) await new Promise((r) => setTimeout(r, RECOGNIZE_FRAME_GAP_MS));
             }

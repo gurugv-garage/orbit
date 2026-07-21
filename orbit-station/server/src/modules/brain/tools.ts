@@ -15,7 +15,7 @@
 
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { mkdirSync, writeFileSync, readdirSync, unlinkSync } from 'node:fs';
+import { mkdirSync, writeFileSync, readdirSync, unlinkSync, readFileSync } from 'node:fs';
 import type { AgentTool, AgentToolResult } from '@earendil-works/pi-agent-core';
 import type { FaceToolsApi, PerceptionGroundingApi, MemoryApi, RecognizeOut, RecognizedPerson } from '../perception/index.js';
 import type { MemoryRow } from '../perception/memory/store.js';
@@ -37,8 +37,61 @@ import { geminiVision, geminiVisionAgent } from '../perception/summarizer.js';
  *  passively via grounding). Small enough that the just-captured frame dominates. */
 const FORCE_GET_WINDOW_MS = Number(process.env.FORCE_GET_WINDOW_MS ?? 6_000);
 
+// Post-move settle timing for the live-frame capture tools (settledFrame). After a body move,
+// wait for the servo to settle (SETTLE_MS) THEN for a frame decoded after that instant, polling
+// up to FRAME_DECODE_MAX_MS (the grabber decodes ~1-2 fps, so a fresh frame lands within ~1s).
+const SETTLE_MS = Number(process.env.PHOTO_SETTLE_MS ?? 350);       // servo settle (matches visual_search DWELL)
+const FRAME_DECODE_MAX_MS = Number(process.env.PHOTO_DECODE_MAX_MS ?? 1_200); // budget to await a post-settle frame
+const FRAME_POLL_MS = 80;                                            // poll cadence while awaiting it
+
+/**
+ * Choose a LIVE frame that is post-settle if the body moved recently. Pure/testable core of
+ * settledFrame (deps injected). `movedAt` = epoch of the last body move (0 = never).
+ *   • no recent move (or the whole settle+decode budget already elapsed) → latest frame.
+ *   • otherwise poll frameSince(settleInstant) until a post-settle frame lands or the budget
+ *     runs out, then fall back to latest. `now`/`sleep` are injectable so tests are deterministic.
+ */
+export async function pickSettledFrame(opts: {
+  movedAt: number;
+  latest: () => string | undefined;
+  frameSince: (minTs: number) => string | undefined;
+  now?: () => number;
+  sleep?: (ms: number) => Promise<void>;
+  settleMs?: number;
+  decodeMaxMs?: number;
+  pollMs?: number;
+}): Promise<string | undefined> {
+  const now = opts.now ?? (() => Date.now());
+  const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+  const settleMs = opts.settleMs ?? SETTLE_MS;
+  const decodeMaxMs = opts.decodeMaxMs ?? FRAME_DECODE_MAX_MS;
+  const pollMs = opts.pollMs ?? FRAME_POLL_MS;
+  const settleBy = opts.movedAt + settleMs;
+  const deadline = settleBy + decodeMaxMs;
+  if (!opts.movedAt || now() >= deadline) return opts.latest();
+  for (;;) {
+    const fresh = opts.frameSince(settleBy);
+    if (fresh) return fresh;
+    if (now() >= deadline) break;
+    await sleep(pollMs);
+  }
+  return opts.latest();
+}
+
 /** how long visual_search's per-pose debug shots live on disk (swept on save). */
 const SEARCH_SHOT_TTL_MS = Number(process.env.VS_SHOT_TTL_MS ?? 48 * 3600_000);
+/** where visual_search saves found-view shots (cwd-relative to the station process). The photo
+ *  tools re-open these by BASENAME so "find X … send it" a few turns later sends the exact
+ *  validated frame, not a fresh re-capture (frame-provenance audit, 2026-07-21). */
+const SEARCH_SHOT_DIR = '.data/search';
+
+/** Read a saved found-view shot by basename → base64 JPEG. Basename-only (no separators /
+ *  traversal) so a model-supplied handle can't escape the shots dir. undefined if gone. */
+function readSearchShot(basename: string): string | undefined {
+  if (!/^[a-zA-Z0-9._-]+\.jpg$/.test(basename)) return undefined;
+  try { return readFileSync(`${SEARCH_SHOT_DIR}/${basename}`).toString('base64'); }
+  catch { return undefined; }
+}
 
 /** Capture a live clip, then hand the finished file to a watcher. The session
  *  provides this; record_video kicks it off and returns immediately. */
@@ -743,6 +796,57 @@ export function buildDockTools(deps: ToolDeps): AgentTool<any>[] {
     return { photo: ctx.imageBase64, streamId: ctx.streamId };
   };
 
+  // The frame visual_search last VALIDATED a target in (the judge's exact frame). "find X and
+  // take a photo" must send THIS frame, not a fresh re-capture — otherwise the recognition
+  // verdict ("found Guru") is stapled to a different, possibly-stale frame (the balcony bug:
+  // provenance drift, docs/decision-traces/thin-client-consolidation.md / the frame-provenance
+  // audit). Consumed by the photo tools while fresh (same turn / a few seconds), then cleared.
+  let lastFound: { jpeg: string; at: number } | undefined;
+  const LAST_FOUND_FRESH_MS = 8_000;
+  const takeFoundFrame = (): string | undefined => {
+    if (lastFound && Date.now() - lastFound.at < LAST_FOUND_FRESH_MS) {
+      const j = lastFound.jpeg; lastFound = undefined; return j; // one-shot: bind to THIS photo only
+    }
+    return undefined;
+  };
+
+  /**
+   * A LIVE frame that is POST-SETTLE if the body just moved. `latest()` is the freshest
+   * DECODED frame, but the grabber decodes at ~1-2 fps — so right after a body turn (a
+   * move tool, or a visual_search that centred on someone) `latest()` is still the
+   * PRE-TURN frame. That is the "found you, turned to you, then photographed the empty
+   * balcony" bug: take_photo/capture_photo grabbed the stale frame.
+   *
+   * Fix: if the body moved within a settle window, wait (short budget) for a frame decoded
+   * AFTER the move settled — the same post-settle discipline visual_search already uses via
+   * frameSince. If nothing moved, or no fresh post-settle frame arrives in time, fall back to
+   * latest() so the tool still produces a frame rather than failing.
+   */
+  const settledFrame = async (streamId: string): Promise<string | undefined> => {
+    const f = deps.getFaces();
+    if (!f) return undefined;
+    return pickSettledFrame({
+      movedAt: deps.motion.lastMotionAt(deps.dock),
+      latest: () => f.frame(streamId),
+      frameSince: (minTs) => f.frameSince(streamId, minTs),
+    });
+  };
+
+  // OBSERVABILITY: capture tools record HOW the frame was chosen — whether the body had just
+  // moved, whether the post-settle wait engaged, and how long it waited. This lands in the obs
+  // ToolExecutionEnd result text (session.ts), so a stale-frame regression ("photographed the
+  // old view after turning") is diagnosable from the trace, not just from staring at the photo.
+  const captureFrame = async (streamId: string): Promise<{ jpeg?: string; obs: string }> => {
+    const movedAt = deps.motion.lastMotionAt(deps.dock);
+    const t0 = Date.now();
+    const jpeg = await settledFrame(streamId);
+    const waitedMs = Date.now() - t0;
+    const sinceMoveMs = movedAt ? t0 - movedAt : -1;
+    const settleEngaged = movedAt > 0 && sinceMoveMs < SETTLE_MS + FRAME_DECODE_MAX_MS;
+    const obs = `[frame: ${movedAt ? `moved ${sinceMoveMs}ms ago, ` : 'no recent move, '}settle ${settleEngaged ? `waited ${waitedMs}ms` : 'skipped'}]`;
+    return { jpeg, obs };
+  };
+
   return [
     tool('set_face', S.SET_FACE_DESC, S.setFaceSchema, async (
       toolCallId, args: { expression: string; reason?: string },
@@ -824,10 +928,24 @@ export function buildDockTools(deps: ToolDeps): AgentTool<any>[] {
       return textResult(await nowFromShell());
     }),
 
-    tool('take_photo', S.TAKE_PHOTO_DESC, S.takePhotoSchema, async (_id, args: { caption?: string; slackChannel?: string }) => {
-      // The same live frame source the vision tools use (turn-attached photo first).
+    tool('take_photo', S.TAKE_PHOTO_DESC, S.takePhotoSchema, async (_id, args: { caption?: string; slackChannel?: string; from_shot?: string }) => {
       const ctx = deps.getTurnContext();
-      const jpegB64 = ctx.imageBase64 ?? (ctx.streamId ? deps.getFaces()?.frame(ctx.streamId) : undefined);
+      // Frame source, in provenance-preferred order (frame-provenance audit, 2026-07-21):
+      //  1. from_shot — an explicit saved found-view handle (durable 48h, survives ACROSS turns:
+      //     "find X" now, "send it" a minute later still sends the exact validated frame).
+      //  2. lastFound — a same-turn visual_search find (the zero-effort default).
+      //  3. turn-attached photo, then 4. a POST-SETTLE live frame (never the pre-turn view).
+      const shotName = args.from_shot?.trim().replace(/^.*\//, ''); // basename only
+      const fromShot = shotName ? readSearchShot(shotName) : undefined;
+      const found = fromShot ? undefined : takeFoundFrame();
+      const cap = fromShot ? { jpeg: fromShot, obs: `[frame: from saved shot ${shotName}]` }
+        : found ? { jpeg: found, obs: '[frame: visual_search found-view]' }
+        : ctx.imageBase64 ? { jpeg: ctx.imageBase64, obs: '[frame: turn-attached photo]' }
+        : (ctx.streamId ? await captureFrame(ctx.streamId) : { jpeg: undefined, obs: '[frame: no stream]' });
+      // an explicit from_shot that no longer exists is a hard error — don't silently re-shoot
+      // a different frame, which is the exact provenance bug we're fixing.
+      if (shotName && !fromShot) throw new Error(`that saved view (${shotName}) is no longer available — take a fresh photo instead`);
+      const jpegB64 = cap.jpeg;
       if (!jpegB64) throw new Error('no camera frame available right now — the stream may be down');
       const channel = args.slackChannel ?? slack.slackDefaultChannel();
       if (slack.slackEnabled() && channel) {
@@ -835,12 +953,12 @@ export function buildDockTools(deps: ToolDeps): AgentTool<any>[] {
           channel, bytes: Buffer.from(jpegB64, 'base64'), filename: `photo-${Date.now()}.jpg`,
           title: args.caption, initialComment: args.caption,
         });
-        return textResult(`Photo sent to Slack${args.caption ? `: ${args.caption}` : ''}.`);
+        return textResult(`Photo sent to Slack${args.caption ? `: ${args.caption}` : ''}. ${cap.obs}`);
       }
       // No Slack target → return the image so the brain sees + narrates it on the dock.
       return {
         content: [
-          { type: 'text', text: args.caption ? `Photo taken: ${args.caption}` : 'Photo taken.' },
+          { type: 'text', text: (args.caption ? `Photo taken: ${args.caption}` : 'Photo taken.') + ` ${cap.obs}` },
           { type: 'image', data: jpegB64, mimeType: 'image/jpeg' },
         ],
         details: undefined,
@@ -855,11 +973,17 @@ export function buildDockTools(deps: ToolDeps): AgentTool<any>[] {
       // still produces a photo rather than failing (and note the fallback in the caption).
       let jpegB64: string | undefined;
       let missedMoment = false;
+      let obs = `[frame: ${secondsAgo}s ago from ring]`;
       if (secondsAgo === 0) {
-        jpegB64 = ctx.imageBase64 ?? (ctx.streamId ? deps.getFaces()?.frame(ctx.streamId) : undefined);
+        // "now" → prefer a just-found frame (visual_search's validated view), else the
+        // turn-attached photo, else a POST-SETTLE live frame (never the pre-turn view).
+        const found = takeFoundFrame();
+        if (found) { jpegB64 = found; obs = '[frame: visual_search found-view]'; }
+        else if (ctx.imageBase64) { jpegB64 = ctx.imageBase64; obs = '[frame: turn-attached photo]'; }
+        else if (ctx.streamId) { const c = await captureFrame(ctx.streamId); jpegB64 = c.jpeg; obs = c.obs; }
       } else if (ctx.streamId) {
         jpegB64 = deps.getFaces()?.frameAt(ctx.streamId, Date.now() - secondsAgo * 1000);
-        if (!jpegB64) { missedMoment = true; jpegB64 = deps.getFaces()?.frame(ctx.streamId); }
+        if (!jpegB64) { missedMoment = true; const c = await captureFrame(ctx.streamId); jpegB64 = c.jpeg; obs = `[frame: ${secondsAgo}s ago MISSED (past ring) → ${c.obs.slice(1)}`; }
       }
       if (!jpegB64) throw new Error('no camera frame available right now — the stream may be down');
       const when = secondsAgo === 0 ? '' : missedMoment ? ' (that moment is past what I kept — this is the latest)' : ` (from ${secondsAgo}s ago)`;
@@ -869,11 +993,11 @@ export function buildDockTools(deps: ToolDeps): AgentTool<any>[] {
           channel, bytes: Buffer.from(jpegB64, 'base64'), filename: `photo-${Date.now()}.jpg`,
           title: args.caption, initialComment: args.caption,
         });
-        return textResult(`Photo sent to Slack${args.caption ? `: ${args.caption}` : ''}${when}.`);
+        return textResult(`Photo sent to Slack${args.caption ? `: ${args.caption}` : ''}${when}. ${obs}`);
       }
       return {
         content: [
-          { type: 'text', text: (args.caption ? `Photo taken: ${args.caption}` : 'Photo taken.') + when },
+          { type: 'text', text: (args.caption ? `Photo taken: ${args.caption}` : 'Photo taken.') + when + ` ${obs}` },
           { type: 'image', data: jpegB64, mimeType: 'image/jpeg' },
         ],
         details: undefined,
@@ -887,11 +1011,13 @@ export function buildDockTools(deps: ToolDeps): AgentTool<any>[] {
       const secondsAgo = Math.max(0, Number(args.secondsAgo) || 0);
       let frameB64: string | undefined;
       let missedMoment = false;
+      let obs = `[frame: ${secondsAgo}s ago from ring]`;
       if (secondsAgo === 0) {
-        frameB64 = ctx.imageBase64 ?? (ctx.streamId ? deps.getFaces()?.frame(ctx.streamId) : undefined);
+        if (ctx.imageBase64) { frameB64 = ctx.imageBase64; obs = '[frame: turn-attached photo]'; }
+        else if (ctx.streamId) { const c = await captureFrame(ctx.streamId); frameB64 = c.jpeg; obs = c.obs; }
       } else if (ctx.streamId) {
         frameB64 = deps.getFaces()?.frameAt(ctx.streamId, Date.now() - secondsAgo * 1000);
-        if (!frameB64) { missedMoment = true; frameB64 = ctx.streamId ? deps.getFaces()?.frame(ctx.streamId) : undefined; }
+        if (!frameB64) { missedMoment = true; const c = await captureFrame(ctx.streamId); frameB64 = c.jpeg; obs = `[frame: ${secondsAgo}s ago MISSED (past ring) → ${c.obs.slice(1)}`; }
       }
       if (!frameB64) throw new Error('no camera frame available right now — the stream may be down');
       // Free-form answer from the single chosen frame (geminiVision = the raw VLM read,
@@ -902,7 +1028,7 @@ export function buildDockTools(deps: ToolDeps): AgentTool<any>[] {
         `say so briefly.\nQUESTION: ${question}`;
       const answer = await geminiVision(prompt, frameB64, deps.dock);
       const note = missedMoment ? ' (that moment is past what I kept, so this is the latest frame)' : '';
-      return textResult((answer?.trim() || "I couldn't make anything out in that frame.") + note);
+      return textResult((answer?.trim() || "I couldn't make anything out in that frame.") + note + ` ${obs}`);
     }),
 
     tool('record_video', S.RECORD_VIDEO_DESC, S.recordVideoSchema, async (_id, args: { seconds?: number; caption?: string; slackChannel?: string }) => {
@@ -1001,7 +1127,7 @@ export function buildDockTools(deps: ToolDeps): AgentTool<any>[] {
           // "gotcha"/"not found" against what was actually seen). Time-bounded:
           // shots older than SHOT_TTL are swept on each save, so the debug
           // record self-cleans instead of growing forever.
-          const dir = '.data/search';
+          const dir = SEARCH_SHOT_DIR;
           mkdirSync(dir, { recursive: true });
           try {
             const cutoff = Date.now() - SEARCH_SHOT_TTL_MS;
@@ -1027,6 +1153,9 @@ export function buildDockTools(deps: ToolDeps): AgentTool<any>[] {
         // the "gotcha" reveal: float the found view on the face for a few
         // seconds so the user can SEE what the robot saw (user ask 2026-07-17).
         deps.showOnFace?.(outcome.foundFrameB64, 10_000);
+        // stash the VALIDATED frame so a following take_photo/capture_photo sends THIS exact
+        // frame (the one the judge confirmed the target in) rather than a racy re-capture.
+        lastFound = { jpeg: outcome.foundFrameB64, at: Date.now() };
       }
       if (outcome.found) {
         // The FACE celebrates, the BODY holds: a [face:] tag in the reply fires
@@ -1043,10 +1172,12 @@ export function buildDockTools(deps: ToolDeps): AgentTool<any>[] {
       if (outcome.found && outcome.candidate) {
         const extra = outcome.otherCandidates.length
           ? ` Also spotted: ${outcome.otherCandidates.map((c) => `${c.label} ${describePose(c.pose)}`).join('; ')}.` : '';
-        const shot = outcome.shotPath
-          ? ` A snapshot of the found view is saved at ${outcome.shotPath} (usable by file/photo tools for chaining — ` +
-            `e.g. "find X and send a pic to Slack"; and since you are FACING them now, take_photo captures this view live). ` +
-            `Never read the raw path aloud.`
+        const shotName = outcome.shotPath ? outcome.shotPath.replace(/^.*\//, '') : '';
+        const shot = shotName
+          ? ` The FOUND VIEW — the exact frame you spotted them in — is saved as "${shotName}". ` +
+            `To send a picture of what you found (now OR in a later turn, e.g. the user says "send it" ` +
+            `after), call take_photo with from_shot="${shotName}" — that sends THAT validated frame, ` +
+            `not a fresh look that might have changed. Never read the handle aloud.`
           : '';
         return textResult(`${outcome.summary} — you are facing them now, and your face is ALREADY set to excited. ` +
           `IMPORTANT: do NOT start this reply with any [face:NAME] tag — a face tag plays body choreography that ` +
@@ -1068,6 +1199,10 @@ export function buildDockTools(deps: ToolDeps): AgentTool<any>[] {
       const v = deps.getTurnContext().voice;
       const byVoice = v?.match && (r.noFace || (!r.name && r.people.length <= 1))
         ? ` By voice, the person speaking is ${v.name}.` : '';
+      // Pin the frame recognition ran on, so a follow-up "take a photo of them" sends the
+      // frame the verdict was formed in, not a fresh (possibly-changed) view (BUG-3 / the
+      // frame-provenance audit). Only when a face was actually seen in it.
+      if (r.frameB64 && !r.noFace) lastFound = { jpeg: r.frameB64, at: Date.now() };
       return textResult(describeRecognition(r) + byVoice);
     }),
 

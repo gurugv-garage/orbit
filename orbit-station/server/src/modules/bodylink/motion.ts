@@ -381,13 +381,19 @@ export class MotionExecutor {
   }
 
   /** Did the body move within the last `withinMs`? The camera-motion signal perception
-   *  needs (the bodymotion snapshot stream never gets faceFollow's pans — no ego-motion
-   *  loop-closure there). Used to tell "the WORLD changed" from "I panned my own head":
-   *  a change-gate trigger while recently-moved is likely self-motion, same scene. The
-   *  window should cover a move + settle (a step is ~500ms). */
+   *  needs. Used to tell "the WORLD changed" from "I panned my own head": a change-gate
+   *  trigger while recently-moved is likely self-motion, same scene. The window should
+   *  cover a move + settle (a step is ~500ms). */
   recentlyMoved(dock: string, withinMs = 1200): boolean {
     const at = this.#docks.get(dock)?.lastMotionAt ?? 0;
     return at > 0 && Date.now() - at < withinMs;
+  }
+
+  /** Epoch ms of the last commanded move on this dock (0 = never moved). A frame-grabbing
+   *  tool reads this to wait for a POST-SETTLE frame after a body turn, instead of serving a
+   *  stale pre-turn frame (the "photographed the old view after turning to you" bug). */
+  lastMotionAt(dock: string): number {
+    return this.#docks.get(dock)?.lastMotionAt ?? 0;
   }
 
   /** A short human-readable CURRENT pose for the brain's grounding (facing + angles), so it can
