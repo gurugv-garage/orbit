@@ -168,8 +168,12 @@ export interface FaceToolsApi {
   /** frame(), but only one decoded at/after `minTs` — visual-search judges
    *  post-settle frames only, never a mid-move smear. */
   frameSince(streamId: string, minTs: number): string | undefined;
-  /** Is this name enrolled in the gallery (case-insensitive)? — the gallery pre-check for
-   *  find_person: "do I actually know this person before I go looking for them?". */
+  /** The frame the camera was showing AT `tMs` (station-clock epoch) as base64 JPEG —
+   *  the "look back to a moment" source for time-parameterized capture. undefined if
+   *  `t` predates the retained window. */
+  frameAt(streamId: string, tMs: number): string | undefined;
+  /** Is this name enrolled in the gallery (case-insensitive)? — the gallery pre-check
+   *  used by visual_search: "do I actually know this person before I go looking?". */
   knowsPerson(name: string): boolean;
   /** Canonical display names of everyone enrolled — so find_person can say who it CAN find. */
   knownNames(): string[];
@@ -1205,6 +1209,9 @@ export function perceptionModule(getHub: () => PerceptionProcessingHub): Station
         },
         frameSince(streamId, minTs) {
           return face.currentFrameSince(streamId, minTs)?.toString('base64');
+        },
+        frameAt(streamId, tMs) {
+          return face.currentFrameAt(streamId, tMs)?.toString('base64');
         },
         async forget({ name, streamId }) {
           const n = name.trim();

@@ -20,6 +20,9 @@
   - [Verification](#verification-1)
 - [Reassessment (2026-07-21) — the `face`-cap-elimination thesis was WRONG](#reassessment-2026-07-21--the-face-cap-elimination-thesis-was-wrong)
 - [What remains worth doing (on its own merit, NOT for the cap)](#what-remains-worth-doing-on-its-own-merit-not-for-the-cap)
+- [Frame buffer + time-parameterized tools (2026-07-21) — the keystone](#frame-buffer--time-parameterized-tools-2026-07-21--the-keystone)
+  - [What was built](#what-was-built)
+  - [Verification](#verification-2)
 <!-- /TOC -->
 
 ## The thesis
@@ -233,10 +236,51 @@ ladder toward a cap removal, because that removal was never possible.
 
 - **Fix `perception-pulse`'s spurious `requires: 'face'`** — a 1-line correctness fix (drop
   the gate or retag to `camera`/none). It is a bug fix, not consolidation. NOT YET DONE.
-- **Frame buffer + time-parameterized tools** — a station rolling frame buffer with
-  `capture_photo(at:)` / `visual_query(q, at:)`, so the brain can ask about the moment that
-  prompted a question instead of racing the live stream. This was always independent of the
-  cap thesis — it stands. Additive, breaks nothing. NOT YET DONE.
+- **Frame buffer + time-parameterized tools** — DONE, see below.
 - **`face-present`: leave on-device.** Moving it is a regression for no benefit.
 - **The `face` cap: leave declared.** It is the dock's face-display actuator.
+
+## Frame buffer + time-parameterized tools (2026-07-21) — the keystone
+
+Independent of the (abandoned) cap thesis. Today the capture tools mean "now" — which races
+reality: by the time the brain decides to look, the moment (a gesture, a held-up object, the
+thing that made a sound) has passed. This gives the brain a **rolling window of recent
+frames** and lets it ask about a *moment*.
+
+**All station-side. No app change, no OTA.** The phone streams the same SFU video; the
+station already decodes it once. So this is testable with just a station restart.
+
+### What was built
+
+- **`FrameGrabber` grew a rolling ring** (`perception/face/frame-grabber.ts`). The 1-deep
+  `#latest`/`#latestAt` cache (which every existing caller reads) is untouched — the ring is
+  purely additive, pushed at the SAME choke point (`#collect`, where each decoded JPEG is
+  stamped `Date.now()`). Bounded by `RING_WINDOW_MS` (60s) AND `RING_MAX_FRAMES` (240) so a
+  burst can't blow memory: ~5-6 MB/stream at the ceiling (~1-2 fps × ~50 KB). Window/eviction
+  + nearest-frame-at-t are pure exported helpers (`pushToRing`, `frameAtIn`) so they're
+  unit-testable without ffmpeg.
+- **`frameAt(tMs)` rode the existing accessor chain** with zero new wiring:
+  `FrameGrabber.frameAt` → `face-recognition.ts currentFrameAt` → `FaceToolsApi.frameAt`
+  (`perception/index.ts`). Every existing frame consumer already goes through this chain.
+- **Two new brain tools** (`brain/tools.ts`, `brain/schemas.ts`), offered to every dock (no
+  allowlist gates tool names — presence in `buildDockTools` is the offer):
+  - **`capture_photo(secondsAgo, caption?, slackChannel?)`** — take_photo, but can look back.
+    `secondsAgo:0` = the live frame (identical to take_photo); `>0` = the ring frame from that
+    moment. If the moment predates the ring it falls back to the latest frame + says so.
+  - **`visual_query(question, secondsAgo?)`** — answer a NL question about the frame at a
+    chosen moment, via `geminiVision` (the free-form VLM read, not the strict present/absent
+    verdict the search judges use). Same look-back + graceful-miss semantics.
+- The **`at` parameter is `secondsAgo` (relative)**, not an absolute epoch — the brain reasons
+  in "what I saw N seconds ago," and the station converts to `Date.now() - secondsAgo*1000`.
+  Frames and salient snapshots share the `Date.now()` clock, so this resolves correctly.
+
+### Verification
+
+- `tsc` (full workspace, server + web) clean.
+- **7 new ring unit tests** (`frame-grabber.test.ts`): window eviction, hard count cap,
+  nearest-frame-at-t, tolerance snapping, empty/evicted → null — all pass.
+- **Full server suite: 636 pass, 0 fail** — the shared-grabber consumers (visual_search,
+  vision-snapshot, identity-snapshot, the /frame route) are unregressed; the ring is additive.
+- Live-dock e2e (T19–T25 in the test plan) is deferred: needs a dock streaming video, not
+  available this session.
 

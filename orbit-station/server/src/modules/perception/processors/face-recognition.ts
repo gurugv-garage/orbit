@@ -52,6 +52,8 @@ export function faceRecognitionProcessor(gallery: Gallery): StreamProcessor & {
   /** currentFrame, but only a frame decoded at/after `minTs` (visual-search:
    *  judge post-settle frames only, never a mid-move smear). */
   currentFrameSince(streamId: string, minTs: number): Buffer | null;
+  /** The frame the camera was showing AT `tMs` (from the grabber's rolling window). */
+  currentFrameAt(streamId: string, tMs: number): Buffer | null;
 } {
   const streams = new Map<string, Stream>();
   void loadFaceModels(); // warm the models at construction
@@ -178,6 +180,12 @@ export function faceRecognitionProcessor(gallery: Gallery): StreamProcessor & {
 
     currentFrameSince(streamId: string, minTs: number): Buffer | null {
       return streams.get(streamId)?.grabber.latestSince(minTs) ?? null;
+    },
+
+    /** The frame the camera was showing AT `tMs` — the "look back to a moment"
+     *  accessor over the grabber's rolling window (null if t predates the window). */
+    currentFrameAt(streamId: string, tMs: number): Buffer | null {
+      return streams.get(streamId)?.grabber.frameAt(tMs) ?? null;
     },
   };
 }

@@ -847,6 +847,64 @@ export function buildDockTools(deps: ToolDeps): AgentTool<any>[] {
       } as AgentToolResult<unknown>;
     }),
 
+    tool('capture_photo', S.CAPTURE_PHOTO_DESC, S.capturePhotoSchema, async (_id, args: { secondsAgo?: number; caption?: string; slackChannel?: string }) => {
+      const ctx = deps.getTurnContext();
+      const secondsAgo = Math.max(0, Number(args.secondsAgo) || 0);
+      // secondsAgo 0 → live frame (same source as take_photo); >0 → look back into the ring.
+      // If the requested moment predates the ring, fall back to the live frame so the tool
+      // still produces a photo rather than failing (and note the fallback in the caption).
+      let jpegB64: string | undefined;
+      let missedMoment = false;
+      if (secondsAgo === 0) {
+        jpegB64 = ctx.imageBase64 ?? (ctx.streamId ? deps.getFaces()?.frame(ctx.streamId) : undefined);
+      } else if (ctx.streamId) {
+        jpegB64 = deps.getFaces()?.frameAt(ctx.streamId, Date.now() - secondsAgo * 1000);
+        if (!jpegB64) { missedMoment = true; jpegB64 = deps.getFaces()?.frame(ctx.streamId); }
+      }
+      if (!jpegB64) throw new Error('no camera frame available right now — the stream may be down');
+      const when = secondsAgo === 0 ? '' : missedMoment ? ' (that moment is past what I kept — this is the latest)' : ` (from ${secondsAgo}s ago)`;
+      const channel = args.slackChannel ?? slack.slackDefaultChannel();
+      if (slack.slackEnabled() && channel) {
+        await slack.uploadFile({
+          channel, bytes: Buffer.from(jpegB64, 'base64'), filename: `photo-${Date.now()}.jpg`,
+          title: args.caption, initialComment: args.caption,
+        });
+        return textResult(`Photo sent to Slack${args.caption ? `: ${args.caption}` : ''}${when}.`);
+      }
+      return {
+        content: [
+          { type: 'text', text: (args.caption ? `Photo taken: ${args.caption}` : 'Photo taken.') + when },
+          { type: 'image', data: jpegB64, mimeType: 'image/jpeg' },
+        ],
+        details: undefined,
+      } as AgentToolResult<unknown>;
+    }),
+
+    tool('visual_query', S.VISUAL_QUERY_DESC, S.visualQuerySchema, async (_id, args: { question?: string; secondsAgo?: number }) => {
+      const question = (args.question ?? '').trim();
+      if (!question) throw new Error('visual_query needs a question');
+      const ctx = deps.getTurnContext();
+      const secondsAgo = Math.max(0, Number(args.secondsAgo) || 0);
+      let frameB64: string | undefined;
+      let missedMoment = false;
+      if (secondsAgo === 0) {
+        frameB64 = ctx.imageBase64 ?? (ctx.streamId ? deps.getFaces()?.frame(ctx.streamId) : undefined);
+      } else if (ctx.streamId) {
+        frameB64 = deps.getFaces()?.frameAt(ctx.streamId, Date.now() - secondsAgo * 1000);
+        if (!frameB64) { missedMoment = true; frameB64 = ctx.streamId ? deps.getFaces()?.frame(ctx.streamId) : undefined; }
+      }
+      if (!frameB64) throw new Error('no camera frame available right now — the stream may be down');
+      // Free-form answer from the single chosen frame (geminiVision = the raw VLM read,
+      // not the strict-JSON present/absent verdict the search judges use).
+      const prompt =
+        `You are the eyes of a small desk robot. Look at THIS single camera frame and answer the ` +
+        `question in one or two plain sentences, honestly. If the frame doesn't show enough to answer, ` +
+        `say so briefly.\nQUESTION: ${question}`;
+      const answer = await geminiVision(prompt, frameB64, deps.dock);
+      const note = missedMoment ? ' (that moment is past what I kept, so this is the latest frame)' : '';
+      return textResult((answer?.trim() || "I couldn't make anything out in that frame.") + note);
+    }),
+
     tool('record_video', S.RECORD_VIDEO_DESC, S.recordVideoSchema, async (_id, args: { seconds?: number; caption?: string; slackChannel?: string }) => {
       const rec = deps.recordVideo;
       if (!rec) throw new Error('video recording is not available right now');

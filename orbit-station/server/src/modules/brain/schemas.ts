@@ -261,6 +261,24 @@ export const recordVideoSchema = {
   },
 } as const;
 
+export const capturePhotoSchema = {
+  type: 'object',
+  properties: {
+    secondsAgo: { type: 'number', description: 'how many seconds back to grab the frame from (0 = right now; up to ~60s of recent history is kept). Use this to capture the MOMENT you just noticed something, not the live frame after it passed.' },
+    caption: { type: 'string', description: 'an optional caption to show / post with the photo' },
+    slackChannel: { type: 'string', description: 'a Slack channel id (Cxxxx) or #name to send the photo to; omit to just show it on the dock (or use the default channel)' },
+  },
+} as const;
+
+export const visualQuerySchema = {
+  type: 'object',
+  properties: {
+    question: { type: 'string', description: 'what you want to know about the scene, e.g. "what colour is the mug?" or "is the door open?"' },
+    secondsAgo: { type: 'number', description: 'how many seconds back the moment you are asking about was (0 = right now; up to ~60s kept). e.g. if you just heard a noise, ask about the frame from a second or two ago, not the live one.' },
+  },
+  required: ['question'],
+} as const;
+
 export const sendToSlackSchema = {
   type: 'object',
   properties: {
@@ -469,6 +487,20 @@ export const TAKE_PHOTO_DESC =
   'With a Slack channel (or a configured default) it posts the photo there; otherwise it shows it on the dock. ' +
   'This is immediate — it returns the moment the photo is captured. ' +
   'NOT for answering "what do you see?" — to DESCRIBE the live moment in words, use force_get_current instead.';
+export const CAPTURE_PHOTO_DESC =
+  'Produce a PHOTO from a MOMENT — like take_photo, but you can look BACK a few seconds (secondsAgo). ' +
+  'The station keeps ~60s of recent camera frames, so if you just noticed something (a gesture, an ' +
+  'expression, something held up) you can grab the frame from when it happened instead of the live ' +
+  'frame after the moment passed. secondsAgo=0 is the same as take_photo (right now). With a Slack ' +
+  'channel (or default) it posts there, otherwise it shows on the dock. ' +
+  'NOT for answering "what did I see?" in words — use visual_query for that.';
+export const VISUAL_QUERY_DESC =
+  'ASK a question about what the camera saw — at a chosen MOMENT. The station keeps ~60s of recent ' +
+  'frames, so secondsAgo lets you ask about the instant a thing happened ("you just heard a clink — ' +
+  'what was it?") rather than racing the live stream. Answers in words from the single frame at that ' +
+  'moment (secondsAgo=0 = now). Use for "what colour / how many / is it open" about a specific instant. ' +
+  'For a continuous "look around and FIND X" search across the room, use visual_search instead; for a ' +
+  'plain word-description of the live scene, force_get_current.';
 export const RECORD_VIDEO_DESC =
   'Record a SHORT video clip from your camera for a few seconds (1–30s, default 5). ' +
   'Use when the user asks you to record / take a video or capture a clip of what you see. ' +

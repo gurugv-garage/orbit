@@ -1,6 +1,9 @@
 /**
  * FrameGrabber — turns a producer's live VP8 RTP into the latest decoded JPEG,
- * on demand. The recognizer + enrollment read `latest()` (~1-2 fps).
+ * on demand. The recognizer + enrollment read `latest()` (~1-2 fps). It also keeps
+ * a short rolling WINDOW of recent frames (RING_WINDOW_MS) so `frameAt(t)` can serve
+ * "the frame the camera was showing at moment t" — the seam behind the brain's
+ * time-parameterized capture (docs/decision-traces/thin-client-consolidation.md).
  *
  * Why not "ffmpeg -i sdp" directly: ffmpeg's SDP/RTP demuxer needs the video
  * dimensions to open the stream, but VP8 carries size only inside a KEYFRAME — so
@@ -22,10 +25,23 @@ import type { RtpPacket } from 'werift';
 /** A decoded frame older than this is considered stale (camera paused/covered). */
 const FRAME_FRESH_MS = 1500;
 
+/** How long a rolling window of recent frames to retain, so the brain can ask about a
+ *  MOMENT ("what did I see when I heard the doorbell") instead of only "now". At ~1-2 fps
+ *  and ~50 KB/frame this is ~5-6 MB per stream at the ceiling — cheap for one live dock. */
+const RING_WINDOW_MS = 60_000;
+/** Hard cap on retained frames, so a burst can't blow memory even if fps spikes. */
+const RING_MAX_FRAMES = 240;
+
+/** One decoded frame + when it was produced (ms epoch, station clock). */
+export interface StampedFrame { jpeg: Buffer; at: number }
+
 export class FrameGrabber {
   #ff?: ChildProcess;
   #latest: Buffer | null = null;
   #latestAt = 0; // when #latest was produced (ms epoch)
+  // Rolling window of recent frames, oldest→newest (the newest is also #latest).
+  // Enables frameAt(t): "the frame the camera was showing at time t".
+  #ring: StampedFrame[] = [];
   #out: Buffer[] = [];
   #started = false;
 
@@ -106,11 +122,34 @@ export class FrameGrabber {
     return this.#latest;
   }
 
+  /**
+   * The frame the camera was showing AT `tMs` (station-clock epoch) — the newest
+   * retained frame with `at <= tMs`. This is the "look back to a moment" accessor:
+   * a salient event (a sound, a spoken line, a visual change) is stamped on the same
+   * Date.now() clock, so `frameAt(event.ts)` returns what was on camera then.
+   *
+   * Returns null when `t` predates the whole window (frame already evicted) or no
+   * frame at/before `t` exists yet. `toleranceMs` allows a `t` slightly AFTER the
+   * last frame to still resolve to that last frame (frames arrive ~1 Hz, so a `t`
+   * stamped between two frames should snap to the one just before it) — default one
+   * frame-interval's worth of slack.
+   */
+  frameAt(tMs: number, toleranceMs = 1500): Buffer | null {
+    return frameAtIn(this.#ring, tMs, toleranceMs);
+  }
+
+  /** Diagnostics: the time span currently retained in the ring (empty → nulls). */
+  ringSpan(): { count: number; oldestAt: number | null; newestAt: number | null } {
+    if (!this.#ring.length) return { count: 0, oldestAt: null, newestAt: null };
+    return { count: this.#ring.length, oldestAt: this.#ring[0]!.at, newestAt: this.#ring[this.#ring.length - 1]!.at };
+  }
+
   stop(): void {
     this.#started = false;
     try { this.#ff?.stdin?.end(); } catch { /* */ }
     try { this.#ff?.kill('SIGKILL'); } catch { /* */ }
     this.#ff = undefined; this.#latest = null;
+    this.#ring = [];
     this.#out = []; this.#pktBuf = []; this.#curTs = null;
     this.#wroteHeader = false;
   }
@@ -150,12 +189,37 @@ export class FrameGrabber {
     const end = joined.lastIndexOf(Buffer.from([0xff, 0xd9]));       // EOI
     const start = end >= 0 ? joined.lastIndexOf(Buffer.from([0xff, 0xd8]), end) : -1; // SOI
     if (end > start && start >= 0) {
-      this.#latest = joined.subarray(start, end + 2);
-      this.#latestAt = Date.now();
+      const jpeg = joined.subarray(start, end + 2);
+      const at = Date.now();
+      this.#latest = jpeg;
+      this.#latestAt = at;
+      // Push into the rolling window (evict by age + hard count cap). The newest frame is
+      // always #latest, so every existing latest()/latestSince() caller is unaffected — the
+      // ring is purely additive. (pure helper so the window logic is unit-testable.)
+      pushToRing(this.#ring, { jpeg, at }, RING_WINDOW_MS, RING_MAX_FRAMES);
       this.#out = [joined.subarray(end + 2)];
     }
     if (joined.length > 4_000_000) this.#out = [joined.subarray(joined.length - 1_000_000)];
   }
+}
+
+/** Push `frame` (newest) into an oldest→newest ring, evicting anything older than
+ *  `windowMs` before the newest frame, and capping the count at `maxFrames`. Pure so
+ *  the window/eviction policy is unit-testable without ffmpeg. Mutates `ring` in place. */
+export function pushToRing(ring: StampedFrame[], frame: StampedFrame, windowMs: number, maxFrames: number): void {
+  ring.push(frame);
+  const cutoff = frame.at - windowMs;
+  while (ring.length && (ring[0]!.at < cutoff || ring.length > maxFrames)) ring.shift();
+}
+
+/** The newest frame in `ring` with `at <= tMs + toleranceMs` (oldest→newest ring).
+ *  null when `t` predates every retained frame. Pure; see FrameGrabber.frameAt. */
+export function frameAtIn(ring: StampedFrame[], tMs: number, toleranceMs: number): Buffer | null {
+  for (let i = ring.length - 1; i >= 0; i--) {
+    const f = ring[i]!;
+    if (f.at <= tMs + toleranceMs) return f.jpeg;
+  }
+  return null;
 }
 
 /** Parse width/height from a VP8 keyframe's uncompressed data chunk. */
