@@ -20,6 +20,7 @@ import type { AgentTool, AgentToolResult } from '@earendil-works/pi-agent-core';
 import type { FaceToolsApi, PerceptionGroundingApi, MemoryApi, RecognizeOut, RecognizedPerson } from '../perception/index.js';
 import type { MemoryRow } from '../perception/memory/store.js';
 import type { MotionExecutor } from '../bodylink/motion.js';
+import { PRIORITY } from '../bodylink/lease.js';
 import type { GateOutcome } from './speech-gate.js';
 import type { MoveStep, MoveTiming } from './schemas.js';
 import { runVisualSearch, stepsFor, describePose, type Verdict } from './visual-search.js';
@@ -1158,6 +1159,13 @@ export function buildDockTools(deps: ToolDeps): AgentTool<any>[] {
         lastFound = { jpeg: outcome.foundFrameB64, at: Date.now() };
       }
       if (outcome.found) {
+        // PARK the found pose with a lease so nothing AMBIENT can wiggle the gaze
+        // off what we just centered on (the soft "don't emit a [face:] tag" guard
+        // below is advisory; this is the hard one). searchHold(50) outranks
+        // moodBit/idle/emotion but yields to a real brain-turn(60) — so the user
+        // talking still moves the body — and auto-expires after ~10s, after which
+        // whoever wants the body takes it. releaseByHolder on 'search-hold'.
+        deps.motion.acquire(deps.dock, 'search-hold', PRIORITY.searchHold, undefined, 10_000);
         // The FACE celebrates, the BODY holds: a [face:] tag in the reply fires
         // gesture choreography that wiggles the gaze off the person we just
         // centered on ("it stops at a different place"). So the tool sets the

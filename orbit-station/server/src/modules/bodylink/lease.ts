@@ -34,6 +34,10 @@ export const PRIORITY = {
   console: 70,      // a human at the Body Console FORCE-TAKES the body — overrides the
                     // brain and the follow reflex; only a future emergency-stop outranks it
   brainTurn: 60,    // a conversation gesture / explicit user `move`
+  searchHold: 50,   // visual_search PARKING its found pose (~10s) — outranks all ambient
+                    // (moodBit/idle/emotion) so a face tag or idle bit can't wiggle the
+                    // gaze off what was just found; still yields to a real brain-turn (60)
+                    // and the operator (70), and auto-expires so the body frees itself
   moodBit: 35,      // an idle-moods BIT (seconds-long) — briefly outranks a standing task,
                     // yields to the brain/operator (the idle-moods task acquires at this)
   continuousTask: 30, // a standing body task — yields to the brain/operator, outranks idle
@@ -106,7 +110,7 @@ export class ActuatorLease {
    * onPreempt). Equal priority = last-write-wins (the new holder takes over). Returns a
    * Lease handle, or null if a HIGHER-priority holder currently has the body.
    */
-  acquire(dock: string, holder: string, priority: number, onPreempt?: () => void): Lease | null {
+  acquire(dock: string, holder: string, priority: number, onPreempt?: () => void, holdMs?: number): Lease | null {
     const live = this.#liveHold(dock);
     if (live && priority < live.priority) {
       this.#log(`[lease] ${dock}: ${holder}(${priority}) denied — ${live.holder}(${live.priority}) holds`);
@@ -117,7 +121,12 @@ export class ActuatorLease {
       try { live.onPreempt?.(); } catch { /* a holder's preempt handler must not break arbitration */ }
     }
     const token = {};
-    const hold: Hold = { holder, priority, onPreempt, token, expiresAt: this.#now() + this.#ttl };
+    // holdMs lets a ONE-SHOT protective hold (e.g. visual_search parking its found
+    // pose) outlive the default momentary TTL without a renew ticker — it still
+    // auto-expires, so a crashed holder can never freeze the body (the TTL safety
+    // property). renew() keeps using the default TTL.
+    const ttl = holdMs != null && holdMs > 0 ? holdMs : this.#ttl;
+    const hold: Hold = { holder, priority, onPreempt, token, expiresAt: this.#now() + ttl };
     this.#holds.set(dock, hold);
     return this.#leaseFor(dock, hold);
   }

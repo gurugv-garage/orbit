@@ -182,3 +182,23 @@ test('holds are per-dock (one dock\'s holder does not affect another)', () => {
   const lB = lease.acquire('dB', 'continuousTask', PRIORITY.continuousTask);
   assert.ok(lB && lB.valid(), 'dock B unaffected by dock A\'s holder');
 });
+
+// ── searchHold: visual_search parks its found pose (~10s), ambient can't clobber ──
+test('searchHold(50) BLOCKS an ambient move but YIELDS to a brain-turn', () => {
+  const { lease } = mk();
+  lease.acquire(DOCK, 'search-hold', PRIORITY.searchHold, undefined, 10_000);
+  // an idle-moods bit (35) or emotion cannot wiggle the parked gaze
+  assert.equal(lease.admit(DOCK, 'task:idle-moods', PRIORITY.moodBit), false, 'moodBit(35) blocked by searchHold(50)');
+  // but the user talking (brain-turn 60) still moves the body
+  assert.equal(lease.admit(DOCK, 'brain-turn', PRIORITY.brainTurn), true, 'brain-turn(60) preempts searchHold(50)');
+});
+
+test('searchHold: an acquire holdMs outlives the default TTL, then auto-expires (body frees)', () => {
+  const c = clock();
+  const lease = new ActuatorLease({ ttlMs: 1500, now: c.now });
+  lease.acquire(DOCK, 'search-hold', PRIORITY.searchHold, undefined, 10_000);
+  c.advance(5_000); // well past the 1500ms default TTL
+  assert.equal(lease.admit(DOCK, 'task:idle-moods', PRIORITY.moodBit), false, 'still held at 5s (holdMs=10s)');
+  c.advance(6_000); // now past 10s total
+  assert.equal(lease.admit(DOCK, 'task:idle-moods', PRIORITY.moodBit), true, 'freed after the 10s hold expires');
+});

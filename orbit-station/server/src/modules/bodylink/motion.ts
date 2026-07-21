@@ -211,8 +211,8 @@ export class MotionExecutor {
    *  Returns null if a higher-priority holder currently owns it. The body's arbiter (§4 of
    *  the facefollow decision trace). Fire-and-forget callers don't need this — they go
    *  through the implicit admit() path inside runSteps/setTargets/playGesture. */
-  acquire(dock: string, holder: string, priority: number, onPreempt?: () => void): Lease | null {
-    return this.#lease.acquire(dock, holder, priority, onPreempt);
+  acquire(dock: string, holder: string, priority: number, onPreempt?: () => void, holdMs?: number): Lease | null {
+    return this.#lease.acquire(dock, holder, priority, onPreempt, holdMs);
   }
 
   /** The current effective body-holder of a dock (after TTL expiry), for the console/debug. */
@@ -352,11 +352,19 @@ export class MotionExecutor {
     if (!this.#lease.admit(dock, source, priorityForSource(source))) { this.#logReject(dock, source, 'rejected-priority', cmdMeta); return; } // a higher holder owns the body
     const base = this.#docks.get(dock)?.targets ?? {};
     const baseDeg = (part: string) => usToDegrees(base[part] ?? 1500);
+    // Gesture joints are OFFSETS around the current gaze by default (expressive tilts read
+    // relative to where you're looking). A joint that sets `relative:false` is ABSOLUTE —
+    // used for a final SETTLE-to-level step: rebasing a `neck:0` onto a non-level start
+    // returns the head to that start, not to level, so curious gestures accreted upward
+    // (2026-07-21). An absolute settle lands true level regardless of where the gesture began.
     const rebased = steps.map((step) => {
       const joints = stepJoints(step);
       if (joints.length === 0) return step; // pure wait
       return {
-        parts: joints.map((j) => ({ part: j.part, degrees: baseDeg(j.part) + j.degrees })),
+        parts: joints.map((j) => ({
+          part: j.part,
+          degrees: j.relative === false ? j.degrees : baseDeg(j.part) + j.degrees,
+        })),
         duration_ms: step.duration_ms, wait_ms: step.wait_ms, snap: step.snap,
       };
     });

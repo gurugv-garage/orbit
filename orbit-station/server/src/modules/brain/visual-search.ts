@@ -250,14 +250,14 @@ export async function runVisualSearch(dock: string, deps: SearchDeps, opts: Sear
   // 0. Known-but-unvisited candidates first (the "find another one" fast path).
   const pending = ctx.candidates.filter((c) => !ctx!.excludedIds.includes(c.id) && !c.centered);
   for (const cand of pending) {
-    if (abortedNow()) return finish(false, undefined, 'search interrupted', true);
+    if (abortedNow()) { await returnHome(); return finish(false, undefined, 'search interrupted', true); }
     const ok = await visitAndConfirm(cand.pose, cand);
     if (ok) return finish(true, ok, `found ${ok.label} at ${describePose(ok.pose)} (a previously seen candidate)`);
   }
 
   // 1. Sweep the plan (resume = skip what's already judged).
   for (const pose of ctx.plan) {
-    if (abortedNow()) return finish(false, undefined, 'search interrupted — coverage kept for a resume', true);
+    if (abortedNow()) { await returnHome(); return finish(false, undefined, 'search interrupted — coverage kept for a resume', true); }
     if (overBudget()) {
       await returnHome();
       return finish(false, undefined,

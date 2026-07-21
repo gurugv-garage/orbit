@@ -296,3 +296,34 @@ test('playGesture: choreography is an OFFSET around the current pose, not absolu
   assert.ok(!frames.some((f) => Math.abs(f.foot!.pulse_width_us - 1500) < 20), 'never teleports to center');
   motion.shutdown();
 });
+
+// The 2026-07-21 fix: a gesture joint with relative:false is ABSOLUTE, not an offset — so a
+// final settle-to-level lands TRUE level regardless of where the gesture started. Without it,
+// curious gestures rebased their `neck:0` onto the previous curious's residue and accreted the
+// head upward, parking it up and never recovering.
+test('playGesture: a relative:false SETTLE joint lands ABSOLUTE level, even from a tilted start', async () => {
+  const { motion, sent } = setup();
+  // start with the head cocked UP (a previous curious left it here)
+  motion.runSteps(DOCK, [{ parts: [{ part: 'neck', degrees: -14 }, { part: 'foot', degrees: -20 }], duration_ms: 200 }], 'test');
+  await sleep(450);
+  const before = sent.length;
+  motion.playGesture(DOCK, 'curious', {
+    curious: [
+      { parts: [{ part: 'neck', degrees: -18 }, { part: 'foot', degrees: 22 }], duration_ms: 120, snap: true }, // offset tilt
+      // absolute settle: neck→0 (level), foot→0 (forward) regardless of start
+      { parts: [{ part: 'neck', degrees: 0, relative: false }, { part: 'foot', degrees: 0, relative: false }], duration_ms: 120, snap: true },
+    ],
+  }, 'test');
+  await sleep(700);
+  const partsOf = (m: BusMessage) => (m.payload as { parts: Record<string, { pulse_width_us: number }> }).parts;
+  const frames = sent.slice(before).map(partsOf).filter((p) => p.neck != null);
+  assert.ok(frames.length >= 2, 'gesture dispatched');
+  const last = frames[frames.length - 1]!;
+  // 1500µs = 0° = true level. The head came back DOWN despite starting at -14°.
+  assert.ok(Math.abs(last.neck!.pulse_width_us - 1500) < 20, `settles to absolute level, got ${last.neck!.pulse_width_us}µs`);
+  assert.ok(Math.abs(last.foot!.pulse_width_us - 1500) < 20, `foot settles to absolute forward, got ${last.foot!.pulse_width_us}µs`);
+  // the FIRST (offset) step must still be rebased onto the -14 start: -14 + -18 = -32° ≈ 1144µs
+  const first = frames[0]!;
+  assert.ok(first.neck!.pulse_width_us < 1300, `the offset tilt step is still rebased on the start, got ${first.neck!.pulse_width_us}µs`);
+  motion.shutdown();
+});

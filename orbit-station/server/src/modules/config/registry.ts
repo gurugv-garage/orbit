@@ -46,6 +46,10 @@ export interface ConfigEntry {
 const moveJoint = z.object({
   part: z.enum(['neck', 'foot']),
   degrees: z.number().min(-90).max(90),
+  // In a faceGesture, joints are OFFSETS around the current gaze by default. `relative:false`
+  // makes this joint an ABSOLUTE target (e.g. a final settle-to-level step) so it lands at a
+  // fixed pose regardless of where the gesture started (see motion.ts playGesture).
+  relative: z.boolean().optional(),
 });
 
 /**
@@ -74,7 +78,7 @@ const faceGesturesSchema = z.record(z.string(), z.array(moveStep));
  *  Degrees, device-independent.
  *  NECK SIGN (verified on hardware): positive = head DOWN, negative = head UP.
  *  FOOT = base yaw (left/right). */
-const FACE_GESTURES_DEFAULT = {
+export const FACE_GESTURES_DEFAULT = {
   // Drowsy: head sags forward (DOWN), bobs once, sinks low — "nodding off".
   sleepy: [
     { part: 'neck', degrees: 30, duration_ms: 900 }, { wait_ms: 250 },
@@ -104,12 +108,19 @@ const FACE_GESTURES_DEFAULT = {
     { parts: [{ part: 'neck', degrees: -22 }, { part: 'foot', degrees: 14 }], duration_ms: 700 }, { wait_ms: 500 },
     { parts: [{ part: 'neck', degrees: -16 }, { part: 'foot', degrees: 8 }], duration_ms: 600 },
   ],
-  // Inquisitive: head cocked UP, body slowly sways left↔right in parallel.
+  // Inquisitive: head cocked UP, body slowly sways left↔right in parallel, then
+  // eases back to level — a gesture RETURNS to rest (like angry/concerned), it
+  // does not park the head up. Leaving it at -14 was why 'curious' left the neck
+  // craned up and idle-moods never recovered (curious.tilt is a pure gesture).
   curious: [
     { parts: [{ part: 'neck', degrees: -18 }, { part: 'foot', degrees: -22 }], duration_ms: 700 }, { wait_ms: 300 },
     { parts: [{ part: 'neck', degrees: -14 }, { part: 'foot', degrees: 22 }], duration_ms: 1100 }, { wait_ms: 300 },
     { parts: [{ part: 'neck', degrees: -18 }, { part: 'foot', degrees: -16 }], duration_ms: 1000 },
-    { parts: [{ part: 'neck', degrees: -14 }, { part: 'foot', degrees: 0 }], duration_ms: 700 },
+    { parts: [{ part: 'neck', degrees: -14 }, { part: 'foot', degrees: 0 }], duration_ms: 700 }, { wait_ms: 400 },
+    // SETTLE to true level — ABSOLUTE (relative:false), not an offset. A gesture is
+    // rebased onto the current gaze, so a plain `neck:0` would return to wherever the
+    // gesture STARTED (which accreted upward); absolute 0 lands level every time.
+    { parts: [{ part: 'neck', degrees: 0, relative: false }, { part: 'foot', degrees: 0, relative: false }], duration_ms: 800 },
   ],
   // Startled: quick snap UP-and-back, freeze, ease toward level.
   surprised: [
