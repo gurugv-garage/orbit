@@ -75,19 +75,20 @@ export function buildCapabilityRegistry(d: CapabilityDeps): CapabilityRegistry {
     handler: (ctx) => d.getFaces()?.recognize({ streamId: streamFor(d, ctx.dock) }),
   });
 
-  // The on-device MLKit face-track (the `perceive` stream, docs/decision-traces/
-  // facefollow-and-actuator-lease.md §7) — the FAST, low-latency face source for the
-  // faceFollow control loop. Requires 'face' (the phone's on-device perception cap)
-  // rather than 'camera': this reads the phone's MLKit output, not the SFU video.
+  // (The `face-track` op — the on-device MLKit fast face source with box geometry — was retired
+  // with faceFollow, its only consumer; see docs/decision-traces/thin-client-consolidation.md.
+  // What survives is the neutral BOOLEAN below: "is anyone visible right now", read off the same
+  // perceive primitive the conductor's presence gate uses (main.ts). idle-moods reads it to gate
+  // attention bits. Still on 'face' (the on-device perception cap) — moving room-presence to the
+  // station SFU/face-api path is the pending perception-pulse consolidation, not this cut.)
   reg.register({
-    op: 'face-track', requires: 'face',
-    describe: 'await this.request("face-track") → { faces, noFace } — the latest on-device '
-      + 'face boxes (each with an eye-midpoint anchor). The fast tracking source (~5 Hz), not station face-api',
-    when: 'for a tight control loop that needs WHERE faces are right now (e.g. faceFollow)',
+    op: 'face-present', requires: 'face',
+    describe: 'await this.request("face-present") → { present } — is anyone visible right now',
+    when: 'to gate idle behaviour on whether there is company (no geometry, just presence)',
     handler: (ctx) => {
       const store = d.getPerceive();
-      const faces = store?.toFollowFaces(store.latest(ctx.dock)) ?? [];
-      return { faces, noFace: faces.length === 0 };
+      const present = (store?.toFollowFaces(store.latest(ctx.dock)) ?? []).length > 0;
+      return { present };
     },
   });
 

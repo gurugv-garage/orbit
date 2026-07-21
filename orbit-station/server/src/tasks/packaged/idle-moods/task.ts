@@ -88,12 +88,12 @@ class IdleMoodsTask extends Task {
       const quietNow = inQuietHours(new Date().getHours(), cfg.quietStartHour, cfg.quietEndHour);
       await this.sleep(Math.round(quietNow ? gap * 3 : gap));
 
-      const faces = await this.faces();
+      const present = await this.facePresent();
       // boredom-on-coherence: how long since the world offered a genuine happening?
       const pulse = await this.request<{ msSinceSalient: number | null }>('perception-pulse')
         .catch(() => ({ msSinceSalient: null }));
       const now = Date.now();
-      if (faces > 0) { if (presentSince === 0) presentSince = now; lastSeenAt = now; }
+      if (present) { if (presentSince === 0) presentSince = now; lastSeenAt = now; }
       else if (presentSince !== 0 && now - lastSeenAt > PRESENCE_GRACE_MS) {
         presentSince = 0;
         attentionSpent = false;            // presence lapsed → the next arrival earns a fresh offer
@@ -136,16 +136,16 @@ class IdleMoodsTask extends Task {
       const salientStr = w.salientMs == null ? 'cold' : `${Math.round(w.salientMs / 1000)}s`;
       const reactiveStr = w.reactive ? ` reactive(salient=${salientStr}<=${Math.round(w.freshEventMaxMs / 1000)}s)` : '';
       const gateStr = pick.speak ? '' : ` gate[quiet=${!w.gate.notQuiet} spokeGap=${w.gate.spokeGapOk} convGap=${w.gate.convGapOk}]`;
-      console.log(`[mood] ts=${now} bit=${pick.bit.id} speak=${pick.speak} faces=${faces} salient=${salientStr}${reactiveStr}${gateStr}`);
+      console.log(`[mood] ts=${now} bit=${pick.bit.id} speak=${pick.speak} present=${present} salient=${salientStr}${reactiveStr}${gateStr}`);
       this.status(`performing ${pick.bit.id}${pick.speak ? ' + speaking' : ''}`);
       try {
         if (needsBody) await this.perform(pick.bit);
         // SEEK payoff: the sweep was a search for people — re-check the camera. Found
-        // someone → delighted surprise instead of calling out (and face-follow locks on
-        // once we release). Still nobody → fall through to the speak-gated call-out.
+        // someone → delighted surprise instead of calling out. Still nobody → fall through
+        // to the speak-gated call-out.
         let foundCompany = false;
         if (pick.bit.seek) {
-          foundCompany = (await this.faces()) > 0;
+          foundCompany = await this.facePresent();
           if (foundCompany) {
             console.log('[mood] seek found company — delighted');
             const r = await this.request<{ ok: boolean; durationMs?: number }>('gesture', { expression: 'surprised', reason: `mood:${pick.bit.id}:seek-found` })
@@ -194,12 +194,6 @@ class IdleMoodsTask extends Task {
       const done = await this.holdBodyThrough((step.duration_ms ?? 500) + (step.wait_ms ?? 0));
       if (!done) { console.log('[mood] preempted mid-bit — abandoning'); return; }
     }
-  }
-
-  /** How many faces are visible right now (0 on any error — a glitch reads as "absent",
-   *  which only makes attention bits rarer, never wrong). */
-  private async faces(): Promise<number> {
-    return (await this.trackFaces()).length;
   }
 
   getStatus(): string { return 'idle-moods'; }

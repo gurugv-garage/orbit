@@ -10,8 +10,8 @@
  *     design time; the conductor only enables/disables/tunes it (wakeUp → the wake-phrase
  *     check woven into the brain's transcript handler; see brain/index.ts matchesWake +
  *     onAddressedFinal, brain/session.ts wake()). No process — it runs where it's instrumented.
- *   • TASK (kind:'task') — a generic SPAWNABLE process the conductor starts/stops (faceFollow
- *     → the `face-follow` task, lease-arbitrated). Runs however it runs.
+ *   • TASK (kind:'task') — a generic SPAWNABLE process the conductor starts/stops (moods
+ *     → the `idle-moods` task, lease-arbitrated). Runs however it runs.
  *
  * `decide(tunings, world, self) → 'off' | 'running'` is the only conducted-thing-specific
  * logic — arithmetic / rules over the tunings + cheap world reads + its own carried state.
@@ -48,11 +48,12 @@ export interface World {
  *  the state and returns the next one alongside its decision). */
 export interface ConductedState {
   desired: Desired;              // last decision (for transition logging)
-  /** for windowed items (faceFollow): epoch the current ACTIVE window opened, 0 = not active. */
+  /** for windowed items: epoch the current ACTIVE window opened, 0 = not active. Carried
+   *  generically; no shipped conducted thing windows today (faceFollow, its only user, was
+   *  retired — see docs/decision-traces/thin-client-consolidation.md). */
   windowOpenedAt: number;
-  /** faceFollow: after a window closes with NOBODY seen, don't re-scan until this epoch
-   *  (presence bypasses it) — an empty room gets a brief scan every rescanCooldownMs, not
-   *  a forever-sweep (the attention-director v1 change, 2026-07-05). 0/absent = no cooldown. */
+  /** for windowed items: don't re-open until this epoch (presence bypasses it). Unused by
+   *  the current set; kept as the generic windowing seam. 0/absent = no cooldown. */
   cooldownUntil?: number;
 }
 
@@ -92,57 +93,6 @@ const num = (v: unknown, d: number) => (typeof v === 'number' && Number.isFinite
 const bool = (v: unknown, d: boolean) => (typeof v === 'boolean' ? v : d);
 const str = (v: unknown, d: string) => (typeof v === 'string' && v ? v : d);
 
-// ── faceFollow — a TASK: presence-aware attention (drives the body) ─────────────────────────
-// The attention-director v1 rule (2026-07-05, replaces the blind periodic window): TRACK
-// while someone is around; when NOBODY has been seen for `idleNoFaceMs`, close the window
-// and go STILL (an empty room must not get a forever-sweeping scanner — servo wear + the
-// "surveillance" read); re-scan briefly every `rescanCooldownMs`; the moment a face appears
-// (world.present), reopen IMMEDIATELY regardless of cooldown. Never during a conversation.
-// Mood-modulated eagerness (bored → lazy glances) is the deferred director v2.
-export const faceFollow: Conducted = {
-  name: 'faceFollow', kind: 'task', taskName: 'face-follow', priority: 30,
-  defaults: {
-    enabled: true, activateAfterMs: 300_000, runForMs: 900_000,
-    idleNoFaceMs: 180_000, rescanCooldownMs: 900_000,
-  },
-  decide(t, world, self) {
-    const enabled = bool(t.enabled, true);
-    const activateAfterMs = num(t.activateAfterMs, 300_000);
-    const runForMs = num(t.runForMs, 900_000);
-    const idleNoFaceMs = num(t.idleNoFaceMs, 180_000);
-    const rescanCooldownMs = num(t.rescanCooldownMs, 900_000);
-    // disabled, body offline, or a conversation live → off (and close any window; no
-    // cooldown — tracking should resume the moment the blocker clears). The body check
-    // stops the silent crash-respawn churn a servo task hits on an offline body.
-    if (!enabled || !world.bodyOnline || world.turnActive || world.listening) {
-      return { desired: 'off', self: { ...self, desired: 'off', windowOpenedAt: 0, cooldownUntil: 0 } };
-    }
-    // currently in an active window?
-    if (self.windowOpenedAt > 0) {
-      // nobody seen for idleNoFaceMs (measured from the last sighting, or the window
-      // open if nobody was EVER seen) → close early + arm the re-scan cooldown.
-      const sinceFace = world.lastPresenceMs > 0
-        ? world.now - world.lastPresenceMs
-        : world.now - self.windowOpenedAt;
-      if (!world.present && sinceFace >= idleNoFaceMs) {
-        return { desired: 'off', self: { ...self, desired: 'off', windowOpenedAt: 0, cooldownUntil: world.now + rescanCooldownMs } };
-      }
-      if (world.now - self.windowOpenedAt >= runForMs) {
-        // window elapsed → sleep (same cooldown so an occupied room resumes on presence).
-        return { desired: 'off', self: { ...self, desired: 'off', windowOpenedAt: 0, cooldownUntil: world.now + rescanCooldownMs } };
-      }
-      return { desired: 'running', self: { ...self, desired: 'running' } };
-    }
-    // not active → open once conversation-idle long enough AND (someone is visible now,
-    // OR the re-scan cooldown has elapsed — the periodic brief look-around).
-    const idleFor = world.lastConversationMs === 0 ? Infinity : world.now - world.lastConversationMs;
-    if (idleFor >= activateAfterMs && (world.present || world.now >= (self.cooldownUntil ?? 0))) {
-      return { desired: 'running', self: { ...self, desired: 'running', windowOpenedAt: world.now, cooldownUntil: 0 } };
-    }
-    return { desired: 'off', self: { ...self, desired: 'off' } };
-  },
-};
-
 // ── wakeUp — a BEHAVIOUR: always-on "hey orbit" (hardcoded in the brain, no process) ─────────
 export const wakeUp: Conducted = {
   name: 'wakeUp', kind: 'behaviour',
@@ -167,8 +117,8 @@ export function wakeTunings(t: Tunings): { enabled: boolean; phrase: string; pro
 // The conductor only decides WHEN it may run: conversation idle ≥ activateAfterMs, never
 // during a conversation. WHICH mood plays (presence, quiet hours, speak gate, weights) is the
 // idle-moods task's own pure picker — capability work stays in the task (vision doc §4). The
-// tunings below ride to the task as its params (snapshot at start). Body contention with
-// faceFollow is the LEASE's job: a bit briefly holds at 35 over faceFollow's 30.
+// tunings below ride to the task as its params (snapshot at start). Body contention with any
+// other body task is the LEASE's job: a bit briefly holds at 35 over the generic task-30.
 export const moods: Conducted = {
   name: 'moods', kind: 'task', taskName: 'idle-moods', priority: 35,
   defaults: {
@@ -192,4 +142,4 @@ export const moods: Conducted = {
 };
 
 /** The v1 conducted set (fixed; pluggable loading is a later generalization). */
-export const CONDUCTED: Conducted[] = [faceFollow, wakeUp, moods];
+export const CONDUCTED: Conducted[] = [wakeUp, moods];

@@ -21,7 +21,7 @@ const mk = (ttlMs = 1000, c = clock()) => ({ lease: new ActuatorLease({ ttlMs, n
 test('priorityForSource maps the known sources', () => {
   assert.equal(priorityForSource('brain-turn'), PRIORITY.brainTurn);
   assert.equal(priorityForSource('console'), PRIORITY.console);
-  assert.equal(priorityForSource('task:t-123'), PRIORITY.faceFollow);
+  assert.equal(priorityForSource('task:t-123'), PRIORITY.continuousTask);
   assert.equal(priorityForSource('emergency'), PRIORITY.emergency);
   assert.equal(priorityForSource('station'), PRIORITY.idle);
 });
@@ -29,22 +29,22 @@ test('priorityForSource maps the known sources', () => {
 // ── acquire: grant / deny by priority ──────────────────────────────────────────
 test('acquire grants when free; current() reflects the holder', () => {
   const { lease } = mk();
-  const l = lease.acquire(DOCK, 'faceFollow', PRIORITY.faceFollow);
+  const l = lease.acquire(DOCK, 'continuousTask', PRIORITY.continuousTask);
   assert.ok(l && l.valid(), 'granted when free');
-  assert.deepEqual(lease.current(DOCK), { holder: 'faceFollow', priority: PRIORITY.faceFollow });
+  assert.deepEqual(lease.current(DOCK), { holder: 'continuousTask', priority: PRIORITY.continuousTask });
 });
 
 test('a LOWER priority is DENIED while a higher holds', () => {
   const { lease } = mk();
   lease.acquire(DOCK, 'brain', PRIORITY.brainTurn);          // 60 holds
-  const lo = lease.acquire(DOCK, 'faceFollow', PRIORITY.faceFollow); // 30
+  const lo = lease.acquire(DOCK, 'continuousTask', PRIORITY.continuousTask); // 30
   assert.equal(lo, null, 'faceFollow(30) denied while brain(60) holds');
 });
 
 test('a HIGHER priority PREEMPTS the holder (fires its onPreempt)', () => {
   const { lease } = mk();
   let preempted = false;
-  lease.acquire(DOCK, 'faceFollow', PRIORITY.faceFollow, () => { preempted = true; }); // 30 holds
+  lease.acquire(DOCK, 'continuousTask', PRIORITY.continuousTask, () => { preempted = true; }); // 30 holds
   const hi = lease.acquire(DOCK, 'brain', PRIORITY.brainTurn);                          // 60 preempts
   assert.ok(hi && hi.valid(), 'higher priority granted');
   assert.ok(preempted, 'the preempted holder was notified');
@@ -63,7 +63,7 @@ test('EQUAL priority = last-write-wins (new holder takes over)', () => {
 // ── the superseded holder can no longer act ────────────────────────────────────
 test('a superseded lease is INVALID (its moves would be rejected)', () => {
   const { lease } = mk();
-  const ff = lease.acquire(DOCK, 'faceFollow', PRIORITY.faceFollow);
+  const ff = lease.acquire(DOCK, 'continuousTask', PRIORITY.continuousTask);
   lease.acquire(DOCK, 'brain', PRIORITY.brainTurn); // preempts ff
   assert.equal(ff!.valid(), false, 'preempted holder lease is no longer valid');
 });
@@ -83,15 +83,15 @@ test('admit: BLOCKED when a higher-priority holder owns the body', () => {
 test('admit: a higher-priority move PREEMPTS a lower holder', () => {
   const { lease } = mk();
   let preempted = false;
-  lease.acquire(DOCK, 'faceFollow', PRIORITY.faceFollow, () => { preempted = true; });
+  lease.acquire(DOCK, 'continuousTask', PRIORITY.continuousTask, () => { preempted = true; });
   assert.equal(lease.admit(DOCK, 'brain-turn', PRIORITY.brainTurn), true, 'brain admits over faceFollow');
   assert.ok(preempted, 'faceFollow was preempted by the brain move');
 });
 
 test('admit: the HOLDER\'s own moves always admit (same source)', () => {
   const { lease } = mk();
-  lease.acquire(DOCK, 'task:t-1', PRIORITY.faceFollow);
-  assert.equal(lease.admit(DOCK, 'task:t-1', PRIORITY.faceFollow), true, 'holder admits its own moves');
+  lease.acquire(DOCK, 'task:t-1', PRIORITY.continuousTask);
+  assert.equal(lease.admit(DOCK, 'task:t-1', PRIORITY.continuousTask), true, 'holder admits its own moves');
 });
 
 test('admit: the holder\'s own LOWER-priority move does NOT downgrade its hold (moods@35 fix)', () => {
@@ -101,10 +101,10 @@ test('admit: the holder\'s own LOWER-priority move does NOT downgrade its hold (
   assert.equal(lease.admit(DOCK, 'task:t-9', priorityForSource('task:t-9')), true, 'own move admits');
   assert.equal(lease.current(DOCK)!.priority, PRIORITY.moodBit, 'hold priority NOT demoted to 30');
   // an equal-30 waiter (faceFollow) must still be denied mid-bit…
-  assert.equal(lease.acquire(DOCK, 'task:t-ff', PRIORITY.faceFollow), null, 'ff(30) denied while bit(35) lives');
+  assert.equal(lease.acquire(DOCK, 'task:t-ff', PRIORITY.continuousTask), null, 'ff(30) denied while bit(35) lives');
   // …and gets the body back after release
   lease.releaseByHolder(DOCK, 'task:t-9');
-  assert.ok(lease.acquire(DOCK, 'task:t-ff', PRIORITY.faceFollow), 'ff reclaims after the bit releases');
+  assert.ok(lease.acquire(DOCK, 'task:t-ff', PRIORITY.continuousTask), 'ff reclaims after the bit releases');
 });
 
 test('admit: a same-holder refresh keeps the LONGER expiry (settle hold not shortened)', () => {
@@ -118,22 +118,22 @@ test('admit: a same-holder refresh keeps the LONGER expiry (settle hold not shor
 
 test('admit: a SETTLE-grace holdMs keeps a follower yielded past the default TTL (look-right fix)', () => {
   const { lease, c } = mk(1000); // default TTL 1s
-  lease.acquire(DOCK, 'task:t-1', PRIORITY.faceFollow); // faceFollow holds
+  lease.acquire(DOCK, 'task:t-1', PRIORITY.continuousTask); // faceFollow holds
   // user move preempts AND takes a 2.5s settle hold (outlives the default 1s TTL)
   assert.equal(lease.admit(DOCK, 'brain-turn', PRIORITY.brainTurn, 2500), true);
   c.advance(1200); // past the DEFAULT ttl, but inside the settle grace
   // faceFollow tries to reclaim — still denied, so it stays yielded and won't re-center yet
-  assert.equal(lease.acquire(DOCK, 'task:t-1', PRIORITY.faceFollow), null, 'follower still yielded during settle');
+  assert.equal(lease.acquire(DOCK, 'task:t-1', PRIORITY.continuousTask), null, 'follower still yielded during settle');
   assert.equal(lease.current(DOCK)?.holder, 'brain-turn', 'brain move still owns the body');
   c.advance(1400); // 2600 total → past the 2500 settle grace
   assert.equal(lease.current(DOCK), undefined, 'settle grace expired → body free');
-  assert.ok(lease.acquire(DOCK, 'task:t-1', PRIORITY.faceFollow), 'follower reclaims + resumes');
+  assert.ok(lease.acquire(DOCK, 'task:t-1', PRIORITY.continuousTask), 'follower reclaims + resumes');
 });
 
 // ── TTL: the safety property — a crashed holder frees the body ──────────────────
 test('TTL EXPIRY: a hold not renewed auto-releases (crashed-holder safety)', () => {
   const { lease, c } = mk(1000);
-  lease.acquire(DOCK, 'faceFollow', PRIORITY.faceFollow);
+  lease.acquire(DOCK, 'continuousTask', PRIORITY.continuousTask);
   assert.ok(lease.current(DOCK), 'held now');
   c.advance(1001); // past the TTL, never renewed
   assert.equal(lease.current(DOCK), undefined, 'expired → body free');
@@ -143,7 +143,7 @@ test('TTL EXPIRY: a hold not renewed auto-releases (crashed-holder safety)', () 
 
 test('renew() keeps a hold alive across ticks', () => {
   const { lease, c } = mk(1000);
-  const l = lease.acquire(DOCK, 'faceFollow', PRIORITY.faceFollow)!;
+  const l = lease.acquire(DOCK, 'continuousTask', PRIORITY.continuousTask)!;
   c.advance(800); l.renew();
   c.advance(800); // 1600 total, but renewed at 800 → only 800 since renew
   assert.ok(l.valid(), 'still valid after a renew within the TTL');
@@ -152,7 +152,7 @@ test('renew() keeps a hold alive across ticks', () => {
 
 test('a renew AFTER expiry does not resurrect (the holder is already gone)', () => {
   const { lease, c } = mk(1000);
-  const l = lease.acquire(DOCK, 'faceFollow', PRIORITY.faceFollow)!;
+  const l = lease.acquire(DOCK, 'continuousTask', PRIORITY.continuousTask)!;
   c.advance(1001);
   l.renew(); // too late
   assert.equal(l.valid(), false, 'expired lease cannot be renewed back to life');
@@ -161,7 +161,7 @@ test('a renew AFTER expiry does not resurrect (the holder is already gone)', () 
 // ── release + stale-handle safety ──────────────────────────────────────────────
 test('release frees the body for the next acquirer', () => {
   const { lease } = mk();
-  const l = lease.acquire(DOCK, 'faceFollow', PRIORITY.faceFollow)!;
+  const l = lease.acquire(DOCK, 'continuousTask', PRIORITY.continuousTask)!;
   l.release();
   assert.equal(lease.current(DOCK), undefined, 'released → free');
   assert.ok(lease.acquire(DOCK, 'console', PRIORITY.console), 'next acquirer gets it');
@@ -169,7 +169,7 @@ test('release frees the body for the next acquirer', () => {
 
 test('a STALE handle cannot release a NEWER holder', () => {
   const { lease } = mk();
-  const old = lease.acquire(DOCK, 'faceFollow', PRIORITY.faceFollow)!;
+  const old = lease.acquire(DOCK, 'continuousTask', PRIORITY.continuousTask)!;
   lease.acquire(DOCK, 'brain', PRIORITY.brainTurn); // preempts; old is stale
   old.release(); // must NOT free the brain's hold
   assert.equal(lease.current(DOCK)!.holder, 'brain', 'stale release ignored — brain still holds');
@@ -179,6 +179,6 @@ test('a STALE handle cannot release a NEWER holder', () => {
 test('holds are per-dock (one dock\'s holder does not affect another)', () => {
   const { lease } = mk();
   lease.acquire('dA', 'brain', PRIORITY.brainTurn);
-  const lB = lease.acquire('dB', 'faceFollow', PRIORITY.faceFollow);
+  const lB = lease.acquire('dB', 'continuousTask', PRIORITY.continuousTask);
   assert.ok(lB && lB.valid(), 'dock B unaffected by dock A\'s holder');
 });

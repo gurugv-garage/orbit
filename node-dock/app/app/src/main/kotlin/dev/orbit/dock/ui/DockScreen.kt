@@ -772,22 +772,6 @@ fun DockScreen() {
         }
     }
 
-    // DEBUG face-follow indicator: track the live on-device face position so the overlay can
-    // show SEARCHING (no face) vs IN-VIEW + how centered. Mirror-corrected NDC from FaceSeen
-    // (x,y ∈ [-1,1]); we keep the last seen + whether it's currently present (a short grace
-    // so a 1-frame miss doesn't flicker the indicator). Drives FaceFollowIndicator below.
-    var ffFaceX by remember { mutableStateOf(0f) }
-    var ffFaceY by remember { mutableStateOf(0f) }
-    var ffSeenAtMs by remember { mutableStateOf(0L) }
-    var ffNowMs by remember { mutableStateOf(0L) }
-    LaunchedEffect(Unit) {
-        PerceptionBus.events.collect { ev ->
-            if (ev is PerceptionEvent.FaceSeen) { ffFaceX = ev.x; ffFaceY = ev.y; ffSeenAtMs = System.currentTimeMillis() }
-            else if (ev is PerceptionEvent.FaceLost) { ffSeenAtMs = 0L }
-        }
-    }
-    LaunchedEffect(Unit) { while (true) { ffNowMs = System.currentTimeMillis(); kotlinx.coroutines.delay(200) } }
-
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -1214,26 +1198,8 @@ fun DockScreen() {
             }
         }
 
-        // DEBUG face-follow indicator (top-most overlay) — ONLY while a face-follow task is
-        // actually running (from the station's task-digest the app already tracks). Four
-        // states: SEARCH (red), WAIT (amber pulse, ~30s lost-lock hold), TRACK (amber dot,
-        // off-center), LOCK (green dot+ring, centered). In named mode it shows the target
-        // name; in salient mode it shows the recognized identity when known.
-        val faceFollow = debugInfo.tasks.firstOrNull { it.name == "face-follow" }
-        if (faceFollow != null) {
-            // target = who it's LOOKING FOR (named mode; empty in salient). seen = who is
-            // actually recognized in view right now (station identity). The indicator compares
-            // them so it never claims "LOCK Sia" while it's actually seeing — and ignoring —
-            // someone else: a wrong person reads as "SEARCH Sia — not them".
-            FaceFollowIndicator(
-                faceX = ffFaceX, faceY = ffFaceY,
-                present = ffSeenAtMs != 0L && (ffNowMs - ffSeenAtMs) < 2500L,
-                msSinceSeen = if (ffSeenAtMs == 0L) Long.MAX_VALUE else (ffNowMs - ffSeenAtMs),
-                target = faceFollow.target,
-                seen = if (senses.facePresent) (senses.identity ?: "") else "",
-                modifier = Modifier.align(Alignment.TopEnd),
-            )
-        }
+        // (The DEBUG face-follow indicator overlay was removed with the faceFollow behaviour;
+        // see docs/decision-traces/thin-client-consolidation.md.)
 
         // OTA opt-in: when the station offers a newer build, show a TAPPABLE banner instead of
         // AUTO-applying: onOffer() starts the download+install itself. The banner is
@@ -1253,97 +1219,6 @@ fun DockScreen() {
                 )
             }
         }
-    }
-}
-
-/** Small debug overlay: the dock's eye-view. A center crosshair = frame center; a dot at the
- *  live face position (NDC x,y ∈ [-1,1], y+ = down) when present (GREEN, brighter as it nears
- *  center), or a RED "searching" ring when no face. Lets you watch detection + centering live
- *  without instrumentation. Top-right, small, non-interactive. */
-@Composable
-private fun FaceFollowIndicator(faceX: Float, faceY: Float, present: Boolean, msSinceSeen: Long, target: String = "", seen: String = "", modifier: Modifier = Modifier) {
-    // States (debug tool for face-follow), derived on-device:
-    //   • LOCK <name>  — following them, centered (green dot + ring)
-    //   • TRACK <name> — following them, off-center, correcting (amber dot)
-    //   • SEARCH <target> — not them / nobody → sweeping (red ring). In NAMED mode, if it
-    //     SEES the wrong person, it says "SEARCH <target> — not them" + a MUTED dot, so it
-    //     never falsely reads "LOCK <target>" while actually seeing+ignoring someone else.
-    //   • WAIT — lost a face recently (≤30s), holding (amber pulsing ring).
-    val box = 96.dp
-    // NAMED mode: a present face only counts as the TARGET when the recognized identity matches.
-    // A present-but-wrong person (or unrecognized while we want a specific name) is NOT a follow.
-    val named = target.isNotEmpty()
-    val isTarget = if (named) (seen.isNotEmpty() && seen.equals(target, ignoreCase = true)) else true
-    val following = present && isTarget          // genuinely tracking who we want
-    val wrongPerson = present && named && !isTarget // sees someone, but not the target
-    // HYSTERESIS on LOCK↔TRACK so jitter at the deadband edge doesn't flicker the label.
-    val enterBand = 0.20f; val exitBand = 0.30f
-    var wasLocked by remember { mutableStateOf(false) }
-    val band = if (wasLocked) exitBand else enterBand
-    val centered = following && kotlin.math.abs(faceX) < band && kotlin.math.abs(faceY) < band
-    if (following) wasLocked = centered
-    val waiting = !present && msSinceSeen < 30_000L
-    // the name to show: who we're FOLLOWING (target or recognized salient face).
-    val who = if (named) target else (seen.ifEmpty { "" })
-    val label = when {
-        following && centered -> if (who.isNotEmpty()) "LOCK $who" else "LOCK"
-        following -> if (who.isNotEmpty()) "TRACK $who" else "TRACK"
-        wrongPerson -> if (seen.isNotEmpty()) "SEARCH $target (saw $seen)" else "SEARCH $target — not them"
-        waiting -> "WAIT" + (if (who.isNotEmpty()) " $who" else "")
-        else -> if (named) "SEARCH $target" else "SEARCH"
-    }
-    val labelColor = when {
-        following && centered -> Color(0xFF49E07A)
-        following -> Color(0xFFE0B84A)
-        waiting -> Color(0xFFE0B84A)
-        else -> Color(0xFFE0504A) // searching / wrong-person → red (not following)
-    }
-    // pulse for WAITING (a slow breathing alpha so it reads as "holding, not lost")
-    val pulse by androidx.compose.animation.core.rememberInfiniteTransition(label = "ffpulse").animateFloat(
-        initialValue = 0.25f, targetValue = 0.9f,
-        animationSpec = androidx.compose.animation.core.infiniteRepeatable(
-            androidx.compose.animation.core.tween(900), androidx.compose.animation.core.RepeatMode.Reverse), label = "ffpulseA")
-    Box(modifier = modifier.padding(8.dp).size(box).background(Color(0x66000000), androidx.compose.foundation.shape.RoundedCornerShape(8.dp))) {
-        androidx.compose.foundation.Canvas(modifier = Modifier.fillMaxSize().padding(6.dp)) {
-            val w = size.width; val h = size.height
-            val cx = w / 2f; val cy = h / 2f
-            drawCircle(Color(0x55FFFFFF), radius = 4f, center = androidx.compose.ui.geometry.Offset(cx, cy))
-            drawLine(Color(0x33FFFFFF), androidx.compose.ui.geometry.Offset(cx, 0f), androidx.compose.ui.geometry.Offset(cx, h), strokeWidth = 1f)
-            drawLine(Color(0x33FFFFFF), androidx.compose.ui.geometry.Offset(0f, cy), androidx.compose.ui.geometry.Offset(w, cy), strokeWidth = 1f)
-            if (following) {
-                // FOLLOWING the target: green (centered/LOCK) or amber (off-center/TRACK) dot.
-                val px = cx + (faceX.coerceIn(-1f, 1f)) * (w / 2f)
-                val py = cy + (faceY.coerceIn(-1f, 1f)) * (h / 2f)
-                val dot = androidx.compose.ui.geometry.Offset(px, py)
-                if (centered) {
-                    val green = Color(0xFF49E07A)
-                    drawLine(green, androidx.compose.ui.geometry.Offset(cx, cy), dot, strokeWidth = 2f)
-                    drawCircle(green, radius = 7f, center = dot)
-                    drawCircle(green, radius = 14f, center = dot, style = androidx.compose.ui.graphics.drawscope.Stroke(width = 2.5f))
-                } else {
-                    val amber = Color(0xFFE0B84A)
-                    drawLine(amber, androidx.compose.ui.geometry.Offset(cx, cy), dot, strokeWidth = 2f)
-                    drawCircle(amber, radius = 7f, center = dot)
-                }
-            } else if (wrongPerson) {
-                // SEES SOMEONE, but NOT the target → a MUTED grey dot at their position (so it's
-                // clearly "noticed, not following") + the red searching ring underneath.
-                drawCircle(Color(0xFFE0504A), radius = w / 2.6f, center = androidx.compose.ui.geometry.Offset(cx, cy), style = androidx.compose.ui.graphics.drawscope.Stroke(width = 1.5f))
-                val px = cx + (faceX.coerceIn(-1f, 1f)) * (w / 2f)
-                val py = cy + (faceY.coerceIn(-1f, 1f)) * (h / 2f)
-                drawCircle(Color(0x99AAAAAA), radius = 6f, center = androidx.compose.ui.geometry.Offset(px, py))
-            } else if (waiting) {
-                // WAITING: amber pulsing ring (holding the lost lock, not yet searching).
-                drawCircle(Color(0xFFE0B84A).copy(alpha = pulse), radius = w / 2.6f, center = androidx.compose.ui.geometry.Offset(cx, cy), style = androidx.compose.ui.graphics.drawscope.Stroke(width = 2.5f))
-            } else {
-                // SEARCH: a solid red ring.
-                drawCircle(Color(0xFFE0504A), radius = w / 2.6f, center = androidx.compose.ui.geometry.Offset(cx, cy), style = androidx.compose.ui.graphics.drawscope.Stroke(width = 2f))
-            }
-        }
-        androidx.compose.material3.Text(
-            text = label, color = labelColor, fontSize = 9.sp, fontWeight = FontWeight.Bold,
-            modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 2.dp),
-        )
     }
 }
 
