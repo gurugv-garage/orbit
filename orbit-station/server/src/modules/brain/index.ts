@@ -851,7 +851,19 @@ export function brainModule(w: BrainWiring): StationModule {
         // the folded note says ignore it if it's unrelated room talk. During
         // SPEAKING the reply is audible: queue (never abort the dock's own
         // speech on heard content — stop/wait/tap are the aborts).
-        if (pre.mode === 'thinking' && w.config('brainThinkingMerge') !== false) {
+        // ADDRESSED-GATE the merge-supersede: only speech ADDRESSED to the dock (a
+        // listening/followup window open) may abort the in-flight turn. Overheard ROOM
+        // chatter while thinking must NOT kill a running turn/tool — that's what let two
+        // people talking near the dock repeatedly abort a visual_search ("interrupted —
+        // looked at 4 of 18 poses"). Stop-intent ("wait"/"stop") already aborted above;
+        // everything else unaddressed falls through to the busy queue and the running turn
+        // finishes. (docs: speech-addressed-vs-overheard; user 2026-07-21.)
+        // NOTE: utteranceAddressed() MUTATES (consumes the window → mode 'thinking') on a
+        // true result, so it must be called EXACTLY ONCE per final. Only the thinking
+        // branch (which returns) calls it here; the idle/listening path at the bottom is
+        // reached only when pre.mode is NOT thinking/speaking, and calls it there.
+        if (pre.mode === 'thinking' && w.config('brainThinkingMerge') !== false
+            && session(t.dockId).utteranceAddressed(t.endedAt, Date.now(), t.startedAt)) {
           const info = session(t.dockId).activeTurn;
           if (info && info.kind === 'user' && info.merges < MERGE_MAX) {
             trace('merge:supersede');
