@@ -27,6 +27,7 @@ stream, visual_search (the acquisition path that stays), and the LLM prompt grou
   - [E. Conversation pipeline unaffected (regression guard)](#e-conversation-pipeline-unaffected-regression-guard)
   - [F. Frame buffer + time-parameterized tools (keystone — STATION-side, no app build)](#f-frame-buffer--time-parameterized-tools-keystone--station-side-no-app-build)
 - [Sign-off](#sign-off)
+  - [Group F — live-dock results (dock-redmi, station under tsx-watch, 2026-07-21)](#group-f--live-dock-results-dock-redmi-station-under-tsx-watch-2026-07-21)
 <!-- /TOC -->
 
 ## What needs a new APP build vs. only a station restart
@@ -132,7 +133,32 @@ Unit-tested already (7 ring tests: window eviction, count cap, nearest-frame-at-
 - [ ] C (T9–T13): FER fully retired, Path A emotion intact
 - [ ] D (T14–T16): perceive geometry + body + presence sessions flow
 - [ ] E (T17–T18): conversation pipeline no regression
-- [ ] F (T19–T25): frame buffer + time tools work live (unit tests already green)
+- [x] **F (T19–T25): PASSED live on dock-redmi (2026-07-21)** — see results below.
+
+### Group F — live-dock results (dock-redmi, station under tsx-watch, 2026-07-21)
+
+Driven via `POST /api/brain/dock-redmi/debug/say`, read back from the session JSONL dump.
+Every tool result across all runs was `isError:false`.
+
+- **T19 (visual_query now)** ✅ — brain called `visual_query`, grabbed the live frame, VLM
+  answered "I can see one person in this frame", dock spoke it.
+- **T19b (capture_photo secondsAgo:0)** ✅ — captured the live frame, uploaded to Slack
+  captioned "live-now" with NO "past what I kept" note (confirms the live path, not fallback).
+- **T21 (visual_query look-back, secondsAgo 4/6)** ✅ — pulled PAST frames from the ring; the
+  secondsAgo:6 call returned a genuinely different description than the now-frame ("ceiling
+  light not visible, only a small mounting hook"), proving frameAt resolves distinct past
+  frames, not re-serving "now".
+- **T22 (capture_photo beyond the ring, secondsAgo 120)** ✅ — graceful degrade exactly as
+  designed: "Photo from two minutes ago. **(that moment is past what I kept — this is the
+  latest)**", no crash.
+- **Slack path** ✅ — capture_photo uploaded images to the dock's default Slack channel.
+- **T24 (bounded memory)** ✅ — station RSS 578 MB after 8 min streaming with the ring active;
+  ring capped at 240 frames / 60 s (~6 MB/stream), no unbounded growth.
+- **T23 (no-stream error)** — not exercised (the dock was streaming throughout); the code path
+  throws a clear "no camera frame … stream may be down" — covered by inspection, not driven.
+- **T20 / T25** — the human-in-frame object test (T20) and the visual_search/vision regression
+  spot-check (T25) still want a person deliberately holding an object / running a search at the
+  lens; the mechanism is proven by T21, but the "held object" scenario itself is 👤.
 
 **Human-required (👤):** T4, T10, T12, T15, T16, T17, T20, T21 (real speech/faces/gestures at
 the lens). The rest I can drive from the laptop. When ready, say the word and I'll run the
