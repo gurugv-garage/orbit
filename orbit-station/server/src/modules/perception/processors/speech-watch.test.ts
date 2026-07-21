@@ -9,6 +9,10 @@ import { isHallucination, isLowConfBackchannel, hasNoWords, confidenceTier } fro
 // voiced); quiet() = silence. These run LOCALLY via feedPcm — no dock, no Opus.
 const FRAME = 480;
 const loud = (n: number) => { const f = new Int16Array(FRAME * n); for (let i = 0; i < f.length; i++) f[i] = i % 2 ? 8000 : -8000; return f; };
+// soft(): amplitude ~655 → RMS ~0.02 — above the transcription floor SILENCE_RMS
+// (0.012) so it's "voiced" and endpoints/transcribes, but BELOW the barge-onset
+// floor ONSET_RMS (0.035) so it must NOT arm the pause. A faint sustained noise.
+const soft = (n: number) => { const f = new Int16Array(FRAME * n); for (let i = 0; i < f.length; i++) f[i] = i % 2 ? 655 : -655; return f; };
 const quiet = (n: number) => new Int16Array(FRAME * n);
 const frames = (ms: number) => Math.round(ms / 30); // ms → frame count
 
@@ -107,6 +111,29 @@ test('a voice micro-gap (one frame) does not reset the onset run', () => {
   d.feedPcm(quiet(frames(30)));  // one-frame micro-gap, within tolerance
   d.feedPcm(loud(frames(150)));
   assert.equal(onsets.length, 1, 'a single-frame gap is tolerated; real speech still fires');
+});
+
+// SEPARATE ONSET FLOOR (2026-07-21): the barge pause uses ONSET_RMS (0.035),
+// HIGHER than the transcription floor SILENCE_RMS (0.012). A faint-but-voiced
+// sustained sound (fan/hum/echo/distant chatter) must NOT arm the pause, even
+// though it's loud enough to endpoint/transcribe.
+test('a faint sustained sound (voiced but below the onset floor) does NOT fire the onset', () => {
+  const { d, onsets } = onsetDetector();
+  d.feedPcm(soft(frames(600))); // 600ms of quiet sound — transcribes, must not pause
+  assert.equal(onsets.length, 0, 'a faint sustained noise must not arm the barge pause');
+});
+
+test('a faint sound still ENDPOINTS/commits (transcription floor unchanged)', () => {
+  const { d, ends } = detector();
+  d.feedPcm(soft(frames(600)));   // voiced at SILENCE_RMS
+  d.feedPcm(quiet(frames(1500))); // silence → endpoint
+  assert.equal(ends.length, 1, 'faint speech still transcribes — only the PAUSE floor was raised');
+});
+
+test('a loud interruption (e.g. "hey hey stop" at the dock) still fires the onset', () => {
+  const { d, onsets } = onsetDetector();
+  d.feedPcm(loud(frames(400))); // 400ms clearly above ONSET_RMS
+  assert.equal(onsets.length, 1, 'a real loud barge must still pause the reply');
 });
 
 // TURN-GATING: a Whisper silence-hallucination must NOT become an agent turn (the

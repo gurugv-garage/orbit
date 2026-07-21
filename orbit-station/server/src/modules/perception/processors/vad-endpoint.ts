@@ -77,6 +77,16 @@ const PREROLL_MS = 200;
  *  the pause needs (waiting for a parakeet word would land 300-800ms too late,
  *  after the overlap has already mangled STT). */
 const ONSET_SUSTAIN_MS = Number(process.env.STT_ONSET_SUSTAIN_MS ?? 240);
+/** SPEECH-ONSET energy floor — the barge-in pause's OWN, HIGHER threshold, kept
+ *  SEPARATE from SILENCE_RMS (2026-07-21). SILENCE_RMS (0.012) is deliberately low
+ *  so quiet real speech still transcribes — but the barge pause reused it, so ANY
+ *  faint sustained sound (a fan, distant chatter, the dock's own TTS echo, a hum)
+ *  above 0.012 for 240ms paused the reply. The pause should fire only on a sound
+ *  loud enough to be a real interruption spoken AT the dock, not ambient noise, so
+ *  it gets its own bar here. Only the onset hook uses this; transcription still
+ *  uses SILENCE_RMS (unchanged). Tune up if small noises still pause, down if a
+ *  real close "stop" doesn't. Env-tunable for live iteration. */
+const ONSET_RMS = Number(process.env.STT_ONSET_RMS ?? 0.035);
 /** Dropout tolerance for the contiguous-voice onset: real voice has micro-gaps
  *  (stop consonants, glottal closures) of a frame or two, so a single silent
  *  frame must NOT reset the onset run. Past this the run is considered broken (a
@@ -322,13 +332,17 @@ export class UtteranceDetector {
       this.#utter.push(frame);
       this.#utterMs += FRAME_MS;
       this.#silenceMs = voiced ? 0 : this.#silenceMs + FRAME_MS;
-      // CONTIGUOUS-voice onset (clap reject, see ONSET_SUSTAIN_MS): only an UNBROKEN
-      // run of voiced audio arms the barge pause. A voiced frame extends the run; a
-      // silent frame is tolerated up to ONSET_GAP_TOLERANCE_MS (voice micro-gaps),
-      // past which the run resets — so a clap's decay, and the gap between two claps,
-      // never accumulate to the threshold. (Only matters until the onset fires once.)
+      // CONTIGUOUS-LOUD onset (clap reject + small-noise reject): only an UNBROKEN
+      // run of audio above the HIGHER onset floor (ONSET_RMS, not the low
+      // transcription SILENCE_RMS) arms the barge pause — so a faint sustained
+      // sound (fan/hum/echo/distant chatter) that is "voiced" enough to transcribe
+      // is NOT loud enough to pause. A loud frame extends the run; a sub-floor
+      // frame is tolerated up to ONSET_GAP_TOLERANCE_MS (voice micro-gaps), past
+      // which the run resets — so a clap's decay, and the gap between two claps,
+      // never accumulate to the threshold. (Only matters until the onset fires.)
+      const loud = rms >= ONSET_RMS;
       if (!this.#onsetFired) {
-        if (voiced) {
+        if (loud) {
           this.#voicedMs += FRAME_MS;
           this.#onsetGapMs = 0;
           if (this.#voicedMs >= ONSET_SUSTAIN_MS) {
@@ -346,7 +360,10 @@ export class UtteranceDetector {
       // speech onset — start an utterance, prepend the preroll.
       this.#inSpeech = true;
       this.#silenceMs = 0; this.#utterMs = 0;
-      this.#voicedMs = FRAME_MS; this.#onsetGapMs = 0; this.#onsetFired = false;
+      // Seed the barge-onset run only if this first frame is LOUD (>= ONSET_RMS),
+      // not merely voiced (>= SILENCE_RMS) — a quiet-start utterance must build the
+      // onset run from its first genuinely loud frame, not get a free 30ms.
+      this.#voicedMs = rms >= ONSET_RMS ? FRAME_MS : 0; this.#onsetGapMs = 0; this.#onsetFired = false;
       this.#lastInterimMs = 0; // fresh utterance → interim cadence restarts
       this.#startedAt = new Date();
       this.#utter = [...this.#preroll, frame];
