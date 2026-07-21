@@ -641,14 +641,27 @@ export function brainModule(w: BrainWiring): StationModule {
       // fragments. (A cancel doesn't set this — nothing left to protect.)
       const bargeCooldownUntil = new Map<string, number>();
       const BARGE_COOLDOWN_MS = 2_500;
-      const resolveBargeHold = (dock: string, why: string, resume: boolean) => {
+      // Three ways a barge-hold ends:
+      //   'resume'    — a final landed and was NOT a stop → play the rest of the reply on.
+      //   'cancelled' — a stop/dismiss/supersede decision killed the audio via its own
+      //                 `cancelled` frame; leave it dead (don't un-hold).
+      //   'yield'     — the hold GAVE UP without a clean stop word (timeout). The user
+      //                 sustained a barge for the full window — don't plow on over them
+      //                 (RCA barge-stop-continues: STT mangled their "stop"). Abort the
+      //                 reply and open a listening window so they can just say it again;
+      //                 strictly safer than resuming (never talks over the user). Any
+      //                 content they gave waits in the busy queue and drains at settle.
+      type BargeEnd = 'resume' | 'cancelled' | 'yield';
+      const resolveBargeHold = (dock: string, why: string, end: BargeEnd) => {
         const h = bargeHolds.get(dock);
         if (!h) return;
         bargeHolds.delete(dock);
         clearTimeout(h.timer);
-        if (resume) {
+        if (end === 'resume') {
           session(dock).ttsHold(false);
           bargeCooldownUntil.set(dock, Date.now() + BARGE_COOLDOWN_MS);
+        } else if (end === 'yield') {
+          session(dock).tapOpen(); // abort the (paused) reply + open listening — yield the floor
         }
         pushAddrTrace({ dockId: dock, text: `(held ${Date.now() - h.at}ms)`, startedAt: h.at, endedAt: Date.now() },
           `barge:release:${why}`, session(dock).conversation().mode);
@@ -732,7 +745,7 @@ export function brainModule(w: BrainWiring): StationModule {
           const hold = bargeHolds.get(t.dockId);
           if (hold && t.endedAt >= hold.at - 500) {
             const cancels = decision === 'stop:dismiss' || decision === 'stop:pause' || decision === 'merge:supersede';
-            resolveBargeHold(t.dockId, decision, !cancels);
+            resolveBargeHold(t.dockId, decision, cancels ? 'cancelled' : 'resume');
           }
           // STAMP the addressed decision onto the speech snapshot (docs/TODO.md §3.0), so the
           // summarizer / fact-extraction / ego can tell "said to the dock" from room chatter.
@@ -814,7 +827,10 @@ export function brainModule(w: BrainWiring): StationModule {
         // Re-engage via tap/palm/wake. Deliberately narrow (stop-intent.ts):
         // content sentences are handled normally. Kill-switch: brainVoiceStop=false.
         if (pre.mode !== 'idle' && w.config('brainVoiceStop') !== false) {
-          const stop = classifyStopIntent(t.text);
+          // duringBarge: a barge-hold is active → the user demonstrably interrupted,
+          // so classifyStopIntent relaxes (trailing "…stop" with leading STT garbage
+          // from the dock's own TTS tail still dismisses — RCA barge-stop-continues).
+          const stop = classifyStopIntent(t.text, bargeHolds.has(t.dockId));
           if (stop === 'dismiss') {
             trace('stop:dismiss');
             for (const u of busyQueue.take(t.dockId)) pushAddrTrace(u, 'skip:dismissed', pre.mode);
@@ -945,7 +961,7 @@ export function brainModule(w: BrainWiring): StationModule {
           return;
         }
         session(dockId).ttsHold(true);
-        const timer = setTimeout(() => resolveBargeHold(dockId, 'timeout', true), BARGE_MAX_HOLD_MS);
+        const timer = setTimeout(() => resolveBargeHold(dockId, 'timeout', 'yield'), BARGE_MAX_HOLD_MS);
         bargeHolds.set(dockId, { at: Date.now(), timer });
         pushAddrTrace({ dockId, text: '(speech onset during reply)', startedAt: Date.now(), endedAt: Date.now() },
           'barge:hold', 'speaking');

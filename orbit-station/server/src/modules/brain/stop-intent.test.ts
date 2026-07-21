@@ -156,3 +156,31 @@ test('classify: wait/hold-on are PAUSE; stop/shut-up family is DISMISS; dismiss 
   // content still none
   assert.equal(classifyStopIntent('Wait, tell me a joke instead.'), 'none');
 });
+
+// ── BARGE trailing-stop relaxation (2026-07-21, RCA barge-stop-continues) ─────
+// During an active barge-hold the dock's OWN TTS tail gets prepended to the
+// user's "stop" by STT ("all the kick stop"). With duringBarge=true a SHORT
+// utterance ending in a dismissal core dismisses; cold, the same text is content.
+
+test('barge trailing-stop: leading STT garbage + trailing stop dismisses ONLY mid-barge', async () => {
+  const { classifyStopIntent } = await import('./stop-intent.js');
+  for (const s of ['All the kick stop.', 'and then the stop', 'uh the moon quiet', 'okay enough']) {
+    assert.equal(classifyStopIntent(s, true), 'dismiss', `mid-barge expected DISMISS: "${s}"`);
+    // cold (no barge), the garbled ones are content — precision preserved
+  }
+  assert.equal(classifyStopIntent('All the kick stop.'), 'none', 'cold: leading garbage stays content');
+  assert.equal(classifyStopIntent('and then the stop'), 'none', 'cold: stays content');
+});
+
+test('barge trailing-stop guards: negation blocks, long sentences stay content, non-dismiss cores ignored', async () => {
+  const { classifyStopIntent } = await import('./stop-intent.js');
+  // negation before the trailing stop → not a stop even mid-barge
+  assert.equal(classifyStopIntent("please don't stop", true), 'none');
+  // too long → a sentence that merely ends in "stop" is content, not a reflex
+  assert.equal(classifyStopIntent('I really need you to help me before we finally stop', true), 'none');
+  // trailing PAUSE core is too weak to relax on — only dismissal cores trail-match
+  assert.equal(classifyStopIntent('the moon and the wait', true), 'none');
+  // a real bare stop is unaffected either way
+  assert.equal(classifyStopIntent('Stop.', true), 'dismiss');
+  assert.equal(classifyStopIntent('Stop.', false), 'dismiss');
+});

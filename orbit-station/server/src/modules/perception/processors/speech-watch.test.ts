@@ -18,6 +18,14 @@ function detector() {
   return { d, ends };
 }
 
+// Same, but also captures speech-ONSET fires (the barge-in "polite pause" trigger).
+function onsetDetector() {
+  const onsets: number[] = []; // one entry per onSpeechStart
+  const d = new UtteranceDetector(() => {});
+  d.onSpeechStart = () => { onsets.push(1); };
+  return { d, onsets };
+}
+
 // THE BUG UNDER TEST: continuous loud speech must NOT endpoint mid-utterance,
 // no matter how long you keep talking (up to the MAX_UTTERANCE safety cap).
 test('continuous voiced audio does NOT endpoint (no mid-speech cut-off)', () => {
@@ -59,6 +67,46 @@ test('counting with short gaps = one utterance; long gaps = split per number', (
   const b = detector();
   for (let i = 0; i < 10; i++) { b.d.feedPcm(loud(frames(400))); b.d.feedPcm(quiet(frames(1600))); }
   assert.equal(b.ends.length, 10, 'long gaps: splits into one utterance per number');
+});
+
+// ── SPEECH-ONSET / BARGE-IN CLAP REJECT (contiguous-voice gate) ──────────────
+// The barge pause fires on onSpeechStart after ONSET_SUSTAIN_MS (240ms) of
+// CONTIGUOUS voiced audio. A clap is a transient (sharp attack, fast decay); it
+// must NOT arm the pause, while a real ~300ms+ utterance must.
+test('sustained voice (>=240ms unbroken) fires the speech onset', () => {
+  const { d, onsets } = onsetDetector();
+  d.feedPcm(loud(frames(400))); // 400ms unbroken voice → onset
+  assert.equal(onsets.length, 1, 'continuous voice arms the barge pause');
+});
+
+test('a single clap does NOT fire the speech onset', () => {
+  const { d, onsets } = onsetDetector();
+  // a clap: ~60ms loud attack + ring, then decay to silence. Well under 240ms.
+  d.feedPcm(loud(frames(60)));
+  d.feedPcm(quiet(frames(400)));
+  assert.equal(onsets.length, 0, 'a lone clap must not arm the barge pause');
+});
+
+test('two claps do NOT accumulate across the gap into an onset (the bug)', () => {
+  const { d, onsets } = onsetDetector();
+  // Two ~150ms claps separated by a ~150ms gap. Cumulative voiced = 300ms (would
+  // have tripped the old accumulator), but neither unbroken run reaches 240ms and
+  // the gap exceeds the tolerance → the run resets → no onset.
+  d.feedPcm(loud(frames(150)));
+  d.feedPcm(quiet(frames(150)));
+  d.feedPcm(loud(frames(150)));
+  d.feedPcm(quiet(frames(400)));
+  assert.equal(onsets.length, 0, 'claps separated by a gap must not accumulate to an onset');
+});
+
+test('a voice micro-gap (one frame) does not reset the onset run', () => {
+  const { d, onsets } = onsetDetector();
+  // 150ms voice, a single 30ms dropout (glottal closure / stop consonant), then
+  // more voice — total unbroken-enough run passes 240ms and fires.
+  d.feedPcm(loud(frames(150)));
+  d.feedPcm(quiet(frames(30)));  // one-frame micro-gap, within tolerance
+  d.feedPcm(loud(frames(150)));
+  assert.equal(onsets.length, 1, 'a single-frame gap is tolerated; real speech still fires');
 });
 
 // TURN-GATING: a Whisper silence-hallucination must NOT become an agent turn (the

@@ -63,8 +63,25 @@ const PREROLL_MS = 200;
 /** SPEECH-ONSET hook threshold (barge-in "polite pause"): fire onSpeechStart only
  *  after this much VOICED audio inside the utterance. A single voiced frame is
  *  often a bump/click or the dock's own AEC residual; ~a quarter second of
- *  sustained voice is a person. Env-tunable for live iteration. */
+ *  sustained voice is a person. Env-tunable for live iteration.
+ *
+ *  This span must be CONTIGUOUS (see #voicedMs below), not merely cumulative: a
+ *  CLAP is a broadband transient — a sharp attack that clears the RMS `voiced`
+ *  bar, then a fast decay. A single clap rings for well under 240ms, and two
+ *  claps used to ACCUMULATE past the threshold across the silent gap between
+ *  them, tripping the barge pause on applause/a hand-clap while the dock spoke
+ *  (live 2026-07-21). Requiring an UNBROKEN run of voiced frames rejects the
+ *  transient (it decays before 240ms) while still firing on real speech, whose
+ *  envelope stays up. This is the "gate the onset on real speech, not raw
+ *  energy" fix — done in the time domain so it keeps the sub-endpoint latency
+ *  the pause needs (waiting for a parakeet word would land 300-800ms too late,
+ *  after the overlap has already mangled STT). */
 const ONSET_SUSTAIN_MS = Number(process.env.STT_ONSET_SUSTAIN_MS ?? 240);
+/** Dropout tolerance for the contiguous-voice onset: real voice has micro-gaps
+ *  (stop consonants, glottal closures) of a frame or two, so a single silent
+ *  frame must NOT reset the onset run. Past this the run is considered broken (a
+ *  clap's decay, or a gap between two claps) and the accumulator restarts. */
+const ONSET_GAP_TOLERANCE_MS = Number(process.env.STT_ONSET_GAP_TOLERANCE_MS ?? 90);
 
 // ─────────────────────────── MERGED ACOUSTIC BATCH (perception-to-brain merge) ───────────────────────────
 // The batch window feeds ONE context-aware interpreter call that replaces the two eager
@@ -187,7 +204,8 @@ export class UtteranceDetector {
   // or any transcription. The consumer (brain) uses it to hold the dock's TTS the
   // moment someone starts talking over it. Opt-in; transport-free like the others.
   onSpeechStart?: (startedAt: Date) => void;
-  #voicedMs = 0;
+  #voicedMs = 0;        // CONTIGUOUS voiced ms for the onset (resets on a real gap; NOT cumulative)
+  #onsetGapMs = 0;      // running silence within the voiced run (tolerated up to ONSET_GAP_TOLERANCE_MS)
   #onsetFired = false;
   // INTERIM hook: called at ~INTERIM_INTERVAL_MS while in-speech with the partial
   // utterance PCM, ONLY when shouldInterim() returns true (the listening gate). The
@@ -304,11 +322,22 @@ export class UtteranceDetector {
       this.#utter.push(frame);
       this.#utterMs += FRAME_MS;
       this.#silenceMs = voiced ? 0 : this.#silenceMs + FRAME_MS;
-      if (voiced) {
-        this.#voicedMs += FRAME_MS;
-        if (!this.#onsetFired && this.#voicedMs >= ONSET_SUSTAIN_MS) {
-          this.#onsetFired = true;
-          this.onSpeechStart?.(this.#startedAt ?? new Date());
+      // CONTIGUOUS-voice onset (clap reject, see ONSET_SUSTAIN_MS): only an UNBROKEN
+      // run of voiced audio arms the barge pause. A voiced frame extends the run; a
+      // silent frame is tolerated up to ONSET_GAP_TOLERANCE_MS (voice micro-gaps),
+      // past which the run resets — so a clap's decay, and the gap between two claps,
+      // never accumulate to the threshold. (Only matters until the onset fires once.)
+      if (!this.#onsetFired) {
+        if (voiced) {
+          this.#voicedMs += FRAME_MS;
+          this.#onsetGapMs = 0;
+          if (this.#voicedMs >= ONSET_SUSTAIN_MS) {
+            this.#onsetFired = true;
+            this.onSpeechStart?.(this.#startedAt ?? new Date());
+          }
+        } else {
+          this.#onsetGapMs += FRAME_MS;
+          if (this.#onsetGapMs > ONSET_GAP_TOLERANCE_MS) this.#voicedMs = 0;
         }
       }
       if (this.#silenceMs >= ENDPOINT_MS || this.#utterMs >= MAX_UTTERANCE_MS) { this.#endUtterance(); return; }
@@ -317,7 +346,7 @@ export class UtteranceDetector {
       // speech onset — start an utterance, prepend the preroll.
       this.#inSpeech = true;
       this.#silenceMs = 0; this.#utterMs = 0;
-      this.#voicedMs = FRAME_MS; this.#onsetFired = false;
+      this.#voicedMs = FRAME_MS; this.#onsetGapMs = 0; this.#onsetFired = false;
       this.#lastInterimMs = 0; // fresh utterance → interim cadence restarts
       this.#startedAt = new Date();
       this.#utter = [...this.#preroll, frame];

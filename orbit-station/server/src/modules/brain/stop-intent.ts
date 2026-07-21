@@ -90,11 +90,30 @@ const MAX_DIRECTIVE_TOKENS = 12;
 
 export type StopIntent = 'none' | 'pause' | 'dismiss';
 
+/** Trailing stop cores that, at the END of a short utterance, still mean "stop"
+ *  even with leading garbage — but ONLY when we already know the user barged
+ *  (duringBarge). "all the kick stop" (the dock's own TTS tail prepended to a
+ *  real "stop" during a barge, live 2026-07-21) must dismiss; the same phrase
+ *  said cold must NOT (it's content). Kept to the unambiguous dismissal cores —
+ *  a trailing "wait" is too weak to relax on. */
+const TRAILING_DISMISS = /\b(stop|quiet|enough|shush)\s*$/;
+/** Cap the leading-garbage a barge trailing-stop tolerates: a whole sentence
+ *  that merely ENDS in "stop" is content ("I need you to help me before we
+ *  stop"), not a reflex. A barge interruption is short. */
+const MAX_BARGE_TRAILING_TOKENS = 6;
+
 /** Classify a bare stop utterance:
  *  - 'dismiss' — stand down (any dismissal core present: it wins over pause);
  *  - 'pause'   — only wait/hold-on cores: shut up and LISTEN;
- *  - 'none'    — carries content (or too long): handle normally. */
-export function classifyStopIntent(text: string): StopIntent {
+ *  - 'none'    — carries content (or too long): handle normally.
+ *
+ *  `duringBarge` (2026-07-21, RCA barge-stop-continues): set when this final
+ *  landed while a barge-hold is ACTIVE — the user has demonstrably interrupted a
+ *  reply, so precision can relax. It enables ONE extra lenient tier: a short
+ *  utterance ENDING in a dismissal core is a dismiss even with leading garbage
+ *  (STT prepends the dock's own TTS tail during the overlap → "all the kick
+ *  stop"). Off by default so the cold-classification behaviour is unchanged. */
+export function classifyStopIntent(text: string, duringBarge = false): StopIntent {
   const raw = text.toLowerCase().replace(/[^a-z\s']/g, ' ').replace(/\s+/g, ' ').trim();
   if (!raw) return 'none';
   // Tier 1 — embedded stop DIRECTIVE ("I want you to stop talking").
@@ -102,6 +121,16 @@ export function classifyStopIntent(text: string): StopIntent {
     for (const re of DISMISS_DIRECTIVES) {
       if (re.test(raw)) return 'dismiss';
     }
+  }
+  // Tier 1.5 — BARGE trailing-stop (relaxed, only mid-barge): a SHORT utterance
+  // that ENDS in a dismissal core, even with leading garbage, is a dismiss. This
+  // catches the dock's own TTS tail prepended to a real "stop" during the overlap
+  // ("all the kick stop"). Negation still blocks ("...don't stop"). Off cold.
+  if (duringBarge
+      && raw.split(' ').length <= MAX_BARGE_TRAILING_TOKENS
+      && !NEGATION_BEFORE.test(raw)
+      && TRAILING_DISMISS.test(raw)) {
+    return 'dismiss';
   }
   // Tier 2 — the bare reflex (predominantly stop words, nothing else).
   let norm = raw;
