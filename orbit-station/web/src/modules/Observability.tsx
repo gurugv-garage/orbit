@@ -11,12 +11,15 @@ interface FeedbackMeta { id: string; sessionId?: string; turnId?: string; source
 interface ToolVM { id: string; name: string; args?: unknown; result?: string; isError?: boolean; startedAt?: number; endedAt?: number }
 interface StepVM { idx: number; model?: string; stopReason?: string; text?: string; tools: ToolVM[]; inTok?: number; outTok?: number; cacheRead?: number; cost?: number; thinkTok?: number; thinkingMs?: number; startedAt?: number; streamStartedAt?: number; endedAt?: number }
 interface SpeechVM { startedAt: number; endedAt?: number }
-interface TriggerVM { kind: string; text?: string; via?: string }
+/** admit provenance for addressed user turns — which rule/window let the utterance in
+ *  (server: brain/conversation-state.ts AdmitTrace, riding trigger.window). */
+interface AdmitVM { rule?: string; mode?: string; windowSrc?: string; openedBy?: string; openedAt?: number; msToExpiry?: number }
+interface TriggerVM { kind: string; text?: string; via?: string; window?: AdmitVM }
 interface TurnVM { id: string; sessionId: string; source?: string; trigger?: TriggerVM; startedAt: number; endedAt?: number; ended: boolean; steps: StepVM[]; speech: SpeechVM[] }
 
 interface StoredTool { toolCallId: string; toolName: string; args?: unknown; result?: string; isError?: boolean; startedAt?: number; endedAt?: number }
 interface StoredStep { index: number; model?: string; stopReason?: string; text?: string; tools: StoredTool[]; usage?: { inputTokens?: number; outputTokens?: number; totalTokens?: number; cost?: number; cacheRead?: number; thinkingTokens?: number }; thinkingMs?: number; startedAt?: number; streamStartedAt?: number; endedAt?: number }
-interface StoredTurn { turnId: string; sessionId: string; trigger?: { kind: string; text?: string }; speech?: { startedAt: number; endedAt?: number }[]; startedAt: number; endedAt?: number; steps: StoredStep[] }
+interface StoredTurn { turnId: string; sessionId: string; trigger?: TriggerVM; speech?: { startedAt: number; endedAt?: number }[]; startedAt: number; endedAt?: number; steps: StoredStep[] }
 interface StoredSession { sessionId: string; source?: string; turns: StoredTurn[] }
 interface SessionSummary { sessionId: string; source?: string }
 
@@ -580,13 +583,24 @@ function TurnRow({ turn, open, onToggle, feedback, dock }: { turn: TurnVM; open:
             implicit (it's the default and would just be noise on every row). `via` names
             the RAISING source (mood:curious.wonder / gate:arrival:x / face-follow:errored). */}
         {turn.trigger?.kind && turn.trigger.kind !== 'user' && (
-          <span className={`obs-turn-kind trigger-${turn.trigger.kind}`} title={turn.trigger.via ?? turn.trigger.kind}>
+          <span className={`obs-turn-kind trigger-${turn.trigger.kind}`} title={kindTitle(turn.trigger)}>
             {/* replay via = "srcSession:srcTurn" — the TURN is the informative half
                 (replays usually target the same session); other kinds badge the source. */}
             {turn.trigger.kind}
             {turn.trigger.via ? `·${(turn.trigger.kind === 'replay'
               ? (turn.trigger.via.split(':')[1] ?? turn.trigger.via).replace('turn-', '')
               : turn.trigger.via.split(':')[0])}` : ''}
+          </span>
+        )}
+        {/* USER turns badge the ADMITTING window (why did this turn run) — EVERY
+            admit, tap included: an unbadged row must mean exactly one thing,
+            "recorded before provenance existed", never "hidden by the UI"
+            (user-reported 2026-07-22: a hidden tap chip read as an unmarked turn).
+            followup/busy-drain/grace are the "suddenly it speaks" answers. */}
+        {turn.trigger?.kind === 'user' && turn.trigger.via && (
+          <span className="obs-turn-kind trigger-user" title={admitTitle(turn.trigger)}>
+            {turn.trigger.via.replace('-window', '')}
+            {turn.trigger.window?.rule === 'started-in-window' ? '·grace' : ''}
           </span>
         )}
         {turn.trigger?.text && <span className="obs-turn-prompt" title={turn.trigger.text}>“{turn.trigger.text}”</span>}
@@ -700,10 +714,25 @@ function TurnTimeline({ turn }: { turn: TurnVM }) {
     <div className="obs-timeline">
       {turn.trigger && (
         <div className={`obs-msg trigger-${turn.trigger.kind}`}>
-          <span className="obs-msg-who">{turn.trigger.kind}</span>
+          <span className="obs-msg-who" title={kindTitle(turn.trigger)}>{turn.trigger.kind}</span>
           {/* the raising source, in full (e.g. mood:curious.wonder, gate:arrival:guru) */}
-          {turn.trigger.via && <span className="obs-msg-via mono">{turn.trigger.via}</span>}
+          {turn.trigger.via && <span className="obs-msg-via mono" title={admitTitle(turn.trigger)}>{turn.trigger.via}</span>}
           {turn.trigger.text && <span className="obs-msg-text obs-copytext" title="double-click a word to select · click ⧉ to copy all">{turn.trigger.text}<CopyIco value={turn.trigger.text} /></span>}
+        </div>
+      )}
+      {/* admit provenance — the full WHY for an addressed user turn: which rule +
+          which window let the utterance in, how that window opened, time left. */}
+      {turn.trigger?.window && (
+        <div className="obs-msg trigger-user" style={{ opacity: 0.85 }}>
+          <span className="obs-msg-who" title="ConversationState admit verdict — why this utterance became a turn">admitted</span>
+          {/* the compact verdict, with the full plain-language explanation on hover */}
+          <span className="obs-msg-via mono" title={admitTitle(turn.trigger)}>
+            {[turn.trigger.window.rule, turn.trigger.window.windowSrc && `${turn.trigger.window.windowSrc} window`,
+              turn.trigger.window.openedBy && `opened by ${turn.trigger.window.openedBy}`,
+              turn.trigger.window.msToExpiry != null && (turn.trigger.window.msToExpiry <= 0
+                ? 'expired at admit' : `${fmtMs(turn.trigger.window.msToExpiry)} left`),
+            ].filter(Boolean).join(' · ')}
+          </span>
         </div>
       )}
       <div className="obs-vaxis">{clockMs(turn.startedAt)} → +{fmtMs(total)} · {evs.length} events</div>
@@ -795,6 +824,89 @@ function inlinePeek(args: unknown, result?: string): string {
 }
 /** turn ids are unique only within a session — key the live index by both. */
 function turnKey(sessionId: string, turnId: string): string { return `${sessionId} ${turnId}`; }
+
+// ── trigger glossary — plain-language tooltips for every chip/badge ──────────
+// "Why did this turn run" must be readable without remembering the vocabulary:
+// each chip's title explains EXACTLY what its value means (user request
+// 2026-07-22 — "I will keep forgetting what they mean").
+
+/** trigger.kind — WHO/WHAT raised the turn. */
+const KIND_EXPLAIN: Record<string, string> = {
+  user: 'A person spoke (or typed) and the utterance was admitted as addressed to the dock.',
+  self: "The dock's OWN impulse — nobody spoke. An internal raiser (perception gate / idle mood / console poke) started this turn; the via names it.",
+  task: 'A background task (separate OS process) reported back and raised this turn to speak its result.',
+  replay: 'A re-run of a recorded turn through the LIVE pipeline — no LLM calls; via = source session:turn.',
+};
+
+/** trigger.via — the ADMITTING window (user turns) or the raising source (self/task). */
+const VIA_EXPLAIN: Record<string, string> = {
+  'tap-window': 'Admitted by a listening window opened DELIBERATELY by a screen tap. The most intentional path: tap → listen → your words ran.',
+  'palm-window': 'Admitted by a listening window opened by the open-palm WAVE gesture (open-only: a palm never closes a window).',
+  'face-window': 'Admitted by the low-priority window that opens when a face ARRIVES in view (wake-on-look). Yields to tap/followup windows.',
+  'followup-window': "Admitted by the AUTO re-listen window that opens after the dock's own reply — NOT a deliberate signal. Anything audible in the room (a TV, a video, other people) can land here, so the brain frames it possibly-overheard and may stay silent, which ends the chain.",
+  'busy-drain': 'Heard WHILE the dock was thinking/speaking → queued in the busy-queue → run as one combined turn when the reply settled. Possibly-overheard framing (you may not have been talking to it).',
+  'wake+command': 'The wake phrase + a command in ONE breath ("hey orbit, look right"): the name was stripped, the remainder ran as the turn.',
+  'phone:turn-request': 'The PHONE originated this turn itself (debug console / adb SAY / typed input) — no station window decision was involved.',
+};
+
+/** via PREFIXES for self/task raisers (via = "<prefix>:<detail>"). */
+const VIA_PREFIX_EXPLAIN: Record<string, string> = {
+  gate: 'Raised by the perception gate-watcher: an auto self-thought reacting to what the dock is perceiving (arrival, a change, idle-loneliness…). Detail = the gate rule that fired.',
+  mood: 'Raised by the idle-moods conductor (a mood bit acted out). Detail = the mood/bit id.',
+  console: 'Poked manually from the web console (Brain view). Detail = the poke kind.',
+  greet: 'The greet-on-arrival raiser: a known face arrived while idle.',
+};
+
+/** AdmitTrace.rule — WHICH state-machine rule admitted the utterance. */
+const RULE_EXPLAIN: Record<string, string> = {
+  'window-open': 'A listening/followup window was OPEN when the final transcript landed — the straightforward admit.',
+  'started-in-window': 'GRACE rescue: the window had already closed when the transcript arrived, but the utterance BEGAN while it was open (STT adds a ~1.3s silence tail before finalizing). Without this rule, long/late-finalized speech would be dropped as overheard.',
+};
+
+/** AdmitTrace.openedBy — WHAT opened the admitting window. */
+const OPENER_EXPLAIN: Record<string, string> = {
+  tap: 'a deliberate screen tap while idle',
+  'tap-interrupt': 'a tap DURING a reply — interrupted it and opened a fresh window',
+  'palm-address': 'the open-palm wave gesture',
+  'palm-interrupt': 'a palm shown DURING a reply — interrupted it and opened a window',
+  'reply-followup': "the dock's own reply ending (auto re-listen so you can follow up hands-free)",
+  'speak-timeout': 'the lost-tts-end recovery: the phone never reported speech ended, the safety cap opened the followup window instead',
+  'face-arrival': 'a face arriving in camera view',
+};
+
+/** Multi-line tooltip for a trigger chip: what the via means + which rule/window/
+ *  opener admitted it + time left. Newlines render in the native title tooltip. */
+function admitTitle(tr: TriggerVM): string {
+  const lines: string[] = [];
+  if (tr.via) {
+    const prefix = tr.via.split(':')[0]!;
+    lines.push(VIA_EXPLAIN[tr.via] ?? VIA_PREFIX_EXPLAIN[prefix] ?? `raised via ${tr.via}`);
+  }
+  const w = tr.window;
+  if (w) {
+    if (w.rule) lines.push(`rule ${w.rule}: ${RULE_EXPLAIN[w.rule] ?? w.rule}`);
+    if (w.openedBy) lines.push(`window opened by: ${OPENER_EXPLAIN[w.openedBy] ?? w.openedBy}`);
+    if (w.msToExpiry != null) {
+      lines.push(w.msToExpiry <= 0
+        ? 'window already EXPIRED at admit (grace path let it through)'
+        : `${fmtMs(w.msToExpiry)} of the window left at admit`);
+    }
+  }
+  return lines.join('\n');
+}
+
+/** Tooltip for the kind badge (self/task/replay + user): what the kind means,
+ *  plus the raiser explanation when via is present. */
+function kindTitle(tr: TriggerVM): string {
+  const lines: string[] = [];
+  lines.push(KIND_EXPLAIN[tr.kind] ?? `trigger kind: ${tr.kind}`);
+  if (tr.via) {
+    const prefix = tr.via.split(':')[0]!;
+    const via = VIA_EXPLAIN[tr.via] ?? VIA_PREFIX_EXPLAIN[prefix];
+    lines.push(via ? `via ${tr.via}: ${via}` : `via: ${tr.via}`);
+  }
+  return lines.join('\n');
+}
 
 function storedToVM(t: StoredTurn, source?: string): TurnVM {
   return {

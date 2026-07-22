@@ -87,6 +87,32 @@ export interface ConvTransition {
 export type WindowSource = 'face' | 'tap' | 'followup';
 const SRC_PRIORITY: Record<WindowSource, number> = { face: 10, followup: 50, tap: 100 };
 
+/**
+ * The full WHY of the last utteranceEnded() decision — admit provenance for the
+ * turn trigger + observability ("why did this turn run" must never be a mystery;
+ * seen live 2026-07-22: a turn admitted at mode=idle msToExpiry=0 with no trace
+ * of which rule let it in). Captured on EVERY call, admitted or not.
+ */
+export interface AdmitTrace {
+  admitted: boolean;
+  /** which rule decided:
+   *  - window-open: a listening/followup window was open when the final landed
+   *  - started-in-window: the grace rescue — utterance BEGAN while the window was
+   *    open, final landed after it closed (STT endpoint tail)
+   *  - no-window / ended-before-grace: the reject reasons */
+  rule: 'window-open' | 'started-in-window' | 'no-window' | 'ended-before-grace';
+  /** mode at decision time (post-prune) — 'idle' + admitted ⇒ the grace path. */
+  mode: ConvMode;
+  /** the window that decided (current, or most-recent for the grace/reject cases) */
+  windowSrc: WindowSource;
+  /** the reason string that opened that window ('tap', 'palm-address',
+   *  'reply-followup', 'face-arrival', 'speak-timeout', …) */
+  openedBy: string;
+  openedAt: number;
+  /** window time left at decision; 0 = already closed (grace path / reject). */
+  msToExpiry: number;
+}
+
 export class ConversationState {
   #mode: ConvMode = 'idle';
   #thinkUntil = 0;  // THINKING safety expiry (ms), or 0 — a turn that never completes (e.g. an LLM
@@ -103,6 +129,9 @@ export class ConversationState {
                         // rescue depended on #lastWindowUntil not being zeroed/clamped
                         // before the final landed, which a tick or a prior consume broke).
   #windowSrc: WindowSource = 'tap'; // why the current window is open (priority)
+  #windowOpenedBy = '';   // the reason string that opened the current/most-recent window
+                          // ('tap', 'palm-address', 'reply-followup', …) — provenance only
+  #lastAdmit: AdmitTrace | null = null; // the full WHY of the last utteranceEnded() decision
   #speakUntil = 0;  // SPEAKING safety expiry (ms), or 0
   #faceCooldownUntil = 0; // a face-arrival is ignored until this time (anti-flap)
   #onTransition?: (t: ConvTransition) => void;
@@ -265,6 +294,7 @@ export class ConversationState {
     if (this.#mode !== 'speaking') return; // already left speaking (e.g. tap-interrupt)
     this.#speakUntil = 0;
     this.#windowSrc = 'followup';
+    this.#windowOpenedBy = 'reply-followup'; // provenance: the reply's auto re-listen
     this.#setWindow(now + ConvCfg.FOLLOWUP_MS);
     this.#set('followup', now, 'tts-end');
   }
@@ -322,9 +352,20 @@ export class ConversationState {
    *  grace horizon that let an utterance through. */
   get lastWindowUntil(): number { return this.#lastWindowUntil; }
 
+  /** The full WHY of the most recent utteranceEnded() decision (admit provenance
+   *  for the turn trigger + obs). Null until the first utterance is judged. */
+  get lastAdmit(): AdmitTrace | null { return this.#lastAdmit; }
+
   utteranceEnded(endedAt: number, now: number, startedAt?: number): boolean {
     this.#prune(now);
     const windowOpenNow = this.#mode === 'listening' || this.#mode === 'followup';
+    // Admit-trace base: the window under judgment (current, or most-recent when
+    // already closed — that's the one the grace rule consults).
+    const admitBase = {
+      mode: this.#mode, windowSrc: this.#windowSrc, openedBy: this.#windowOpenedBy,
+      openedAt: this.#windowOpenedAt,
+      msToExpiry: this.#windowUntil ? Math.max(0, this.#windowUntil - now) : 0,
+    };
     // STARTED-WHILE-OPEN (the robust rescue): an utterance you BEGAN while the window
     // was open is addressed, even if the FINAL only lands after the window has since
     // closed (STT adds ~1.3s trailing silence; a conv-tick can prune the window to idle
@@ -340,8 +381,19 @@ export class ConversationState {
     const inOpenInterval = startedAt != null && this.#lastWindowUntil > 0
       && startedAt >= this.#windowOpenedAt - ConvCfg.GRACE_MS
       && startedAt <= this.#lastWindowUntil;
-    if (!windowOpenNow && !inOpenInterval) return false;
-    if (windowOpenNow && endedAt < now - ConvCfg.GRACE_MS) return false;
+    if (!windowOpenNow && !inOpenInterval) {
+      this.#lastAdmit = { admitted: false, rule: 'no-window', ...admitBase };
+      return false;
+    }
+    if (windowOpenNow && endedAt < now - ConvCfg.GRACE_MS) {
+      this.#lastAdmit = { admitted: false, rule: 'ended-before-grace', ...admitBase };
+      return false;
+    }
+    this.#lastAdmit = {
+      admitted: true,
+      rule: windowOpenNow ? 'window-open' : 'started-in-window',
+      ...admitBase,
+    };
     this.#windowUntil = 0;
     // DON'T zero #lastWindowUntil/#windowOpenedAt here — keeping the just-closed
     // interval lets a follow-on utterance from the SAME breath still qualify; a NEW
@@ -378,7 +430,9 @@ export class ConversationState {
     if (this.#mode === 'speaking' && this.#speakUntil && now >= this.#speakUntil) {
       // tts-end lost → behave as if speech ended (bounded recovery).
       this.#speakUntil = 0;
-      this.#windowUntil = now + ConvCfg.FOLLOWUP_MS;
+      this.#windowSrc = 'followup';
+      this.#windowOpenedBy = 'speak-timeout'; // provenance: lost tts-end recovery
+      this.#setWindow(now + ConvCfg.FOLLOWUP_MS);
       this.#set('followup', now, 'speak-timeout');
     }
     if ((this.#mode === 'listening' || this.#mode === 'followup')
@@ -408,6 +462,7 @@ export class ConversationState {
   /** Open a listening window of a given source (priority) → listening. */
   #openWindow(src: WindowSource, until: number, now: number, reason: string): void {
     this.#windowSrc = src;
+    this.#windowOpenedBy = reason; // provenance: WHAT opened this window (admit trace)
     this.#setWindow(until);
     this.#set('listening', now, reason);
   }

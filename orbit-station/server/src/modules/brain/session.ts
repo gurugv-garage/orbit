@@ -52,7 +52,7 @@ import { gesturesFromConfig } from '../bodylink/motion.js';
 import { buildSystemPrompt, isVisionIntent, MOOD_TAG_RE, MOVE_TAG_RE, stripMoodTag } from './prompt.js';
 import { SpeechGate } from './speech-gate.js';
 import { decideThought, type SessionState } from './thought-router.js';
-import { ConversationState, type ConvTransition } from './conversation-state.js';
+import { ConversationState, type AdmitTrace, type ConvTransition } from './conversation-state.js';
 import { MAX_HISTORY_MESSAGES, SESSION_IDLE_MIN, VISION_GATE } from './constants.js';
 import { RpcBroker } from './rpc.js';
 import { makeReplayStreamFn, wrapToolsForReplay, type ReplayScript } from './replay.js';
@@ -75,9 +75,13 @@ const CONV_TICK_MS = 500;
 
 export interface TurnRequest {
   turnId: string;
-  /** `via` = WHICH source raised a non-user trigger (a mood bit id, a gate raise key,
-   *  the greet, the console poke) — provenance surfaced in the observability trace. */
-  trigger: { kind: string; text: string; via?: string };
+  /** `via` = WHICH source raised/admitted the trigger (a mood bit id, a gate raise
+   *  key, the greet, the console poke — and for addressed user turns the WINDOW
+   *  that admitted the utterance: tap-window/followup-window/…). `window` = the
+   *  ConversationState admit verdict for addressed user turns (which rule + which
+   *  window + how it opened + time left) — provenance surfaced in observability so
+   *  "why did this turn run" is never a mystery. */
+  trigger: { kind: string; text: string; via?: string; window?: AdmitTrace };
   context?: { state?: string; battery?: number };
   imageBase64?: string;
   imageMime?: string;
@@ -230,6 +234,7 @@ export class DockBrainSession {
   /** the sentences actually SPOKEN this turn (for the self-remark feedback loop). */
   #spokenSentences: string[] = [];
   #triggerVia: string | undefined; // the raising source (mood bit / gate key / …) — obs only
+  #triggerWindow: AdmitTrace | undefined; // the admit verdict for addressed user turns — obs only
   #mergeCount = 0; // merge-supersedes carried by the CURRENT turn (Addendum 10)
   // A1.2: a station-originated user turn (an addressed always-on-mic utterance) —
   // the phone must adopt it even though its trigger.kind is 'user'.
@@ -564,6 +569,11 @@ export class DockBrainSession {
   utteranceAddressed(endedAt: number, now = Date.now(), startedAt?: number): boolean {
     return this.#conv.utteranceEnded(endedAt, now, startedAt);
   }
+
+  /** The admit verdict of the most recent utteranceAddressed() — WHICH rule/window
+   *  let the utterance in (or kept it out). Read right after the call; feeds the
+   *  turn trigger's provenance + the addressed debug trace. */
+  lastAdmit(): AdmitTrace | null { return this.#conv.lastAdmit; }
 
   /** Back-compat shim for the console 2c surface + tests. */
   setListening(listening: boolean): void {
@@ -1013,6 +1023,7 @@ export class DockBrainSession {
     this.#triggerText = req.trigger.text;
     this.#triggerKind = req.trigger.kind || 'user';
     this.#triggerVia = req.trigger.via;
+    this.#triggerWindow = req.trigger.window;
     this.#mergeCount = req.merges ?? 0;
     this.#stationOriginated = req.stationOriginated === true;
     this.#cancelled = false;
@@ -1474,7 +1485,9 @@ export class DockBrainSession {
         // new user message, so deriving the trigger from history labeled
         // every turn with the PREVIOUS utterance (seen live on the console).
         this.#shipObs('TurnStart', {
-          trigger: { kind: this.#triggerKind, text: this.#triggerText, ...(this.#triggerVia ? { via: this.#triggerVia } : {}) },
+          trigger: { kind: this.#triggerKind, text: this.#triggerText,
+            ...(this.#triggerVia ? { via: this.#triggerVia } : {}),
+            ...(this.#triggerWindow ? { window: this.#triggerWindow } : {}) },
         });
         break;
       case 'turn_start':

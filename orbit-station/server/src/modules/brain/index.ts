@@ -727,11 +727,11 @@ export function brainModule(w: BrainWiring): StationModule {
         // snapshot the conversation state BEFORE any decision consumes the window.
         const preLastWin = session(t.dockId).convLastWindowUntil(); // BEFORE snapshot prunes
         const pre = session(t.dockId).conversation();
-        const trace = (decision: string) => {
+        const trace = (decision: string, extra?: Record<string, unknown>) => {
           addrTrace.push({ at: Date.now(), dock: t.dockId, text: t.text, tier: t.confTier ?? '?',
             avgLogprob: t.avgLogprob, noSpeechProb: t.noSpeechProb, compressionRatio: t.compressionRatio,
             decision, mode: pre.mode, windowUntil: pre.windowUntil, msToExpiry: pre.msToExpiry,
-            lastWindowUntil: preLastWin, startedAt: t.startedAt, endedAt: t.endedAt });
+            lastWindowUntil: preLastWin, startedAt: t.startedAt, endedAt: t.endedAt, ...extra });
           if (addrTrace.length > 50) addrTrace.shift();
           // A pending barge hold resolves on this dock's next final — but only
           // a final whose utterance ENDED after the hold was placed (with
@@ -788,7 +788,7 @@ export function brainModule(w: BrainWiring): StationModule {
               session(t.dockId).tapOpen(); // open the listening window (adopt), same as wake()
               void session(t.dockId).handleTurnRequest({
                 turnId: `addr-${randomUUID()}`,
-                trigger: { kind: 'user', text: command },
+                trigger: { kind: 'user', text: command, via: 'wake+command' },
                 stationOriginated: true,
                 stt: { confTier: t.confTier, avgLogprob: t.avgLogprob, noSpeechProb: t.noSpeechProb,
                   compressionRatio: t.compressionRatio, voice: t.voice },
@@ -907,16 +907,28 @@ export function brainModule(w: BrainWiring): StationModule {
           return;
         }
         if (!session(t.dockId).utteranceAddressed(t.endedAt, Date.now(), t.startedAt)) { trace('skip:not-addressed'); return; }
-        trace('RAN-TURN');
+        // The admit verdict: WHICH window/rule let this utterance in. Rides the
+        // trigger into observability so an admitted turn always explains itself
+        // (seen 2026-07-22: a turn ran at mode=idle with no provenance at all —
+        // the grace path was invisible; a video chained 5 turns before anyone
+        // could tell why).
+        const admit = session(t.dockId).lastAdmit();
+        // via names the ADMITTING window. 'followup-window' (auto re-listen —
+        // NOT a deliberate signal) keeps its special meaning: the brain frames
+        // those as possibly-overheard and may stay silent, which mechanically
+        // ends the followup chain (no reply → no window). Deliberate openers
+        // (tap/palm/wake → src 'tap', face-arrival → 'face') name themselves.
+        // NOTE this keys on the admitting WINDOW (admit.windowSrc), not pre.mode
+        // as before — so a followup-window utterance admitted via the GRACE path
+        // (pre.mode already idle) is now correctly framed possibly-overheard too.
+        const via = admit?.windowSrc === 'followup' ? 'followup-window'
+          : admit?.windowSrc === 'face' ? 'face-window'
+          : admit?.openedBy?.startsWith('palm') ? 'palm-window'
+          : 'tap-window';
+        trace('RAN-TURN', { via, admitRule: admit?.rule, windowOpenedBy: admit?.openedBy });
         void session(t.dockId).handleTurnRequest({
           turnId: `addr-${randomUUID()}`,
-          // via 'followup-window': heard in the auto re-listen window, NOT via a
-          // deliberate signal (tap/palm/wake open 'listening', not 'followup') —
-          // the brain frames these as possibly-overheard and may stay silent,
-          // which mechanically ends the followup chain (no reply → no window).
-          trigger: pre.mode === 'followup'
-            ? { kind: 'user', text: t.text, via: 'followup-window' }
-            : { kind: 'user', text: t.text },
+          trigger: { kind: 'user', text: t.text, via, ...(admit ? { window: admit } : {}) },
           stationOriginated: true, // A1.2: the phone must ADOPT this (it didn't start it)
           // STT confidence → observability turn trace (why this heard utterance ran).
           stt: { confTier: t.confTier, avgLogprob: t.avgLogprob, noSpeechProb: t.noSpeechProb,
@@ -1002,11 +1014,17 @@ export function brainModule(w: BrainWiring): StationModule {
           case 'transcript':
             if (p?.isFinal !== true) session(dock).preWarm();
             break;
-          case 'turn-request':
-            void session(dock).handleTurnRequest(p as unknown as TurnRequest).catch((err) => {
+          case 'turn-request': {
+            // Provenance backstop: a phone-originated turn (typed in the debug
+            // console / DebugTestReceiver / legacy tap-to-talk) that carries no
+            // via gets one, so NO turn ever reaches obs unexplained.
+            const treq = p as unknown as TurnRequest;
+            if (treq?.trigger && !treq.trigger.via) treq.trigger.via = 'phone:turn-request';
+            void session(dock).handleTurnRequest(treq).catch((err) => {
               console.error(`[brain] ${dock}: turn crashed`, err);
             });
             break;
+          }
           case 'addressed': {
             // A tap — TOGGLE the dock's addressed listening window (D1). Stamped
             // with the STATION clock so the utterance correlation (also station

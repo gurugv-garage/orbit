@@ -57,7 +57,7 @@ export interface AgentEventDto {
     /** MessageEnd: the UNSTRIPPED assistant text ([face:]/[move] tags intact) —
      *  the turn-replay source; `text` stays the spoken (tag-stripped) form. */
     rawText?: string;
-    trigger?: { kind: string; text?: string; via?: string };
+    trigger?: Trigger;
     state?: string;
     merges?: number;
     stopReason?: string;
@@ -122,7 +122,19 @@ export interface SpeechWindow { startedAt: number; endedAt?: number }
  * "heartbeat", "schedule", "node" (another orbit node), etc. — set a different
  * kind and carry their own payload in `text`. The UI badges on `kind`.
  */
-export interface Trigger { kind: string; text?: string }
+export interface Trigger {
+  kind: string;
+  text?: string;
+  /** the raising/admitting source ('followup-window', 'busy-drain', 'gate:<key>',
+   *  'mood:<bit>', 'wake+command', 'phone:turn-request', …). */
+  via?: string;
+  /** for addressed user turns: the ConversationState admit verdict — which rule +
+   *  which window let the utterance in (brain/conversation-state.ts AdmitTrace). */
+  window?: {
+    admitted?: boolean; rule?: string; mode?: string; windowSrc?: string;
+    openedBy?: string; openedAt?: number; msToExpiry?: number;
+  };
+}
 
 export interface TurnRecord {
   turnId: string;
