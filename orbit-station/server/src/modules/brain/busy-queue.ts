@@ -26,6 +26,11 @@ export interface HeardUtterance {
   text: string;
   startedAt: number;
   endedAt: number;
+  /** segmentation-minted correlation id (`<dockId>:<audioStartMs>`) — threads the
+   *  audio segment through the addressed trace + turn trigger + obs. */
+  utteranceId?: string;
+  /** wall-clock the transcript landed (vs endedAt = when the sound stopped). */
+  sttFinalAt?: number;
   confTier?: string;
   avgLogprob?: number | null;
   noSpeechProb?: number | null;

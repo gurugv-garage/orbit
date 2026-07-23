@@ -105,6 +105,9 @@ fun DockScreen() {
             // Keepalive is NOT an edge: station-only (refreshes its speaking cap);
             // no bus re-emit (that reset the barge grace window every 5s).
             onSpeakingKeepalive = { agentRef.value?.speakingKeepalive() },
+            // TTS observability (pause/resume/play-start + speak-edge) → the
+            // trace log + a lossy client-evt frame on the station timeline.
+            onClientEvt = { event, detail -> agentRef.value?.clientEvt(event, detail) },
         )
     }
     // Station-synced config (faceGestures live at the STATION now; the keys left
@@ -423,6 +426,11 @@ fun DockScreen() {
     // Face skin wiring: a face change (brain tool / dev picker / config / restore)
     // re-points the renderer (faceId flow) AND re-voices the TTS, then persists.
     LaunchedEffect(controller, tts, configCache) {
+        // Face-state observability: every actual FaceState transition → the
+        // trace log + a lossy client-evt frame (FaceController stays brain-free).
+        controller.onStateChange = { from, to ->
+            agent.clientEvt("face-state", mapOf("from" to from.name, "to" to to.name))
+        }
         controller.onFaceStyleChanged = { id ->
             tts.applyVoice(dev.orbit.dock.ui.face.FaceRegistry.byId(id).voice)
             dev.orbit.dock.ui.face.FaceStylePrefs.set(ctx, id)

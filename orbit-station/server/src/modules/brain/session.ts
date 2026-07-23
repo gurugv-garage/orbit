@@ -53,6 +53,9 @@ import { buildSystemPrompt, isVisionIntent, MOOD_TAG_RE, MOVE_TAG_RE, stripMoodT
 import { SpeechGate } from './speech-gate.js';
 import { decideThought, type SessionState } from './thought-router.js';
 import { ConversationState, type AdmitTrace, type ConvTransition } from './conversation-state.js';
+import { mkdirSync, writeFileSync, readdirSync, statSync, unlinkSync } from 'node:fs';
+import { join } from 'node:path';
+import { recordConvEvent } from '../observability/conv-events.js';
 import { MAX_HISTORY_MESSAGES, SESSION_IDLE_MIN, VISION_GATE } from './constants.js';
 import { RpcBroker } from './rpc.js';
 import { makeReplayStreamFn, wrapToolsForReplay, type ReplayScript } from './replay.js';
@@ -81,7 +84,10 @@ export interface TurnRequest {
    *  ConversationState admit verdict for addressed user turns (which rule + which
    *  window + how it opened + time left) — provenance surfaced in observability so
    *  "why did this turn run" is never a mystery. */
-  trigger: { kind: string; text: string; via?: string; window?: AdmitTrace };
+  trigger: { kind: string; text: string; via?: string; window?: AdmitTrace;
+    /** segmentation-minted id of the admitting utterance (`<dockId>:<audioStartMs>`)
+     *  — joins this turn to its conv_events/perception rows on the timeline. */
+    utteranceId?: string };
   context?: { state?: string; battery?: number };
   imageBase64?: string;
   imageMime?: string;
@@ -235,6 +241,8 @@ export class DockBrainSession {
   #spokenSentences: string[] = [];
   #triggerVia: string | undefined; // the raising source (mood bit / gate key / …) — obs only
   #triggerWindow: AdmitTrace | undefined; // the admit verdict for addressed user turns — obs only
+  #triggerUtterance: string | undefined; // the admitting utterance's correlation id — obs only
+  #turnImage: string | undefined; // ref of the saved input frame this turn's model saw — obs only
   #mergeCount = 0; // merge-supersedes carried by the CURRENT turn (Addendum 10)
   // A1.2: a station-originated user turn (an addressed always-on-mic utterance) —
   // the phone must adopt it even though its trigger.kind is 'user'.
@@ -823,6 +831,14 @@ export class DockBrainSession {
    *  renderer) + a structured log line. */
   #onConvTransition(t: ConvTransition): void {
     this.#d.log?.(`[conv] ${this.dock} ${t.from}->${t.to} (${t.reason})`);
+    // The listening-window/mode LIFECYCLE on the durable timeline: open (reason
+    // tap/palm-address/reply-followup/…), expire (window-timeout), consume
+    // (addressed-utterance), speak edges, safety prunes. Extends don't transition
+    // (same mode) — windowUntil on each event carries the current horizon instead.
+    recordConvEvent({
+      dockId: this.dock, lane: 'conv', type: `conv:${t.to}`, verdict: t.reason,
+      ts: t.at, detail: { from: t.from, windowUntil: this.#conv.snapshot(t.at).windowUntil },
+    });
     // a directed agent frame to the phone (the renderer reads it for face/beeps).
     // windowUntil = absolute epoch ms the listening/followup window closes (0 when not
     // timed) — the phone renders a live countdown from it, so a screenshot shows WHETHER
@@ -1024,6 +1040,8 @@ export class DockBrainSession {
     this.#triggerKind = req.trigger.kind || 'user';
     this.#triggerVia = req.trigger.via;
     this.#triggerWindow = req.trigger.window;
+    this.#triggerUtterance = req.trigger.utteranceId;
+    this.#turnImage = undefined;
     this.#mergeCount = req.merges ?? 0;
     this.#stationOriginated = req.stationOriginated === true;
     this.#cancelled = false;
@@ -1229,6 +1247,11 @@ export class DockBrainSession {
       if (image) {
         content.push({ type: 'image', data: image, mimeType: req.imageBase64 ? (req.imageMime ?? 'image/jpeg') : 'image/jpeg' });
         this.#debug('vision', { source: req.imageBase64 ? 'phone-photo' : 'sfu-frame' });
+        // Keep the EXACT frame the model saw (the request ring strips images):
+        // bounded dump keyed dock/turnId, ref rides TurnStart → TurnRecord.image →
+        // the obs UI renders the thumbnail. "What did it actually look at?" must
+        // never be unanswerable on a vision turn.
+        this.#turnImage = saveTurnImage(this.dock, req.turnId, image);
       }
     }
 
@@ -1487,7 +1510,9 @@ export class DockBrainSession {
         this.#shipObs('TurnStart', {
           trigger: { kind: this.#triggerKind, text: this.#triggerText,
             ...(this.#triggerVia ? { via: this.#triggerVia } : {}),
-            ...(this.#triggerWindow ? { window: this.#triggerWindow } : {}) },
+            ...(this.#triggerWindow ? { window: this.#triggerWindow } : {}),
+            ...(this.#triggerUtterance ? { utteranceId: this.#triggerUtterance } : {}) },
+          ...(this.#turnImage ? { image: this.#turnImage } : {}),
         });
         break;
       case 'turn_start':
@@ -1918,6 +1943,34 @@ export function resolveModel(spec: string): Model<any> {
  * into every request's options, the only reliable seam.
  */
 export const DOCK_MAX_TOKENS = 2048;
+
+/** Persist the input frame a vision turn's model actually saw (the request ring
+ *  strips image bytes). Bounded dump like the utterance WAVs: prune oldest past
+ *  the budget, every Nth save. Returns the ref (`<dock>/<turnId>.jpg`) served by
+ *  GET /api/observability/turn-image?f=<ref>, or undefined when the write fails. */
+const TURN_IMAGE_BUDGET_BYTES = Number(process.env.OBS_TURN_IMAGE_MB ?? 200) * 1024 * 1024;
+let turnImageSavesSincePrune = 0;
+export function saveTurnImage(dock: string, turnId: string, base64: string): string | undefined {
+  try {
+    const safeTurn = turnId.replace(/[^a-zA-Z0-9._-]/g, '_');
+    const dir = `.data/turn-images/${dock}`;
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, `${safeTurn}.jpg`), Buffer.from(base64, 'base64'));
+    if (++turnImageSavesSincePrune >= 20) {
+      turnImageSavesSincePrune = 0;
+      const sizes = new Map(readdirSync(dir).filter((f) => f.endsWith('.jpg'))
+        .map((f) => [f, statSync(join(dir, f))] as const)
+        .sort((a, b) => a[1].mtimeMs - b[1].mtimeMs)
+        .map(([f, st]) => [f, st.size] as const));
+      let total = [...sizes.values()].reduce((n, s) => n + s, 0);
+      for (const [f, size] of sizes) {
+        if (total <= TURN_IMAGE_BUDGET_BYTES) break;
+        try { unlinkSync(join(dir, f)); total -= size; } catch { /* */ }
+      }
+    }
+    return `${dock}/${safeTurn}.jpg`;
+  } catch { return undefined; }
+}
 
 /** Serialize one LLM request (the streamFn `context` arg — literally what goes
  *  to the provider) for the obs request ring. Images are replaced with a size

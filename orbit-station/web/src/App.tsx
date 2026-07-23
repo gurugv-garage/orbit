@@ -5,6 +5,7 @@ import { ErrorBoundary } from './components/ErrorBoundary';
 import { Overview } from './modules/Overview';
 import { Docks } from './modules/Docks';
 import { Observability } from './modules/Observability';
+import { Timeline } from './modules/Timeline';
 import { Brain } from './modules/Brain';
 import { Tasks } from './modules/Tasks';
 import { Conductor } from './modules/Conductor';
@@ -26,6 +27,7 @@ const VIEWS: ViewDef[] = [
   { id: 'overview', label: 'Overview', ico: '◎', el: <Overview /> },
   { id: 'docks', label: 'Docks', ico: '🛰', el: <Docks /> },
   { id: 'observability', label: 'Observability', ico: '📡', el: <Observability /> },
+  { id: 'timeline', label: 'Timeline', ico: '🧵', el: <Timeline /> },
   { id: 'cost', label: 'Cost', ico: '💰', el: <Cost /> },
   { id: 'brain', label: 'Brain', ico: '🗣', el: <Brain /> },
   { id: 'conductor', label: 'Conductor', ico: '🎼', el: <Conductor /> },

@@ -35,6 +35,7 @@ import { gesturesFromConfig } from '../bodylink/motion.js';
 import { getFaceTools, getPerceptionGrounding, getMemoryApi, getGateApi, getTranscriptApi, getPerceiveStore, getBgAddressedApi, markSpeechAddressed, markEnrichWoke, noteSelfRemark, lastSalientAt } from '../perception/index.js';
 import { getSelf } from '../ego/index.js';
 import { isRecording } from '../capture/index.js';
+import { recordConvEvent } from '../observability/conv-events.js';
 import type { VideoRecorderApi } from '../perception/record/recorder.js';
 import { RpcBroker } from './rpc.js';
 import { BusyQueue, splitByAge, type HeardUtterance } from './busy-queue.js';
@@ -620,6 +621,14 @@ export function brainModule(w: BrainWiring): StationModule {
           avgLogprob: u.avgLogprob, noSpeechProb: u.noSpeechProb, compressionRatio: u.compressionRatio,
           decision, mode, startedAt: u.startedAt, endedAt: u.endedAt });
         if (addrTrace.length > 50) addrTrace.shift();
+        // DURABLE twin of the in-memory ring: every brain verdict also lands on the
+        // conversation timeline (conv_events) — the ring is cap-50 and dies with the
+        // process; the timeline is what incident reconstruction reads.
+        recordConvEvent({
+          dockId: u.dockId, lane: 'brain', type: 'addr', verdict: decision, text: u.text,
+          utteranceId: u.utteranceId, audioStartAt: u.startedAt, audioEndAt: u.endedAt,
+          sttFinalAt: u.sttFinalAt, detail: { mode, tier: u.confTier ?? '?' },
+        });
       };
       // ── BARGE-IN "POLITE PAUSE" ── someone starts talking while the dock is
       // mid-reply (speech ONSET from the station VAD, ~240ms of sustained voice —
@@ -706,7 +715,7 @@ export function brainModule(w: BrainWiring): StationModule {
           turnId: `addr-${randomUUID()}`,
           // via 'busy-drain': heard DURING the reply, not deliberately addressed
           // — same possibly-overheard framing as the followup window.
-          trigger: { kind: 'user', text: fresh.map((u) => u.text).join(' '), via: 'busy-drain' }, // in order, nothing lost
+          trigger: { kind: 'user', text: fresh.map((u) => u.text).join(' '), via: 'busy-drain', utteranceId: newest.utteranceId }, // in order, nothing lost
           stationOriginated: true,
           stt: { confTier: newest.confTier, avgLogprob: newest.avgLogprob,
             noSpeechProb: newest.noSpeechProb, compressionRatio: newest.compressionRatio,
@@ -733,6 +742,13 @@ export function brainModule(w: BrainWiring): StationModule {
             decision, mode: pre.mode, windowUntil: pre.windowUntil, msToExpiry: pre.msToExpiry,
             lastWindowUntil: preLastWin, startedAt: t.startedAt, endedAt: t.endedAt, ...extra });
           if (addrTrace.length > 50) addrTrace.shift();
+          // durable twin on the conversation timeline (see pushAddrTrace).
+          recordConvEvent({
+            dockId: t.dockId, lane: 'brain', type: 'addr', verdict: decision, text: t.text,
+            utteranceId: t.utteranceId, audioStartAt: t.startedAt, audioEndAt: t.endedAt,
+            sttFinalAt: t.sttFinalAt,
+            detail: { mode: pre.mode, tier: t.confTier ?? '?', msToExpiry: pre.msToExpiry, ...extra },
+          });
           // A pending barge hold resolves on this dock's next final — but only
           // a final whose utterance ENDED after the hold was placed (with
           // slack): a straggler transcription of speech that finished BEFORE
@@ -788,7 +804,7 @@ export function brainModule(w: BrainWiring): StationModule {
               session(t.dockId).tapOpen(); // open the listening window (adopt), same as wake()
               void session(t.dockId).handleTurnRequest({
                 turnId: `addr-${randomUUID()}`,
-                trigger: { kind: 'user', text: command, via: 'wake+command' },
+                trigger: { kind: 'user', text: command, via: 'wake+command', utteranceId: t.utteranceId },
                 stationOriginated: true,
                 stt: { confTier: t.confTier, avgLogprob: t.avgLogprob, noSpeechProb: t.noSpeechProb,
                   compressionRatio: t.compressionRatio, voice: t.voice },
@@ -890,6 +906,7 @@ export function brainModule(w: BrainWiring): StationModule {
                 kind: 'user',
                 text: `${info.text}\n[While you were thinking, they also said: "${t.text}" — if it belongs to the request (a correction, addition, or a repeat of it), fold it in and answer ONCE; if it is unrelated room talk, ignore it.]`,
                 via: 'merge',
+                utteranceId: t.utteranceId,
               },
               stationOriginated: true,
               merges: info.merges + 1,
@@ -906,7 +923,17 @@ export function brainModule(w: BrainWiring): StationModule {
           trace('queue:busy');
           return;
         }
-        if (!session(t.dockId).utteranceAddressed(t.endedAt, Date.now(), t.startedAt)) { trace('skip:not-addressed'); return; }
+        if (!session(t.dockId).utteranceAddressed(t.endedAt, Date.now(), t.startedAt)) {
+          // Attach the REJECT verdict too — "why did it NOT respond" must explain
+          // itself exactly like RAN-TURN does (rule + which window existed last +
+          // when it closed), or the ✕ row on the timeline is a dead end.
+          const rej = session(t.dockId).lastAdmit();
+          trace('skip:not-addressed', rej ? {
+            admitRule: rej.rule, windowOpenedBy: rej.openedBy, windowOpenedAt: rej.openedAt,
+            lastWindowUntil: preLastWin,
+          } : {});
+          return;
+        }
         // The admit verdict: WHICH window/rule let this utterance in. Rides the
         // trigger into observability so an admitted turn always explains itself
         // (seen 2026-07-22: a turn ran at mode=idle with no provenance at all —
@@ -928,7 +955,8 @@ export function brainModule(w: BrainWiring): StationModule {
         trace('RAN-TURN', { via, admitRule: admit?.rule, windowOpenedBy: admit?.openedBy });
         void session(t.dockId).handleTurnRequest({
           turnId: `addr-${randomUUID()}`,
-          trigger: { kind: 'user', text: t.text, via, ...(admit ? { window: admit } : {}) },
+          trigger: { kind: 'user', text: t.text, via, utteranceId: t.utteranceId,
+            ...(admit ? { window: admit } : {}) },
           stationOriginated: true, // A1.2: the phone must ADOPT this (it didn't start it)
           // STT confidence → observability turn trace (why this heard utterance ran).
           stt: { confTier: t.confTier, avgLogprob: t.avgLogprob, noSpeechProb: t.noSpeechProb,
@@ -941,10 +969,14 @@ export function brainModule(w: BrainWiring): StationModule {
       // always fires. Drives the REAL addressed→turn→adopt path with NO live mic.
       injectAddressed = (dock, text) => {
         session(dock).tap();
-        onAddressedFinal({ dockId: dock, text, startedAt: Date.now(), endedAt: Date.now() });
+        // utteranceId 'debug:<ts>' — injected utterances have NO audio/perception
+        // row, and an unmarked one reads as a mystery on the timeline ("who said
+        // this?" — user, 2026-07-23). The id says it was the debug API.
+        onAddressedFinal({ dockId: dock, text, startedAt: Date.now(), endedAt: Date.now(),
+          utteranceId: `debug:${Date.now()}` });
       };
       // No tap: exactly what a live mic final looks like to the brain.
-      injectHeard = (t) => { onAddressedFinal(t); };
+      injectHeard = (t) => { onAddressedFinal({ utteranceId: `debug:${Date.now()}`, ...t }); };
       getTranscriptApi()?.onFinal((t) => { onAddressedFinal(t); });
       // LIVE INTERIMS (caption UI): the gate — produce interims ONLY while the dock is
       // in a listening/followup turn (bounds GPU cost to active turns, not ambient
@@ -1014,6 +1046,22 @@ export function brainModule(w: BrainWiring): StationModule {
           case 'transcript':
             if (p?.isFinal !== true) session(dock).preWarm();
             break;
+          case 'client-evt': {
+            // Phone-side instrumentation (RemoteBrain.clientEvt): tts-pause/resume,
+            // face-state flips, speak edges, state heals… Lossy by design. Lands on
+            // the conversation timeline with BOTH clocks: deviceTs (the phone's) and
+            // ts (station arrival) — their difference ≈ skew + transit, enough to
+            // align phone events against station events per incident.
+            const { event, deviceTs, ...detail } = (p ?? {}) as { event?: string; deviceTs?: number } & Record<string, unknown>;
+            if (typeof event === 'string') {
+              recordConvEvent({
+                dockId: dock, lane: 'phone', type: `phone:${event}`,
+                ...(typeof deviceTs === 'number' ? { deviceTs } : {}),
+                ...(Object.keys(detail).length ? { detail } : {}),
+              });
+            }
+            break;
+          }
           case 'turn-request': {
             // Provenance backstop: a phone-originated turn (typed in the debug
             // console / DebugTestReceiver / legacy tap-to-talk) that carries no

@@ -19,6 +19,11 @@ package dev.orbit.dock.tts
  */
 class SpeakingEdgeGate {
 
+    /** Optional observability tap: invoked (under the gate's lock — keep it
+     *  cheap) whenever the public speaking signal actually rises/falls. The
+     *  gate stays dependency-free; the app wires this where it's constructed. */
+    var onEdge: ((rising: Boolean) -> Unit)? = null
+
     private var turnOpen = false
     private var speaking = false   // the signaled (public) speaking state
 
@@ -44,6 +49,7 @@ class SpeakingEdgeGate {
     fun onUtteranceStarted(): Boolean {
         val rise = !speaking
         speaking = true
+        if (rise) onEdge?.invoke(true)
         return rise
     }
 
@@ -60,12 +66,14 @@ class SpeakingEdgeGate {
     fun onStopped(): Boolean {
         val fall = speaking
         speaking = false
+        if (fall) onEdge?.invoke(false)
         return fall
     }
 
     private fun fall(queueDrained: Boolean): Boolean {
         if (!speaking || !queueDrained || turnOpen) return false
         speaking = false
+        onEdge?.invoke(false)
         return true
     }
 }

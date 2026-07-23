@@ -589,6 +589,12 @@ export interface FinalTranscript {
   /** the utterance's VAD window (ms epoch) — drives the addressed correlation. */
   startedAt: number;
   endedAt: number;
+  /** correlation id minted at segmentation (`<dockId>:<audioStartMs>`) — threads
+   *  this audio segment through snapshot → admit trace → turn trigger → obs. */
+  utteranceId?: string;
+  /** wall-clock the transcript committed (endedAt = when the SOUND stopped;
+   *  the gap is the STT lag every downstream decision lived with). */
+  sttFinalAt?: number;
   /** Whisper's own confidence flag (a gasp/low-conf word is tagged, not dropped). */
   lowConfidence: boolean;
   /** graded confidence: 'good' | 'shaky' | 'garbage'. A 'garbage' addressed utterance

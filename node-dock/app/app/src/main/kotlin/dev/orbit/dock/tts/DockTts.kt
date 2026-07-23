@@ -39,6 +39,9 @@ class DockTts(
      *  edge callback re-emitted Speaking(true) on the PerceptionBus every tick,
      *  resetting the barge-in grace window + counters each time. */
     private val onSpeakingKeepalive: () -> Unit = {},
+    /** Observability tap (→ RemoteBrain.clientEvt): tts-pause / tts-resume /
+     *  tts-auto-resume-timeout / tts-play-start + the gate's speak-edge. */
+    private val onClientEvt: (event: String, detail: Map<String, Any?>) -> Unit = { _, _ -> },
 ) : Speaker {
     private val appCtx = context.applicationContext
 
@@ -62,7 +65,9 @@ class DockTts(
     // Rising/falling edges of the public "speaking" signal. Turn-aware so the
     // gap between streamed sentences never reads as "stopped speaking" — that
     // false edge mid-reply is what re-armed the mic over the dock's own voice.
-    private val gate = SpeakingEdgeGate()
+    private val gate = SpeakingEdgeGate().apply {
+        onEdge = { rising -> onClientEvt("speak-edge", mapOf("rising" to rising)) }
+    }
     // Pause/continue (the barge-in "polite pause"). Playback is held at the PCM
     // drain (WebRtcAudio.pauseTtsRender) so resume is sample-exact. The speaking
     // signal must NOT fall while held — the station would read SpeakEnd, settle
@@ -379,7 +384,10 @@ class DockTts(
         if (pcm16 == null || pcm16.isEmpty()) { finishUtterance(id); return }
         // playback-start edge (the real "now speaking").
         face.speak()
-        if (gate.onUtteranceStarted()) speakingRose()
+        if (gate.onUtteranceStarted()) {
+            speakingRose()
+            onClientEvt("tts-play-start", emptyMap())
+        }
         WebRtcAudio.renderTtsPcm(appCtx, pcm16)
         // Schedule this utterance's end. Sentences synthesize near-simultaneously but
         // play SEQUENTIALLY from the shared render queue, so each finish must wait for
@@ -472,20 +480,24 @@ class DockTts(
             for (t in startTimers.values) { t.future?.cancel(false); t.future = null }
             holdTimeout = scheduler.schedule({
                 Timber.w("TTS hold exceeded ${HOLD_MAX_MS}ms with no release — auto-resuming")
-                resume()
+                doResume(auto = true)
             }, HOLD_MAX_MS, java.util.concurrent.TimeUnit.MILLISECONDS)
             Timber.i("TTS paused (${finishTimers.size} finish timers held)")
         }
+        onClientEvt("tts-pause", emptyMap())
     }
 
     /** Continue speech held by [pause], shifting the playback clock and every
      *  finish timer by the held duration, then feeding any synthesis that
      *  completed while held. */
-    override fun resume() {
+    override fun resume() = doResume(auto = false)
+
+    private fun doResume(auto: Boolean) {
         val deferred: List<String>
+        val shift: Long
         synchronized(pauseLock) {
             if (!paused) return
-            val shift = System.currentTimeMillis() - pausedAtMs
+            shift = System.currentTimeMillis() - pausedAtMs
             paused = false
             holdTimeout?.cancel(false)
             holdTimeout = null
@@ -503,6 +515,7 @@ class DockTts(
             pausedFeeds.clear()
             Timber.i("TTS resumed after ${shift}ms (${deferred.size} deferred feeds)")
         }
+        onClientEvt(if (auto) "tts-auto-resume-timeout" else "tts-resume", mapOf("heldMs" to shift))
         // Feed on the scheduler, not the caller's thread — a release arrives on
         // the WS frame path (or the UI), and each feed is a WAV read + resample.
         deferred.forEach { id -> scheduler.execute { feedSynthesized(id) } }

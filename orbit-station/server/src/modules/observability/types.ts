@@ -134,6 +134,9 @@ export interface Trigger {
     admitted?: boolean; rule?: string; mode?: string; windowSrc?: string;
     openedBy?: string; openedAt?: number; msToExpiry?: number;
   };
+  /** segmentation-minted id of the admitting utterance (`<dockId>:<audioStartMs>`)
+   *  — joins the turn to its conv_events / perception rows on the timeline. */
+  utteranceId?: string;
 }
 
 export interface TurnRecord {
@@ -155,6 +158,9 @@ export interface TurnRecord {
   steps: StepRecord[];
   /** llm calls = steps that emitted tool calls + 1 (per brain.md). */
   llmCalls: number;
+  /** ref of the saved input frame the model saw on a vision turn
+   *  (`<dock>/<turnId>.jpg`, served by GET /api/observability/turn-image?f=). */
+  image?: string;
 }
 
 // ── cost aggregation (the Cost console tab) ─────────────────────────────────

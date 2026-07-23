@@ -1,0 +1,33 @@
+/* Timeline — the cross-component conversation debugger (conv_events + turns). */
+
+.tl-controls { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 10px; }
+.tl-feed { display: flex; flex-direction: column; gap: 2px; }
+.tl-line { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+.tl-time { font-size: 11px; opacity: 0.75; white-space: nowrap; flex: 0 0 86px; }
+.tl-lanebadge { flex: 0 0 74px; font-size: 10px; text-transform: uppercase; letter-spacing: 0.05em;
+  opacity: 0.85; text-align: right; }
+.lb-phone { color: rgb(80,160,255); } .lb-perception { color: rgb(170,120,255); }
+.lb-brain { color: rgb(255,180,70); } .lb-conv { color: rgb(110,220,160); }
+.tl-gap { text-align: center; font-size: 11px; opacity: 0.5; padding: 2px 0; }
+.tl-noise { font-size: 12px; opacity: 0.65; padding: 2px 0 2px 94px; cursor: pointer; }
+.tl-noise .tl-line { opacity: 0.9; padding-left: 12px; }
+.tl-ev { display: inline-block; max-width: 100%; padding: 2px 8px; margin: 1px 0; border-radius: 10px;
+  font-size: 12px; line-height: 1.5; border: 1px solid transparent; overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap; vertical-align: top; cursor: default; }
+.tl-ev.open { white-space: normal; }
+.tl-ev .mono { font-size: 11px; }
+.tl-ev-phone      { background: rgba( 80,160,255,0.14); border-color: rgba( 80,160,255,0.45); }
+.tl-ev-perception { background: rgba(170,120,255,0.14); border-color: rgba(170,120,255,0.45); }
+.tl-ev-brain      { background: rgba(255,180, 70,0.14); border-color: rgba(255,180, 70,0.45); }
+.tl-ev-conv       { background: rgba(110,220,160,0.12); border-color: rgba(110,220,160,0.40); }
+.tl-ev.bad  { border-color: rgba(255, 90, 90,0.8); background: rgba(255,90,90,0.12); }
+.tl-ev.good { border-color: rgba(110,220,160,0.9); }
+.tl-turn { flex: 1; margin: 3px 0; padding: 4px 10px; border-left: 3px solid rgba(255,180,70,0.8);
+  background: rgba(255,180,70,0.08); border-radius: 4px; font-size: 12px; }
+.tl-lag { opacity: 0.7; font-size: 11px; margin-left: 6px; }
+.tl-detail { display: block; opacity: 0.75; font-size: 11px; white-space: normal; word-break: break-word; }
+.tl-clip { margin-left: 6px; cursor: pointer; }
+.tl-why { display: block; font-size: 11.5px; opacity: 0.9; white-space: normal; word-break: break-word;
+  border-left: 2px solid rgba(255,180,70,0.6); padding-left: 6px; margin: 3px 0; font-style: italic; }
+.tl-turnmark { margin-left: 4px; font-size: 10px; opacity: 0.9; cursor: help; }
+.tl-inturn > .tl-ev { border-left: 3px solid rgba(255,180,70,0.9); }

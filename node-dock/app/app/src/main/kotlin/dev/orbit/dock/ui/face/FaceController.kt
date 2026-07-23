@@ -81,6 +81,19 @@ class FaceController(
     private val _state = MutableStateFlow(FaceState.Idle)
     val state: StateFlow<FaceState> = _state.asStateFlow()
 
+    /** Observability tap: invoked on every ACTUAL face-state change (from ≠ to),
+     *  at the single [setState] chokepoint. Set by the app; null in tests. Keep
+     *  it cheap and free of calls back into this controller. */
+    var onStateChange: ((from: FaceState, to: FaceState) -> Unit)? = null
+
+    /** The one writer for [_state], so every transition hits [onStateChange]. */
+    private fun setState(to: FaceState) {
+        val from = _state.value
+        if (from == to) return
+        _state.value = to
+        onStateChange?.invoke(from, to)
+    }
+
     private val _speaker = MutableStateFlow(Speaker.Silent)
     val speaker: StateFlow<Speaker> = _speaker.asStateFlow()
 
@@ -213,22 +226,22 @@ class FaceController(
             )
         }
         passiveLockUntilMs = nowMs() + STALE_GUARD_MS
-        if (_state.value == FaceState.Idle) _state.value = FaceState.Engaged
+        if (_state.value == FaceState.Idle) setState(FaceState.Engaged)
     }
 
     fun listen() {
         wakeUp()
-        _state.value = FaceState.Listening
+        setState(FaceState.Listening)
     }
 
     fun speak() {
         wakeUp()
-        _state.value = FaceState.Speaking
+        setState(FaceState.Speaking)
         _speaker.value = Speaker.Bot
     }
 
     fun silence() {
-        _state.value = FaceState.Idle
+        setState(FaceState.Idle)
         _speaker.value = Speaker.Silent
         lastSettledAtMs = nowMs()   // the decay afterglow starts at the settle
         scheduleDecay()
@@ -237,7 +250,7 @@ class FaceController(
 
     fun illustrate() {
         wakeUp()
-        _state.value = FaceState.Illustrating
+        setState(FaceState.Illustrating)
     }
 
     /**
@@ -413,7 +426,7 @@ class FaceController(
         val anyOff = _micMuted.value || _camMuted.value
         _privacy.value = bothOff
         if (anyOff) {
-            _state.value = FaceState.Idle
+            setState(FaceState.Idle)
             sleepyJob?.cancel()
             sleepyJob = null
             _speaker.value = if (bothOff) Speaker.Muted else Speaker.Silent

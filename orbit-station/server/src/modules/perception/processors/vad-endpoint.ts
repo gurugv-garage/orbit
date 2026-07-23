@@ -214,6 +214,14 @@ export class UtteranceDetector {
   // or any transcription. The consumer (brain) uses it to hold the dock's TTS the
   // moment someone starts talking over it. Opt-in; transport-free like the others.
   onSpeechStart?: (startedAt: Date) => void;
+  // GATE-DEATH hook (observability): an utterance the detector discarded before
+  // anyone downstream could see it — today only the sub-MIN_UTTERANCE_MS drop
+  // (the self-documented "tapped but no reply" cause). Opt-in, transport-free.
+  onDrop?: (info: { reason: 'min-utterance'; voicedMs: number; startedAt: number }) => void;
+  // DECODE-TROUBLE hook (observability): sustained opus decode failures — a dead
+  // decoder is audio silently vanishing. Fired at the same cadence as the console
+  // warnings (first failure + every 200th).
+  onDecodeTrouble?: (fails: number, ok: number) => void;
   #voicedMs = 0;        // CONTIGUOUS voiced ms for the onset (resets on a real gap; NOT cumulative)
   #onsetGapMs = 0;      // running silence within the voiced run (tolerated up to ONSET_GAP_TOLERANCE_MS)
   #onsetFired = false;
@@ -260,9 +268,11 @@ export class UtteranceDetector {
       this.#decodeFail++;
       if (this.#decodeFail === 1) {
         console.warn(`[speech-watch] OPUS DECODE FAILED (first): ${err instanceof Error ? err.message : String(err)}`);
+        this.onDecodeTrouble?.(this.#decodeFail, this.#decodeOk);
       }
       if (this.#decodeFail % 200 === 0) {
         console.warn(`[speech-watch] opus decode: ${this.#decodeFail} failures / ${this.#decodeOk} ok`);
+        this.onDecodeTrouble?.(this.#decodeFail, this.#decodeOk);
       }
     }
   }
@@ -476,12 +486,15 @@ export class UtteranceDetector {
   #endUtterance(): void {
     const frames = this.#utter;
     const ms = this.#utterMs - this.#silenceMs; // voiced span
+    const startedAtMs = this.#startedAt?.getTime() ?? Date.now();
     this.#inSpeech = false; this.#utter = []; this.#silenceMs = 0; this.#utterMs = 0;
     this.#lastInterimMs = 0;
-    if (ms < MIN_UTTERANCE_MS) return; // too short → noise (a clipped/quiet onset
-                                       // under MIN_UTTERANCE_MS is dropped here — the
-                                       // cause of an occasional "tapped but no reply"
-                                       // when only a fragment of speech was voiced).
+    if (ms < MIN_UTTERANCE_MS) {           // too short → noise (a clipped/quiet onset
+      this.onDrop?.({ reason: 'min-utterance', voicedMs: ms, startedAt: startedAtMs });
+      return;                              // under MIN_UTTERANCE_MS is dropped here — the
+                                           // cause of an occasional "tapped but no reply"
+                                           // when only a fragment of speech was voiced).
+    }
     // Record the endpoint boundary (a safe cut point — a completed utterance). We DON'T arm the
     // speech path here: that's PARAKEET-driven (words vs '') via speechEndpoint(), called by the
     // owner once transcription returns. An RMS endpoint alone is not proof of speech (a whir trips
@@ -527,7 +540,10 @@ export class UtteranceDetector {
     const frames = this.#utter;
     const ms = this.#utterMs - this.#silenceMs;
     this.#inSpeech = false; this.#utter = []; this.#silenceMs = 0; this.#utterMs = 0;
-    if (ms < MIN_UTTERANCE_MS) return;
+    if (ms < MIN_UTTERANCE_MS) {
+      this.onDrop?.({ reason: 'min-utterance', voicedMs: ms, startedAt: this.#startedAt?.getTime() ?? Date.now() });
+      return;
+    }
     const started = this.#startedAt ?? new Date();
     this.#startedAt = null;
     await (this.commit ?? this.#onUtterance)(concatFrames(frames), started, new Date());

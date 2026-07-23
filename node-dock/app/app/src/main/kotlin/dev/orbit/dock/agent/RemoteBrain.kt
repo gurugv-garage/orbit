@@ -204,6 +204,7 @@ class RemoteBrain(
         val st = _state.value
         if (st is AgentState.Waiting || st is AgentState.Thinking || st is AgentState.ToolCalling) {
             _state.value = AgentState.Idle
+            clientEvt("state-heal", mapOf("from" to st.javaClass.simpleName))
         }
     }
 
@@ -313,10 +314,33 @@ class RemoteBrain(
     // ── raw conversation events → the station (it owns the state machine) ──────
     // The phone is a pure sensor here: report what happened; the station decides.
 
+    /** OBSERVABILITY: a small conversational event — trace it locally AND ship a
+     *  LOSSY `client-evt` frame on the agent topic so the station can place phone
+     *  events on a cross-component timeline. Telemetry publish (never critical):
+     *  silently dropped when the link is down. */
+    fun clientEvt(event: String, detail: Map<String, Any?> = emptyMap()) {
+        trace("EVT $event" + if (detail.isEmpty()) "" else
+            detail.entries.joinToString(" ", prefix = " ") { "${it.key}=${it.value}" })
+        if (!isConfigured) return
+        link.publish("agent", "client-evt", buildJsonObject {
+            put("event", event)
+            put("deviceTs", System.currentTimeMillis())
+            for ((k, v) in detail) when (v) {
+                null -> {}
+                is Boolean -> put(k, v)
+                is Number -> put(k, v)
+                else -> put(k, v.toString())
+            }
+        })
+    }
+
     /** Voice activity edge — active=true HOLDS the listening window open (no ceiling
      *  while talking); active=false (a real silence end) releases it to a short endpoint. */
     fun sendVad(active: Boolean) {
-        if (isConfigured) link.publish("agent", "vad", buildJsonObject { put("active", active) })
+        if (!isConfigured) return
+        link.publish("agent", "vad", buildJsonObject { put("active", active) })
+        // trace only — the station already receives the vad frame itself.
+        trace("EVT vad-edge active=$active")
     }
 
     /** A new face arrived in view (low-priority listen request). */
@@ -337,6 +361,7 @@ class RemoteBrain(
         endTurnLocally()
         _state.value = AgentState.Idle
         if (turnId.isNotEmpty()) {
+            trace("EVT turn-cancel turn=${turnId.take(8)}")
             scope.launch {
                 link.publishCritical("agent", "turn-cancel", buildJsonObject { put("turnId", turnId) })
             }
@@ -356,6 +381,7 @@ class RemoteBrain(
     internal fun setSpeaking(speaking: Boolean) {
         if (speaking) _state.value = AgentState.Speaking
         else if (_state.value is AgentState.Speaking) _state.value = AgentState.Idle
+        clientEvt("speech-status", mapOf("speaking" to speaking))
         // The brain derives SpeakStart/SpeakEnd/TurnSettled obs markers from
         // these — keyed to the turn whose speech this is (lastTurnId: the TTS
         // tail outlives the turn).
@@ -375,6 +401,8 @@ class RemoteBrain(
     internal fun speakingKeepalive() {
         val turnId = lastTurnId
         if (turnId.isEmpty()) return
+        // trace only — this already ships a speech-status frame every ~5s.
+        trace("EVT speech-keepalive turn=${turnId.take(8)}")
         scope.launch {
             link.publishCritical("agent", "speech-status", buildJsonObject {
                 put("turnId", turnId); put("speaking", true); put("keepalive", true)

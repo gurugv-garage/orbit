@@ -14,12 +14,12 @@ interface SpeechVM { startedAt: number; endedAt?: number }
 /** admit provenance for addressed user turns — which rule/window let the utterance in
  *  (server: brain/conversation-state.ts AdmitTrace, riding trigger.window). */
 interface AdmitVM { rule?: string; mode?: string; windowSrc?: string; openedBy?: string; openedAt?: number; msToExpiry?: number }
-interface TriggerVM { kind: string; text?: string; via?: string; window?: AdmitVM }
-interface TurnVM { id: string; sessionId: string; source?: string; trigger?: TriggerVM; startedAt: number; endedAt?: number; ended: boolean; steps: StepVM[]; speech: SpeechVM[] }
+interface TriggerVM { kind: string; text?: string; via?: string; window?: AdmitVM; utteranceId?: string }
+interface TurnVM { id: string; sessionId: string; source?: string; trigger?: TriggerVM; startedAt: number; endedAt?: number; ended: boolean; steps: StepVM[]; speech: SpeechVM[]; image?: string }
 
 interface StoredTool { toolCallId: string; toolName: string; args?: unknown; result?: string; isError?: boolean; startedAt?: number; endedAt?: number }
 interface StoredStep { index: number; model?: string; stopReason?: string; text?: string; tools: StoredTool[]; usage?: { inputTokens?: number; outputTokens?: number; totalTokens?: number; cost?: number; cacheRead?: number; thinkingTokens?: number }; thinkingMs?: number; startedAt?: number; streamStartedAt?: number; endedAt?: number }
-interface StoredTurn { turnId: string; sessionId: string; trigger?: TriggerVM; speech?: { startedAt: number; endedAt?: number }[]; startedAt: number; endedAt?: number; steps: StoredStep[] }
+interface StoredTurn { turnId: string; sessionId: string; trigger?: TriggerVM; speech?: { startedAt: number; endedAt?: number }[]; startedAt: number; endedAt?: number; steps: StoredStep[]; image?: string }
 interface StoredSession { sessionId: string; source?: string; turns: StoredTurn[] }
 interface SessionSummary { sessionId: string; source?: string }
 
@@ -735,6 +735,17 @@ function TurnTimeline({ turn }: { turn: TurnVM }) {
           </span>
         </div>
       )}
+      {/* the EXACT input frame this turn's model saw (vision turns) — request
+          ring strips image bytes, so this dump is the only visual evidence. */}
+      {turn.image && (
+        <div className="obs-msg" style={{ alignItems: 'flex-start' }}>
+          <span className="obs-msg-who" title="the input frame attached to this turn's LLM request">📷 saw</span>
+          <a href={`/api/observability/turn-image?f=${encodeURIComponent(turn.image)}`} target="_blank" rel="noreferrer">
+            <img src={`/api/observability/turn-image?f=${encodeURIComponent(turn.image)}`}
+              alt="turn input frame" style={{ maxHeight: 120, borderRadius: 4 }} />
+          </a>
+        </div>
+      )}
       <div className="obs-vaxis">{clockMs(turn.startedAt)} → +{fmtMs(total)} · {evs.length} events</div>
       <div className="obs-vt">
         {evs.map((ev, i) => {
@@ -910,7 +921,7 @@ function kindTitle(tr: TriggerVM): string {
 
 function storedToVM(t: StoredTurn, source?: string): TurnVM {
   return {
-    id: t.turnId, sessionId: t.sessionId, source, trigger: t.trigger, startedAt: t.startedAt, endedAt: t.endedAt, ended: t.endedAt != null,
+    id: t.turnId, sessionId: t.sessionId, source, trigger: t.trigger, startedAt: t.startedAt, endedAt: t.endedAt, ended: t.endedAt != null, image: t.image,
     speech: t.speech ?? [],
     steps: t.steps.map((s) => ({
       idx: s.index, model: s.model, stopReason: s.stopReason, text: s.text,
@@ -923,7 +934,10 @@ function storedToVM(t: StoredTurn, source?: string): TurnVM {
 function applyEvent(turn: TurnVM, ev: AgentEventDto): void {
   const last = turn.steps[turn.steps.length - 1];
   switch (ev.kind) {
-    case 'TurnStart': if (ev.data?.trigger != null) turn.trigger = ev.data.trigger as TriggerVM; break;
+    case 'TurnStart':
+      if (ev.data?.trigger != null) turn.trigger = ev.data.trigger as TriggerVM;
+      if (typeof ev.data?.image === 'string') turn.image = ev.data.image;
+      break;
     case 'TurnEnd': turn.ended = true; turn.endedAt = ev.ts; break;
     case 'StepStart': turn.steps.push({ idx: turn.steps.length, tools: [], startedAt: ev.ts }); break;
     case 'StepEnd':

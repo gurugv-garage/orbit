@@ -24,6 +24,8 @@ import { json } from '../../core/http.js';
 import type { RouteContext, StationModule } from '../../core/module.js';
 import { healthSummary } from './health.js';
 import { ObsStore } from './store.js';
+import { convEventLog, setConvEventPublisher } from './conv-events.js';
+import { renderIncidentMarkdown } from './incident.js';
 import type { AgentEventDto, SessionEnrichment, SessionRecord } from './types.js';
 
 /** Access to the obs store for other modules. Observability is the source of
@@ -69,6 +71,12 @@ export function observabilityModule(): StationModule {
 
     init(b) {
       bus = b;
+      // Conversation-timeline events (conv-events.ts): emitters across perception/
+      // brain/session record directly; here we wire the live fan-out so the
+      // browser timeline streams them as they land (same topic as agent events).
+      setConvEventPublisher((ev) => {
+        bus.publish({ topic: 'obs', kind: 'conv-event', payload: ev, source: 'station' });
+      });
       // Publish the cross-module access only once the bus is live (the exposed
       // `ingest` re-publishes onto it), so a caller can never hit an undefined bus.
       obsRef.current = {
@@ -144,6 +152,65 @@ export function observabilityModule(): StationModule {
         return true;
       }
 
+      // ── conversation timeline (conv_events) ────────────────────────────────
+      // GET /conv-events?dock&from&to&limit&lanes=phone,brain — the durable
+      // cross-component event stream (see conv-events.ts). Feeds the Timeline UI.
+      if (subPath === '/conv-events' && req.method === 'GET') {
+        const u = new URL(req.url ?? '/', 'http://x');
+        json(res, 200, {
+          events: convEventLog().query({
+            dock: u.searchParams.get('dock') ?? undefined,
+            from: num(u, 'from'), to: num(u, 'to'), limit: num(u, 'limit'),
+            lanes: u.searchParams.get('lanes')?.split(',').filter(Boolean),
+          }),
+        });
+        return true;
+      }
+
+      // ── incident bundle ────────────────────────────────────────────────────
+      // GET /incident?dock&from&to[&format=md] — ONE self-contained bundle for a
+      // time window: every conv event, every turn (full Session/Turn/Step detail),
+      // the perception snapshots, on one timeline. The paste-to-an-LLM debugging
+      // artifact: "here is exactly what happened on every component".
+      if (subPath === '/incident' && req.method === 'GET') {
+        const u = new URL(req.url ?? '/', 'http://x');
+        const dock = u.searchParams.get('dock') ?? undefined;
+        const to = num(u, 'to') ?? Date.now();
+        const from = num(u, 'from') ?? to - 15 * 60_000;
+        const events = convEventLog().query({ dock, from, to, limit: 10_000 });
+        const turns = store.turnsInWindow(from, to)
+          .filter((t) => !dock || t.source === dock)
+          .map(({ turn, source }) => ({ ...turn, source }));
+        // snapshots come from perception — imported lazily so observability never
+        // depends on perception at module load (perception already imports obs).
+        let snapshots: unknown[] = [];
+        try {
+          const { getSnapshotsApi } = await import('../perception/index.js');
+          snapshots = getSnapshotsApi()?.inWindow(new Date(from).toISOString(), new Date(to).toISOString(), dock) ?? [];
+        } catch { /* perception absent (tests) — bundle without snapshots */ }
+        const bundle = { dock: dock ?? 'all', from, to, generatedAt: Date.now(), events, turns, snapshots };
+        if (u.searchParams.get('format') === 'md') {
+          res.writeHead(200, { 'content-type': 'text/markdown; charset=utf-8' });
+          res.end(renderIncidentMarkdown(bundle));
+        } else {
+          json(res, 200, bundle);
+        }
+        return true;
+      }
+
+      // GET /turn-image?f=<dock>/<turnId>.jpg — the input frame a vision turn's
+      // model actually saw (saved by the session; the request ring strips bytes).
+      if (subPath === '/turn-image' && req.method === 'GET') {
+        const u = new URL(req.url ?? '/', 'http://x');
+        const f = u.searchParams.get('f') ?? '';
+        if (!/^[a-zA-Z0-9._-]+\/[a-zA-Z0-9._-]+\.jpg$/.test(f)) { json(res, 400, { error: 'bad image ref' }); return true; }
+        const file = `.data/turn-images/${f}`;
+        if (!existsSync(file)) { json(res, 404, { error: 'no such turn image' }); return true; }
+        res.writeHead(200, { 'content-type': 'image/jpeg', 'cache-control': 'max-age=86400' });
+        createReadStream(file).pipe(res);
+        return true;
+      }
+
       if (subPath === '/health' && req.method === 'GET') {
         const url = new URL(req.url ?? '', 'http://x');
         const window = Math.max(1, Math.min(2000, Number(url.searchParams.get('window')) || 100));
@@ -208,6 +275,12 @@ export function observabilityModule(): StationModule {
 }
 
 import type { CostGroupBy } from './types.js';
+
+/** A numeric query param, or undefined when absent/invalid. */
+function num(u: URL, key: string): number | undefined {
+  const v = Number(u.searchParams.get(key));
+  return Number.isFinite(v) && v > 0 ? v : undefined;
+}
 
 /** Parse ?from&to (epoch ms); default to the last 7 days. */
 function costWindow(u: URL): { from: number; to: number } {

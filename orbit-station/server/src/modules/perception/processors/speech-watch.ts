@@ -32,6 +32,7 @@ import type { MediaKind } from '../../media/tap.js';
 import type { StreamContext, StreamProcessor } from '../processor.js';
 import { makeSnapshot, type SnapshotStore } from '../snapshots.js';
 import { dockConditions } from '../../../core/conditions.js';
+import { recordConvEvent } from '../../observability/conv-events.js';
 import { UtteranceDetector, SAMPLE_RATE } from './vad-endpoint.js';
 import type { EnrichContext, EnrichResult } from './audio-enricher.js';
 import { mkdirSync, writeFileSync, readdirSync, statSync, unlinkSync } from 'node:fs';
@@ -429,6 +430,12 @@ export interface FinalTranscriptEvent {
   text: string;
   startedAt: number;
   endedAt: number;
+  /** correlation id minted at segmentation (`<dockId>:<audioStartMs>`) — follows
+   *  this audio segment through snapshot → admit trace → turn trigger → obs. */
+  utteranceId?: string;
+  /** wall-clock the transcript COMMITTED (vs endedAt = when the sound stopped) —
+   *  the STT lag every downstream decision lived with. */
+  sttFinalAt?: number;
   lowConfidence: boolean;
   confTier?: ConfTier;
   /** The engine's own confidence metrics, carried through so observability shows WHY a
@@ -537,6 +544,10 @@ export function speechWatchProcessor(
         // utterances skip it — embeddings on <0.8s far-field slivers are noise
         // (trial-measured), and the enroll ring shouldn't collect them either.
         const durS = pcm.length / SAMPLE_RATE;
+        // Correlation id for this audio segment — every downstream trace (snapshot,
+        // conv event, admit decision, turn trigger) carries it, so an utterance can
+        // be followed end-to-end. The startedAtMs half doubles as the clip WAV key.
+        const utteranceId = `${ctx.dockId}:${startedAt.getTime()}`;
         // VOICED-FRACTION GATE (measured 2026-07-23): a mostly-silent clip is
         // near-certainly parakeet hallucinating on AEC-residual — it has no
         // no-speech probability to decline. Drop it BEFORE the sidecar call (saves
@@ -549,6 +560,18 @@ export function speechWatchProcessor(
           const vpct = voicedFractionPct(pcm);
           if (vpct < MIN_VOICED_PCT) {
             console.log(`[speech-watch] drop: ${vpct}% voiced < ${MIN_VOICED_PCT}% floor (${durS.toFixed(1)}s clip) — silent/echo, not transcribing`);
+            // This drop is the known barge-unsafe gate (see MIN_VOICED_PCT decl):
+            // it can eat a real "stop" spoken over TTS. So it must NEVER be
+            // invisible — keep the AUDIO (the only falsifiable evidence) + a conv
+            // event so the dropped clip can be played back later. Deliberately NO
+            // snapshot: ambient drops run ~4/min and empty speech rows would flood
+            // every snapshot consumer (grounding/summarizer/classifier context).
+            const clip = saveUtteranceWav(ctx.dockId, pcm, startedAt.getTime());
+            recordConvEvent({
+              dockId: ctx.dockId, lane: 'perception', type: 'stt:drop', verdict: 'voiced-fraction',
+              utteranceId, audioStartAt: startedAt.getTime(), audioEndAt: endedAt.getTime(),
+              detail: { voicedPct: vpct, floorPct: MIN_VOICED_PCT, durS: Number(durS.toFixed(1)), clip },
+            });
             detector.speechEndpoint(false); // treat as non-speech (don't arm the enrich fast-path)
             return;
           }
@@ -567,6 +590,10 @@ export function speechWatchProcessor(
           dockConditions.report(ctx.dockId, 'stt_unreachable',
             "I can't hear you right now — my speech recognition service isn't running. "
             + 'Please start the STT sidecar on the station.');
+          recordConvEvent({
+            dockId: ctx.dockId, lane: 'perception', type: 'stt:unreachable', verdict: res.error,
+            utteranceId, audioStartAt: startedAt.getTime(), audioEndAt: endedAt.getTime(),
+          });
           return;
         }
         // The sidecar answered → clear any prior deaf condition (recovered).
@@ -582,7 +609,15 @@ export function speechWatchProcessor(
         const words = (tr?.text ?? '').replace(/[^a-z0-9]/gi, '');
         const isRealSpeech = !!tr && words.length >= 2 && confidenceTier(tr) !== 'garbage';
         detector.speechEndpoint(isRealSpeech);
-        if (!tr) return;
+        if (!tr) {
+          // the VAD endpointed a voiced span but the engine heard NOTHING — worth a
+          // trace (it's a "tapped but no reply" shape the old pipeline hid).
+          recordConvEvent({
+            dockId: ctx.dockId, lane: 'perception', type: 'stt:empty',
+            utteranceId, audioStartAt: startedAt.getTime(), audioEndAt: endedAt.getTime(), sttFinalAt: sttDoneAt,
+          });
+          return;
+        }
         // Don't DROP shaky transcripts — a gasp / "oh!" / cut-off word can be
         // signal. TAG them lowConfidence (from the engine's own logprob/no-speech/
         // compression metrics under Whisper, falling back to text heuristics — which
@@ -655,11 +690,26 @@ export function speechWatchProcessor(
         // silence). Both still land as snapshots above for the record, but neither
         // may become an agent turn — otherwise the dock answers things no one said
         // (the "Thank you" → "You're very welcome!" phantom reply).
-        if (!isBeepArtifact(tr.text) && !isHallucination(tr.text)
-            && !isLowConfBackchannel(tr.text, lowConfidence) && !hasNoWords(tr.text)) {
+        const withheld = isBeepArtifact(tr.text) ? 'beep-artifact'
+          : isHallucination(tr.text) ? 'hallucination'
+          : isLowConfBackchannel(tr.text, lowConfidence) ? 'low-conf-backchannel'
+          : hasNoWords(tr.text) ? 'no-words'
+          : null;
+        // Conv-event either way: a FINAL that reached the brain, or the explicit
+        // withheld reason (the snapshot alone never said WHY it wasn't a turn).
+        recordConvEvent({
+          dockId: ctx.dockId, lane: 'perception',
+          type: withheld ? 'stt:withheld' : 'stt:final',
+          ...(withheld ? { verdict: withheld } : {}),
+          text: tr.text, utteranceId,
+          audioStartAt: startedAt.getTime(), audioEndAt: endedAt.getTime(), sttFinalAt: sttDoneAt,
+          detail: { tier, ...(tr.engineConf != null ? { conf: Number(tr.engineConf.toFixed(3)) } : {}) },
+        });
+        if (!withheld) {
           onFinal?.({
             dockId: ctx.dockId, streamId: ctx.streamId, text: tr.text,
             startedAt: startedAt.getTime(), endedAt: endedAt.getTime(), lowConfidence, confTier: tier,
+            utteranceId, sttFinalAt: sttDoneAt,
             avgLogprob: tr.avgLogprob, noSpeechProb: tr.noSpeechProb, compressionRatio: tr.compressionRatio,
             voice, // who the voice sounded like (fingerprint) — the brain's hearing-identity
           });
@@ -668,8 +718,30 @@ export function speechWatchProcessor(
       const detector = new UtteranceDetector((pcm, startedAt, endedAt) => { void commit(pcm, startedAt, endedAt); });
       detector.commit = commit; // flushNow awaits this; the live path stays fire-and-forget
       if (onSpeechStart) {
-        detector.onSpeechStart = (startedAt) => onSpeechStart({ dockId: ctx.dockId, at: startedAt.getTime() });
+        detector.onSpeechStart = (startedAt) => {
+          // the acoustic barge-onset itself, at the SOURCE — whether or not the
+          // brain acts on it (mode/cooldown/self-motion may all skip the hold).
+          recordConvEvent({
+            dockId: ctx.dockId, lane: 'perception', type: 'vad:onset',
+            audioStartAt: startedAt.getTime(),
+          });
+          onSpeechStart({ dockId: ctx.dockId, at: startedAt.getTime() });
+        };
       }
+      // gate deaths BEFORE transcription — previously fully invisible.
+      detector.onDrop = ({ reason, voicedMs, startedAt }) => {
+        recordConvEvent({
+          dockId: ctx.dockId, lane: 'perception', type: 'stt:drop', verdict: reason,
+          utteranceId: `${ctx.dockId}:${startedAt}`, audioStartAt: startedAt,
+          detail: { voicedMs },
+        });
+      };
+      detector.onDecodeTrouble = (fails, ok) => {
+        recordConvEvent({
+          dockId: ctx.dockId, lane: 'perception', type: 'audio:decode-fail',
+          detail: { fails, ok, streamId: ctx.streamId },
+        });
+      };
 
       // ── AUDIO ENRICHER (merged path) ── when wired, ONE context-aware pass over each batch
       // window replaces the two backgroundAudio calls: it lands the authoritative durable

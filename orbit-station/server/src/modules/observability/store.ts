@@ -58,6 +58,7 @@ export class ObsStore {
       case 'TurnStart':
         turn.startedAt = ev.ts;
         if (ev.data?.trigger != null) turn.trigger = ev.data.trigger;
+        if (typeof ev.data?.image === 'string') turn.image = ev.data.image;
         break;
       case 'TurnEnd':
         turn.endedAt = ev.ts;
@@ -255,8 +256,9 @@ export class ObsStore {
 
   /** Turns whose start falls in [from,to], read from SQLite so the window can
    *  reach past the in-memory working set (exact within DB retention). Each row
-   *  is the full TurnRecord JSON plus the session's source. */
-  #turnsInWindow(from: number, to: number): Array<{ turn: TurnRecord; source: string }> {
+   *  is the full TurnRecord JSON plus the session's source. Public: the cost
+   *  rollups AND the incident/timeline endpoints both window over turns. */
+  turnsInWindow(from: number, to: number): Array<{ turn: TurnRecord; source: string }> {
     const rows = this.#db.prepare(
       `SELECT detail, source FROM obs_turns WHERE started_at BETWEEN ? AND ? ORDER BY started_at`,
     ).all(from, to) as Array<{ detail: string; source: string }>;
@@ -269,7 +271,7 @@ export class ObsStore {
   costRollup(from: number, to: number, groupBy: CostGroupBy): CostSummary {
     const total = bucket();
     const groups = new Map<string, CostBucket>();
-    for (const { turn, source } of this.#turnsInWindow(from, to)) {
+    for (const { turn, source } of this.turnsInWindow(from, to)) {
       const kind = costKind(turn.trigger?.kind);
       for (const step of turn.steps) {
         const u = step.usage;
@@ -295,7 +297,7 @@ export class ObsStore {
    *  the stacked time chart. */
   costSeries(from: number, to: number, groupBy: 'source' | 'kind' | 'model' | 'usecase'): CostSeriesPoint[] {
     const days = new Map<string, Record<string, number>>();
-    for (const { turn, source } of this.#turnsInWindow(from, to)) {
+    for (const { turn, source } of this.turnsInWindow(from, to)) {
       const kind = costKind(turn.trigger?.kind);
       const day = utcDay(turn.startedAt);
       for (const step of turn.steps) {
