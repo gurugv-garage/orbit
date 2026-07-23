@@ -10,12 +10,12 @@
 
 import { mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { DATA_DIR as STATION_DATA_DIR } from '../../core/db.js';
 import type { FeedbackMeta } from './types.js';
 
-/** `.data/feedback/` resolved relative to this source file (decoupled from cwd,
- *  same idiom as core/db.ts). */
-const DATA_DIR = fileURLToPath(new URL('../../../.data/feedback/', import.meta.url));
+/** `.data/feedback/` under the shared station data root (never re-derive the
+ *  `../` chain here — see core/db.ts DATA_DIR). */
+const DATA_DIR = join(STATION_DATA_DIR, 'feedback');
 
 export interface StoredFeedback {
   id: string;

@@ -20,6 +20,7 @@ import type { IncomingMessage } from 'node:http';
 import { introspect, runModel, PROMPT as EGO_PROMPT, type IntrospectInputs } from './introspect.js';
 import { reconciledPerceptionSince } from '../perception/index.js';
 import { DEFAULT_MODEL as EGO_DEFAULT_MODEL } from '../perception/summarizer.js';
+import { dataPath } from '../../core/data-dir.js';
 
 /** Read + JSON-parse a request body (local helper; the ego routes are the only POSTs here). */
 async function parseBody<T>(req: IncomingMessage): Promise<Partial<T>> {
@@ -30,7 +31,7 @@ async function parseBody<T>(req: IncomingMessage): Promise<Partial<T>> {
   try { return JSON.parse(raw) as Partial<T>; } catch { return {}; }
 }
 
-const LAST_SUMMARY_FILE = '.data/perception/last-summary.json';
+const LAST_SUMMARY_FILE = dataPath('perception', 'last-summary.json');
 
 /** The introspection CHECKPOINT (§7c): the ego's own `meta.updated` timestamp — "everything
  *  since I last introspected". Falls back to a few hours if absent (fresh dock). Returns an
@@ -54,7 +55,7 @@ function checkpointIso(egoText: string, nowMs: number): string {
  *  real dialogue, not its own machinery. Best-effort. */
 function recentConversation(dock: string, sinceMs: number, maxTurns = 40): string {
   try {
-    const dir = `.data/brain/${dock}`;
+    const dir = dataPath('brain', dock);
     if (!existsSync(dir)) return '';
     // by mtime: only sessions touched at/after the checkpoint can hold in-span turns (with a
     // small slack, since mtime is the last write). Cheap pre-filter before reading contents.

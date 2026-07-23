@@ -32,6 +32,7 @@ import * as whatsapp from '../../integrations/whatsapp.js';
 import * as last30days from '../../integrations/last30days.js';
 import * as websearch from '../../integrations/websearch.js';
 import { geminiVision, geminiVisionAgent } from '../perception/summarizer.js';
+import { dataPath } from '../../core/data-dir.js';
 
 /** force_get_current summarizes only this tight window around its fresh capture, so
  *  "right now" means now — not the 60s background window (which the LLM already has
@@ -84,7 +85,7 @@ const SEARCH_SHOT_TTL_MS = Number(process.env.VS_SHOT_TTL_MS ?? 48 * 3600_000);
 /** where visual_search saves found-view shots (cwd-relative to the station process). The photo
  *  tools re-open these by BASENAME so "find X … send it" a few turns later sends the exact
  *  validated frame, not a fresh re-capture (frame-provenance audit, 2026-07-21). */
-const SEARCH_SHOT_DIR = '.data/search';
+const SEARCH_SHOT_DIR = dataPath('search');
 
 /** Read a saved found-view shot by basename → base64 JPEG. Basename-only (no separators /
  *  traversal) so a model-supplied handle can't escape the shots dir. undefined if gone. */

@@ -21,8 +21,9 @@
 import { appendFileSync, readFileSync, existsSync, mkdirSync, readdirSync, writeFileSync, unlinkSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import type { SnapshotRecord } from './snapshots.js';
+import { dataPath } from '../../core/data-dir.js';
 
-const ROOT = '.data/perception/records';
+const ROOT = dataPath('perception', 'records');
 /** How long raw perception is retained on disk. Storage is cheap → generous default (6 h);
  *  the *consumption* budget (how much a reader feeds an LLM) is capped separately, at read
  *  time (§7c). Env-tunable. */

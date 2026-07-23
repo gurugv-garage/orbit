@@ -22,6 +22,7 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import type { RosterEntry } from '../../core/websocket-gateway.js';
 import type { DockComponent, DockInfo } from '../../core/protocol.js';
+import { dataPath } from '../../core/data-dir.js';
 
 interface PersistedDock {
   manifest: string[];
@@ -66,7 +67,7 @@ export class Directory {
   #file: string;
   #docks = new Map<string, PersistedDock>();
 
-  constructor(getRoster: () => RosterEntry[], file = '.data/docks.json') {
+  constructor(getRoster: () => RosterEntry[], file = dataPath('docks.json')) {
     this.#getRoster = getRoster;
     this.#file = file;
     this.#load();

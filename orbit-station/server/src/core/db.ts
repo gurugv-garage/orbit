@@ -12,10 +12,12 @@
 import Database from 'better-sqlite3';
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { DATA_DIR } from './data-dir.js';
 
-// server/src/core/db.ts → ../../ = server/ ; keep the db under the station root.
-const DATA_DIR = fileURLToPath(new URL('../../../.data/', import.meta.url));
+// The station data root lives in core/data-dir.ts — see the note there on why
+// hand-written `.data` paths must not be re-derived. Re-exported for callers
+// that already import it from here.
+export { DATA_DIR, dataPath } from './data-dir.js';
 
 let db: Database.Database | null = null;
 

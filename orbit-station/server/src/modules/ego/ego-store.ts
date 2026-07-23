@@ -10,8 +10,9 @@
  */
 import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
+import { dataPath } from '../../core/data-dir.js';
 
-const ROOT = '.data/ego';
+const ROOT = dataPath('ego');
 const TEMPLATE = `# ego
 
 ## why I'm here

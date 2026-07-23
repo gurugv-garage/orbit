@@ -22,6 +22,7 @@
 import { mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { AgentMessage } from '@earendil-works/pi-agent-core';
+import { dataPath } from '../../core/data-dir.js';
 
 export interface SessionMeta {
   sessionId: string;
@@ -44,7 +45,7 @@ export interface SessionMeta {
 export class SessionStore {
   #root: string;
 
-  constructor(root = '.data/brain') {
+  constructor(root = dataPath('brain')) {
     this.#root = root;
   }
 

@@ -1,2 +1,4 @@
-data/
-models/embed/*.onnx
+# Runtime storage. ANCHORED (leading slash) — an unanchored `data/` also
+# matches source dirs like src/modules/data/, silently untracking them.
+/data/
+/models/embed/*.onnx

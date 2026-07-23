@@ -68,6 +68,7 @@ import { buildDockTools, buildGrantTools, buildSlackTools, buildWhatsAppTools, b
 import { FACES, type MoveStep } from './schemas.js';
 import type { VideoRecorderApi } from '../perception/record/recorder.js';
 import * as slack from '../../integrations/slack.js';
+import { dataPath } from '../../core/data-dir.js';
 
 /** How long an autonomous (task) turn waits before running, so back-to-back
  *  same-instance signals (notify+finish) coalesce into one turn. Tiny vs. the
@@ -2034,7 +2035,7 @@ let turnImageSavesSincePrune = 0;
 export function saveTurnImage(dock: string, turnId: string, base64: string): string | undefined {
   try {
     const safeTurn = turnId.replace(/[^a-zA-Z0-9._-]/g, '_');
-    const dir = `.data/turn-images/${dock}`;
+    const dir = dataPath('turn-images', dock);
     mkdirSync(dir, { recursive: true });
     writeFileSync(join(dir, `${safeTurn}.jpg`), Buffer.from(base64, 'base64'));
     if (++turnImageSavesSincePrune >= 20) {
@@ -2061,7 +2062,7 @@ function saveReqImage(base64: string | undefined): string | undefined {
   if (!base64) return undefined;
   try {
     const ref = `${createHash('sha1').update(base64).digest('hex').slice(0, 20)}.jpg`;
-    const dir = '.data/req-images';
+    const dir = dataPath('req-images');
     const file = join(dir, ref);
     if (!existsSync(file)) {
       mkdirSync(dir, { recursive: true });

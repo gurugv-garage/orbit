@@ -8,7 +8,7 @@
     "node": ">=22"
   },
   "scripts": {
-    "dev": "tsx watch --ignore './.data/**' --ignore './src/tasks/generated/**' src/main.ts",
+    "dev": "tsx watch --ignore '../.data/**' --ignore './.data/**' --ignore './src/tasks/generated/**' src/main.ts",
     "start": "tsx src/main.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "tsx --test --test-force-exit",

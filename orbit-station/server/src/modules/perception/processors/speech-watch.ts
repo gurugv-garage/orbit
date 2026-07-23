@@ -37,6 +37,7 @@ import { UtteranceDetector, SAMPLE_RATE } from './vad-endpoint.js';
 import type { EnrichContext, EnrichResult } from './audio-enricher.js';
 import { mkdirSync, writeFileSync, readdirSync, statSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
+import { dataPath } from '../../../core/data-dir.js';
 
 /** How much disk the enricher WAV-debug dump may use before it prunes the oldest files. */
 // ~0.5-0.9 MB per window (14-29s @ 16 kHz mono). 200 MB ≈ ~300-400 windows ≈ a few hours of active
@@ -49,7 +50,7 @@ const ENRICH_SAVE_BUDGET_BYTES = Number(process.env.PERCEPTION_ENRICH_SAVE_MB ??
  *  Self-bounded: keeps the newest ~ENRICH_SAVE_BUDGET_BYTES (default 100 MB), pruning oldest. */
 function saveEnrichWav(dockId: string, pcm: Int16Array, startedAtMs: number, voicedPct: number): void {
   try {
-    const dir = `.data/enrich-audio/${dockId}`;
+    const dir = dataPath('enrich-audio', dockId);
     mkdirSync(dir, { recursive: true });
     const db = pcm.length * 2;
     writeFileSync(`${dir}/${startedAtMs}_v${voicedPct}.wav`,
@@ -76,9 +77,9 @@ function wavHeader(dataBytes: number): Buffer {
  *  transcript came from, so the console can PLAY any speech row (and enrollment can
  *  keep the clip). The path is THE shared contract between the writer (here), the
  *  enroll clip-copy (voice/service.ts) and the HTTP reader (perception/index.ts) —
- *  cwd-relative like the sibling enrich-audio dump. */
+ *  ABSOLUTE, under the shared station data root (core/data-dir.ts). */
 export function utteranceWavPath(dockId: string, startedAtMs: number): string {
-  return `.data/utterance-audio/${dockId}/${startedAtMs}.wav`;
+  return dataPath('utterance-audio', dockId, `${startedAtMs}.wav`);
 }
 const UTTER_SAVE_BUDGET_BYTES = Number(process.env.PERCEPTION_UTTER_SAVE_MB ?? 200) * 1024 * 1024;
 // Prune every Nth save, not every save — readdir+stat-per-file on each utterance
@@ -88,7 +89,7 @@ const UTTER_PRUNE_EVERY = 20;
 let utterSavesSincePrune = 0;
 function saveUtteranceWav(dockId: string, pcm: Int16Array, startedAtMs: number): boolean {
   try {
-    const dir = `.data/utterance-audio/${dockId}`;
+    const dir = dataPath('utterance-audio', dockId);
     mkdirSync(dir, { recursive: true });
     const db = pcm.length * 2;
     writeFileSync(utteranceWavPath(dockId, startedAtMs),

@@ -116,6 +116,7 @@ function presentNamesFromRecent(recent: SnapshotRecord[]): string[] {
 import { makeResult, type PerceptionResult } from './result.js';
 import { classifyDistance, TENTATIVE_THRESHOLD } from './face/gallery.js';
 import { VoiceIdService } from './voice/service.js';
+import { dataPath } from '../../core/data-dir.js';
 
 // Gallery persists next to the server's data (alongside the db). One file.
 const GALLERY_PATH = fileURLToPath(new URL('../../../data/face-gallery.json', import.meta.url));
@@ -733,7 +734,7 @@ export function perceptionModule(getHub: () => PerceptionProcessingHub): Station
   // engine's short-horizon state — a station restart used to amnesia-wipe the day
   // (grounding starts from it). Loaded at construction;
   // written on each set (summaries are ≥60 s apart, a write per set is nothing).
-  const LAST_SUMMARY_FILE = '.data/perception/last-summary.json';
+  const LAST_SUMMARY_FILE = dataPath('perception', 'last-summary.json');
   const lastSummary = new Map<string, LastSummary>();
   try {
     const raw = JSON.parse(readFileSync(LAST_SUMMARY_FILE, 'utf8')) as Record<string, LastSummary>;
@@ -1704,7 +1705,7 @@ export function perceptionModule(getHub: () => PerceptionProcessingHub): Station
         const am = subPath.match(/^\/enrich-audio\/([^/]+)\/(\d+)$/);
         if (am && req.method === 'GET') {
           const dock = decodeURIComponent(am[1]!); const want = Number(am[2]!);
-          const dir = `.data/enrich-audio/${dock}`;
+          const dir = dataPath('enrich-audio', dock);
           try {
             const fs = await import('node:fs');
             const files = fs.readdirSync(dir).filter((f) => f.endsWith('.wav'));

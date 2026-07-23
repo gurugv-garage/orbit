@@ -127,7 +127,7 @@ export function observabilityModule(): StationModule {
         const from = Number(u.searchParams.get('from') ?? 0);
         const to = Number(u.searchParams.get('to') ?? Date.now());
         let files: string[] = [];
-        try { files = readdirSync('.data/search'); } catch { /* none yet */ }
+        try { files = readdirSync(dataPath('search')); } catch { /* none yet */ }
         const shots = files.map((f) => {
           const m = /^(.+)-(\d{13})-(.+)\.jpg$/.exec(f);
           return m ? { f, dock: m[1]!, ts: Number(m[2]), tag: m[3]! } : undefined;
@@ -145,7 +145,7 @@ export function observabilityModule(): StationModule {
         const u = new URL(req.url ?? '/', 'http://x');
         const f = u.searchParams.get('f') ?? '';
         if (!/^[a-zA-Z0-9._-]+\.jpg$/.test(f)) { json(res, 400, { error: 'bad shot name' }); return true; }
-        const file = `.data/search/${f}`;
+        const file = dataPath('search', f);
         if (!existsSync(file)) { json(res, 404, { error: 'no such shot' }); return true; }
         res.writeHead(200, { 'content-type': 'image/jpeg', 'cache-control': 'max-age=86400' });
         createReadStream(file).pipe(res);
@@ -204,7 +204,7 @@ export function observabilityModule(): StationModule {
         const u = new URL(req.url ?? '/', 'http://x');
         const f = u.searchParams.get('f') ?? '';
         if (!/^[a-f0-9]{20}\.jpg$/.test(f)) { json(res, 400, { error: 'bad image ref' }); return true; }
-        const file = `.data/req-images/${f}`;
+        const file = dataPath('req-images', f);
         if (!existsSync(file)) { json(res, 404, { error: 'no such request image (evicted?)' }); return true; }
         res.writeHead(200, { 'content-type': 'image/jpeg', 'cache-control': 'max-age=86400' });
         createReadStream(file).pipe(res);
@@ -217,7 +217,7 @@ export function observabilityModule(): StationModule {
         const u = new URL(req.url ?? '/', 'http://x');
         const f = u.searchParams.get('f') ?? '';
         if (!/^[a-zA-Z0-9._-]+\/[a-zA-Z0-9._-]+\.jpg$/.test(f)) { json(res, 400, { error: 'bad image ref' }); return true; }
-        const file = `.data/turn-images/${f}`;
+        const file = dataPath('turn-images', f);
         if (!existsSync(file)) { json(res, 404, { error: 'no such turn image' }); return true; }
         res.writeHead(200, { 'content-type': 'image/jpeg', 'cache-control': 'max-age=86400' });
         createReadStream(file).pipe(res);
@@ -309,6 +309,7 @@ function costGroupBy(raw: string | null): CostGroupBy {
 }
 
 import type { IncomingMessage } from 'node:http';
+import { dataPath } from '../../core/data-dir.js';
 function readBody(req: IncomingMessage): Promise<string> {
   return new Promise((resolve, reject) => {
     let data = '';
