@@ -643,7 +643,10 @@ export function brainModule(w: BrainWiring): StationModule {
       // Kill-switch: brainBargeHold=false. Requires STT_ECHO_GATE unset (the
       // default): the echo-gate drops mic audio while the dock speaks — the
       // very audio that triggers and resolves the hold.
-      const bargeHolds = new Map<string, { at: number; timer: NodeJS.Timeout }>();
+      // `heardWords` = did the STT produce ANY intelligible words during this hold?
+      // It decides the timeout outcome (see resolveBargeHold): words-but-no-stop is
+      // an ambiguous interruption (yield), no words at all is noise (resume).
+      const bargeHolds = new Map<string, { at: number; timer: NodeJS.Timeout; heardWords: boolean }>();
       const BARGE_MAX_HOLD_MS = 6_000;
       // After a RESUMED hold, ignore new onsets briefly: in a noisy room every
       // ambient utterance would otherwise re-hold the reply and it plays in
@@ -664,6 +667,17 @@ export function brainModule(w: BrainWiring): StationModule {
       const resolveBargeHold = (dock: string, why: string, end: BargeEnd) => {
         const h = bargeHolds.get(dock);
         if (!h) return;
+        // TIMEOUT SPLIT (2026-07-23): a hold that expires WITHOUT the STT ever
+        // producing words was noise — a cough, a door, room sound, the dock's own
+        // echo — not someone interrupting. Yielding there stops a reply nobody
+        // asked to stop (measured: 5 of 13 live barges took this path). Resume
+        // instead. When words DID arrive but weren't a clean stop, the user
+        // demonstrably said something to us, so keep Fix A's yield (never plow
+        // over a sustained real interruption — RCA barge-stop-continues).
+        // This distinction only became reliable once finals started arriving
+        // DURING the reply (the dual silence floor, same day) — before that, a
+        // missing final meant "endpointing was blocked", not "there were no words".
+        if (end === 'yield' && !h.heardWords) { end = 'resume'; why = `${why}:no-words`; }
         bargeHolds.delete(dock);
         clearTimeout(h.timer);
         if (end === 'resume') {
@@ -759,6 +773,7 @@ export function brainModule(w: BrainWiring): StationModule {
           // frame — don't resume under them; every other decision releases the
           // hold and the reply plays on.
           const hold = bargeHolds.get(t.dockId);
+          if (hold) hold.heardWords = true; // a final reached the brain ⇒ real words were spoken
           if (hold && t.endedAt >= hold.at - 500) {
             const cancels = decision === 'stop:dismiss' || decision === 'stop:pause' || decision === 'merge:supersede';
             resolveBargeHold(t.dockId, decision, cancels ? 'cancelled' : 'resume');
@@ -1016,7 +1031,7 @@ export function brainModule(w: BrainWiring): StationModule {
         }
         session(dockId).ttsHold(true);
         const timer = setTimeout(() => resolveBargeHold(dockId, 'timeout', 'yield'), BARGE_MAX_HOLD_MS);
-        bargeHolds.set(dockId, { at: Date.now(), timer });
+        bargeHolds.set(dockId, { at: Date.now(), timer, heardWords: false });
         pushAddrTrace({ dockId, text: '(speech onset during reply)', startedAt: Date.now(), endedAt: Date.now() },
           'barge:hold', 'speaking');
       });
