@@ -136,9 +136,16 @@ function RequestPeek({ sessionId, turnId, stepIdx, cacheRead, inputTokens }: { s
       })
       .catch(() => setState('missing'));
   };
+  const cr = cacheRead ?? 0;
+  const fresh = inputTokens != null ? (inputTokens > cr ? inputTokens - cr : inputTokens) : undefined;
+  const total = fresh != null ? cr + fresh : undefined;
   return (
-    <details className="obs-ev-tool obs-req" onToggle={(e) => { if ((e.target as HTMLDetailsElement).open) load(); }}>
-      <summary className="muted sm">📨 request</summary>
+    <details className="obs-ev-tool obs-req obs-convctx" onToggle={(e) => { if ((e.target as HTMLDetailsElement).open) load(); }}>
+      <summary className="muted sm">
+        📨 request — the exact bytes this LLM step sent
+        {total != null && <> · {fmtTok(total)} tok in{cr > 0 ? ` (${Math.round(100 * cr / total)}% cached)` : ''}</>}
+        {reqData && <> · {reqData.messages?.length ?? 0} msgs · {reqData.tools?.length ?? 0} tools</>}
+      </summary>
       {state === 'loading' && <div className="muted sm">loading…</div>}
       {state === 'missing' && <div className="muted sm">not recorded (pre-dates capture, or evicted from the ring)</div>}
       {state === 'ok' && reqData && (() => {
@@ -156,14 +163,21 @@ function RequestPeek({ sessionId, turnId, stepIdx, cacheRead, inputTokens }: { s
         });
         return (
         <div className="obs-req-body">
-          {(cacheRead ?? 0) >= 0 && inputTokens != null && (
-            <div className="muted sm" style={{ margin: '2px 0 6px' }}>
-              <span style={{ color: 'rgb(110,220,160)' }}>■ cached</span> ~{fmtTok(cacheRead ?? 0)} of {fmtTok(inputTokens)} input tokens
-              ({inputTokens > 0 ? Math.round(100 * (cacheRead ?? 0) / inputTokens) : 0}%) ·{' '}
-              <span style={{ color: 'rgb(255,180,70)' }}>■ fresh</span> {fmtTok(Math.max(0, inputTokens - (cacheRead ?? 0)))} —
-              boundary placement is an estimate from char/image counts
-            </div>
-          )}
+          {(cacheRead ?? 0) >= 0 && inputTokens != null && (() => {
+            const cr = cacheRead ?? 0;
+            // Gemini excludes cached tokens from inputTokens on a hit — fresh is
+            // whichever interpretation keeps the parts non-negative.
+            const fresh = inputTokens > cr ? inputTokens - cr : inputTokens;
+            const total = cr + fresh;
+            return (
+              <div className="muted sm" style={{ margin: '2px 0 6px' }}>
+                <span style={{ color: 'rgb(110,220,160)' }}>■ cached</span> ~{fmtTok(cr)} of {fmtTok(total)} input tokens
+                ({total > 0 ? Math.round(100 * cr / total) : 0}%) ·{' '}
+                <span style={{ color: 'rgb(255,180,70)' }}>■ fresh</span> {fmtTok(fresh)} —
+                boundary placement is an estimate from char/image counts
+              </div>
+            );
+          })()}
           {reqData.tools && reqData.tools.length > 0 && (
             <div className="obs-kv"><span>tools ({reqData.tools.length})</span><pre>{reqData.tools.join(', ')}</pre></div>
           )}
@@ -218,7 +232,24 @@ export function Observability() {
     const q = new URLSearchParams(location.hash.split('?')[1] ?? '');
     const sid = q.get('session'); const tid = q.get('turn');
     if (sid) setFSession(sid);
-    if (sid && tid) setExpanded((prev) => new Set(prev).add(turnKey(sid, tid)));
+    if (sid && tid) {
+      setExpanded((prev) => new Set(prev).add(tid)); // expanded is keyed by BARE turn id
+      // scroll once the row exists (data loads async; poll briefly).
+      const key = turnKey(sid, tid);
+      let tries = 0;
+      const iv = setInterval(() => {
+        // re-scroll for a few ticks: rows above load async and shift the layout
+        // after the first scroll lands.
+        // NOTE: turnKey joins with a NUL byte (same idiom as the server's FTS
+        // key) — CSS.escape maps NUL to U+FFFD, so a querySelector match is
+        // impossible; compare attribute strings in JS instead.
+        const el = [...document.querySelectorAll('[data-turnkey]')]
+          .find((e) => e.getAttribute('data-turnkey') === key);
+        if (el) el.scrollIntoView({ block: 'center' });
+        if (++tries > 14) clearInterval(iv);
+      }, 300);
+      return () => clearInterval(iv);
+    }
   }, []);
   const [fSource, setFSource] = useState('');
   const [fTool, setFTool] = useState('');
@@ -635,7 +666,7 @@ function TurnRow({ turn, open, onToggle, feedback, dock }: { turn: TurnVM; open:
     }
   };
   return (
-    <div className={`obs-turn${open ? ' open' : ''}`}>
+    <div className={`obs-turn${open ? ' open' : ''}`} data-turnkey={turnKey(turn.sessionId, turn.id)}>
       <button className="obs-turn-head" onClick={onToggle}>
         <span className="obs-caret">{open ? '▾' : '▸'}</span>
         <span className="obs-turn-time mono">{clockMs(turn.startedAt)}</span>
@@ -921,7 +952,11 @@ function sumUsage(turns: TurnVM[]): UsageAgg {
 /** Compact `tokens · cache% · cost` chip used on turn + session headers. */
 function UsageChip({ u, title }: { u: UsageAgg; title: string }) {
   if (u.calls === 0) return null;
-  const cachePct = u.inTok > 0 && u.cacheRead > 0 ? Math.round((u.cacheRead / u.inTok) * 100) : 0;
+  // fresh = inTok minus cached when inTok includes it; when the provider reports
+  // inTok EXCLUDING cached (Gemini on a hit: 908 in + 24.5k cached), inTok IS the
+  // fresh part — without this, the chip showed 2705%.
+  const cacheFresh = u.inTok > u.cacheRead ? u.inTok - u.cacheRead : u.inTok;
+  const cachePct = u.cacheRead > 0 ? Math.round((u.cacheRead / (u.cacheRead + cacheFresh)) * 100) : 0;
   return (
     <span className="muted sm mono" title={`${title}: ${u.inTok.toLocaleString()} in → ${u.outTok.toLocaleString()} out · ${u.cacheRead.toLocaleString()} cached · ~${u.thinkTok.toLocaleString()} thinking (est, billed inside out) · ${u.calls} LLM call${u.calls !== 1 ? 's' : ''}`}>
       {fmtTok(u.inTok)}→{fmtTok(u.outTok)}

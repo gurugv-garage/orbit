@@ -35,3 +35,5 @@
   background: rgba(255,120,200,0.15); border: 1px solid rgba(255,120,200,0.55); }
 .obs-convctx { margin: 6px 0; padding: 6px 8px; border: 1px solid rgba(128,128,160,0.25); border-radius: 6px; }
 .obs-convctx > summary { cursor: pointer; }
+.tl-turn a { color: rgb(140,190,255); }
+.tl-turn a:hover { text-decoration: underline; }
