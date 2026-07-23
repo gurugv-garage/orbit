@@ -424,3 +424,36 @@ test('confidenceTier: parakeet engineConf maps to good/shaky/garbage bands', () 
   // no engineConf (old sidecar / whisper) → unchanged legacy behavior
   assert.equal(confidenceTier({ ...base }), 'good');
 });
+
+// ── DUAL SILENCE FLOOR (2026-07-23): endpointing an interruption DURING the reply ──
+// THE BUG: the dock's own TTS residual sits above the normal floor (0.012), so while
+// it speaks every frame scores "voiced", the silence counter never accumulates, and
+// an interruption cannot endpoint until the reply ENDS (measured live: 54% of
+// TTS-overlapping utterances ended only after tts-end; p90 18.3s vs 6.5s in silence).
+// soft() ≈ RMS 0.02 — above the idle floor, below the speaking floor (0.03): exactly
+// the residual band.
+test('speaking floor: residual-level audio does NOT block the endpoint (barge can commit mid-reply)', () => {
+  const { d, ends } = detector();
+  d.isSpeaking = () => true;                 // dock is mid-reply
+  d.feedPcm(loud(frames(600)));              // the interruption ("stop")
+  d.feedPcm(soft(frames(1500)));             // 1.5s of TTS residual — must read as SILENCE
+  assert.equal(ends.length, 1, 'the interruption endpointed while the dock was still speaking');
+});
+
+test('idle floor unchanged: the same residual-level audio still counts as voiced', () => {
+  const { d, ends } = detector();
+  d.isSpeaking = () => false;                // normal, dock silent
+  d.feedPcm(loud(frames(600)));
+  d.feedPcm(soft(frames(1500)));             // 0.02 > 0.012 → still "voiced" → no endpoint
+  assert.equal(ends.length, 0, 'quiet speech must NOT be cut short when the dock is not speaking');
+});
+
+test('speaking floor still endpoints on real silence, and real speech stays voiced', () => {
+  const { d, ends } = detector();
+  d.isSpeaking = () => true;
+  d.feedPcm(loud(frames(600)));
+  d.feedPcm(loud(frames(600)));              // loud (0.24) is far above 0.03 — no split
+  assert.equal(ends.length, 0, 'loud speech must not endpoint mid-word under the raised floor');
+  d.feedPcm(quiet(frames(1500)));
+  assert.equal(ends.length, 1);
+});

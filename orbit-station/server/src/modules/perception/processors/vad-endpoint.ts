@@ -39,6 +39,30 @@ const FRAME_SAMPLES = (SAMPLE_RATE * FRAME_MS) / 1000;
  *  clean gap: it catches marginal-gain restart speech with margin, while staying well
  *  above comfort noise. See docs/findings/inprogress-stt-issue.md. */
 const SILENCE_RMS = Number(process.env.STT_SILENCE_RMS ?? 0.012);
+/** SILENCE floor used WHILE THE DOCK IS SPEAKING — the endpointing half of the
+ *  barge problem (measured 2026-07-23).
+ *
+ *  The endpointer closes an utterance after ENDPOINT_MS of CONTIGUOUS sub-floor
+ *  audio. The dock's own TTS residual sits ABOVE the normal 0.012 floor, so while
+ *  it talks every frame scores "voiced", the silence counter never accumulates,
+ *  and an interruption cannot endpoint until the reply ENDS. Measured over 6h of
+ *  live traffic: utterances overlapping TTS took 4.5s median to endpoint (vs 2.6s
+ *  in silence), p90 18.3s (vs 6.5s), one hit the 60s cap — and 54% of them ended
+ *  only AFTER tts-end. That is why the barge hold times out and yields, and why a
+ *  spoken "stop" lands too late to be read as a stop (the transcript is often
+ *  fine; it just arrives after the moment it mattered — a better explanation than
+ *  "STT mangled it", docs/rca/2026-07-21-barge-stop-continues.md).
+ *
+ *  Raising the FLOOR (not ENDPOINT_MS) makes more frames count as silence, so a
+ *  real pause fills the 1300ms while the dock is still talking and the final
+ *  arrives INSIDE the barge-hold window. 0.03 from the measured distributions:
+ *  TTS residual p50 0.003 / p75 0.010 / p90 0.026; real speech p50 0.018 /
+ *  p75 0.110 — so ~90% of residual reads as silence while typical speech stays
+ *  above it. COST: speech quieter than 0.03 spoken OVER the dock may endpoint
+ *  early and split mid-sentence; the first piece is normally enough for
+ *  stop-intent and the remainder lands in the busy queue. Idle is unchanged
+ *  (SILENCE_RMS) — this only applies while `isSpeaking` is true. */
+const SILENCE_RMS_SPEAKING = Number(process.env.STT_SILENCE_RMS_SPEAKING ?? 0.03);
 /** The enricher payload window: a continuous never-drained PCM ring of the
  *  last N ms, snapshotted at a trigger so the interpreter hears the LEAD-UP too
  *  (bg-audio-summarizer.md §2 "trigger vs payload"). */
@@ -214,6 +238,10 @@ export class UtteranceDetector {
   // or any transcription. The consumer (brain) uses it to hold the dock's TTS the
   // moment someone starts talking over it. Opt-in; transport-free like the others.
   onSpeechStart?: (startedAt: Date) => void;
+  /** "Is the dock speaking right now?" — selects the elevated silence floor so an
+   *  interruption can endpoint DURING the reply (see SILENCE_RMS_SPEAKING). Unset
+   *  ⇒ always the normal floor, i.e. exactly the pre-2026-07-23 behaviour. */
+  isSpeaking?: () => boolean;
   // GATE-DEATH hook (observability): an utterance the detector discarded before
   // anyone downstream could see it — today only the sub-MIN_UTTERANCE_MS drop
   // (the self-documented "tapped but no reply" cause). Opt-in, transport-free.
@@ -297,7 +325,10 @@ export class UtteranceDetector {
     let sum = 0;
     for (let i = 0; i < frame.length; i++) { const v = frame[i]! / 32768; sum += v * v; }
     const rms = Math.sqrt(sum / frame.length);
-    const voiced = rms >= SILENCE_RMS;
+    // DUAL FLOOR: while the dock speaks, its own TTS residual would otherwise
+    // score every frame voiced and block endpointing until the reply ends.
+    const floor = this.isSpeaking?.() ? SILENCE_RMS_SPEAKING : SILENCE_RMS;
+    const voiced = rms >= floor;
 
     // ENRICHER ring + trigger: every frame (voiced or not) lands in the ring;
     // the cheap trigger runs per frame and snapshots the ring when something acoustically

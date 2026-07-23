@@ -44,3 +44,4 @@ app/tmp/
 # are local-only.
 bench/results/latest.json
 bench/results/*.log
+sounds-preview/

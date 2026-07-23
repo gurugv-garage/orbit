@@ -742,6 +742,10 @@ export function speechWatchProcessor(
           onSpeechStart({ dockId: ctx.dockId, at: startedAt.getTime() });
         };
       }
+      // DUAL SILENCE FLOOR: while the dock speaks, raise the endpointer's silence
+      // floor so an interruption can endpoint DURING the reply instead of after it
+      // (see SILENCE_RMS_SPEAKING). Same signal the voiced-fraction gate uses.
+      if (isSpeaking) detector.isSpeaking = () => isSpeaking(ctx.dockId);
       // gate deaths BEFORE transcription — previously fully invisible.
       detector.onDrop = ({ reason, voicedMs, startedAt }) => {
         recordConvEvent({
