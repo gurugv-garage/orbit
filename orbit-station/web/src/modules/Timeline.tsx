@@ -267,7 +267,7 @@ export function Timeline() {
       if (j - i >= 3) { out.push({ ts: all[i]!.ts, noise: all.slice(i, j).flatMap((r) => r.ev ? [r.ev] : r.utt!) }); i = j; }
       else { out.push(all[i]!); i++; }
     }
-    return out;
+    return out.reverse(); // newest first — you're almost always here for "just now"
   }, [data, lanes, dock]);
 
   const mdUrl = `/api/observability/incident?${new URLSearchParams({
@@ -310,8 +310,10 @@ export function Timeline() {
       <div className="tl-feed">
         {rows.length === 0 && <div className="tl-gap">no events in this window{dock ? ` for ${dock}` : ''}</div>}
         {rows.map((row, i) => {
+          // newest-first: the divider shows the quiet stretch between this row
+          // and the (newer) one rendered above it.
           const prev = rows[i - 1];
-          const gapMs = prev ? row.ts - prev.ts : 0;
+          const gapMs = prev ? prev.ts - row.ts : 0;
           const key = row.ev ? `e${row.ev.id}` : row.noise ? `n${row.noise[0]!.id}`
             : row.utt ? `u${row.utt[0]!.id}` : `t${row.turn!.sessionId}:${row.turn!.turnId}`;
           return <FeedRow key={key} row={row} gapMs={gapMs > 30_000 ? gapMs : 0} />;
