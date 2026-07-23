@@ -603,6 +603,12 @@ function TurnRow({ turn, open, onToggle, feedback, dock }: { turn: TurnVM; open:
             {turn.trigger.window?.rule === 'started-in-window' ? '·grace' : ''}
           </span>
         )}
+        {(turn.trigger?.utteranceId?.startsWith('debug:') || turn.trigger?.via === 'phone:turn-request') && (
+          <span className="pill sm" title="programmatic trigger (debug REST API / phone debug broadcast) — no real audio behind this turn"
+            style={{ borderColor: 'rgba(255,120,200,0.6)' }}>
+            💉 {turn.trigger?.utteranceId?.startsWith('debug:') ? 'debug-api' : 'phone-debug'}
+          </span>
+        )}
         {turn.trigger?.text && <span className="obs-turn-prompt" title={turn.trigger.text}>“{turn.trigger.text}”</span>}
         <span className={`obs-turn-dur${dur(turn) > 4000 ? ' slow' : ''}`}>{fmtMs(dur(turn))}</span>
         <span className="muted sm">{turn.steps.length} step{turn.steps.length !== 1 ? 's' : ''}</span>

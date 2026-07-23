@@ -98,6 +98,10 @@ hardening); the older per-turn obs (Session/Turn/Step) predates it.
 - perception · `vad:onset` — ≥240ms contiguous ≥0.035-RMS voice (the barge
   trigger), fired whether or not the brain acted.
 - perception · `audio:decode-fail` — opus decoder failing (audio vanishing).
+- INJECTED sources are tagged: `utteranceId` prefix `debug:` = the debug REST
+  API (debug/say / debug/hear — no real audio); turn `via phone:turn-request` =
+  phone-side debug/adb. Both render as a 💉 tag in Timeline + Observability;
+  `kind: replay` badges replay turns.
 - brain · `addr` verdict — every admission decision: `RAN-TURN`, `wake`,
   `wake+command`, `skip:not-addressed|garbage|no-words|quiet|recording|stale|
   dismissed`, `queue:busy`, `drain:ran`, `merge:supersede`, `stop:dismiss|pause`,

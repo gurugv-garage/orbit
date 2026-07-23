@@ -29,6 +29,9 @@ for it to happen naturally. Companion to [observability.md](observability.md)
   conversation event (tap etc.) to drive the state machine directly.
 - adb (debug builds): `adb shell am broadcast -a dev.orbit.dock.debug.SAY -e
   text '…'` — a turn driven from the phone side (DebugTestReceiver).
+- All injected paths are TAGGED in the UIs (💉 debug-api / phone-debug, via
+  `utteranceId debug:<ts>` / `via phone:turn-request`) so they never read as a
+  real human utterance later.
 
 ## Real-audio scenarios (the honest path)
 

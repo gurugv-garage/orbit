@@ -91,6 +91,15 @@ function explainVerdict(ev: ConvEvent): string | null {
   }
 }
 
+/** Programmatic-source tag: injected/debug rows must NEVER read as a real human
+ *  utterance (recurring confusion — "who said this?"). debug:<ts> utteranceIds
+ *  come from the debug REST API; via phone:turn-request = phone-side debug/adb. */
+function sourceTag(utteranceId?: string, via?: string): string | null {
+  if (utteranceId?.startsWith('debug:')) return 'debug-api';
+  if (via === 'phone:turn-request') return 'phone-debug';
+  return null;
+}
+
 function EventChip({ ev }: { ev: ConvEvent }) {
   const [open, setOpen] = useState(false);
   const [playing, setPlaying] = useState(false);
@@ -126,6 +135,7 @@ function EventChip({ ev }: { ev: ConvEvent }) {
       {bad ? '✕ ' : good ? '✓ ' : ''}
       <span className="mono">{ev.lane === 'conv' ? `→ ${label}` : label}</span>
       {ev.verdict && ev.verdict !== label && <> <b>{ev.verdict}</b></>}
+      {sourceTag(ev.utteranceId) && <span className="tl-srctag" title="not real audio — injected via the debug API">💉 {sourceTag(ev.utteranceId)}</span>}
       {ev.text && <> “{ev.text}”</>}
       {audioMs != null && <span className="tl-lag" title="how long the SOUND lasted">🎙{(audioMs / 1000).toFixed(1)}s</span>}
       {sttLag != null && <span className="tl-lag" title="sound ended → transcript landed (decisions in between saw no text)">stt +{sttLag}ms</span>}
@@ -155,6 +165,7 @@ function TurnRow({ t }: { t: IncidentTurn }) {
     <div className="tl-turn" title={t.trigger?.text ?? ''}>
       🧠 <b>turn</b> {t.state ?? 'open'}{err ? ' ⚠' : ''} · {t.trigger?.kind ?? '?'}
       {t.trigger?.via ? ` via ${t.trigger.via}` : ''}
+      {sourceTag(t.trigger?.utteranceId, t.trigger?.via) && <span className="tl-srctag" title="programmatic trigger — no real audio behind this turn">💉 {sourceTag(t.trigger?.utteranceId, t.trigger?.via)}</span>}
       {t.trigger?.text ? <> — “{t.trigger.text.slice(0, 140)}”</> : null}
       {dur != null && <span className="tl-lag">{(dur / 1000).toFixed(1)}s</span>}
       {t.speech?.length ? <span className="tl-lag">🔊 {t.speech.length} tts window{t.speech.length > 1 ? 's' : ''}</span> : null}
