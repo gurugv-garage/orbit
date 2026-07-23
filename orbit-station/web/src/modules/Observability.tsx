@@ -846,8 +846,8 @@ function TurnTimeline({ turn }: { turn: TurnVM }) {
         if (!clipUrl && !stt) return null;
         return (
           <div className="obs-msg trigger-user obs-sttev" style={{ alignItems: 'center', flexWrap: 'wrap' }}>
-            <span className="obs-msg-who" title="the audio + STT evidence behind the trigger text">🎙 heard</span>
-            {clipUrl && <audio controls preload="none" src={clipUrl} style={{ height: 26, maxWidth: 260 }} />}
+            <span className="obs-msg-who" title="the audio + STT evidence behind the trigger text, and the admit verdict that let it run">🎙 heard</span>
+            {clipUrl && <audio controls preload="none" src={clipUrl} style={{ height: 26, maxWidth: 240 }} />}
             {stt?.confTier && (
               <span className={`pill sm${stt.confTier === 'garbage' ? ' bad' : stt.confTier === 'shaky' ? '' : ' acc'}`}
                 title="the STT engine's own confidence tier (good / shaky / garbage)">{stt.confTier}</span>
@@ -860,21 +860,24 @@ function TurnTimeline({ turn }: { turn: TurnVM }) {
                 👤 {stt.voice.name}{stt.voice.match ? '' : '?'}
               </span>
             )}
+            {/* the admit verdict rides HERE when there's a heard row to host it —
+                one evidence line ("what it heard + why that ran") instead of two. */}
+            {turn.trigger?.window && (
+              <span className="obs-msg-via mono" style={{ opacity: 0.8 }} title={admitTitle(turn.trigger)}>
+                · admitted: {admitSummary(turn.trigger.window)}
+              </span>
+            )}
           </div>
         );
       })()}
       {/* admit provenance — the full WHY for an addressed user turn: which rule +
           which window let the utterance in, how that window opened, time left. */}
-      {turn.trigger?.window && (
+      {turn.trigger?.window && !hasHeardRow(turn) && (
         <div className="obs-msg trigger-user" style={{ opacity: 0.85 }}>
           <span className="obs-msg-who" title="ConversationState admit verdict — why this utterance became a turn">admitted</span>
           {/* the compact verdict, with the full plain-language explanation on hover */}
           <span className="obs-msg-via mono" title={admitTitle(turn.trigger)}>
-            {[turn.trigger.window.rule, turn.trigger.window.windowSrc && `${turn.trigger.window.windowSrc} window`,
-              turn.trigger.window.openedBy && `opened by ${turn.trigger.window.openedBy}`,
-              turn.trigger.window.msToExpiry != null && (turn.trigger.window.msToExpiry <= 0
-                ? 'expired at admit' : `${fmtMs(turn.trigger.window.msToExpiry)} left`),
-            ].filter(Boolean).join(' · ')}
+            {admitSummary(turn.trigger.window)}
           </span>
         </div>
       )}
@@ -1128,6 +1131,22 @@ function silentTurnInfo(turn: TurnVM): { tags: string; reason?: string } | null 
     : overheard ? `possibly-overheard framing (${turn.trigger?.via}) — the prompt says to stay silent unless clearly addressed`
     : shaky ? `${turn.stt?.confTier} transcript` : undefined;
   return { tags: raw, reason };
+}
+
+/** Compact one-line admit verdict (full plain-language version is the hover). */
+function admitSummary(w: NonNullable<TriggerVM['window']>): string {
+  return [w.rule, w.windowSrc && `${w.windowSrc} window`,
+    w.openedBy && `opened by ${w.openedBy}`,
+    w.msToExpiry != null && (w.msToExpiry <= 0 ? 'expired at admit' : `${fmtMs(w.msToExpiry)} left`),
+  ].filter(Boolean).join(' · ');
+}
+
+/** True when the 🎙 heard evidence row renders — it hosts the admit verdict, so
+ *  the standalone "admitted" row would be a duplicate second line. */
+function hasHeardRow(turn: TurnVM): boolean {
+  const uid = turn.trigger?.utteranceId;
+  const hasClip = !!uid && !uid.startsWith('debug:') && /:(\d{13})$/.test(uid) && !!turn.source;
+  return hasClip || !!turn.stt;
 }
 
 function storedToVM(t: StoredTurn, source?: string): TurnVM {
