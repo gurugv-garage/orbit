@@ -242,6 +242,7 @@ export class DockBrainSession {
   #triggerVia: string | undefined; // the raising source (mood bit / gate key / …) — obs only
   #triggerWindow: AdmitTrace | undefined; // the admit verdict for addressed user turns — obs only
   #triggerUtterance: string | undefined; // the admitting utterance's correlation id — obs only
+  #triggerStt: TurnRequest['stt'] | undefined; // STT evidence for the admitting utterance — obs only
   #turnImage: string | undefined; // ref of the saved input frame this turn's model saw — obs only
   #mergeCount = 0; // merge-supersedes carried by the CURRENT turn (Addendum 10)
   // A1.2: a station-originated user turn (an addressed always-on-mic utterance) —
@@ -1041,6 +1042,7 @@ export class DockBrainSession {
     this.#triggerVia = req.trigger.via;
     this.#triggerWindow = req.trigger.window;
     this.#triggerUtterance = req.trigger.utteranceId;
+    this.#triggerStt = req.stt;
     this.#turnImage = undefined;
     this.#mergeCount = req.merges ?? 0;
     this.#stationOriginated = req.stationOriginated === true;
@@ -1513,6 +1515,7 @@ export class DockBrainSession {
             ...(this.#triggerWindow ? { window: this.#triggerWindow } : {}),
             ...(this.#triggerUtterance ? { utteranceId: this.#triggerUtterance } : {}) },
           ...(this.#turnImage ? { image: this.#turnImage } : {}),
+          ...(this.#triggerStt ? { stt: this.#triggerStt } : {}),
         });
         break;
       case 'turn_start':

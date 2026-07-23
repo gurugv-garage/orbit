@@ -161,6 +161,12 @@ export interface TurnRecord {
   /** ref of the saved input frame the model saw on a vision turn
    *  (`<dock>/<turnId>.jpg`, served by GET /api/observability/turn-image?f=). */
   image?: string;
+  /** STT evidence for the admitting utterance (heard turns): the engine's own
+   *  confidence tier/metrics + the voice fingerprint. The clip itself is at
+   *  GET /api/perception/utterance-audio/<dock>/<audioStartMs> (audioStartMs =
+   *  the trigger.utteranceId suffix). */
+  stt?: { confTier?: string; avgLogprob?: number | null; noSpeechProb?: number | null;
+    compressionRatio?: number | null; voice?: { name: string; score?: number; match?: boolean } };
 }
 
 // ── cost aggregation (the Cost console tab) ─────────────────────────────────

@@ -16,11 +16,12 @@ interface SpeechVM { startedAt: number; endedAt?: number }
  *  (server: brain/conversation-state.ts AdmitTrace, riding trigger.window). */
 interface AdmitVM { rule?: string; mode?: string; windowSrc?: string; openedBy?: string; openedAt?: number; msToExpiry?: number }
 interface TriggerVM { kind: string; text?: string; via?: string; window?: AdmitVM; utteranceId?: string }
-interface TurnVM { id: string; sessionId: string; source?: string; trigger?: TriggerVM; startedAt: number; endedAt?: number; ended: boolean; steps: StepVM[]; speech: SpeechVM[]; image?: string }
+interface SttVM { confTier?: string; avgLogprob?: number | null; noSpeechProb?: number | null; compressionRatio?: number | null; voice?: { name: string; score?: number; match?: boolean } }
+interface TurnVM { id: string; sessionId: string; source?: string; trigger?: TriggerVM; startedAt: number; endedAt?: number; ended: boolean; steps: StepVM[]; speech: SpeechVM[]; image?: string; stt?: SttVM }
 
 interface StoredTool { toolCallId: string; toolName: string; args?: unknown; result?: string; isError?: boolean; startedAt?: number; endedAt?: number }
 interface StoredStep { index: number; model?: string; stopReason?: string; text?: string; tools: StoredTool[]; usage?: { inputTokens?: number; outputTokens?: number; totalTokens?: number; cost?: number; cacheRead?: number; thinkingTokens?: number }; thinkingMs?: number; startedAt?: number; streamStartedAt?: number; endedAt?: number }
-interface StoredTurn { turnId: string; sessionId: string; trigger?: TriggerVM; speech?: { startedAt: number; endedAt?: number }[]; startedAt: number; endedAt?: number; steps: StoredStep[]; image?: string }
+interface StoredTurn { turnId: string; sessionId: string; trigger?: TriggerVM; speech?: { startedAt: number; endedAt?: number }[]; startedAt: number; endedAt?: number; steps: StoredStep[]; image?: string; stt?: SttVM }
 interface StoredSession { sessionId: string; source?: string; turns: StoredTurn[] }
 interface SessionSummary { sessionId: string; source?: string }
 
@@ -734,6 +735,36 @@ function TurnTimeline({ turn }: { turn: TurnVM }) {
           {turn.trigger.text && <span className="obs-msg-text obs-copytext" title="double-click a word to select · click ⧉ to copy all">{turn.trigger.text}<CopyIco value={turn.trigger.text} /></span>}
         </div>
       )}
+      {/* STT EVIDENCE for a heard turn: the actual audio the transcript came
+          from (utteranceId suffix = the clip WAV key) + the engine's own
+          confidence — so "what did it really hear, and how sure was it" is
+          answered in place, next to the text it produced. */}
+      {(() => {
+        const uid = turn.trigger?.utteranceId;
+        const m = uid && !uid.startsWith('debug:') ? uid.match(/:(\d{13})$/) : null;
+        const clipUrl = m && turn.source
+          ? `/api/perception/utterance-audio/${encodeURIComponent(turn.source)}/${m[1]}` : null;
+        const stt = turn.stt;
+        if (!clipUrl && !stt) return null;
+        return (
+          <div className="obs-msg trigger-user obs-sttev" style={{ alignItems: 'center', flexWrap: 'wrap' }}>
+            <span className="obs-msg-who" title="the audio + STT evidence behind the trigger text">🎙 heard</span>
+            {clipUrl && <audio controls preload="none" src={clipUrl} style={{ height: 26, maxWidth: 260 }} />}
+            {stt?.confTier && (
+              <span className={`pill sm${stt.confTier === 'garbage' ? ' bad' : stt.confTier === 'shaky' ? '' : ' acc'}`}
+                title="the STT engine's own confidence tier (good / shaky / garbage)">{stt.confTier}</span>
+            )}
+            {stt?.avgLogprob != null && <span className="muted sm mono" title="mean token log-prob (whisper only; very negative = unsure)">logprob {stt.avgLogprob.toFixed(2)}</span>}
+            {stt?.noSpeechProb != null && <span className="muted sm mono" title="P(silence/noise) — high = likely hallucination">noSpeech {stt.noSpeechProb.toFixed(2)}</span>}
+            {stt?.compressionRatio != null && <span className="muted sm mono" title="gzip ratio — high = repetition loop">compr {stt.compressionRatio.toFixed(2)}</span>}
+            {stt?.voice && (
+              <span className="pill sm" title={`voice fingerprint: best enrolled match${stt.voice.score != null ? ` (score ${stt.voice.score.toFixed(2)})` : ''}${stt.voice.match ? '' : ' — below the match bar'}`}>
+                👤 {stt.voice.name}{stt.voice.match ? '' : '?'}
+              </span>
+            )}
+          </div>
+        );
+      })()}
       {/* admit provenance — the full WHY for an addressed user turn: which rule +
           which window let the utterance in, how that window opened, time left. */}
       {turn.trigger?.window && (
@@ -976,7 +1007,7 @@ function ConvContext({ turn }: { turn: TurnVM }) {
 
 function storedToVM(t: StoredTurn, source?: string): TurnVM {
   return {
-    id: t.turnId, sessionId: t.sessionId, source, trigger: t.trigger, startedAt: t.startedAt, endedAt: t.endedAt, ended: t.endedAt != null, image: t.image,
+    id: t.turnId, sessionId: t.sessionId, source, trigger: t.trigger, startedAt: t.startedAt, endedAt: t.endedAt, ended: t.endedAt != null, image: t.image, stt: t.stt,
     speech: t.speech ?? [],
     steps: t.steps.map((s) => ({
       idx: s.index, model: s.model, stopReason: s.stopReason, text: s.text,
@@ -992,6 +1023,7 @@ function applyEvent(turn: TurnVM, ev: AgentEventDto): void {
     case 'TurnStart':
       if (ev.data?.trigger != null) turn.trigger = ev.data.trigger as TriggerVM;
       if (typeof ev.data?.image === 'string') turn.image = ev.data.image;
+      if (ev.data?.stt != null) turn.stt = ev.data.stt as SttVM;
       break;
     case 'TurnEnd': turn.ended = true; turn.endedAt = ev.ts; break;
     case 'StepStart': turn.steps.push({ idx: turn.steps.length, tools: [], startedAt: ev.ts }); break;

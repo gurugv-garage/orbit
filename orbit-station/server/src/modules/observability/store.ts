@@ -59,6 +59,7 @@ export class ObsStore {
         turn.startedAt = ev.ts;
         if (ev.data?.trigger != null) turn.trigger = ev.data.trigger;
         if (typeof ev.data?.image === 'string') turn.image = ev.data.image;
+        if (ev.data?.stt != null) turn.stt = ev.data.stt;
         break;
       case 'TurnEnd':
         turn.endedAt = ev.ts;
