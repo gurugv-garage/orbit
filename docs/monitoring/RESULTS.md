@@ -81,6 +81,22 @@ as un-representative of a normal day.
   you hear me clearly now". Fixed same day by the two-tier floor (35% while
   speaking / 10% idle); re-sweep in a few days to confirm the drop rate falls.
 
+- **Self-echo loop → CONFIRMED BUG, unfixed.** 12:43:20 turn-b90ae163 (an idle
+  `mood:curious.wonder` self-thought) began a chain of **4 turns / ~45s with zero
+  human speech**: the dock's own TTS returned through the mic, transcribed as
+  garbled text ("I just keep the movement around and put your own container."),
+  and was admitted — first via the **busy queue** (`queue:busy` → `drain:ran`),
+  then twice via the **followup window**. Every gate passed: the barge pause was
+  suppressed by `barge:skip:self-motion` on all four onsets, the echoes committed
+  just after `tts-end` so they met the 10% idle floor not the 35% speaking floor,
+  and parakeet rated the first one **good**. The chain broke only on a window
+  timeout. A `conv:idle reconnect` mid-loop split the session (unexamined).
+  Ruled out as fixes, with numbers: text-similarity to the spoken line (0.40 /
+  0.18 / 0.06 — AEC mangles the echo), confidence tier (good), voice fingerprint
+  (0.53-0.66 today, not separable). Full trace + the three options:
+  [rca/2026-07-23-self-echo-loop.md](../rca/2026-07-23-self-echo-loop.md).
+  **Decision pending** — every option trades away something real.
+
 **Changes since last run (all 2026-07-23):**
 conv_events + Timeline + incident bundle; static system prompt (cache);
 stale-frame pruning; two-tier voiced floor; dual silence floor (barge
@@ -97,3 +113,7 @@ streaming working); `followup-chains` longest chain only 3 turns (healthy).
    (`probe.mjs dropped-speech`, needs the sidecar up).
 3. Watch `cost.cachePct` over a normal conversational day now that the prompt is stable.
 4. Phone lane is still dark in conv_events — needs the app sideload.
+5. **Decide the self-echo fix** (RCA above): reject utterances overlapping a TTS
+   window (kills content barge-in) vs station-side echo cancellation against the
+   TTS reference we already hold (preserves it, real work). Until then, watch for
+   repeat loops: chains of turns where nobody spoke.
