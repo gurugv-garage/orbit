@@ -98,7 +98,7 @@ function msgPreview(content: unknown): string {
       const item = p as { type?: string; text?: string; toolName?: string; omitted?: string };
       if (item.type === 'text') return item.text ?? '';
       if (item.type === 'toolCall') return `⚙ ${item.toolName ?? 'tool'}`;
-      if (item.type === 'image') return item.omitted ?? '[image]';
+      if (item.type === 'image') return '📷 [image]';
       return `[${item.type ?? '?'}]`;
     }).join(' ');
   }
@@ -136,15 +136,27 @@ function RequestPeek({ sessionId, turnId, stepIdx }: { sessionId: string; turnId
             </details>
           )}
           <div className="muted sm" style={{ margin: '4px 0 2px' }}>{reqData.messages?.length ?? 0} messages in window</div>
-          {reqData.messages?.map((m, i) => (
-            <details key={i} className="obs-req-msg">
-              <summary className="muted sm">
-                <span className="mono">{i}</span> · <strong>{m.role ?? '?'}</strong>
-                <span className="obs-ev-peek mono"> {msgPreview(m.content).slice(0, 140)}</span>
-              </summary>
-              <pre className="obs-req-pre">{pretty(m)}</pre>
-            </details>
-          ))}
+          {reqData.messages?.map((m, i) => {
+            const imgs = Array.isArray(m.content)
+              ? (m.content as Array<{ type?: string; imageRef?: string }>).filter((piece) => piece.type === 'image' && piece.imageRef)
+              : [];
+            return (
+              <details key={i} className="obs-req-msg">
+                <summary className="muted sm">
+                  <span className="mono">{i}</span> · <strong>{m.role ?? '?'}</strong>
+                  {imgs.length > 0 && <span> 📷{imgs.length > 1 ? `×${imgs.length}` : ''}</span>}
+                  <span className="obs-ev-peek mono"> {msgPreview(m.content).slice(0, 140)}</span>
+                </summary>
+                {imgs.map((piece) => (
+                  <a key={piece.imageRef} href={`/api/observability/req-image?f=${encodeURIComponent(piece.imageRef!)}`} target="_blank" rel="noreferrer">
+                    <img src={`/api/observability/req-image?f=${encodeURIComponent(piece.imageRef!)}`}
+                      alt="frame sent to the model" style={{ maxHeight: 110, borderRadius: 4, margin: '4px 6px 4px 0' }} />
+                  </a>
+                ))}
+                <pre className="obs-req-pre">{pretty(m)}</pre>
+              </details>
+            );
+          })}
         </div>
       )}
     </details>

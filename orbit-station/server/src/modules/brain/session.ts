@@ -53,7 +53,8 @@ import { buildSystemPrompt, isVisionIntent, MOOD_TAG_RE, MOVE_TAG_RE, stripMoodT
 import { SpeechGate } from './speech-gate.js';
 import { decideThought, type SessionState } from './thought-router.js';
 import { ConversationState, type AdmitTrace, type ConvTransition } from './conversation-state.js';
-import { mkdirSync, writeFileSync, readdirSync, statSync, unlinkSync } from 'node:fs';
+import { mkdirSync, writeFileSync, readdirSync, statSync, unlinkSync, existsSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 import { recordConvEvent } from '../observability/conv-events.js';
 import { MAX_HISTORY_MESSAGES, SESSION_IDLE_MIN, VISION_GATE } from './constants.js';
@@ -1975,6 +1976,35 @@ export function saveTurnImage(dock: string, turnId: string, base64: string): str
   } catch { return undefined; }
 }
 
+/** Content-addressed dump of request images (sha1 of the base64 → one file per
+ *  UNIQUE frame, however many requests repeat it). Bounded like the other dumps. */
+const REQ_IMAGE_BUDGET_BYTES = Number(process.env.OBS_REQ_IMAGE_MB ?? 100) * 1024 * 1024;
+let reqImageSavesSincePrune = 0;
+function saveReqImage(base64: string | undefined): string | undefined {
+  if (!base64) return undefined;
+  try {
+    const ref = `${createHash('sha1').update(base64).digest('hex').slice(0, 20)}.jpg`;
+    const dir = '.data/req-images';
+    const file = join(dir, ref);
+    if (!existsSync(file)) {
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(file, Buffer.from(base64, 'base64'));
+      if (++reqImageSavesSincePrune >= 50) {
+        reqImageSavesSincePrune = 0;
+        const entries = readdirSync(dir).filter((f) => f.endsWith('.jpg'))
+          .map((f) => { const st = statSync(join(dir, f)); return [f, st.size, st.mtimeMs] as const; })
+          .sort((a, b) => a[2] - b[2]);
+        let total = entries.reduce((n, [, size]) => n + size, 0);
+        for (const [f, size] of entries) {
+          if (total <= REQ_IMAGE_BUDGET_BYTES) break;
+          try { unlinkSync(join(dir, f)); total -= size; } catch { /* */ }
+        }
+      }
+    }
+    return ref;
+  } catch { return undefined; }
+}
+
 /** Serialize one LLM request (the streamFn `context` arg — literally what goes
  *  to the provider) for the obs request ring. Images are replaced with a size
  *  marker: a vision frame is ~100 KB of base64 that's already observable via
@@ -1989,7 +2019,13 @@ export function serializeRequest(context: Context): string {
       content: content.map((part) => {
         const p = part as { type?: string; data?: string };
         return p.type === 'image'
-          ? { type: 'image', omitted: `[image stripped, ${p.data?.length ?? 0} base64 chars]` }
+          // Bytes still stripped from the ring row (they'd shrink its window ~10×),
+          // but each unique frame is saved ONCE to a content-addressed dump —
+          // history repeats the same frames every request, so dedup makes "show
+          // the images the model saw" nearly free. imageRef serves via
+          // GET /api/observability/req-image?f=<ref>.
+          ? { type: 'image', imageRef: saveReqImage(p.data),
+              omitted: `[image stripped, ${p.data?.length ?? 0} base64 chars]` }
           : part;
       }),
     };

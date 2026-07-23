@@ -198,6 +198,19 @@ export function observabilityModule(): StationModule {
         return true;
       }
 
+      // GET /req-image?f=<sha1-20>.jpg — a frame from a recorded LLM request
+      // (content-addressed; one file per unique frame across all requests).
+      if (subPath === '/req-image' && req.method === 'GET') {
+        const u = new URL(req.url ?? '/', 'http://x');
+        const f = u.searchParams.get('f') ?? '';
+        if (!/^[a-f0-9]{20}\.jpg$/.test(f)) { json(res, 400, { error: 'bad image ref' }); return true; }
+        const file = `.data/req-images/${f}`;
+        if (!existsSync(file)) { json(res, 404, { error: 'no such request image (evicted?)' }); return true; }
+        res.writeHead(200, { 'content-type': 'image/jpeg', 'cache-control': 'max-age=86400' });
+        createReadStream(file).pipe(res);
+        return true;
+      }
+
       // GET /turn-image?f=<dock>/<turnId>.jpg — the input frame a vision turn's
       // model actually saw (saved by the session; the request ring strips bytes).
       if (subPath === '/turn-image' && req.method === 'GET') {
