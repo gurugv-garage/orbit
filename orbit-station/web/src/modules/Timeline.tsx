@@ -355,7 +355,7 @@ function UtteranceRow({ evs, inTurn }: { evs: ConvEvent[]; inTurn?: IncidentTurn
   const main = brain ?? stt ?? evs[0]!;
   return (
     <>
-      <span className="tl-lanebadge mono lb-perception">🎙 utt</span>
+      <span className="tl-lanebadge mono lb-perception" title="one spoken utterance's whole journey: audio → STT → brain verdict">🎙 speech</span>
       <EventChip ev={{ ...main, text: main.text ?? stt?.text,
         audioStartAt: stt?.audioStartAt ?? main.audioStartAt, audioEndAt: stt?.audioEndAt ?? main.audioEndAt,
         sttFinalAt: stt?.sttFinalAt ?? main.sttFinalAt,
