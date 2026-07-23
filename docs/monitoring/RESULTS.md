@@ -5,6 +5,22 @@ One entry per run, **newest first**. Produced by the routine in
 testing. The point of this file is the TREND: a later run should be able to read
 the last few entries and tell whether anything moved.
 
+## The run, step by step
+
+1. `node docs/monitoring/collect.mjs --hours 24` → the window's numbers as JSON.
+2. Score each number against the watchlist in [README.md](README.md); note what tripped.
+3. Run the probe behind each tripped number:
+   `probe.mjs suppressed-barges | dropped-speech | endpoint-lag | tts-delay | followup-chains`
+   (`dropped-speech` needs the STT sidecar on :8078).
+4. Pull evidence for anything still unexplained —
+   `GET /api/observability/incident?dock&from&to&format=md`, and for hearing issues
+   the clip at `GET /api/perception/utterance-audio/<dock>/<audioStartMs>`.
+5. Read the last 2-3 entries below and compare each metric against them.
+6. Open 3 turns by hand in the Timeline — the slowest, a silent one, a random one —
+   looking for anything nobody has listed yet.
+7. `git log` the window; attribute any metric jump to a deploy.
+8. Append a dated entry using the template below.
+
 ## Entry template
 
 ```markdown
