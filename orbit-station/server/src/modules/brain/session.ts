@@ -1489,6 +1489,11 @@ export class DockBrainSession {
     // so at most ONE message changes per request → the cache prefix keeps
     // everything before it.
     let strippedAny = false;
+    // stale camera frames → text placeholders (see pruneStaleImages). At most a
+    // handful of messages change, each exactly once (when it ages past the TTL)
+    // — and at this dock's traffic the implicit cache is expired by then anyway.
+    const pruned = pruneStaleImages(repaired);
+    if (pruned.changed) { repaired.length = 0; repaired.push(...pruned.messages); strippedAny = true; }
     for (let i = repaired.length - 1; i >= 0; i--) {
       const m = repaired[i] as { role?: string; content?: unknown };
       if (m.role !== 'user' || !Array.isArray(m.content)) continue;
@@ -1970,6 +1975,35 @@ export function resolveModel(spec: string): Model<any> {
  * into every request's options, the only reliable seam.
  */
 export const DOCK_MAX_TOKENS = 2048;
+
+/** How long a camera frame stays in history before it's replaced with a text
+ *  placeholder (stale pixels presented as context mislead vision answers, and
+ *  each frame re-costs ~800 input tokens every call — measured 8 frames/request
+ *  before pruning). 5 min keeps the natural "that thing you just saw" follow-up. */
+const STALE_IMAGE_MS = 5 * 60_000;
+
+/** Replace image parts in user messages older than STALE_IMAGE_MS with a text
+ *  placeholder. Pure (returns new array when changed); the current turn's
+ *  message is never in `messages` yet when this runs (sanitize precedes the
+ *  prompt append). Messages without a timestamp are left alone. */
+export function pruneStaleImages(messages: AgentMessage[], now = Date.now()): { messages: AgentMessage[]; changed: boolean } {
+  let changed = false;
+  const out = messages.map((m) => {
+    const msg = m as { role?: string; timestamp?: number; content?: unknown };
+    if (msg.role !== 'user' || !Array.isArray(msg.content)) return m;
+    if (typeof msg.timestamp !== 'number' || now - msg.timestamp <= STALE_IMAGE_MS) return m;
+    if (!msg.content.some((c) => (c as { type?: string }).type === 'image')) return m;
+    const when = new Date(msg.timestamp + 5.5 * 3600_000).toISOString().slice(11, 16);
+    changed = true;
+    return {
+      ...msg,
+      content: msg.content.map((c) => (c as { type?: string }).type === 'image'
+        ? { type: 'text', text: `[camera frame from ${when} IST removed — stale; look again if you need the current view]` }
+        : c),
+    } as AgentMessage;
+  });
+  return { messages: changed ? out : messages, changed };
+}
 
 /** Persist the input frame a vision turn's model actually saw (the request ring
  *  strips image bytes). Bounded dump like the utterance WAVs: prune oldest past

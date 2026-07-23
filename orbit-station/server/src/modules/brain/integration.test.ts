@@ -28,6 +28,7 @@ import { RpcBroker } from './rpc.js';
 import { SessionStore } from './store.js';
 import { DockBrainSession, type SessionDeps } from './session.js';
 import { stripTurnContext } from './prompt.js';
+import { pruneStaleImages } from './session.js';
 import { buildMemoryTools } from './tools.js';
 import { newLatch, tap as tapLatch, decideAddressed, type AddressedLatch } from './addressed.js';
 import { MemoryStore, type Embedder } from '../perception/memory/store.js';
@@ -97,6 +98,28 @@ test('E2E grounding: a cached summary reaches the prompt the LLM receives (turn 
   assert.match(seenUserText, /Perception — last summary/);
   assert.match(seenUserText, /debugging and sounded frustrated/);
   assert.doesNotMatch(seenSystemPrompt, /Perception — last summary/, 'grounding must NOT churn the static system prompt');
+});
+
+test('pruneStaleImages: old frames become placeholders, fresh + untimestamped stay', () => {
+  const now = 10 * 60_000;
+  const img = { type: 'image', data: 'AAAA', mimeType: 'image/jpeg' };
+  const msgs = [
+    { role: 'user', timestamp: 1 * 60_000, content: [{ type: 'text', text: 'look' }, img] },          // 9 min old → pruned
+    { role: 'user', timestamp: 8 * 60_000, content: [{ type: 'text', text: 'and now' }, img] },       // 2 min old → kept
+    { role: 'user', content: [{ type: 'text', text: 'no ts' }, img] },                                 // no timestamp → kept
+    { role: 'assistant', timestamp: 1, content: [{ type: 'text', text: 'ok' }] },                      // not user → untouched
+  ] as never[];
+  const { messages, changed } = pruneStaleImages(msgs, now);
+  assert.equal(changed, true);
+  const c0 = (messages[0] as { content: Array<{ type: string; text?: string }> }).content;
+  assert.equal(c0[1]!.type, 'text');
+  assert.match(c0[1]!.text!, /camera frame from .* removed — stale/);
+  assert.equal((messages[1] as { content: Array<{ type: string }> }).content[1]!.type, 'image');
+  assert.equal((messages[2] as { content: Array<{ type: string }> }).content[1]!.type, 'image');
+  // unchanged input → same reference, no churn
+  const again = pruneStaleImages(messages, now);
+  assert.equal(again.changed, false);
+  assert.equal(again.messages, messages);
 });
 
 test('E2E memory: remember then recall_memory round-trip through the real store', async () => {
