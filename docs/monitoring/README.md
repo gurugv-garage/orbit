@@ -157,6 +157,9 @@ evidence attached, recorded in RESULTS.md.
 | `turnQuality.silentTurns` | <10% of turns | >25% of turns | the dock has gone quiet on people |
 | `turnQuality.firstSpeechMsP50` | <5s | >7s, or +50% vs recent runs | replies feel sluggish |
 | `hearing.sttLagMsP90` | <1s | >2s | STT is falling behind; barge/stop react late |
+| `hearing.dropsLowDensity` | steady | any RISE vs prior runs | new 2026-07-23. Sustained voiced audio yielding almost no words = AEC residue reaching transcription. A rise means the AEC is doing worse, not that the gate is wrong |
+| `attention.selfEchoSkips` | non-zero is normal | a SPIKE, or user says "it ignored me while it was talking" | new 2026-07-23 (`skip:self-echo`). Utterances dropped because the dock was speaking. Each one is also a lost content-barge |
+| self-echo CHAINS | 0 | any chain of 3+ turns with no `tap`/`wake`/`palm` opener | **CONFIRMED bug (2026-07-23)**: the dock answering its own voice — see the signs section above |
 | `cost.usdPerTurn` | stable | +50% vs the last runs | a model/prompt change is costing money |
 | `cost.byUsecase` non-Conversation | small | any role >25% of spend | background work is outspending the user |
 | `cost.cachePct` | >30% on a busy day | 0% across a busy day | prompt prefix stability regressed |

@@ -113,7 +113,19 @@ streaming working); `followup-chains` longest chain only 3 turns (healthy).
    (`probe.mjs dropped-speech`, needs the sidecar up).
 3. Watch `cost.cachePct` over a normal conversational day now that the prompt is stable.
 4. Phone lane is still dark in conv_events — needs the app sideload.
-5. **Decide the self-echo fix** (RCA above): reject utterances overlapping a TTS
+5. **Verify the two echo gates** shipped 2026-07-23 — both are UNPROVEN live:
+   `low-density` never fired in testing (the voiced-fraction gate caught residue
+   first), and `skip:self-echo` never fired either (nothing arrived as content
+   while speaking). Watch for their first real firings, and for the cost:
+   a lost content-barge shows up as "it ignored me while it was talking".
+6. **Intermittent stop loss** — the same barge test failed at 15:23 (stop eaten
+   by the 35% speaking floor → `timeout:no-words` → reply continued) and passed
+   at 15:27. Not deterministic; needs repeated runs. Candidate fix (not built):
+   drop the voiced floor to the idle value while a barge hold is active.
+7. **Was it still speaking?** A stop landed while the trace said `conv:speaking`
+   but the user in the room says the dock was silent — possibly a stale speaking
+   mode from a lost `speech-status` frame. Needs the phone lane (sideload).
+8. **Decide the remaining self-echo fix** (RCA above): reject utterances overlapping a TTS
    window (kills content barge-in) vs station-side echo cancellation against the
    TTS reference we already hold (preserves it, real work). Until then, watch for
    repeat loops: chains of turns where nobody spoke.

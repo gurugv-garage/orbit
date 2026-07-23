@@ -933,6 +933,22 @@ export function brainModule(w: BrainWiring): StationModule {
           }
         }
         if (pre.mode === 'thinking' || pre.mode === 'speaking') {
+          // SELF-ECHO REJECT (2026-07-23, docs/rca/2026-07-23-self-echo-loop.md):
+          // audio captured while the dock's OWN TTS is playing is, in this room's
+          // measurements, overwhelmingly AEC residue that parakeet fabricated words
+          // from ("And even if it's mine, I end up" — 8 words, 1.2s voiced, DURING
+          // the reply). Queuing those ran them as turns at settle, which fed the
+          // dock its own voice and drove two self-conversation loops.
+          //
+          // STOP WORDS ARE UNAFFECTED: classifyStopIntent runs ABOVE this branch,
+          // so "stop"/"wait"/"hold on" still abort the reply. What this removes is
+          // CONTENT barge-in (talk over the dock, get answered afterwards) while
+          // SPEAKING — deliberately, because it cannot be told from residue.
+          // During THINKING nothing is playing, so there is no echo to reject.
+          if (pre.mode === 'speaking' && w.config('brainEchoReject') !== false) {
+            trace('skip:self-echo');
+            return;
+          }
           busyQueue.add(t);
           session(t.dockId).notifyHeardDuringTurn('queued'); // flash the heard cue
           trace('queue:busy');

@@ -177,6 +177,48 @@ const ECHO_GATE = process.env.STT_ECHO_GATE === '1';
 // baseline. STT_MIN_VOICED_PCT=0 disables the gate entirely.
 const MIN_VOICED_PCT = Number(process.env.STT_MIN_VOICED_PCT ?? 35);
 const MIN_VOICED_PCT_IDLE = Number(process.env.STT_MIN_VOICED_PCT_IDLE ?? 10);
+
+// --------------------------------------------------------------------------- //
+// SPEECH-DENSITY GATE (AEC-residue backstop) — measured 2026-07-23.
+// --------------------------------------------------------------------------- //
+// The dock's own TTS is CANCELLED by the phone's AEC, but what survives is a
+// rhythmically speech-shaped, phonetically destroyed residue. The VAD sees energy
+// above SILENCE_RMS and holds the utterance open for 19-25s; parakeet (a
+// transducer that cannot decline) is handed that mush and emits the shortest
+// plausible phrase — "I am a little worried.", "Oh yeah, we're some." Those
+// fabrications scored tier `good`, passed every existing gate, and drove two
+// self-conversation loops (docs/rca/2026-07-23-self-echo-loop.md).
+//
+// The separator is DENSITY: sustained voiced audio producing almost no words.
+// Measured on 5 confirmed-real + 22 residue clips:
+//   real speech   : 2.56 - 4.72 words per VOICED second (35 words in 8.1s voiced)
+//   long residue  : 0.55 - 1.11 (5 words in 8.5s voiced)
+// Deliberately NARROW — it only judges utterances with >= MIN_DENSITY_VOICED_S of
+// voiced audio. SHORT residue ("Yeah.", "Okay.", "Thank you.") is acoustically
+// IDENTICAL to a short real answer and is NOT separable this way; RMS was tested
+// as a tie-breaker and rejected (real 0.055-0.183 vs residue 0.014-0.083 overlap).
+// Those need the timing-based TTS-overlap rule instead (see the RCA).
+const MIN_DENSITY_VOICED_S = Number(process.env.STT_DENSITY_MIN_VOICED_S ?? 4);
+const MIN_WORDS_PER_VOICED_S = Number(process.env.STT_MIN_WORDS_PER_VOICED_S ?? 2);
+/** The density verdict, as a PURE function of the two measurements — so the
+ *  measured thresholds are pinned by a unit test (speech-watch.test.ts) and can
+ *  never drift silently. True ⇒ AEC residue the engine hallucinated over. */
+export function isLowDensity(voicedS: number, wordCount: number): boolean {
+  if (voicedS < MIN_DENSITY_VOICED_S) return false;   // short clips are not judgeable
+  return (wordCount / voicedS) < MIN_WORDS_PER_VOICED_S;
+}
+
+/** Seconds of voiced audio (frames at/above the voiced floor) in `pcm`. */
+function voicedSeconds(pcm: Int16Array): number {
+  const frame = Math.round(SAMPLE_RATE * 0.02); // 20ms, same test the VAD uses
+  let voiced = 0;
+  for (let i = 0; i + frame <= pcm.length; i += frame) {
+    let sum = 0;
+    for (let j = i; j < i + frame; j++) { const v = pcm[j]! / 32768; sum += v * v; }
+    if (Math.sqrt(sum / frame) >= VOICED_FLOOR_RMS) voiced++;
+  }
+  return voiced * 0.02;
+}
 // Mirror the VAD endpointer's own voiced floor (vad-endpoint.ts SILENCE_RMS) via
 // the same env var, so this gate's per-frame test is identical to the endpointer's.
 const VOICED_FLOOR_RMS = Number(process.env.STT_SILENCE_RMS ?? 0.012);
@@ -705,7 +747,16 @@ export function speechWatchProcessor(
         // silence). Both still land as snapshots above for the record, but neither
         // may become an agent turn — otherwise the dock answers things no one said
         // (the "Thank you" → "You're very welcome!" phantom reply).
-        const withheld = isBeepArtifact(tr.text) ? 'beep-artifact'
+        // SPEECH-DENSITY (see MIN_WORDS_PER_VOICED_S): sustained voiced audio that
+        // produced almost no words is AEC residue the engine hallucinated over,
+        // not speech. Only judges long-voiced clips; short ones are exempt because
+        // a one-word answer is indistinguishable from short residue.
+        const voicedS = voicedSeconds(pcm);
+        const wordCount = tr.text.split(/\s+/).filter((w) => /[a-z0-9]/i.test(w)).length;
+        const density = voicedS > 0 ? wordCount / voicedS : Infinity;
+        const lowDensity = isLowDensity(voicedS, wordCount);
+        const withheld = lowDensity ? 'low-density'
+          : isBeepArtifact(tr.text) ? 'beep-artifact'
           : isHallucination(tr.text) ? 'hallucination'
           : isLowConfBackchannel(tr.text, lowConfidence) ? 'low-conf-backchannel'
           : hasNoWords(tr.text) ? 'no-words'
@@ -718,7 +769,8 @@ export function speechWatchProcessor(
           ...(withheld ? { verdict: withheld } : {}),
           text: tr.text, utteranceId,
           audioStartAt: startedAt.getTime(), audioEndAt: endedAt.getTime(), sttFinalAt: sttDoneAt,
-          detail: { tier, ...(tr.engineConf != null ? { conf: Number(tr.engineConf.toFixed(3)) } : {}) },
+          detail: { tier, ...(tr.engineConf != null ? { conf: Number(tr.engineConf.toFixed(3)) } : {}) ,
+            ...(lowDensity ? { voicedS: Number(voicedS.toFixed(1)), words: wordCount, wordsPerVoicedS: Number(density.toFixed(2)) } : {}) },
         });
         if (!withheld) {
           onFinal?.({

@@ -14,6 +14,8 @@ happened to time out.
 - [Root cause](#root-cause)
 - [What does NOT work (measured, so nobody retries it)](#what-does-not-work-measured-so-nobody-retries-it)
 - [Options (none free)](#options-none-free)
+- [What was built (2026-07-23, same day)](#what-was-built-2026-07-23-same-day)
+- [Open, unexplained](#open-unexplained)
 - [Also surfaced](#also-surfaced)
 - [Reproduce / verify](#reproduce--verify)
 <!-- /TOC -->
@@ -103,6 +105,72 @@ over the reply and it is answered afterwards (busy-queue → drain).
 
 **Recommendation:** 2 as a stopgap, 3 as the answer. Not implemented — both
 change conversational feel, so the call is the user's.
+
+## What was built (2026-07-23, same day)
+
+Two gates, both deliberately narrow, both traced with the clip kept so any drop
+is re-judgeable:
+
+**1. Speech-density gate** (`speech-watch.ts`, verdict `low-density`).
+Drops an utterance when **voiced ≥4s AND <2 words per voiced-second**. Rationale
+above: sustained voiced energy producing almost no words is residue the engine
+fabricated over. Thresholds are MEASURED and pinned by unit tests.
+
+Validation (offline replay of kept clips, the only clean method available):
+- drops the 3 loop drivers (0.55, 0.59, 1.11 w/voiced-s)
+- keeps all 5 confirmed-real utterances (2.56-4.72)
+- across 45 judged clips from the day: everything kept is recognisable speech
+  (2.03-4.60), everything dropped is garbled fragments (0.39-1.96)
+- live: 19 real utterances in a walk-around test (incl. 6 m through two walls),
+  **0 false drops**
+
+⚠️ **Margin is thin.** Kept-min 2.03 vs drop-max 1.96 — 0.07 apart, tighter than
+the first small sample suggested. A slower speaker or a different room could
+cross it. Re-measure rather than trust the number.
+
+⚠️ **Unproven in production.** In live testing the voiced-fraction gate caught
+the residue first (drops at 19/30/31/34% vs the 35% speaking floor), so the
+density gate never fired. It is a BACKSTOP for when residue clears that floor.
+
+⚠️ **Cannot catch short residue** — by design. "And even if it's mine, I end up"
+measured 8 words in 1.2 s voiced = **6.56 w/s**, DENSER than any real speech
+recorded. Short residue is acoustically indistinguishable from a short real
+answer; no acoustic rule separates them.
+
+**2. Self-echo reject** (`brain/index.ts`, verdict `skip:self-echo`).
+An utterance heard while `mode === 'speaking'` is no longer queued — it is
+dropped. This is the only thing that catches the short-residue class, and it
+uses timing (the station knows when it is speaking) rather than acoustics.
+Kill-switch `brainEchoReject=false`.
+
+- **Stop words are UNAFFECTED**: `classifyStopIntent` runs above this branch.
+- **Cost, paid deliberately:** removes CONTENT barge-in during speaking (talk
+  over the dock, get answered after). The interrupt half survives.
+- **Status: NOT verified live.** One barge test after shipping it showed
+  `barge:hold → stt:final "Stop, stop, stop." → stop:dismiss` (the interrupt
+  path intact), but the `skip:self-echo` branch itself never fired in any test —
+  nothing arrived as content during speaking. And the user reports the dock was
+  NOT audibly talking when that stop landed, so even that run may have been a
+  stop onto silence rather than a real barge. Treat as unproven.
+
+## Open, unexplained
+
+- **Was it still speaking?** The trace showed `conv:speaking` with no `tts-end`
+  when the stop landed, but the user (in the room) says it was not talking.
+  Either the reply drained early and the trace kept a stale `speaking` mode
+  (a lost `speech-status` frame — the `SPEAK_MAX_MS` cap exists for exactly
+  this), or the reply really was playing. Unresolved; distinguishing them needs
+  the phone lane (blocked on the app sideload).
+- **Intermittent stop loss.** 15:23 a "stop" over a reply was eaten by the
+  voiced-fraction gate at the 35 % speaking floor (`barge:release:timeout:
+  no-words` → resumed, reply continued). 15:27 the identical test passed at tier
+  `good`. Same code both times ⇒ the failure is intermittent, so one passing run
+  proves nothing. Candidate fix, NOT built: drop the voiced floor to the idle
+  value while a barge hold is active (we already believe someone is speaking).
+- **This morning's `timeout:no-words → resume`** removed the circuit breaker
+  that used to abort a reply on a sustained wordless barge. It stopped noise
+  aborting replies, but it also let the 15:23 unheard stop fail silently. The two
+  incidents pull in opposite directions; the trade needs re-deciding.
 
 ## Also surfaced
 

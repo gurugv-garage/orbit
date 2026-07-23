@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { UtteranceDetector } from './vad-endpoint.js';
-import { isHallucination, isLowConfBackchannel, hasNoWords, confidenceTier } from './speech-watch.js';
+import { isHallucination, isLowConfBackchannel, hasNoWords, confidenceTier, isLowDensity } from './speech-watch.js';
 
 // Mirrors the detector's own constants. FRAME_MS=30 @ 16 kHz → 480 samples/frame.
 // ENDPOINT_MS=1300 → ~44 silent frames commit. MIN_UTTERANCE_MS=180 → ≥6 voiced
@@ -456,4 +456,30 @@ test('speaking floor still endpoints on real silence, and real speech stays voic
   assert.equal(ends.length, 0, 'loud speech must not endpoint mid-word under the raised floor');
   d.feedPcm(quiet(frames(1500)));
   assert.equal(ends.length, 1);
+});
+
+// SPEECH DENSITY (AEC-residue backstop) — the thresholds are MEASURED
+// (2026-07-23, docs/rca/2026-07-23-self-echo-loop.md), so pin them to the real
+// clips: 5 confirmed-real utterances and the residue that drove the loops.
+test('isLowDensity: sustained voiced audio yielding almost no words is residue', () => {
+  // the three loop drivers (voicedS, words) — all must be caught
+  assert.equal(isLowDensity(8.5, 5), true, '"I am a little worried." — 19.2s clip');
+  assert.equal(isLowDensity(7.3, 4), true, '"Oh yeah, we\'re some." — 25.8s clip');
+  assert.equal(isLowDensity(5.4, 6), true, '"See when he doesn\'t really like."');
+});
+
+test('isLowDensity: confirmed REAL speech always survives', () => {
+  assert.equal(isLowDensity(8.1, 35), false, '"And now I am pretty far…"');
+  assert.equal(isLowDensity(4.9, 19), false, '"when it is not talking. From here I\'m a little far."');
+  assert.equal(isLowDensity(2.5, 12), false, 'short + dense');
+  assert.equal(isLowDensity(2.3, 6), false, '"Give me a coffee, my job."');
+  assert.equal(isLowDensity(1.2, 4), false, '"Just giving your feedback."');
+});
+
+test('isLowDensity: SHORT clips are never judged (a one-word answer is not residue)', () => {
+  // short residue and short real speech are acoustically identical — out of scope
+  // by design; the TTS-overlap rule is what covers them.
+  assert.equal(isLowDensity(0.4, 1), false, '"stop" / "Oh."');
+  assert.equal(isLowDensity(1.8, 1), false, 'a lone "Okay." in a 4.7s clip');
+  assert.equal(isLowDensity(3.9, 0), false, 'just under the judgeable floor');
 });
