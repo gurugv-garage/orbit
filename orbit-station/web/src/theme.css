@@ -210,6 +210,17 @@ label.field { display: flex; flex-direction: column; gap: 4px; font-size: 12px; 
    expanded trigger badge. 'user' is never rendered here (implicit default, pure noise). */
 .obs-turn-kind { flex: none; font-size: 9px; text-transform: uppercase; letter-spacing: .06em; padding: 1px 5px; border-radius: 4px; font-weight: 600; background: var(--warn); color: #0a0e1c; }
 .obs-turn-kind.trigger-task { background: var(--accent); }
+/* TRIGGER-KIND COLOUR FAMILIES — the badge answers "why did this turn run?" at a
+   glance, so the hue encodes the ANSWER CLASS, not the individual via:
+     amber  = the user deliberately addressed it (tap / palm / wake)
+     violet = the dock raised itself (self-mood / self-console / task / replay)
+     cyan   = speech heard DURING a reply (busy-drain / merge) — the "it answered
+              something I said mid-sentence" class
+     slate  = passive/ambient admission (followup window, face window) — the
+              "suddenly it spoke" class the followup-chain bugs live in  */
+.obs-turn-kind.trigger-self, .obs-turn-kind.trigger-replay { background: rgb(178,140,255); }
+.obs-turn-kind.via-busy-drain, .obs-turn-kind.via-merge { background: rgb(90,200,225); }
+.obs-turn-kind.via-followup, .obs-turn-kind.via-face { background: rgb(150,165,190); }
 
 /* REPLAY rows nest under their source turn: indented, marked with ↳, and
    collapsed behind a thin "↳ N replays" toggle by default (live ones show). */

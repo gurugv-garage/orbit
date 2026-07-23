@@ -690,7 +690,7 @@ function TurnRow({ turn, open, onToggle, feedback, dock }: { turn: TurnVM; open:
             (user-reported 2026-07-22: a hidden tap chip read as an unmarked turn).
             followup/busy-drain/grace are the "suddenly it speaks" answers. */}
         {turn.trigger?.kind === 'user' && turn.trigger.via && (
-          <span className="obs-turn-kind trigger-user" title={admitTitle(turn.trigger)}>
+          <span className={`obs-turn-kind trigger-user via-${turn.trigger.via.replace('-window', '')}`} title={admitTitle(turn.trigger)}>
             {turn.trigger.via.replace('-window', '')}
             {turn.trigger.window?.rule === 'started-in-window' ? '·grace' : ''}
           </span>
