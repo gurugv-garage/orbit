@@ -1052,7 +1052,7 @@ function ConvContext({ turn }: { turn: TurnVM }) {
   if (events.length === 0) return null;
   const uid = turn.trigger?.utteranceId;
   return (
-    <details className="obs-convctx" open>
+    <details className="obs-convctx">
       <summary className="muted sm">
         🧵 conversation context — {events.length} pipeline events ±30s around this turn
         {turn.source && (
