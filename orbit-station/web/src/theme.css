@@ -220,6 +220,9 @@ label.field { display: flex; flex-direction: column; gap: 4px; font-size: 12px; 
               "suddenly it spoke" class the followup-chain bugs live in  */
 .obs-turn-kind.trigger-self, .obs-turn-kind.trigger-replay { background: rgb(178,140,255); }
 .obs-turn-kind.via-busy-drain, .obs-turn-kind.via-merge { background: rgb(90,200,225); }
+/* the user INTERRUPTED the dock (barge yield / spoken "wait") — its own class:
+   the dock stopped itself and handed the floor back. */
+.obs-turn-kind.via-barge-yield, .obs-turn-kind.via-voice-pause { background: rgb(255,138,128); }
 .obs-turn-kind.via-followup, .obs-turn-kind.via-face { background: rgb(150,165,190); }
 
 /* REPLAY rows nest under their source turn: indented, marked with ↳, and

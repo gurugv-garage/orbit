@@ -685,7 +685,7 @@ test('quiet mode: palm (tapOpen), wake, and face-arrival do NOT open a listening
   const { session } = makeSession([]);
   session.setQuiet(Infinity);
   // palm — the "listen to me" gesture — is ignored while quiet
-  session.tapOpen();
+  session.tapOpen('palm');
   assert.equal(session.isListening(), false, 'palm opened a window while quiet');
   // wake() (audio-enricher fallback / wake phrase) routes through tapOpen + speakCanned — both gated
   session.wake('did you call me?');

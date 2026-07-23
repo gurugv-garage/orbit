@@ -1012,6 +1012,9 @@ const VIA_EXPLAIN: Record<string, string> = {
   'busy-drain': 'Heard WHILE the dock was thinking/speaking → queued in the busy-queue → run as one combined turn when the reply settled. Possibly-overheard framing (you may not have been talking to it).',
   'wake+command': 'The wake phrase + a command in ONE breath ("hey orbit, look right"): the name was stripped, the remainder ran as the turn.',
   'phone:turn-request': 'The PHONE originated this turn itself (debug console / adb SAY / typed input) — no station window decision was involved.',
+  'barge-yield': 'You talked OVER the dock and kept going: the barge hold ran its full 6s with no clean stop-word, so the dock YIELDED — aborted its own reply and opened a listening window for you (never plow over a sustained interruption).',
+  'voice-pause': 'You said "wait" / "hold on": the reply was aborted and a listening window opened (the spoken tap-interrupt). The busy queue is kept — you are mid-exchange.',
+  'wake-window': 'The wake phrase opened this listening window (the dock acknowledged, then your next words ran).',
 };
 
 /** via PREFIXES for self/task raisers (via = "<prefix>:<detail>"). */
@@ -1037,6 +1040,9 @@ const OPENER_EXPLAIN: Record<string, string> = {
   'reply-followup': "the dock's own reply ending (auto re-listen so you can follow up hands-free)",
   'speak-timeout': 'the lost-tts-end recovery: the phone never reported speech ended, the safety cap opened the followup window instead',
   'face-arrival': 'a face arriving in camera view',
+  'barge-yield': 'the barge hold timing out with no clean stop-word — the dock yielded the floor mid-reply',
+  'voice-pause': 'a spoken "wait"/"hold on" aborting the reply',
+  wake: 'the wake phrase',
 };
 
 /** Multi-line tooltip for a trigger chip: what the via means + which rule/window/

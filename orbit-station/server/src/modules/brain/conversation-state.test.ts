@@ -530,3 +530,30 @@ it('no trailing start-grace anywhere: late starts stay overheard (A1h holds)', (
   d.dismiss(3_000);        // dismissal → idle
   assert.equal(d.utteranceEnded(4_000, 4_100, 3_400), false, 'speech after dismissal stays unaddressed');
 });
+
+describe('ConversationState — tapOpen provenance', () => {
+  // REGRESSION (2026-07-23, turn-fe004678): tapOpen hardcoded 'palm-interrupt'/
+  // 'palm-address' for ALL callers, so a barge yield badged as a palm gesture the
+  // user never made. Every caller must now stamp itself.
+  it('a barge-yield / voice-pause / wake window never claims a palm', () => {
+    for (const by of ['barge-yield', 'voice-pause', 'wake'] as const) {
+      const { cs } = make();
+      cs.speakStart(0);                    // dock mid-reply → the interrupting branch
+      cs.tapOpen(1000, by);
+      cs.utteranceEnded(1500, 1600);
+      assert.equal(cs.lastAdmit?.openedBy, by, `${by} window must name itself`);
+    }
+  });
+
+  it('a REAL palm keeps its legacy strings (historical traces + the UI read them)', () => {
+    const idle = make().cs;
+    idle.tapOpen(1000, 'palm');
+    idle.utteranceEnded(1500, 1600);
+    assert.equal(idle.lastAdmit?.openedBy, 'palm-address');
+    const busy = make().cs;
+    busy.speakStart(0);
+    busy.tapOpen(1000, 'palm');
+    busy.utteranceEnded(1500, 1600);
+    assert.equal(busy.lastAdmit?.openedBy, 'palm-interrupt');
+  });
+});

@@ -178,23 +178,30 @@ export class ConversationState {
     }
   }
 
-  /** ADDRESS, open-only (the palm gesture). Like {@link tap} but NEVER toggles a
-   *  window OFF — a palm always means "listen to me", never "go away". This fixes
-   *  the palm-interrupt bug: a palm shown while the dock is SPEAKING raced the
+  /** ADDRESS, open-only. Like {@link tap} but NEVER toggles a window OFF — these
+   *  callers always mean "listen to me", never "go away". This fixes the
+   *  palm-interrupt bug: a palm shown while the dock is SPEAKING raced the
    *  natural speaking→followup transition; arriving in 'followup', plain tap() did
    *  tap-OFF → idle, and the user's next utterance was dropped as not-addressed.
    *  Open-only: from idle/listening/followup → (re)open a listening window; from
    *  thinking/speaking → interrupt into a window. It can only ever leave the dock
-   *  LISTENING. */
-  tapOpen(now: number): void {
+   *  LISTENING.
+   *
+   *  `by` names WHO opened it — it becomes AdmitTrace.openedBy and the turn's
+   *  provenance badge. REQUIRED, with NO default, deliberately: the reason used to
+   *  be hardcoded 'palm-*' for all four callers, so a barge-yield / wake /
+   *  voice-pause window all claimed a palm gesture the user never made (seen live
+   *  2026-07-23: turn-fe004678 badged 'palm-window' for a barge yield). A default
+   *  would let a future caller re-introduce exactly that lie by saying nothing;
+   *  the compiler now forces every caller to state what actually happened. */
+  tapOpen(now: number, by: 'palm' | 'barge-yield' | 'voice-pause' | 'wake'): void {
     this.#prune(now);
-    if (this.#mode === 'thinking' || this.#mode === 'speaking') {
-      this.#speakUntil = 0;
-      this.#openWindow('tap', now + ConvCfg.LISTEN_MS, now, 'palm-interrupt');
-    } else {
-      // idle / listening / followup → ensure a fresh listening window is open.
-      this.#openWindow('tap', now + ConvCfg.LISTEN_MS, now, 'palm-address');
-    }
+    const interrupting = this.#mode === 'thinking' || this.#mode === 'speaking';
+    // keep the legacy palm strings byte-identical (tests + historical traces read
+    // 'palm-address'/'palm-interrupt'); other callers name themselves.
+    const reason = by === 'palm' ? (interrupting ? 'palm-interrupt' : 'palm-address') : by;
+    if (interrupting) this.#speakUntil = 0;
+    this.#openWindow('tap', now + ConvCfg.LISTEN_MS, now, reason);
   }
 
   /** True if `tap()` at `now` would INTERRUPT an in-flight reply (mode thinking or

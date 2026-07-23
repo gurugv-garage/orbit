@@ -670,7 +670,7 @@ export function brainModule(w: BrainWiring): StationModule {
           session(dock).ttsHold(false);
           bargeCooldownUntil.set(dock, Date.now() + BARGE_COOLDOWN_MS);
         } else if (end === 'yield') {
-          session(dock).tapOpen(); // abort the (paused) reply + open listening — yield the floor
+          session(dock).tapOpen('barge-yield'); // abort the (paused) reply + open listening — yield the floor
         }
         pushAddrTrace({ dockId: dock, text: `(held ${Date.now() - h.at}ms)`, startedAt: h.at, endedAt: Date.now() },
           `barge:release:${why}`, session(dock).conversation().mode);
@@ -801,7 +801,7 @@ export function brainModule(w: BrainWiring): StationModule {
             if (command.replace(/[^a-z0-9]/gi, '').length >= 2) {
               console.log(`[wake] ${t.dockId} FIRED-WITH-COMMAND on "${t.text}" → turn "${command}" (phrase="${w.phrase}", tier=${t.confTier ?? '?'})`);
               trace('wake+command');
-              session(t.dockId).tapOpen(); // open the listening window (adopt), same as wake()
+              session(t.dockId).tapOpen('wake'); // open the listening window (adopt), same as wake()
               void session(t.dockId).handleTurnRequest({
                 turnId: `addr-${randomUUID()}`,
                 trigger: { kind: 'user', text: command, via: 'wake+command', utteranceId: t.utteranceId },
@@ -858,7 +858,7 @@ export function brainModule(w: BrainWiring): StationModule {
           // KEPT (they're mid-exchange; it drains at the next settle).
           if (stop === 'pause') {
             trace('stop:pause');
-            session(t.dockId).tapOpen();
+            session(t.dockId).tapOpen('voice-pause');
             return;
           }
         }
@@ -948,9 +948,19 @@ export function brainModule(w: BrainWiring): StationModule {
         // NOTE this keys on the admitting WINDOW (admit.windowSrc), not pre.mode
         // as before — so a followup-window utterance admitted via the GRACE path
         // (pre.mode already idle) is now correctly framed possibly-overheard too.
+        // via names the ADMITTING window by WHO OPENED IT. openedBy is the truth
+        // (ConversationState stamps it); 'tap-window' is the fallback for a real
+        // tap. NB the palm-prefix test must stay LAST of the openedBy checks —
+        // before 2026-07-23 tapOpen hardcoded 'palm-*' for every caller, so a
+        // barge-yield/wake/voice-pause window claimed a palm that never happened
+        // (turn-fe004678). Those callers now stamp themselves.
+        const openedBy = admit?.openedBy ?? '';
         const via = admit?.windowSrc === 'followup' ? 'followup-window'
           : admit?.windowSrc === 'face' ? 'face-window'
-          : admit?.openedBy?.startsWith('palm') ? 'palm-window'
+          : openedBy === 'barge-yield' ? 'barge-yield'
+          : openedBy === 'voice-pause' ? 'voice-pause'
+          : openedBy === 'wake' ? 'wake-window'
+          : openedBy.startsWith('palm') ? 'palm-window'
           : 'tap-window';
         trace('RAN-TURN', { via, admitRule: admit?.rule, windowOpenedBy: admit?.openedBy });
         void session(t.dockId).handleTurnRequest({
@@ -1080,7 +1090,7 @@ export function brainModule(w: BrainWiring): StationModule {
             // EXCEPT openOnly (the PALM gesture): address open-only, never toggle
             // off — a palm always means "listen to me". Fixes palm-during-speaking
             // racing speaking→followup and landing as tap-off → idle → dropped.
-            if ((p as { openOnly?: boolean } | null)?.openOnly) session(dock).tapOpen();
+            if ((p as { openOnly?: boolean } | null)?.openOnly) session(dock).tapOpen('palm');
             else session(dock).tap();
             // TRANSPARENCY: the user is trying to talk. If the dock is in a known
             // broken condition (e.g. the STT sidecar is down so it's deaf), tell

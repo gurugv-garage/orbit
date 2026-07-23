@@ -460,14 +460,14 @@ export class DockBrainSession {
    *  {@link tap} it interrupts an in-flight reply, but it always leaves the dock
    *  LISTENING (fixes the palm-during-speaking → followup → tap-off → dropped
    *  utterance bug). */
-  tapOpen(now = Date.now()): void {
+  tapOpen(by: 'palm' | 'barge-yield' | 'voice-pause' | 'wake', now = Date.now()): void {
     // QUIET MODE (🤐): the PALM ("listen to me") is ignored while quiet — a quiet
     // dock never opens a listening window it can't reply from. This is also the
     // gate for wake() (which calls tapOpen) and wake+command's adopt. Only a TAP
     // (tap(), the deliberate engage gesture) exits quiet. No-op cleanly.
     if (this.isQuiet(now)) return;
     const interrupts = this.#conv.tapWouldInterrupt(now);
-    this.#conv.tapOpen(now);
+    this.#conv.tapOpen(now, by); // `by` = the REAL opener (provenance; see ConversationState.tapOpen)
     if (interrupts) this.#interruptSpeech(); // abort the interrupted reply (or its TTS tail)
   }
 
@@ -484,7 +484,7 @@ export class DockBrainSession {
    *  cancelled the dying turn (the phone silences + drops its straggler frames by
    *  turnId once it adopts the canned turn). */
   wake(prompt: string, now = Date.now()): void {
-    this.tapOpen(now); // open the listening window first so the follow-up utterance is addressed
+    this.tapOpen('wake', now); // open the listening window first so the follow-up utterance is addressed
     this.speakCanned(prompt);
   }
 
