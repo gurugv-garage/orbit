@@ -17,11 +17,11 @@ interface SpeechVM { startedAt: number; endedAt?: number }
 interface AdmitVM { rule?: string; mode?: string; windowSrc?: string; openedBy?: string; openedAt?: number; msToExpiry?: number }
 interface TriggerVM { kind: string; text?: string; via?: string; window?: AdmitVM; utteranceId?: string }
 interface SttVM { confTier?: string; avgLogprob?: number | null; noSpeechProb?: number | null; compressionRatio?: number | null; voice?: { name: string; score?: number; match?: boolean } }
-interface TurnVM { id: string; sessionId: string; source?: string; trigger?: TriggerVM; startedAt: number; endedAt?: number; ended: boolean; steps: StepVM[]; speech: SpeechVM[]; image?: string; stt?: SttVM }
+interface TurnVM { id: string; sessionId: string; source?: string; trigger?: TriggerVM; startedAt: number; endedAt?: number; ended: boolean; steps: StepVM[]; speech: SpeechVM[]; image?: string; stt?: SttVM; speechStopped?: string }
 
 interface StoredTool { toolCallId: string; toolName: string; args?: unknown; result?: string; isError?: boolean; startedAt?: number; endedAt?: number }
 interface StoredStep { index: number; model?: string; stopReason?: string; text?: string; rawText?: string; tools: StoredTool[]; usage?: { inputTokens?: number; outputTokens?: number; totalTokens?: number; cost?: number; cacheRead?: number; thinkingTokens?: number }; thinkingMs?: number; startedAt?: number; streamStartedAt?: number; endedAt?: number }
-interface StoredTurn { turnId: string; sessionId: string; trigger?: TriggerVM; speech?: { startedAt: number; endedAt?: number }[]; startedAt: number; endedAt?: number; steps: StoredStep[]; image?: string; stt?: SttVM }
+interface StoredTurn { turnId: string; sessionId: string; trigger?: TriggerVM; speech?: { startedAt: number; endedAt?: number }[]; startedAt: number; endedAt?: number; steps: StoredStep[]; image?: string; stt?: SttVM; speechStopped?: string }
 interface StoredSession { sessionId: string; source?: string; turns: StoredTurn[] }
 interface SessionSummary { sessionId: string; source?: string }
 
@@ -715,6 +715,12 @@ function TurnRow({ turn, open, onToggle, feedback, dock }: { turn: TurnVM; open:
           );
         })}
         {silentTurnInfo(turn) && <span className="pill sm" title="finished cleanly, chose to say nothing (expand for why)">🤫 silent</span>}
+        {turn.speechStopped && (
+          <span className="pill sm" style={{ borderColor: 'rgba(255,138,128,0.7)' }}
+            title={STOP_EXPLAIN[turn.speechStopped] ?? turn.speechStopped}>
+            {STOP_LABEL[turn.speechStopped] ?? `⏹ ${turn.speechStopped}`}
+          </span>
+        )}
         {err && <span className="dot off" title="error" />}
         {!turn.ended && <span className="dot wait" title="running" />}
         {feedback?.map((f) => (
@@ -1032,6 +1038,23 @@ const RULE_EXPLAIN: Record<string, string> = {
 };
 
 /** AdmitTrace.openedBy — WHAT opened the admitting window. */
+/** Turn-row badge for a reply whose AUDIO was cut short — "why did it stop
+ *  talking?" answered without opening the trace (user, 2026-07-23). */
+const STOP_LABEL: Record<string, string> = {
+  'voice-stop': '⏹ you said stop',
+  'voice-pause': '⏸ you said wait',
+  'barge-yield': '↩ yielded to you',
+  'tap-interrupt': '⏹ tap interrupt',
+  superseded: '⤼ superseded',
+};
+const STOP_EXPLAIN: Record<string, string> = {
+  'voice-stop': 'You spoke a DISMISSAL ("stop" / "shut up" / "never mind") over the reply: the audio was killed, every window closed, and the dock stood down to idle. Re-engage with a tap, palm, or the wake phrase.',
+  'voice-pause': 'You said "wait" / "hold on": the reply was aborted and a listening window opened so you could speak. Anything queued is kept — you are mid-exchange.',
+  'barge-yield': 'You talked over the dock and kept going: the barge hold ran its full 6s and the STT DID produce words, but none of them a clean stop. Rather than plow over a sustained interruption, the dock aborted its own reply and handed you the floor. (A wordless barge resumes instead — see brain/index.ts resolveBargeHold.)',
+  'tap-interrupt': 'A screen tap (or palm) during the reply: the audio was cut and a fresh listening window opened.',
+  superseded: 'A new turn replaced this one while it was still speaking (e.g. a merge-supersede folding in something you said mid-thought).',
+};
+
 const OPENER_EXPLAIN: Record<string, string> = {
   tap: 'a deliberate screen tap while idle',
   'tap-interrupt': 'a tap DURING a reply — interrupted it and opened a fresh window',
@@ -1157,7 +1180,7 @@ function hasHeardRow(turn: TurnVM): boolean {
 
 function storedToVM(t: StoredTurn, source?: string): TurnVM {
   return {
-    id: t.turnId, sessionId: t.sessionId, source, trigger: t.trigger, startedAt: t.startedAt, endedAt: t.endedAt, ended: t.endedAt != null, image: t.image, stt: t.stt,
+    id: t.turnId, sessionId: t.sessionId, source, trigger: t.trigger, startedAt: t.startedAt, endedAt: t.endedAt, ended: t.endedAt != null, image: t.image, stt: t.stt, speechStopped: t.speechStopped,
     speech: t.speech ?? [],
     steps: t.steps.map((s) => ({
       idx: s.index, model: s.model, stopReason: s.stopReason, text: s.text, rawText: s.rawText,
@@ -1176,6 +1199,9 @@ function applyEvent(turn: TurnVM, ev: AgentEventDto): void {
       if (ev.data?.stt != null) turn.stt = ev.data.stt as SttVM;
       break;
     case 'TurnEnd': turn.ended = true; turn.endedAt = ev.ts; break;
+    case 'SpeechStopped':
+      if (typeof ev.data?.reason === 'string') turn.speechStopped = ev.data.reason as string;
+      break;
     case 'StepStart': turn.steps.push({ idx: turn.steps.length, tools: [], startedAt: ev.ts }); break;
     case 'StepEnd':
       if (last) {

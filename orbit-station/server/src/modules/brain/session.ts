@@ -77,6 +77,15 @@ const COALESCE_WINDOW_MS = 60;
  *  expiries emit their transition promptly (phone beep-off/idle on time). */
 const CONV_TICK_MS = 500;
 
+/** Why an in-flight reply's AUDIO was cut short — surfaced on the turn trace so
+ *  "why did it stop talking?" is answerable from the turn alone. */
+export type SpeechStopReason =
+  | 'voice-stop'      // spoken dismissal ("stop", "shut up") — stand down to idle
+  | 'voice-pause'     // spoken "wait"/"hold on" — abort, then listen
+  | 'barge-yield'     // sustained barge with words, no clean stop → yielded the floor
+  | 'tap-interrupt'   // a screen tap / palm during the reply
+  | 'superseded';     // a new turn replaced this one mid-reply
+
 export interface TurnRequest {
   turnId: string;
   /** `via` = WHICH source raised/admitted the trigger (a mood bit id, a gate raise
@@ -441,7 +450,7 @@ export class DockBrainSession {
     if (this.isQuiet(now)) this.setQuiet(null);
     const interrupts = this.#conv.tapWouldInterrupt(now);
     this.#conv.tap(now);
-    if (interrupts) this.#interruptSpeech(); // abort the interrupted reply (or its TTS tail)
+    if (interrupts) this.#interruptSpeech('tap-interrupt'); // abort the interrupted reply (or its TTS tail)
   }
 
   /** Abort whatever is AUDIBLY in flight: the active turn (agent + motion +
@@ -451,7 +460,13 @@ export class DockBrainSession {
    *  signal and the dock talked to the end of its buffer (live 2026-07-13).
    *  The bare `cancelled` frame makes the phone silence (app build 31+; older
    *  builds ignore it — no worse than before). */
-  #interruptSpeech(): void {
+  #interruptSpeech(why: SpeechStopReason): void {
+    // WHY the audio was cut, onto the turn's obs trace. Without it a turn that was
+    // dismissed mid-sentence, yielded to a barge, or interrupted by a tap all
+    // render as a plain 'done' — indistinguishable from one that finished
+    // naturally, which is exactly the "why did it stop talking?" question the
+    // trace exists to answer (user, 2026-07-23).
+    this.#shipObsMarker('SpeechStopped', { reason: why });
     if (this.#turnActive) this.cancel();
     else this.#sendToVoice('cancelled', { turnId: '' });
   }
@@ -468,7 +483,12 @@ export class DockBrainSession {
     if (this.isQuiet(now)) return;
     const interrupts = this.#conv.tapWouldInterrupt(now);
     this.#conv.tapOpen(now, by); // `by` = the REAL opener (provenance; see ConversationState.tapOpen)
-    if (interrupts) this.#interruptSpeech(); // abort the interrupted reply (or its TTS tail)
+    // the cut names the SAME cause as the window that replaces it (wake opens a
+    // window without cutting anything the user objected to → plain tap-interrupt).
+    if (interrupts) {
+      this.#interruptSpeech(by === 'barge-yield' ? 'barge-yield'
+        : by === 'voice-pause' ? 'voice-pause' : 'tap-interrupt');
+    }
   }
 
   /** WAKE (conductor `wakeUp` behaviour): the wake phrase was heard while idle. Open the
@@ -545,7 +565,7 @@ export class DockBrainSession {
    *  fires the settle chokepoint; the caller clears the busy queue first so
    *  nothing drains after a dismissal. */
   dismiss(now = Date.now()): void {
-    this.#interruptSpeech();
+    this.#interruptSpeech('voice-stop');
     this.#conv.dismiss(now);
   }
 
@@ -1927,9 +1947,9 @@ export class DockBrainSession {
     });
   }
 
-  #shipObsMarker(kind: string): void {
+  #shipObsMarker(kind: string, data?: Record<string, unknown>): void {
     if (this.#obsTurnId === '') return;
-    this.#shipObs(kind);
+    this.#shipObs(kind, data);
   }
 
   #resolveModel(): Model<any> {

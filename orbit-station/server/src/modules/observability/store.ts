@@ -113,6 +113,9 @@ export class ObsStore {
         if (open) open.endedAt = ev.ts;
         break;
       }
+      case 'SpeechStopped':
+        if (typeof ev.data?.reason === 'string') turn.speechStopped = ev.data.reason;
+        break;
       case 'TurnSettled':
         // TTS tail drained after TurnEnd — the real end of the UX turn.
         turn.settledAt = ev.ts;

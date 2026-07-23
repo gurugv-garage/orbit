@@ -26,7 +26,9 @@ export type AgentEventKind =
   | 'SpeakStart'
   | 'SpeakEnd'
   // the TTS tail drained after TurnEnd → the whole user-perceived turn is over.
-  | 'TurnSettled';
+  | 'TurnSettled'
+  // the reply's AUDIO was cut short (dismiss / barge yield / tap) — data.reason
+  | 'SpeechStopped';
 
 /**
  * One agent-core event as it crosses the wire. The host stamps it with the
@@ -161,6 +163,10 @@ export interface TurnRecord {
   /** ref of the saved input frame the model saw on a vision turn
    *  (`<dock>/<turnId>.jpg`, served by GET /api/observability/turn-image?f=). */
   image?: string;
+  /** Why this turn's speech was cut short, when it was (SpeechStopReason:
+   *  voice-stop | voice-pause | barge-yield | tap-interrupt | superseded).
+   *  Absent ⇒ the reply finished on its own. */
+  speechStopped?: string;
   /** STT evidence for the admitting utterance (heard turns): the engine's own
    *  confidence tier/metrics + the voice fingerprint. The clip itself is at
    *  GET /api/perception/utterance-audio/<dock>/<audioStartMs> (audioStartMs =

@@ -22,7 +22,9 @@ export type AgentEventKind =
   | 'TurnStart' | 'TurnEnd' | 'StepStart' | 'StepEnd'
   | 'MessageStart' | 'MessageUpdate' | 'MessageEnd'
   | 'ToolExecutionStart' | 'ToolExecutionUpdate' | 'ToolExecutionEnd'
-  | 'SpeakStart' | 'SpeakEnd';
+  | 'SpeakStart' | 'SpeakEnd'
+  // the reply's audio was cut short (dismiss / barge yield / tap) — data.reason
+  | 'SpeechStopped';
 
 export interface AgentEventDto {
   sessionId: string;
