@@ -16,6 +16,7 @@ hardening); the older per-turn obs (Session/Turn/Step) predates it.
 - [Key gate thresholds (context for reading events; all env-tunable)](#key-gate-thresholds-context-for-reading-events-all-env-tunable)
 - [How to debug an incident (recipe)](#how-to-debug-an-incident-recipe)
 - [Beyond the conversation pipeline (whole-system observability)](#beyond-the-conversation-pipeline-whole-system-observability)
+- [Daily monitoring](#daily-monitoring)
 - [Known gaps](#known-gaps)
 <!-- /TOC -->
 
@@ -192,6 +193,13 @@ hardening); the older per-turn obs (Session/Turn/Step) predates it.
 - Wake near-misses: console log `[wake] … near-miss` (station stdout).
 - Station stdout (tsx watch terminal): `[speech-watch]`, `[enrich]`, `[conv]`,
   `[wake]`, `[brain]` prefixes — the pre-conv_events legacy layer.
+
+## Daily monitoring
+
+A ~daily read over this data — categorized checks, thresholds, a known-bug
+watchlist, and a dated results log for trend comparison — lives in
+[monitoring/README.md](monitoring/README.md) with `collect.mjs` (the numbers)
+and `probe.mjs` (the evidence behind a number). Stored data only; no live tests.
 
 ## Known gaps
 

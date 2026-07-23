@@ -13,6 +13,7 @@ for it to happen naturally. Companion to [observability.md](observability.md)
 - [Replays (re-run recorded reality)](#replays-re-run-recorded-reality)
 - [Face / body / vision probes](#face--body--vision-probes)
 - [Kill-switches & thresholds (config console `/#config` or env)](#kill-switches--thresholds-config-console-config-or-env)
+- [Passive monitoring (no driving)](#passive-monitoring-no-driving)
 - [End-to-end sanity](#end-to-end-sanity)
 <!-- /TOC -->
 
@@ -99,6 +100,12 @@ for it to happen naturally. Companion to [observability.md](observability.md)
   — window timings / wake-on-look.
 - Perception enricher paths: console toggles (speech / non-speech triggers);
   `PERCEPTION_ENRICH_SAVE=1` dumps enricher WAVs to listen back.
+
+## Passive monitoring (no driving)
+
+To READ what already happened rather than trigger something new — the ~daily
+health routine, thresholds, and the results log — see
+[monitoring/README.md](monitoring/README.md).
 
 ## End-to-end sanity
 
