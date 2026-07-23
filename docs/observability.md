@@ -92,9 +92,10 @@ hardening); the older per-turn obs (Session/Turn/Step) predates it.
 
 ## conv_events vocabulary (lane · type → meaning)
 
-- perception · `stt:drop` verdict `voiced-fraction` — clip <35% voiced frames
-  dropped BEFORE the sidecar; detail {voicedPct, floorPct, durS, clip}. Clip
-  is KEPT — play it to check if real speech was eaten (known barge-unsafe gate).
+- perception · `stt:drop` verdict `voiced-fraction` — clip below the two-tier
+  floor (35% while the dock speaks / 10% otherwise) dropped BEFORE the sidecar;
+  detail {voicedPct, floorPct, speaking, durS, clip}. Clip is KEPT — play it to
+  check if real speech was eaten.
 - perception · `stt:drop` verdict `min-utterance` — voiced span <180ms
   discarded at endpointing ("tapped but no reply" cause).
 - perception · `stt:withheld` verdict `hallucination|beep-artifact|
