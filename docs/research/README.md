@@ -14,6 +14,8 @@ It is NOT a place for orbit's own design decisions — those live in
 
 | Entry | Subject | First researched | Last updated | Status |
 |---|---|---|---|---|
+| [livekit-agents.md](livekit-agents.md) | LiveKit Agents as a speech-to-speech orchestration base (barge-in/turn-taking/tool interleave) — source-read fit study; compared against Pipecat | 2026-07-22 | 2026-07-22 | active |
+| [pipecat-orchestration.md](pipecat-orchestration.md) | Pipecat (`pipecat-ai/pipecat`) as a conversation-orchestration base — fit assessment (deep-research + adversarial verify) | 2026-07-22 | 2026-07-22 | active |
 | [perceptual-memory.md](perceptual-memory.md) | Visual entity memory (faces/places/things) via embeddings + small VLM — feasibility & POCs | 2026-07-08 | 2026-07-08 | active |
 | [pibot.md](pibot.md) | `badlogic/pibot` — local-first voice robot on the same `pi` agent kernel | 2026-06-22 | 2026-06-22 | active |
 
