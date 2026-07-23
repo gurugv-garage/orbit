@@ -48,7 +48,8 @@ export type Topic =
   | 'ego'          // per-dock ego document (identity + story) + introspection + trace
   | 'conductor'    // per-dock conductor: governs behaviours + tasks (REST surface only for now)
   | 'slack'        // inbound Slack (Socket Mode) events: message/mention/dm (ingest only for now)
-  | 'feedback';    // session feedback capture: app-button flags → full debugging dump (MD)
+  | 'feedback'     // session feedback capture: app-button flags → full debugging dump (MD)
+  | 'data';        // local storage inventory: on-demand disk scan, REST surface only
 
 // ── peer → station ─────────────────────────────────────────────────────────
 

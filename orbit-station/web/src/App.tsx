@@ -19,6 +19,7 @@ import { Ego } from './modules/Ego';
 import { Memory } from './modules/Memory';
 import { Capture } from './modules/Capture';
 import { Cost } from './modules/Cost';
+import { Data } from './modules/Data';
 import { Feedback } from './modules/Feedback';
 
 interface ViewDef { id: string; label: string; ico: string; el: React.ReactNode; }
@@ -29,6 +30,7 @@ const VIEWS: ViewDef[] = [
   { id: 'observability', label: 'Observability', ico: '📡', el: <Observability /> },
   { id: 'timeline', label: 'Timeline', ico: '🧵', el: <Timeline /> },
   { id: 'cost', label: 'Cost', ico: '💰', el: <Cost /> },
+  { id: 'data', label: 'Data', ico: '💾', el: <Data /> },
   { id: 'brain', label: 'Brain', ico: '🗣', el: <Brain /> },
   { id: 'conductor', label: 'Conductor', ico: '🎼', el: <Conductor /> },
   { id: 'tasks', label: 'Tasks', ico: '⏱', el: <Tasks /> },

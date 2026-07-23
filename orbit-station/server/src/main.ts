@@ -33,6 +33,7 @@ import { Directory } from './modules/docks/directory.js';
 import { BindingStore } from './modules/docks/bindings.js';
 import { brainModule, getBrainAccess, getWakeApi, getConductorAccess } from './modules/brain/index.js';
 import { conductorModule } from './modules/conductor/index.js';
+import { dataModule } from './modules/data/index.js';
 import { feedbackModule, getFeedbackCapture } from './modules/feedback/index.js';
 import { healthSummary } from './modules/observability/health.js';
 import { composeEnrichment, type ContextSources } from './modules/observability/context.js';
@@ -255,6 +256,7 @@ async function main() {
   modules.push(captureModule({ getHub: () => perceptionProcessingHub!, directory, dir: captureDir }));
   modules.push(otaModule(() => hub));   // OTA: version-compare against live roster
   modules.push(egoModule());            // per-dock ego document + introspection + trace
+  modules.push(dataModule());           // local storage inventory (on-demand disk scan)
   // station meta module needs the registry + hub; add it last.
   modules.push(stationModule(() => modules, () => hub));
 
