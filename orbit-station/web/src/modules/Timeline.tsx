@@ -16,7 +16,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import './timeline.css';
 
-interface ConvEvent {
+export interface ConvEvent {
   id: number; ts: number; dockId: string;
   lane: 'phone' | 'perception' | 'brain' | 'conv';
   type: string; verdict?: string; text?: string;
@@ -38,7 +38,7 @@ const WINDOWS: Array<[label: string, ms: number]> = [
   ['5m', 5 * 60_000], ['15m', 15 * 60_000], ['1h', 3_600_000], ['6h', 6 * 3_600_000], ['24h', 24 * 3_600_000],
 ];
 
-const fmtT = (ms: number) =>
+export const fmtT = (ms: number) =>
   new Date(ms).toLocaleTimeString('en-IN', { hour12: false, timeZone: 'Asia/Kolkata' })
   + '.' + String(ms % 1000).padStart(3, '0');
 
@@ -100,7 +100,7 @@ function sourceTag(utteranceId?: string, via?: string): string | null {
   return null;
 }
 
-function EventChip({ ev }: { ev: ConvEvent }) {
+export function EventChip({ ev }: { ev: ConvEvent }) {
   const [open, setOpen] = useState(false);
   const [playing, setPlaying] = useState(false);
   const audioRef = useRef<HTMLAudioElement | null>(null);
@@ -173,7 +173,8 @@ function TurnRow({ t }: { t: IncidentTurn }) {
         <a href={`/api/observability/turn-image?f=${encodeURIComponent(t.image)}`} target="_blank" rel="noreferrer"
           title="the input frame the model saw" style={{ marginLeft: 6 }}>📷</a>
       )}
-      <span className="tl-lag mono">{t.turnId.slice(0, 13)}… · session {t.sessionId.slice(0, 8)}… (open in Observability)</span>
+      <a className="tl-lag mono" href={`#observability?session=${encodeURIComponent(t.sessionId)}&turn=${encodeURIComponent(t.turnId)}`}
+        title="open this turn expanded in the Observability tree">{t.turnId.slice(0, 13)}… → open in Observability</a>
     </div>
   );
 }
@@ -189,14 +190,24 @@ export function Timeline() {
   const to = frozenTo ?? Date.now();
   const from = to - winMs;
 
+  // deep link: #timeline?dock=<d>&t=<epochMs> — jump to a moment (from the
+  // Observability turn view), frozen so the 3s live refresh doesn't scroll away.
+  useEffect(() => {
+    const q = new URLSearchParams(location.hash.split('?')[1] ?? '');
+    const d = q.get('dock'); const t = Number(q.get('t'));
+    if (d) setDock(d);
+    if (Number.isFinite(t) && t > 0) { setLive(false); setFrozenTo(t + 120_000); setWinMs(5 * 60_000); }
+  }, []);
+
   const refresh = useCallback(() => {
-    const q = new URLSearchParams({ from: String(Date.now() - winMs), to: String(Date.now()) });
+    const end = frozenTo ?? Date.now();
+    const q = new URLSearchParams({ from: String(end - winMs), to: String(end) });
     if (dock) q.set('dock', dock);
     fetch(`/api/observability/incident?${q}`)
       .then((r) => r.json())
       .then((j: Incident) => setData({ events: j.events ?? [], turns: j.turns ?? [] }))
       .catch(() => {});
-  }, [dock, winMs]);
+  }, [dock, winMs, frozenTo]);
 
   useEffect(() => {
     refresh();

@@ -3,6 +3,7 @@ import type { MouseEvent as ReactMouseEvent, ReactNode } from 'react';
 import { useStationEvents } from '../lib/useStation';
 import { api } from '../lib/station';
 import type { AgentEventDto } from '../lib/protocol';
+import { EventChip, fmtT, type ConvEvent } from './Timeline';
 
 // feedback overlay (GET /api/feedback/) — just the fields the trace badges need.
 interface FeedbackMeta { id: string; sessionId?: string; turnId?: string; source: string; reason?: string }
@@ -159,6 +160,13 @@ export function Observability() {
 
   // filters
   const [fSession, setFSession] = useState('');
+  // deep link from the Timeline: #observability?session=<sid>&turn=<tid>
+  useEffect(() => {
+    const q = new URLSearchParams(location.hash.split('?')[1] ?? '');
+    const sid = q.get('session'); const tid = q.get('turn');
+    if (sid) setFSession(sid);
+    if (sid && tid) setExpanded((prev) => new Set(prev).add(turnKey(sid, tid)));
+  }, []);
   const [fSource, setFSource] = useState('');
   const [fTool, setFTool] = useState('');
   const [fErrors, setFErrors] = useState(false);
@@ -752,6 +760,7 @@ function TurnTimeline({ turn }: { turn: TurnVM }) {
           </a>
         </div>
       )}
+      <ConvContext turn={turn} />
       <div className="obs-vaxis">{clockMs(turn.startedAt)} → +{fmtMs(total)} · {evs.length} events</div>
       <div className="obs-vt">
         {evs.map((ev, i) => {
@@ -923,6 +932,46 @@ function kindTitle(tr: TriggerVM): string {
     lines.push(via ? `via ${tr.via}: ${via}` : `via: ${tr.via}`);
   }
   return lines.join('\n');
+}
+
+/** The ±30s of conversation-pipeline events AROUND a turn (conv_events): what
+ *  was heard/dropped before it, the window that admitted it, barge/stop events
+ *  during its TTS. Fetched lazily when the turn expands — the cross-component
+ *  timeline coming to the turn view instead of being a separate destination. */
+function ConvContext({ turn }: { turn: TurnVM }) {
+  const [events, setEvents] = useState<ConvEvent[] | null>(null);
+  useEffect(() => {
+    const from = turn.startedAt - 30_000;
+    const to = (turn.endedAt ?? turn.startedAt) + 30_000;
+    const q = new URLSearchParams({ from: String(from), to: String(to) });
+    if (turn.source) q.set('dock', turn.source);
+    fetch(`/api/observability/conv-events?${q}`)
+      .then((r) => r.json())
+      .then((j: { events: ConvEvent[] }) => setEvents(j.events ?? []))
+      .catch(() => setEvents([]));
+  }, [turn.id, turn.sessionId]);
+  if (events == null) return <div className="muted sm">loading conversation context…</div>;
+  if (events.length === 0) return null;
+  const uid = turn.trigger?.utteranceId;
+  return (
+    <details className="obs-convctx" open>
+      <summary className="muted sm">
+        🧵 conversation context — {events.length} pipeline events ±30s around this turn
+        {turn.source && (
+          <a style={{ marginLeft: 8 }} href={`#timeline?dock=${encodeURIComponent(turn.source)}&t=${turn.startedAt}`}
+            title="open the full cross-component timeline around this moment">full timeline →</a>
+        )}
+      </summary>
+      {events.map((ev) => (
+        <div key={ev.id} className={`tl-line${uid && ev.utteranceId === uid ? ' tl-inturn' : ''}`}
+          title={uid && ev.utteranceId === uid ? 'THIS turn\u2019s own utterance' : undefined}>
+          <span className="tl-time mono">{fmtT(ev.ts)}</span>
+          <span className={`tl-lanebadge mono lb-${ev.lane}`}>{ev.lane}</span>
+          <EventChip ev={ev} />
+        </div>
+      ))}
+    </details>
+  );
 }
 
 function storedToVM(t: StoredTurn, source?: string): TurnVM {
