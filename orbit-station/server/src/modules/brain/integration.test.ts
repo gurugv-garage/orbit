@@ -27,6 +27,7 @@ import { MotionExecutor } from '../bodylink/motion.js';
 import { RpcBroker } from './rpc.js';
 import { SessionStore } from './store.js';
 import { DockBrainSession, type SessionDeps } from './session.js';
+import { stripTurnContext } from './prompt.js';
 import { buildMemoryTools } from './tools.js';
 import { newLatch, tap as tapLatch, decideAddressed, type AddressedLatch } from './addressed.js';
 import { MemoryStore, type Embedder } from '../perception/memory/store.js';
@@ -50,7 +51,7 @@ function assistant(text: string): AssistantMessage {
 }
 const tick = () => new Promise((r) => setTimeout(r, 30));
 
-test('E2E grounding: a cached summary reaches the LLM system prompt', async () => {
+test('E2E grounding: a cached summary reaches the prompt the LLM receives (turn context)', async () => {
   const bus = new Bus();
   const directory = new Directory(() => [phonePeer()], join(tmpdir(), `dir-${Math.random()}.json`));
   const store = new SessionStore(mkdtempSync(join(tmpdir(), 'gnd-e2e-')));
@@ -65,6 +66,7 @@ test('E2E grounding: a cached summary reaches the LLM system prompt', async () =
   };
 
   let seenSystemPrompt = '';
+  let seenUserText = '';
   const cfg = { brainModel: 'openai-compatible/faux@http://test' } as Record<string, unknown>;
   const deps: SessionDeps = {
     bus, directory, rpc: new RpcBroker(bus, directory), motion, store,
@@ -74,6 +76,9 @@ test('E2E grounding: a cached summary reaches the LLM system prompt', async () =
     // capture the system prompt the agent actually sends.
     streamFn: ((_m: unknown, ctx: any) => {
       seenSystemPrompt = ctx?.systemPrompt ?? ctx?.system ?? '';
+      const lastUser = [...(ctx?.messages ?? [])].reverse().find((x: any) => x.role === 'user');
+      seenUserText = Array.isArray(lastUser?.content)
+        ? lastUser.content.map((c: any) => c.text ?? '').join('') : String(lastUser?.content ?? '');
       const s: AssistantMessageEventStream = createAssistantMessageEventStream();
       s.push({ type: 'start', partial: assistant('') });
       s.push({ type: 'text_delta', contentIndex: 0, delta: 'ok', partial: assistant('ok') });
@@ -86,8 +91,12 @@ test('E2E grounding: a cached summary reaches the LLM system prompt', async () =
   await session.handleTurnRequest({ turnId: 'u1', trigger: { kind: 'user', text: 'how am I doing?' } });
   for (let i = 0; i < 20 && !seenSystemPrompt; i++) await tick();
 
-  assert.match(seenSystemPrompt, /Perception — last summary/);
-  assert.match(seenSystemPrompt, /debugging and sounded frustrated/);
+  // CACHE STABILITY v2: grounding rides the TURN CONTEXT on the user message
+  // (the system prompt is static per session — prompt.ts). Same E2E guarantee:
+  // the cached summary reaches what the LLM actually receives.
+  assert.match(seenUserText, /Perception — last summary/);
+  assert.match(seenUserText, /debugging and sounded frustrated/);
+  assert.doesNotMatch(seenSystemPrompt, /Perception — last summary/, 'grounding must NOT churn the static system prompt');
 });
 
 test('E2E memory: remember then recall_memory round-trip through the real store', async () => {
@@ -141,9 +150,10 @@ test('E2E addressed (A1.2): a tapped final transcript becomes a user turn; an un
       // streamFn(model, context, options) — messages live on the context arg.
       const msgs = (ctx?.messages ?? []) as Array<{ role: string; content: any }>;
       const lastUser = [...msgs].reverse().find((x) => x.role === 'user');
-      const t = Array.isArray(lastUser?.content)
+      const raw = Array.isArray(lastUser?.content)
         ? lastUser!.content.map((c: any) => c.text ?? '').join('')
         : String(lastUser?.content ?? '');
+      const t = stripTurnContext(raw); // volatile per-turn block rides the user msg now
       if (t) seenTurns.push(t);
       const s: AssistantMessageEventStream = createAssistantMessageEventStream();
       s.push({ type: 'start', partial: assistant('') });
@@ -202,7 +212,7 @@ function bargeHarness(firstMs = 200) {
     streamFn: ((_model: unknown, ctx: any) => {
       const msgs = (ctx?.messages ?? []) as Array<{ role: string; content: any }>;
       const lastUser = [...msgs].reverse().find((x) => x.role === 'user');
-      const t = Array.isArray(lastUser?.content) ? lastUser!.content.map((c: any) => c.text ?? '').join('') : '';
+      const t = stripTurnContext(Array.isArray(lastUser?.content) ? lastUser!.content.map((c: any) => c.text ?? '').join('') : '');
       started.push(t);
       const s: AssistantMessageEventStream = createAssistantMessageEventStream();
       s.push({ type: 'start', partial: assistant('') });

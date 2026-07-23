@@ -49,7 +49,7 @@ import type { Directory } from '../docks/directory.js';
 import type { MotionExecutor } from '../bodylink/motion.js';
 import type { FaceToolsApi, PerceptionGroundingApi, MemoryApi } from '../perception/index.js';
 import { gesturesFromConfig } from '../bodylink/motion.js';
-import { buildSystemPrompt, isVisionIntent, MOOD_TAG_RE, MOVE_TAG_RE, stripMoodTag } from './prompt.js';
+import { buildSystemPrompt, buildTurnContext, stripTurnContext, isVisionIntent, MOOD_TAG_RE, MOVE_TAG_RE, stripMoodTag } from './prompt.js';
 import { SpeechGate } from './speech-gate.js';
 import { decideThought, type SessionState } from './thought-router.js';
 import { ConversationState, type AdmitTrace, type ConvTransition } from './conversation-state.js';
@@ -1159,14 +1159,19 @@ export class DockBrainSession {
     let self: string | undefined;
     try { self = this.#d.getSelf?.(this.dock); }
     catch (err) { this.#d.log?.(`[brain] ${this.dock}: ego read failed (ignored): ${String(err)}`); }
+    // CACHE STABILITY v2: the system prompt is fully STATIC within a session
+    // (persona/skills/memory/ego only) — every volatile per-turn piece rides
+    // the user message via buildTurnContext below. See prompt.ts for why.
     agent.state.systemPrompt = buildSystemPrompt({
       persona: str(this.#d.config('brainPersona')),
       self,
       memory,
       skills: [this.#skills.promptBlock, fileAccess ? FILE_TOOLS_PROMPT : '', taskPrompt]
         .filter(Boolean).join('\n\n'),
-      context: [bodyLine, req.context?.state].filter(Boolean).join(' '),
-      grounding,
+      // false → the pre-WI-3 tool-mood prompt (kill-switch pairs with #filterMood)
+      inlineMood: this.#d.config('brainInlineMood') !== false,
+    });
+    const turnContext = buildTurnContext({
       // a self-thought is the robot's OWN perception/awareness, not a user
       // utterance — frame it so the model doesn't reply "you said…" to itself
       // and knows it may stay silent (docs/perception-to-brain.md 2.1).
@@ -1174,8 +1179,8 @@ export class DockBrainSession {
       // heard in the followup window / during the reply, not deliberately
       // addressed — the model may stay silent, which ends the followup chain.
       overheard: this.#triggerVia === 'followup-window' || this.#triggerVia === 'busy-drain',
-      // false → the pre-WI-3 tool-mood prompt (kill-switch pairs with #filterMood)
-      inlineMood: this.#d.config('brainInlineMood') !== false,
+      grounding,
+      context: [bodyLine, req.context?.state].filter(Boolean).join(' '),
     });
     agent.state.model = this.#resolveModel();
     agent.state.thinkingLevel = (str(this.#d.config('brainThinkingLevel')) ?? 'off') as never;
@@ -1241,7 +1246,7 @@ export class DockBrainSession {
     // vision-gate bypass for task turns: the triggering frame IS the evidence,
     // and task text won't match the vision-intent regex (tasks §7a).
     const gate = VISION_GATE && this.#triggerKind === 'user';
-    const content: (TextContent | ImageContent)[] = [{ type: 'text', text: req.trigger.text }];
+    const content: (TextContent | ImageContent)[] = [{ type: 'text', text: `${turnContext}\n\n${req.trigger.text}` }];
     if (!gate || isVisionIntent(req.trigger.text)) {
       // no live-frame grab on a replay: the responses are canned, an image is dead weight
       const grabbed = req.imageBase64 == null && streamId != null && !req.replay
@@ -1478,6 +1483,24 @@ export class DockBrainSession {
         }
       }
     }
+    // Strip the volatile turn-context block from PAST user messages (it was only
+    // ever situational — stale grounding/clock in history misleads the model and
+    // bloats every future request). Only the most recent message ever has one,
+    // so at most ONE message changes per request → the cache prefix keeps
+    // everything before it.
+    let strippedAny = false;
+    for (let i = repaired.length - 1; i >= 0; i--) {
+      const m = repaired[i] as { role?: string; content?: unknown };
+      if (m.role !== 'user' || !Array.isArray(m.content)) continue;
+      const c0 = m.content[0] as { type?: string; text?: string };
+      if (c0?.type === 'text' && typeof c0.text === 'string') {
+        const stripped = stripTurnContext(c0.text);
+        if (stripped !== c0.text) {
+          repaired[i] = { ...m, content: [{ ...c0, text: stripped }, ...m.content.slice(1)] } as AgentMessage;
+          strippedAny = true;
+        }
+      }
+    }
     let result = repaired;
     // HYSTERESIS TRIM (Addendum 7, prompt-cache stability): trimming to the cap
     // EVERY turn shifted the history window by one turn per turn — the request
@@ -1497,7 +1520,7 @@ export class DockBrainSession {
       }
       if (boundary != null && boundary > 0) result = result.slice(boundary);
     }
-    if (result.length !== msgs.length) agent.state.messages = result;
+    if (result.length !== msgs.length || strippedAny) agent.state.messages = result;
   }
 
   /** Translate pi loop events → speak frames + status + obs DTOs. NOTE the

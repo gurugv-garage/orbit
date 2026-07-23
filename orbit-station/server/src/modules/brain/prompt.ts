@@ -155,15 +155,49 @@ you, or people in the room talking to each other. If it is clearly not
 addressed to you, stay silent: reply with only your mood tag and no words.
 When in doubt, answer briefly.`.trim();
 
+/** Delimiters for the per-turn volatile block that now rides the USER message
+ *  (buildTurnContext) instead of the system prompt. The closing marker lets
+ *  stripTurnContext() remove the block from PAST messages on the next request,
+ *  so history stays lean and the cache prefix only loses the newest message. */
+export const TURN_CTX_OPEN = '[turn context — the situation right now, NOT words anyone spoke]';
+export const TURN_CTX_CLOSE = '[/turn context]';
+const TURN_CTX_RE = new RegExp(
+  `${TURN_CTX_OPEN.replace(/[[\]]/g, '\\$&')}[\\s\\S]*?${TURN_CTX_CLOSE.replace(/[[\]]/g, '\\$&')}\\n*`,
+);
+
+/**
+ * The VOLATILE per-turn material — turn framing, perception grounding, body
+ * state, the clock — prepended to the turn's user message. Moved OUT of the
+ * system prompt (2026-07-23, cache fix v2): Addendum 7 ordered the system
+ * prompt static-first/volatile-last, but the system prompt PRECEDES the whole
+ * message history in the provider's cache-prefix computation — so its churning
+ * tail still voided caching for every history token on every call (measured:
+ * 1-12% hit on live conversation vs 94.6% on the repeated-prompt bench day).
+ * In the final user message, churn is free — that message is new anyway.
+ */
+export function buildTurnContext(opts: { selfThought?: boolean; overheard?: boolean; grounding?: string; context?: string; now?: Date }): string {
+  const parts: string[] = [];
+  if (opts.selfThought) parts.push(SELF_THOUGHT_FRAMING);
+  if (opts.overheard) parts.push(OVERHEARD_FRAMING);
+  if (opts.grounding && opts.grounding.trim().length > 0) parts.push(opts.grounding.trim());
+  if (opts.context && opts.context.trim().length > 0) parts.push(`Current state — ${opts.context.trim()}`);
+  parts.push(nowLine(opts.now));
+  return `${TURN_CTX_OPEN}\n${parts.join('\n\n')}\n${TURN_CTX_CLOSE}`;
+}
+
+/** Remove a turn-context block from a PAST user message's text (idempotent;
+ *  returns the input unchanged when no block is present). */
+export function stripTurnContext(text: string): string {
+  return TURN_CTX_RE.test(text) ? text.replace(TURN_CTX_RE, '').trimStart() : text;
+}
+
 export function buildSystemPrompt(opts: { persona?: string; self?: string; context?: string; grounding?: string; memory?: string; skills?: string; now?: Date; selfThought?: boolean; inlineMood?: boolean; overheard?: boolean }): string {
-  // ORDER = CACHE STABILITY (Addendum 7): Gemini's implicit prompt caching
-  // discounts any request sharing a byte-identical PREFIX with a recent one —
-  // and the first divergent byte ends the match for EVERYTHING after it
-  // (including the whole conversation history). The old order put the
-  // current-time line ~350 tokens in, so no request ever cached (measured:
-  // cacheRead 0 on every turn). Static-first, volatile-LAST:
-  //   stable across turns : SYSTEM, persona, skills, memory (per-session), ego
-  //   volatile tail       : per-turn framings, grounding, state, and the time
+  // CACHE STABILITY v2: the live session passes ONLY the static opts now — the
+  // volatile material (framings/grounding/state/time) moved to buildTurnContext
+  // on the user message, so this whole prompt is byte-stable across a session
+  // and the provider caches it + the message history behind it. The volatile
+  // branches below remain for the console's prompt PREVIEW (brain/index.ts),
+  // which renders a combined view; they only render when such opts are passed.
   let p = opts.inlineMood === false ? SYSTEM_TOOL_MOOD : SYSTEM;
   if (opts.persona && opts.persona.trim().length > 0) p += `\n\n${opts.persona.trim()}`;
   // skills = pi progressive disclosure (names+descriptions only; full body via
@@ -182,15 +216,15 @@ export function buildSystemPrompt(opts: { persona?: string; self?: string; conte
   if (opts.self && opts.self.trim().length > 0) {
     p += `\n\nWHO YOU ARE RIGHT NOW (your own evolving inner self — this is you, speak and feel from it; do not recite it verbatim):\n${opts.self.trim()}`;
   }
-  // ── volatile tail (changes per turn — everything cacheable is above) ──
+  // ── preview-only volatile tail (the live session passes none of these) ──
+  const volatile = opts.selfThought || opts.overheard
+    || (opts.grounding && opts.grounding.trim().length > 0)
+    || (opts.context && opts.context.trim().length > 0) || opts.now != null;
   if (opts.selfThought) p += `\n\n${SELF_THOUGHT_FRAMING}`;
   if (opts.overheard) p += `\n\n${OVERHEARD_FRAMING}`;
-  // perception grounding (docs/perception-to-brain.md 3.1): what's been happening,
-  // not just the instant — the last summary (with how stale it is) + the raw stream
-  // since. Stamped so the model knows whether it's live or old and can hedge.
   if (opts.grounding && opts.grounding.trim().length > 0) p += `\n\n${opts.grounding.trim()}`;
   if (opts.context && opts.context.trim().length > 0) p += `\n\nCurrent state — ${opts.context.trim()}`;
-  p += `\n\n${nowLine(opts.now)}`;
+  if (volatile) p += `\n\n${nowLine(opts.now)}`;
   return p;
 }
 

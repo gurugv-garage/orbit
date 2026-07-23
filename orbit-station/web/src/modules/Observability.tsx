@@ -105,7 +105,24 @@ function msgPreview(content: unknown): string {
   return '';
 }
 
-function RequestPeek({ sessionId, turnId, stepIdx }: { sessionId: string; turnId: string; stepIdx: number }) {
+/** Rough token count for one message (text/4 + ~800/image) — used to place the
+ *  cache boundary. The provider caches a byte PREFIX of (system + messages in
+ *  order); we walk in that order until the reported cacheRead is consumed. An
+ *  ESTIMATE (real tokenization differs) — labeled as such in the UI. */
+function estMsgTokens(m: { content?: unknown }): number {
+  const c = m.content;
+  if (typeof c === 'string') return Math.round(c.length / 4);
+  if (!Array.isArray(c)) return 8;
+  let tok = 8;
+  for (const p of c as Array<{ type?: string; text?: string }>) {
+    if (typeof p.text === 'string') tok += Math.round(p.text.length / 4);
+    if (p.type === 'image') tok += 800;
+    if (p.type === 'toolCall') tok += 60;
+  }
+  return tok;
+}
+
+function RequestPeek({ sessionId, turnId, stepIdx, cacheRead, inputTokens }: { sessionId: string; turnId: string; stepIdx: number; cacheRead?: number; inputTokens?: number }) {
   const [state, setState] = useState<'idle' | 'loading' | 'ok' | 'missing'>('idle');
   const [reqData, setReqData] = useState<RecordedRequest | null>(null);
   const load = () => {
@@ -124,14 +141,35 @@ function RequestPeek({ sessionId, turnId, stepIdx }: { sessionId: string; turnId
       <summary className="muted sm">📨 request</summary>
       {state === 'loading' && <div className="muted sm">loading…</div>}
       {state === 'missing' && <div className="muted sm">not recorded (pre-dates capture, or evicted from the ring)</div>}
-      {state === 'ok' && reqData && (
+      {state === 'ok' && reqData && (() => {
+        // estimated cache boundary: walk system prompt then messages in order,
+        // consuming the step's reported cacheRead tokens.
+        const sysTok = Math.round((reqData.systemPrompt?.length ?? 0) / 4);
+        let remaining = (cacheRead ?? 0) - sysTok;
+        const sysCached = (cacheRead ?? 0) > 0 && remaining >= -sysTok * 0.2; // system cached if cacheRead reaches ~it
+        const cachedIdx = new Set<number>();
+        reqData.messages?.forEach((m, i) => {
+          if (remaining <= 0) return;
+          const t = estMsgTokens(m);
+          if (remaining >= t * 0.5) cachedIdx.add(i); // >half its tokens covered → call it cached
+          remaining -= t;
+        });
+        return (
         <div className="obs-req-body">
+          {(cacheRead ?? 0) >= 0 && inputTokens != null && (
+            <div className="muted sm" style={{ margin: '2px 0 6px' }}>
+              <span style={{ color: 'rgb(110,220,160)' }}>■ cached</span> ~{fmtTok(cacheRead ?? 0)} of {fmtTok(inputTokens)} input tokens
+              ({inputTokens > 0 ? Math.round(100 * (cacheRead ?? 0) / inputTokens) : 0}%) ·{' '}
+              <span style={{ color: 'rgb(255,180,70)' }}>■ fresh</span> {fmtTok(Math.max(0, inputTokens - (cacheRead ?? 0)))} —
+              boundary placement is an estimate from char/image counts
+            </div>
+          )}
           {reqData.tools && reqData.tools.length > 0 && (
             <div className="obs-kv"><span>tools ({reqData.tools.length})</span><pre>{reqData.tools.join(', ')}</pre></div>
           )}
           {reqData.systemPrompt != null && (
-            <details className="obs-req-msg">
-              <summary className="muted sm">system prompt · {fmtTok(Math.round(reqData.systemPrompt.length / 4))} tok est · {reqData.systemPrompt.length.toLocaleString()} chars</summary>
+            <details className="obs-req-msg" style={{ borderLeft: `3px solid ${sysCached ? 'rgba(110,220,160,0.8)' : 'rgba(255,180,70,0.8)'}`, paddingLeft: 6 }}>
+              <summary className="muted sm" title={sysCached ? 'served from prompt cache (estimated)' : 'NOT cached (estimated) — this prefix changed since the previous request'}>system prompt · {fmtTok(Math.round(reqData.systemPrompt.length / 4))} tok est · {reqData.systemPrompt.length.toLocaleString()} chars</summary>
               <pre className="obs-req-pre">{reqData.systemPrompt}</pre>
             </details>
           )}
@@ -141,8 +179,9 @@ function RequestPeek({ sessionId, turnId, stepIdx }: { sessionId: string; turnId
               ? (m.content as Array<{ type?: string; imageRef?: string }>).filter((piece) => piece.type === 'image' && piece.imageRef)
               : [];
             return (
-              <details key={i} className="obs-req-msg">
-                <summary className="muted sm">
+              <details key={i} className="obs-req-msg"
+                style={{ borderLeft: `3px solid ${cachedIdx.has(i) ? 'rgba(110,220,160,0.8)' : 'rgba(255,180,70,0.8)'}`, paddingLeft: 6 }}>
+                <summary className="muted sm" title={cachedIdx.has(i) ? 'served from prompt cache (estimated boundary)' : 'fresh tokens (estimated boundary)'}>
                   <span className="mono">{i}</span> · <strong>{m.role ?? '?'}</strong>
                   {imgs.length > 0 && <span> 📷{imgs.length > 1 ? `×${imgs.length}` : ''}</span>}
                   <span className="obs-ev-peek mono"> {msgPreview(m.content).slice(0, 140)}</span>
@@ -158,7 +197,8 @@ function RequestPeek({ sessionId, turnId, stepIdx }: { sessionId: string; turnId
             );
           })}
         </div>
-      )}
+        );
+      })()}
     </details>
   );
 }
@@ -686,7 +726,7 @@ function TurnTimeline({ turn }: { turn: TurnVM }) {
     const stream = s.streamStartedAt != null ? s.streamStartedAt - t0 : e; // wait→stream boundary
     evs.push({
       lane: 'llm', cls: 'gen', label: `step ${s.idx} · WaitForToken`, start: a, end: stream,
-      detail: <>{s.model && <span className="pill acc sm">{s.model.split('/').pop()}</span>}{s.stopReason && <span className="muted sm mono">{s.stopReason}</span>}<span className="muted sm">tok {tok(s.inTok)}→{tok(s.outTok)}</span>{s.cacheRead != null && s.cacheRead > 0 && <span className="muted sm" title="input tokens served from prompt cache">⚡ {fmtTok(s.cacheRead)} cached</span>}{(s.thinkTok ?? 0) > 0 && <span className="muted sm" title="thinking tokens (estimated from streamed thoughts; billed inside output)">🧠 ~{fmtTok(s.thinkTok!)}{s.thinkingMs != null ? ` · ${fmtMs(s.thinkingMs)}` : ''}</span>}{s.cost != null && s.cost > 0 && <span className="muted sm mono">{fmtCost(s.cost)}</span>}<RequestPeek sessionId={turn.sessionId} turnId={turn.id} stepIdx={s.idx} /></>,
+      detail: <>{s.model && <span className="pill acc sm">{s.model.split('/').pop()}</span>}{s.stopReason && <span className="muted sm mono">{s.stopReason}</span>}<span className="muted sm">tok {tok(s.inTok)}→{tok(s.outTok)}</span>{s.cacheRead != null && s.cacheRead > 0 && <span className="muted sm" title="input tokens served from prompt cache">⚡ {fmtTok(s.cacheRead)} cached</span>}{(s.thinkTok ?? 0) > 0 && <span className="muted sm" title="thinking tokens (estimated from streamed thoughts; billed inside output)">🧠 ~{fmtTok(s.thinkTok!)}{s.thinkingMs != null ? ` · ${fmtMs(s.thinkingMs)}` : ''}</span>}{s.cost != null && s.cost > 0 && <span className="muted sm mono">{fmtCost(s.cost)}</span>}<RequestPeek sessionId={turn.sessionId} turnId={turn.id} stepIdx={s.idx} cacheRead={s.cacheRead} inputTokens={s.inTok} /></>,
     });
     if (stream < e) {
       evs.push({

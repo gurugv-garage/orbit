@@ -60,7 +60,15 @@ hardening); the older per-turn obs (Session/Turn/Step) predates it.
   `format=md` = the paste-to-an-LLM incident document. THE debugging artifact.
 - `GET /observability/sessions` / `sessions/:id` — Session/Turn/Step trees.
 - `GET /observability/requests/:sessionId/:turnId/:stepIndex` — the EXACT
-  request that LLM step sent (systemPrompt+messages+tool names; images stripped).
+  request that LLM step sent (systemPrompt+messages+tool names; image bytes
+  stripped but each unique frame saved once → `GET /observability/req-image?f=`,
+  rendered as 📷 thumbnails in the 📨 peek). The peek also colors each message
+  green/orange by the step's reported cacheRead (estimated prefix boundary).
+  Prompt structure (2026-07-23 cache fix v2): the system prompt is STATIC per
+  session; all volatile per-turn material (framings/grounding/state/clock) rides
+  a `[turn context]` block on the final user message and is stripped from past
+  messages — so the request prefix repeats and Gemini implicit caching can hit
+  the whole history (measured full-prefix hit: 24.5k of 25.4k tokens).
 - `GET /observability/turn-image?f=<dock>/<turnId>.jpg` — the input frame a
   vision turn's model actually saw.
 - `GET /observability/cost/summary|series?from&to&groupBy=` — spend rollups.
