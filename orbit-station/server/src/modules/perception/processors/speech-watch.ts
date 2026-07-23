@@ -140,6 +140,48 @@ async function classifyAddressed(
 const ECHO_GATE = process.env.STT_ECHO_GATE === '1';
 
 // --------------------------------------------------------------------------- //
+// VOICED-FRACTION GATE (acoustic hallucination backstop) — measured 2026-07-23.
+// --------------------------------------------------------------------------- //
+// Parakeet is a transducer with NO no-speech probability: handed a mostly-silent
+// clip it cannot decline, so it emits a confident short word ("Yeah."/"Okay.").
+// The VAD promotes near-silent AEC-residual buffers to "utterances" (a few faint
+// blips clear the endpoint), and those become confident phantom transcripts.
+// Measured on 18 confirmed-silent clips (no human spoke): phantoms were 5-32%
+// voiced (median 10%), RMS ~0.006; QUIET-ROOM real speech is 42-73% voiced, RMS
+// 0.025-0.17. A voiced-fraction floor separates those two. `voicedFraction`
+// = fraction of 20ms frames at/above SILENCE_RMS. Below STT_MIN_VOICED_PCT the
+// clip is treated as NON-SPEECH (transcript dropped, endpoint not armed).
+//
+// ⚠️ KNOWN GAP — NOT YET BARGE-SAFE (default 35, ON). The 42% "real speech" floor
+// was measured on QUIET-ROOM utterances only. A short interruption spoken OVER the
+// dock's TTS ("stop"/"wait") is inherently lower voiced-fraction (brief word +
+// AEC-residual tail), so this 35% floor was observed live to ALSO drop real
+// barge-stops — trading the phantom bug for a worse one (dropped interruptions).
+// It is ON anyway (deliberate call 2026-07-23: kill the confident phantoms now,
+// accept the barge risk) — but the real fix still owed is a barge-safe path: a
+// different signal, a lower threshold validated against captured "stop"/"wait"-
+// over-TTS clips, or a cheap keyword-spot rescue that runs before the drop.
+// Set STT_MIN_VOICED_PCT=0 to disable entirely.
+const MIN_VOICED_PCT = Number(process.env.STT_MIN_VOICED_PCT ?? 35);
+// Mirror the VAD endpointer's own voiced floor (vad-endpoint.ts SILENCE_RMS) via
+// the same env var, so this gate's per-frame test is identical to the endpointer's.
+const VOICED_FLOOR_RMS = Number(process.env.STT_SILENCE_RMS ?? 0.012);
+/** Fraction (0-100) of 20ms frames in `pcm` whose RMS is at/above the voiced floor —
+ *  the same per-frame voiced test the VAD endpointer uses. */
+function voicedFractionPct(pcm: Int16Array): number {
+  const frame = Math.round(SAMPLE_RATE * 0.02); // 20ms
+  if (pcm.length < frame) return 0;
+  let voiced = 0, total = 0;
+  for (let i = 0; i + frame <= pcm.length; i += frame) {
+    let sum = 0;
+    for (let j = i; j < i + frame; j++) { const s = pcm[j]! / 32768; sum += s * s; }
+    if (Math.sqrt(sum / frame) >= VOICED_FLOOR_RMS) voiced++;
+    total++;
+  }
+  return total === 0 ? 0 : Math.round((voiced / total) * 100);
+}
+
+// --------------------------------------------------------------------------- //
 // STT silence-hallucination backstop (the VAD should pre-empt these).
 // --------------------------------------------------------------------------- //
 // Canonical silence outputs — stock sign-off / caption phrases the engine emits from
@@ -495,6 +537,22 @@ export function speechWatchProcessor(
         // utterances skip it — embeddings on <0.8s far-field slivers are noise
         // (trial-measured), and the enroll ring shouldn't collect them either.
         const durS = pcm.length / SAMPLE_RATE;
+        // VOICED-FRACTION GATE (measured 2026-07-23): a mostly-silent clip is
+        // near-certainly parakeet hallucinating on AEC-residual — it has no
+        // no-speech probability to decline. Drop it BEFORE the sidecar call (saves
+        // the transcribe too) and DON'T arm the speech endpoint. ON at 35% (see
+        // MIN_VOICED_PCT decl for the default + the ⚠️ barge-safety caveat): kills
+        // the phantoms (measured 15→0 in a silent room) at the cost of a known,
+        // still-unfixed risk of dropping a "stop"/"wait" barge spoken over TTS.
+        // STT_MIN_VOICED_PCT=0 disables.
+        if (MIN_VOICED_PCT > 0) {
+          const vpct = voicedFractionPct(pcm);
+          if (vpct < MIN_VOICED_PCT) {
+            console.log(`[speech-watch] drop: ${vpct}% voiced < ${MIN_VOICED_PCT}% floor (${durS.toFixed(1)}s clip) — silent/echo, not transcribing`);
+            detector.speechEndpoint(false); // treat as non-speech (don't arm the enrich fast-path)
+            return;
+          }
+        }
         const wantEmbed = !!voiceId && voiceId.enabled() && durS >= VOICE_MIN_S;
         const res = await transcribe(pcm, wantEmbed);
         // Wall-clock instant the transcript LANDED (result committed). Distinct from
