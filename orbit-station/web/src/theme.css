@@ -241,7 +241,7 @@ label.field { display: flex; flex-direction: column; gap: 4px; font-size: 12px; 
 /* VERTICAL timeline: one labeled row per event, time-ordered. No clipping. */
 .obs-vaxis { font-size: 9px; color: #5a647c; margin: 4px 0 4px 2px; font-family: ui-monospace, monospace; }
 .obs-vt { display: flex; flex-direction: column; gap: 1px; }
-.obs-ev { display: grid; grid-template-columns: 56px 150px 56px 1fr; gap: 8px; align-items: center; height: 18px; }
+.obs-ev { display: grid; grid-template-columns: 104px 150px 56px 1fr; gap: 8px; align-items: center; height: 18px; } /* col 1 fits "@1.87s→1.93s" */
 .obs-ev-when { font-size: 10px; color: var(--dim); text-align: right; }
 .obs-ev-dur { font-size: 10px; color: var(--dim); text-align: right; }
 .obs-ev-lbl { font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; padding-left: 6px; border-left: 3px solid var(--line); }
