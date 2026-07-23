@@ -141,8 +141,11 @@ hardening); the older per-turn obs (Session/Turn/Step) predates it.
 - Server VAD: voiced ≥0.012 RMS (`STT_SILENCE_RMS`); endpoint 1300ms silence;
   min utterance 180ms; max 60s; preroll 200ms (vad-endpoint.ts).
 - Barge onset: own floor 0.035 RMS, 240ms contiguous, 90ms gap tolerance.
-- Voiced-fraction gate: <35% of 20ms frames voiced → drop (`STT_MIN_VOICED_PCT`,
-  0 disables). KNOWN barge-unsafe: a "stop" over TTS lands in the drop band.
+- Voiced-fraction gate, TWO-TIER (2026-07-23): floor 35% while the dock is
+  SPEAKING (`STT_MIN_VOICED_PCT` — TTS echo is the phantom factory), 10%
+  otherwise (`STT_MIN_VOICED_PCT_IDLE` — measured: real far-field speech lives
+  at 2-33% voiced; 16% of drops at the flat 35% floor carried real words).
+  Drop events carry {voicedPct, floorPct, speaking}. 0 disables.
 - Conf tiers (parakeet): garbage <0.72, shaky <0.85; whisper metric gates
   dormant under parakeet (null logprob/no_speech/compression).
 - Windows (conversation-state.ts): LISTEN 8s, FOLLOWUP 8s, GRACE 2.5s,

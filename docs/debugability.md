@@ -90,8 +90,9 @@ for it to happen naturally. Companion to [observability.md](observability.md)
 - `brainVoiceStop=false` — disable reflex voice-stop/dismiss.
 - `brainThinkingMerge=false` — disable merge-supersede while thinking.
 - `STT_ECHO_GATE=1` — re-enable the echo mute (kills barge audio; default off).
-- `STT_MIN_VOICED_PCT=0` — disable the voiced-fraction gate (phantom risk
-  returns); raise/lower to probe the barge-drop band.
+- `STT_MIN_VOICED_PCT` (35, while dock speaks) / `STT_MIN_VOICED_PCT_IDLE`
+  (10, otherwise) — the two-tier voiced-fraction gate; 0 disables. Re-judge a
+  tuning by transcribing the kept dropped clips (2026-07-23 sweep = baseline).
 - `STT_SILENCE_RMS`, `STT_ENDPOINT_MS`, `STT_MIN_UTTERANCE_MS`,
   `STT_ONSET_RMS`, `STT_ONSET_SUSTAIN_MS` — VAD/endpoint/barge-onset floors.
 - `CONV_LISTEN_MS`, `CONV_FOLLOWUP_MS`, `CONV_GRACE_MS`, `CONV_FACE_ARRIVAL=1`

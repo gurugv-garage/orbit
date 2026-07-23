@@ -153,17 +153,29 @@ const ECHO_GATE = process.env.STT_ECHO_GATE === '1';
 // = fraction of 20ms frames at/above SILENCE_RMS. Below STT_MIN_VOICED_PCT the
 // clip is treated as NON-SPEECH (transcript dropped, endpoint not armed).
 //
-// ⚠️ KNOWN GAP — NOT YET BARGE-SAFE (default 35, ON). The 42% "real speech" floor
-// was measured on QUIET-ROOM utterances only. A short interruption spoken OVER the
-// dock's TTS ("stop"/"wait") is inherently lower voiced-fraction (brief word +
-// AEC-residual tail), so this 35% floor was observed live to ALSO drop real
-// barge-stops — trading the phantom bug for a worse one (dropped interruptions).
-// It is ON anyway (deliberate call 2026-07-23: kill the confident phantoms now,
-// accept the barge risk) — but the real fix still owed is a barge-safe path: a
-// different signal, a lower threshold validated against captured "stop"/"wait"-
-// over-TTS clips, or a cheap keyword-spot rescue that runs before the drop.
-// Set STT_MIN_VOICED_PCT=0 to disable entirely.
+// TWO-TIER FLOOR (2026-07-23, measured on 533 kept dropped clips): the phantom
+// and real-speech voiced-fraction distributions OVERLAP at idle (phantoms 5-32%,
+// median 10%; real far-field speech 2-33% — full sentences at 5-9%), so no single
+// threshold separates them. But the COST asymmetry does:
+//   • dock SPEAKING → TTS echo residual is the phantom factory and parakeet
+//     transcribes echo into real-ish words the text gates can't catch → keep the
+//     strict floor (MIN_VOICED_PCT, 35).
+//   • otherwise (idle/listening/thinking) → no echo source; a phantom that
+//     passes costs only enricher arming + a noisy record (no window ⇒ no reply;
+//     wake needs the NAME) — while a dropped real utterance was the measured
+//     16%-of-drops bug ("I don't know if you hear me clearly now" eaten at 31%
+//     voiced) → low floor (MIN_VOICED_PCT_IDLE, 10 = the phantom median: kills
+//     the densest phantom band, saves the 11-33% real-speech majority).
+// The barge case is covered by timing: finals COMMIT ~1.3-2s after speech ends,
+// past the 800ms isSpeaking tail, so a barge reply's commit usually lands in
+// followup mode → low floor. Residual gap: speech committing while TTS still
+// plays (long overlap) faces 35% — Fix B territory; the polite-pause mostly
+// defuses it by silencing TTS ~300ms after onset.
+// Re-measure after tuning: transcribe the kept dropped clips (all drops keep
+// their WAV + a conv event) and count real words — the 2026-07-23 sweep is the
+// baseline. STT_MIN_VOICED_PCT=0 disables the gate entirely.
 const MIN_VOICED_PCT = Number(process.env.STT_MIN_VOICED_PCT ?? 35);
+const MIN_VOICED_PCT_IDLE = Number(process.env.STT_MIN_VOICED_PCT_IDLE ?? 10);
 // Mirror the VAD endpointer's own voiced floor (vad-endpoint.ts SILENCE_RMS) via
 // the same env var, so this gate's per-frame test is identical to the endpointer's.
 const VOICED_FLOOR_RMS = Number(process.env.STT_SILENCE_RMS ?? 0.012);
@@ -557,9 +569,11 @@ export function speechWatchProcessor(
         // still-unfixed risk of dropping a "stop"/"wait" barge spoken over TTS.
         // STT_MIN_VOICED_PCT=0 disables.
         if (MIN_VOICED_PCT > 0) {
+          const speaking = isSpeaking?.(ctx.dockId) ?? false;
+          const floor = speaking ? MIN_VOICED_PCT : MIN_VOICED_PCT_IDLE;
           const vpct = voicedFractionPct(pcm);
-          if (vpct < MIN_VOICED_PCT) {
-            console.log(`[speech-watch] drop: ${vpct}% voiced < ${MIN_VOICED_PCT}% floor (${durS.toFixed(1)}s clip) — silent/echo, not transcribing`);
+          if (vpct < floor) {
+            console.log(`[speech-watch] drop: ${vpct}% voiced < ${floor}% floor (${durS.toFixed(1)}s clip, speaking=${speaking}) — silent/echo, not transcribing`);
             // This drop is the known barge-unsafe gate (see MIN_VOICED_PCT decl):
             // it can eat a real "stop" spoken over TTS. So it must NEVER be
             // invisible — keep the AUDIO (the only falsifiable evidence) + a conv
@@ -570,7 +584,7 @@ export function speechWatchProcessor(
             recordConvEvent({
               dockId: ctx.dockId, lane: 'perception', type: 'stt:drop', verdict: 'voiced-fraction',
               utteranceId, audioStartAt: startedAt.getTime(), audioEndAt: endedAt.getTime(),
-              detail: { voicedPct: vpct, floorPct: MIN_VOICED_PCT, durS: Number(durS.toFixed(1)), clip },
+              detail: { voicedPct: vpct, floorPct: floor, speaking, durS: Number(durS.toFixed(1)), clip },
             });
             detector.speechEndpoint(false); // treat as non-speech (don't arm the enrich fast-path)
             return;
