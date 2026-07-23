@@ -10,7 +10,7 @@ interface FeedbackMeta { id: string; sessionId?: string; turnId?: string; source
 
 // ── view models (mirror the server store) ────────────────────────────────────
 interface ToolVM { id: string; name: string; args?: unknown; result?: string; isError?: boolean; startedAt?: number; endedAt?: number }
-interface StepVM { idx: number; model?: string; stopReason?: string; text?: string; tools: ToolVM[]; inTok?: number; outTok?: number; cacheRead?: number; cost?: number; thinkTok?: number; thinkingMs?: number; startedAt?: number; streamStartedAt?: number; endedAt?: number }
+interface StepVM { idx: number; model?: string; stopReason?: string; text?: string; rawText?: string; tools: ToolVM[]; inTok?: number; outTok?: number; cacheRead?: number; cost?: number; thinkTok?: number; thinkingMs?: number; startedAt?: number; streamStartedAt?: number; endedAt?: number }
 interface SpeechVM { startedAt: number; endedAt?: number }
 /** admit provenance for addressed user turns — which rule/window let the utterance in
  *  (server: brain/conversation-state.ts AdmitTrace, riding trigger.window). */
@@ -20,7 +20,7 @@ interface SttVM { confTier?: string; avgLogprob?: number | null; noSpeechProb?: 
 interface TurnVM { id: string; sessionId: string; source?: string; trigger?: TriggerVM; startedAt: number; endedAt?: number; ended: boolean; steps: StepVM[]; speech: SpeechVM[]; image?: string; stt?: SttVM }
 
 interface StoredTool { toolCallId: string; toolName: string; args?: unknown; result?: string; isError?: boolean; startedAt?: number; endedAt?: number }
-interface StoredStep { index: number; model?: string; stopReason?: string; text?: string; tools: StoredTool[]; usage?: { inputTokens?: number; outputTokens?: number; totalTokens?: number; cost?: number; cacheRead?: number; thinkingTokens?: number }; thinkingMs?: number; startedAt?: number; streamStartedAt?: number; endedAt?: number }
+interface StoredStep { index: number; model?: string; stopReason?: string; text?: string; rawText?: string; tools: StoredTool[]; usage?: { inputTokens?: number; outputTokens?: number; totalTokens?: number; cost?: number; cacheRead?: number; thinkingTokens?: number }; thinkingMs?: number; startedAt?: number; streamStartedAt?: number; endedAt?: number }
 interface StoredTurn { turnId: string; sessionId: string; trigger?: TriggerVM; speech?: { startedAt: number; endedAt?: number }[]; startedAt: number; endedAt?: number; steps: StoredStep[]; image?: string; stt?: SttVM }
 interface StoredSession { sessionId: string; source?: string; turns: StoredTurn[] }
 interface SessionSummary { sessionId: string; source?: string }
@@ -631,6 +631,7 @@ function TurnRow({ turn, open, onToggle, feedback, dock }: { turn: TurnVM; open:
             </span>
           );
         })}
+        {silentTurnInfo(turn) && <span className="pill sm" title="finished cleanly, chose to say nothing (expand for why)">🤫 silent</span>}
         {err && <span className="dot off" title="error" />}
         {!turn.ended && <span className="dot wait" title="running" />}
         {feedback?.map((f) => (
@@ -735,6 +736,20 @@ function TurnTimeline({ turn }: { turn: TurnVM }) {
           {turn.trigger.text && <span className="obs-msg-text obs-copytext" title="double-click a word to select · click ⧉ to copy all">{turn.trigger.text}<CopyIco value={turn.trigger.text} /></span>}
         </div>
       )}
+      {(() => {
+        const si = silentTurnInfo(turn);
+        if (!si) return null;
+        return (
+          <div className="obs-msg" style={{ opacity: 0.9 }}>
+            <span className="obs-msg-who" title="the model completed this turn cleanly and deliberately produced no speech">🤫 silent</span>
+            <span className="muted sm">
+              model finished cleanly (no errors) and returned no speech
+              {si.tags ? <> — output was only <span className="mono">{si.tags.slice(0, 80)}</span></> : ' — empty output'}
+              {si.reason && <>. Likely why: {si.reason}.</>}
+            </span>
+          </div>
+        );
+      })()}
       {/* STT EVIDENCE for a heard turn: the actual audio the transcript came
           from (utteranceId suffix = the clip WAV key) + the engine's own
           confidence — so "what did it really hear, and how sure was it" is
@@ -1005,12 +1020,32 @@ function ConvContext({ turn }: { turn: TurnVM }) {
   );
 }
 
+/** A turn that finished CLEANLY but spoke nothing — the model chose silence.
+ *  Distinct from failed/cancelled: without this, "done, 0 words" reads as a
+ *  mystery ("why didn't it respond?"), when the trace shows a healthy LLM call
+ *  that returned only face/move tags. Reason derived when the framing explains
+ *  it (possibly-overheard windows + shaky STT); else just the clean-finish fact. */
+function silentTurnInfo(turn: TurnVM): { tags: string; reason?: string } | null {
+  if (!turn.ended || turn.steps.length === 0) return null;
+  const failed = turn.steps.some((st) => st.stopReason === 'error' || st.tools.some((tc) => tc.isError));
+  if (failed) return null; // real errors render their own path
+  if (turn.steps.some((st) => (st.text ?? '').trim().length > 0)) return null;
+  const raw = turn.steps.map((st) => st.rawText ?? '').join(' ').trim();
+  const overheard = turn.trigger?.via === 'followup-window' || turn.trigger?.via === 'busy-drain';
+  const shaky = turn.stt?.confTier && turn.stt.confTier !== 'good';
+  const reason = overheard && shaky
+    ? `possibly-overheard framing (${turn.trigger?.via}) + ${turn.stt?.confTier} transcript — the prompt says to stay silent unless clearly addressed`
+    : overheard ? `possibly-overheard framing (${turn.trigger?.via}) — the prompt says to stay silent unless clearly addressed`
+    : shaky ? `${turn.stt?.confTier} transcript` : undefined;
+  return { tags: raw, reason };
+}
+
 function storedToVM(t: StoredTurn, source?: string): TurnVM {
   return {
     id: t.turnId, sessionId: t.sessionId, source, trigger: t.trigger, startedAt: t.startedAt, endedAt: t.endedAt, ended: t.endedAt != null, image: t.image, stt: t.stt,
     speech: t.speech ?? [],
     steps: t.steps.map((s) => ({
-      idx: s.index, model: s.model, stopReason: s.stopReason, text: s.text,
+      idx: s.index, model: s.model, stopReason: s.stopReason, text: s.text, rawText: s.rawText,
       inTok: s.usage?.inputTokens, outTok: s.usage?.outputTokens, cacheRead: s.usage?.cacheRead, cost: s.usage?.cost, thinkTok: s.usage?.thinkingTokens, thinkingMs: s.thinkingMs, startedAt: s.startedAt, streamStartedAt: s.streamStartedAt, endedAt: s.endedAt,
       tools: s.tools.map((tc) => ({ id: tc.toolCallId, name: tc.toolName, args: tc.args, result: tc.result, isError: tc.isError, startedAt: tc.startedAt, endedAt: tc.endedAt })),
     })),
@@ -1036,7 +1071,10 @@ function applyEvent(turn: TurnVM, ev: AgentEventDto): void {
       }
       break;
     case 'MessageUpdate': if (last && last.streamStartedAt == null) last.streamStartedAt = ev.ts; break;
-    case 'MessageEnd': if (last && ev.data?.text != null) last.text = ev.data.text; break;
+    case 'MessageEnd':
+      if (last && ev.data?.text != null) last.text = ev.data.text;
+      if (last && typeof ev.data?.rawText === 'string') last.rawText = ev.data.rawText;
+      break;
     case 'SpeakStart': {
       const prev = [...turn.speech].reverse().find((x) => x.endedAt == null); if (prev) prev.endedAt = ev.ts;
       turn.speech.push({ startedAt: ev.ts }); break;
