@@ -897,7 +897,10 @@ function TurnTimeline({ turn }: { turn: TurnVM }) {
           const widPct = Math.max(1.5, ((ev.end - ev.start) / total) * 100);
           return (
             <div key={i} className={`obs-ev lane-${ev.lane}`}>
-              <span className="obs-ev-when mono">@{fmtMs(ev.start)}</span>
+              <span className="obs-ev-when mono"
+                title={`${clockMs(turn.startedAt + ev.start)} → ${clockMs(turn.startedAt + ev.end)} (wall clock)`}>
+                {ev.end > ev.start ? `@${fmtMs(ev.start)}→${fmtMs(ev.end)}` : `@${fmtMs(ev.start)}`}
+              </span>
               <span className={`obs-ev-lbl ${ev.cls}`}>{ev.label}</span>
               <span className="obs-ev-dur mono">{fmtMs(ev.end - ev.start)}</span>
               <span className="obs-ev-track">
